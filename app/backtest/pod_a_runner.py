@@ -1,0 +1,326 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+from app.backtest.pod_a_executor import PodAExecutor
+from app.backtest.pod_report import PodABacktestReport
+from app.backtest.snapshot_loader import SnapshotLoader
+from app.persistence.journal import (
+    JsonlJournal,
+    build_signal_journal_record,
+    build_trade_journal_record,
+)
+from app.risk.pod_a_gate import PodARiskGate
+from app.settings import AppConfig
+from app.trident.supervisor import TridentSupervisor
+from app.trident.types import RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
+
+
+@dataclass(slots=True)
+class PodABacktestResult:
+    records_processed: int
+    signal_count: int
+    accepted_count: int
+    rejected_count: int
+    opened_count: int
+    skipped_open_count: int
+    closed_trade_count: int
+    win_count: int
+    loss_count: int
+    realized_pnl_usd: float
+    gross_pnl_usd: float
+    fees_usd: float
+    max_drawdown_usd: float
+    average_hold_hours: float
+    records_by_regime: dict[str, int]
+    records_by_date: dict[str, int]
+    signals_by_symbol: dict[str, int]
+    signals_by_side: dict[str, int]
+    signals_by_setup: dict[str, int]
+    signals_by_regime: dict[str, int]
+    signals_by_date: dict[str, int]
+    accepted_by_date: dict[str, int]
+    rejected_by_date: dict[str, int]
+    rejections_by_reason: dict[str, int]
+    regime_transition_count: int
+    regime_transitions: dict[str, int]
+    regime_transitions_by_date: dict[str, dict[str, int]]
+    close_reasons: dict[str, int]
+    trades_by_symbol: dict[str, int]
+    pnl_by_symbol: dict[str, float]
+    pnl_by_date: dict[str, float]
+    closed_trade_log: list[dict[str, object]]
+    average_confidence: float
+    output_path: str | None = None
+
+
+class PodABacktestRunner:
+    """Replays market snapshots through Pod A signal generation."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self.config = config
+        self.loader = SnapshotLoader()
+        self.risk_gate = PodARiskGate(config)
+        self.executor = PodAExecutor(config)
+
+    def run_jsonl(
+        self,
+        input_path: str | Path,
+        output_path: str | Path | None = None,
+    ) -> PodABacktestResult:
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident-backtest",
+            mode="observation",
+        )
+        output_journal = JsonlJournal(output_path) if output_path is not None else None
+        report = PodABacktestReport()
+
+        last_snapshot_by_symbol: dict[str, SymbolMarketSnapshot] = {}
+        last_timestamp: str | None = None
+
+        for record in self.loader.iter_jsonl(input_path):
+            report.records_processed += 1
+            date_key = self._date_key(record.timestamp, record.source_file)
+            report.add_record_date(date_key)
+            previous_regime = supervisor.state.regime.value
+            supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
+            current_regime = supervisor.state.regime.value
+            if current_regime != previous_regime:
+                report.add_regime_transition(
+                    date_key=date_key,
+                    previous_regime=previous_regime,
+                    new_regime=current_regime,
+                )
+            report.add_record_regime(supervisor.state.regime.value)
+            snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            previews = supervisor.preview_pod_a_signals(snapshots)
+            trade_plans = supervisor.build_pod_a_trade_plans(snapshots)
+            risk_decisions = self.risk_gate.evaluate_many(trade_plans)
+            execution = self.executor.process_record(
+                snapshots=snapshots,
+                risk_decisions=risk_decisions,
+                signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
+                timestamp=record.timestamp,
+            )
+
+            snapshot_by_symbol = {item["symbol"]: item for item in record.symbols}
+            decisions_by_symbol: dict[str, RiskDecision] = {
+                decision.trade_plan.symbol: decision for decision in risk_decisions
+            }
+
+            if output_journal is not None:
+                fills_by_symbol: dict[str, list[dict[str, object]]] = {}
+                for fill in execution.fills:
+                    fills_by_symbol.setdefault(str(fill["symbol"]), []).append(fill)
+                output_journal.append_many(
+                    build_signal_journal_record(
+                        timestamp=record.timestamp,
+                        record_index=record.record_index,
+                        regime=supervisor.state.regime.value,
+                        regime_snapshot=record.regime_snapshot,
+                        symbol_snapshot=snapshot_by_symbol.get(preview.symbol),
+                        signal={
+                            "symbol": preview.symbol,
+                            "side": preview.side,
+                            "setup": preview.setup,
+                            "confidence": preview.confidence,
+                            "confidence_components": (
+                                decisions_by_symbol[preview.symbol].trade_plan.confidence_components
+                                if preview.symbol in decisions_by_symbol
+                                else {}
+                            ),
+                            "source_file": record.source_file,
+                            "risk": {
+                                "accepted": decisions_by_symbol.get(preview.symbol).accepted
+                                if preview.symbol in decisions_by_symbol
+                                else False,
+                                "reason": decisions_by_symbol.get(preview.symbol).reason
+                                if preview.symbol in decisions_by_symbol
+                                else "missing_trade_plan",
+                                "target_notional_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.target_notional_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "stop_bps": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.stop_bps
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                            },
+                            "execution": {
+                                "had_open_position_before": execution.had_open_position_before.get(
+                                    preview.symbol,
+                                    False,
+                                ),
+                                "has_open_position_after": execution.has_open_position_after.get(
+                                    preview.symbol,
+                                    False,
+                                ),
+                                "opened": preview.symbol in execution.opened_symbols,
+                                "skipped_open": preview.symbol
+                                in execution.skipped_open_symbols,
+                                "close_reason": execution.close_reasons_by_symbol.get(
+                                    preview.symbol
+                                ),
+                                "open_fills": [
+                                    fill
+                                    for fill in fills_by_symbol.get(preview.symbol, [])
+                                    if fill.get("action") == "open"
+                                ],
+                                "close_fills": [
+                                    fill
+                                    for fill in fills_by_symbol.get(preview.symbol, [])
+                                    if fill.get("action") == "close"
+                                ],
+                            },
+                        },
+                    )
+                    for preview in previews
+                )
+
+            for preview in previews:
+                report.add_signal(
+                    date_key=date_key,
+                    symbol=preview.symbol,
+                    side=preview.side,
+                    setup=preview.setup,
+                    regime=supervisor.state.regime.value,
+                    confidence=preview.confidence,
+                )
+            for decision in risk_decisions:
+                report.add_decision(
+                    date_key=date_key,
+                    accepted=decision.accepted,
+                    reason=decision.reason,
+                )
+            report.add_execution_batch(
+                opened_symbols=execution.opened_symbols,
+                skipped_open_symbols=execution.skipped_open_symbols,
+            )
+            for trade in execution.closed_trades:
+                if output_journal is not None:
+                    output_journal.append(
+                        build_trade_journal_record(
+                            timestamp=record.timestamp,
+                            record_index=record.record_index,
+                            trade=self._trade_to_record(trade),
+                        )
+                    )
+                report.add_closed_trade(
+                    date_key=self._date_key(
+                        trade.closed_at.isoformat() if trade.closed_at is not None else record.timestamp,
+                        record.source_file,
+                    ),
+                    symbol=trade.symbol,
+                    side=trade.side,
+                    pnl_usd=trade.pnl_usd,
+                    gross_pnl_usd=trade.gross_pnl_usd,
+                    fees_usd=trade.fees_usd,
+                    close_reason=trade.close_reason,
+                    hold_hours=self._hold_hours(trade),
+                    opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
+                    closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+                )
+
+            last_snapshot_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
+            last_timestamp = record.timestamp
+
+        final_trades, _ = self.executor.finalize(
+            snapshots=list(last_snapshot_by_symbol.values()),
+            timestamp=last_timestamp,
+        )
+        for trade in final_trades:
+            if output_journal is not None:
+                output_journal.append(
+                    build_trade_journal_record(
+                        timestamp=last_timestamp,
+                        record_index=report.records_processed,
+                        trade=self._trade_to_record(trade),
+                    )
+                )
+            report.add_closed_trade(
+                date_key=self._date_key(
+                    trade.closed_at.isoformat() if trade.closed_at is not None else last_timestamp,
+                    "finalize",
+                ),
+                symbol=trade.symbol,
+                side=trade.side,
+                pnl_usd=trade.pnl_usd,
+                gross_pnl_usd=trade.gross_pnl_usd,
+                fees_usd=trade.fees_usd,
+                close_reason=trade.close_reason,
+                hold_hours=self._hold_hours(trade),
+                opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
+                closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+            )
+
+        return PodABacktestResult(
+            records_processed=report.records_processed,
+            signal_count=report.signal_count,
+            accepted_count=report.accepted_count,
+            rejected_count=report.rejected_count,
+            opened_count=report.opened_count,
+            skipped_open_count=report.skipped_open_count,
+            closed_trade_count=report.closed_trade_count,
+            win_count=report.win_count,
+            loss_count=report.loss_count,
+            realized_pnl_usd=report.realized_pnl_usd,
+            gross_pnl_usd=report.gross_pnl_usd,
+            fees_usd=report.fees_usd,
+            max_drawdown_usd=report.max_drawdown_usd,
+            average_hold_hours=report.average_hold_hours,
+            records_by_regime=report.records_by_regime,
+            records_by_date=report.records_by_date,
+            signals_by_symbol=report.signals_by_symbol,
+            signals_by_side=report.signals_by_side,
+            signals_by_setup=report.signals_by_setup,
+            signals_by_regime=report.signals_by_regime,
+            signals_by_date=report.signals_by_date,
+            accepted_by_date=report.accepted_by_date,
+            rejected_by_date=report.rejected_by_date,
+            rejections_by_reason=report.rejections_by_reason,
+            regime_transition_count=report.regime_transition_count,
+            regime_transitions=report.regime_transitions,
+            regime_transitions_by_date=report.regime_transitions_by_date,
+            close_reasons=report.close_reasons,
+            trades_by_symbol=report.trades_by_symbol,
+            pnl_by_symbol=report.pnl_by_symbol,
+            pnl_by_date=report.pnl_by_date,
+            closed_trade_log=report.closed_trade_log,
+            average_confidence=report.average_confidence,
+            output_path=str(output_path) if output_path is not None else None,
+        )
+
+    def _hold_hours(self, trade: object) -> float | None:
+        opened_at = getattr(trade, "opened_at", None)
+        closed_at = getattr(trade, "closed_at", None)
+        if opened_at is None or closed_at is None:
+            return None
+        return round((closed_at - opened_at).total_seconds() / 3600.0, 4)
+
+    def _trade_to_record(self, trade: object) -> dict[str, object]:
+        return {
+            "symbol": trade.symbol,
+            "side": trade.side,
+            "entry_price": trade.entry_price,
+            "exit_price": trade.exit_price,
+            "target_notional_usd": trade.target_notional_usd,
+            "gross_pnl_usd": trade.gross_pnl_usd,
+            "fees_usd": trade.fees_usd,
+            "pnl_usd": trade.pnl_usd,
+            "close_reason": trade.close_reason,
+            "hold_hours": self._hold_hours(trade),
+            "opened_at": trade.opened_at.isoformat() if trade.opened_at else None,
+            "closed_at": trade.closed_at.isoformat() if trade.closed_at else None,
+        }
+
+    def _date_key(self, timestamp: str | None, fallback_source_file: str) -> str:
+        if timestamp:
+            return timestamp[:10]
+        if fallback_source_file.endswith(".jsonl"):
+            return fallback_source_file.removesuffix(".jsonl")
+        return fallback_source_file

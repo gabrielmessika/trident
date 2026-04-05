@@ -1,0 +1,16 @@
+[project]
+name = "trident"
+version = "0.1.0"
+description = "TRIDENT trading bot orchestrator for Hyperliquid"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "websockets>=15.0",
+]
+
+[dependency-groups]
+dev = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

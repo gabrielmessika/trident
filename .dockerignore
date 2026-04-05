@@ -1,0 +1,11 @@
+.git
+.venv
+__pycache__
+*.pyc
+logs/*
+runtime/*
+data/gbot_archive
+data/server_archive
+data/replay_reports
+data/live_snapshots
+*.jsonl

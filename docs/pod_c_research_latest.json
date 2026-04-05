@@ -1,0 +1,67 @@
+{
+  "input_path": "/workspaces/trident/data/live_snapshots/2026-04-05.jsonl",
+  "candidate_count": 2,
+  "go_count": 0,
+  "best_candidate": null,
+  "recommendation": "no-go",
+  "studies": [
+    {
+      "leader_symbol": "BTC",
+      "follower_symbols": [
+        "SOL",
+        "HYPE",
+        "SUI"
+      ],
+      "impulse_threshold_bps": 8.0,
+      "horizon_bars": 1,
+      "sample_count_by_symbol": {
+        "SOL": 0,
+        "HYPE": 0,
+        "SUI": 0
+      },
+      "expectancy_bps_by_symbol": {
+        "SOL": 0.0,
+        "HYPE": 0.0,
+        "SUI": 0.0
+      },
+      "hit_rate_by_symbol": {
+        "SOL": 0.0,
+        "HYPE": 0.0,
+        "SUI": 0.0
+      },
+      "best_symbol": null,
+      "best_expectancy_bps": 0.0,
+      "recommendation": "no-go",
+      "rationale": "No follower showed robust positive expectancy."
+    },
+    {
+      "leader_symbol": "ETH",
+      "follower_symbols": [
+        "SOL",
+        "HYPE",
+        "SUI"
+      ],
+      "impulse_threshold_bps": 8.0,
+      "horizon_bars": 1,
+      "sample_count_by_symbol": {
+        "SOL": 0,
+        "HYPE": 0,
+        "SUI": 0
+      },
+      "expectancy_bps_by_symbol": {
+        "SOL": 0.0,
+        "HYPE": 0.0,
+        "SUI": 0.0
+      },
+      "hit_rate_by_symbol": {
+        "SOL": 0.0,
+        "HYPE": 0.0,
+        "SUI": 0.0
+      },
+      "best_symbol": null,
+      "best_expectancy_bps": 0.0,
+      "recommendation": "no-go",
+      "rationale": "No follower showed robust positive expectancy."
+    }
+  ]
+}

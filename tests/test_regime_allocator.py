@@ -1,0 +1,142 @@
+import unittest
+
+from app.settings import load_config
+from app.trident.regime_allocator import RegimeAllocator
+from app.trident.types import Regime, RegimeSnapshot
+
+
+class RegimeAllocatorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = load_config("config/trident.toml")
+        self.allocator = RegimeAllocator(self.config)
+
+    def test_returns_cash_when_snapshot_not_ready(self) -> None:
+        regime = self.allocator.classify(RegimeSnapshot(ready=False))
+        self.assertEqual(regime, Regime.CASH)
+
+    def test_classifies_dead_zone(self) -> None:
+        regime = self.allocator.classify(
+            RegimeSnapshot(
+                ready=True,
+                adx=10.0,
+                atr_ratio=0.4,
+                range_width_bps=50.0,
+                structure_score=0.1,
+            )
+        )
+        self.assertEqual(regime, Regime.DEAD_ZONE)
+
+    def test_classifies_range_auction(self) -> None:
+        regime = self.allocator.classify(
+            RegimeSnapshot(
+                ready=True,
+                adx=16.0,
+                atr_ratio=1.1,
+                range_width_bps=130.0,
+                structure_score=0.15,
+            )
+        )
+        self.assertEqual(regime, Regime.RANGE_AUCTION)
+
+    def test_classifies_trend_expansion(self) -> None:
+        regime = self.allocator.classify(
+            RegimeSnapshot(
+                ready=True,
+                adx=32.0,
+                atr_ratio=1.2,
+                range_width_bps=180.0,
+                structure_score=0.55,
+            )
+        )
+        self.assertEqual(regime, Regime.TREND_EXPANSION)
+
+    def test_classifies_panic_squeeze(self) -> None:
+        regime = self.allocator.classify(
+            RegimeSnapshot(
+                ready=True,
+                adx=22.0,
+                atr_ratio=2.1,
+                range_width_bps=240.0,
+                structure_score=0.2,
+                btc_impulse=True,
+            )
+        )
+        self.assertEqual(regime, Regime.PANIC_SQUEEZE)
+
+    def test_resolve_applies_hysteresis_for_dead_to_range_transition(self) -> None:
+        dead_snapshot = RegimeSnapshot(
+            ready=True,
+            adx=10.0,
+            atr_ratio=0.4,
+            range_width_bps=50.0,
+            structure_score=0.1,
+        )
+        range_snapshot = RegimeSnapshot(
+            ready=True,
+            adx=16.0,
+            atr_ratio=1.1,
+            range_width_bps=130.0,
+            structure_score=0.15,
+        )
+
+        first = self.allocator.resolve(
+            snapshot=dead_snapshot,
+            current_regime=Regime.CASH,
+            pending_regime=None,
+            pending_count=0,
+        )
+        self.assertEqual(first.effective_regime, Regime.DEAD_ZONE)
+        self.assertTrue(first.switched)
+
+        second = self.allocator.resolve(
+            snapshot=range_snapshot,
+            current_regime=first.effective_regime,
+            pending_regime=first.pending_regime,
+            pending_count=first.pending_count,
+        )
+        self.assertEqual(second.effective_regime, Regime.DEAD_ZONE)
+        self.assertEqual(second.pending_regime, Regime.RANGE_AUCTION)
+        self.assertEqual(second.pending_count, 1)
+
+        third = self.allocator.resolve(
+            snapshot=range_snapshot,
+            current_regime=second.effective_regime,
+            pending_regime=second.pending_regime,
+            pending_count=second.pending_count,
+        )
+        self.assertEqual(third.effective_regime, Regime.DEAD_ZONE)
+        self.assertEqual(third.pending_count, 2)
+
+        fourth = self.allocator.resolve(
+            snapshot=range_snapshot,
+            current_regime=third.effective_regime,
+            pending_regime=third.pending_regime,
+            pending_count=third.pending_count,
+        )
+        self.assertEqual(fourth.effective_regime, Regime.RANGE_AUCTION)
+        self.assertTrue(fourth.switched)
+
+    def test_resolve_enters_panic_immediately(self) -> None:
+        panic_snapshot = RegimeSnapshot(
+            ready=True,
+            adx=22.0,
+            atr_ratio=2.1,
+            range_width_bps=240.0,
+            structure_score=0.2,
+            btc_impulse=True,
+        )
+
+        decision = self.allocator.resolve(
+            snapshot=panic_snapshot,
+            current_regime=Regime.DEAD_ZONE,
+            pending_regime=None,
+            pending_count=0,
+        )
+
+        self.assertEqual(decision.raw_regime, Regime.PANIC_SQUEEZE)
+        self.assertEqual(decision.effective_regime, Regime.PANIC_SQUEEZE)
+        self.assertTrue(decision.switched)
+
+
+if __name__ == "__main__":
+    unittest.main()

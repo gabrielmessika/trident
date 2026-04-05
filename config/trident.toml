@@ -1,0 +1,102 @@
+[general]
+mode = "observation"
+host = "127.0.0.1"
+port = 3000
+log_level = "info"
+
+[hyperliquid]
+ws_url = "wss://api.hyperliquid.xyz/ws"
+info_url = "https://api.hyperliquid.xyz/info"
+rate_limit_state_path = "./runtime/hyperliquid_rate_limits.json"
+snapshot_output_dir = "./data/live_snapshots"
+bucket_ms = 60000
+reconnect_delay_seconds = 5.0
+max_reconnect_delay_seconds = 30.0
+connect_timeout_seconds = 10.0
+message_timeout_seconds = 20.0
+heartbeat_interval_seconds = 25.0
+max_idle_heartbeats = 2
+info_requests_per_minute = 60
+ws_connects_per_minute = 6
+ws_messages_per_second = 8
+shared_rate_limit_jitter_seconds = 0.1
+circuit_breaker_threshold = 3
+circuit_breaker_seconds = 30.0
+default_coins = ["BTC", "ETH", "SOL", "HYPE"]
+
+[trident]
+enabled = true
+
+[trident.regime]
+adx_trend_threshold = 22
+trend_structure_threshold = 0.30
+atr_ratio_panic_threshold = 1.8
+dead_zone_atr_threshold = 0.45
+dead_zone_range_threshold = 80
+switch_confirmation_bars = 3
+trend_confirmation_bars = 1
+panic_confirmation_bars = 1
+
+[trident.capital]
+reference_equity_usd = 1000
+max_allocation_per_symbol_pct = 0.25
+min_symbol_allocation_usd = 25
+
+[trident.risk]
+min_confidence = 0.50
+max_trade_plans_per_batch = 2
+min_trade_notional_usd = 50
+
+[trident.execution]
+dry_run_taker_fee_bps = 3.5
+dry_run_slippage_bps = 0.5
+dry_run_spread_multiplier = 0.5
+
+[trident.allocations.trend_expansion]
+pod_a = 0.60
+pod_b = 0.10
+pod_c = 0.30
+
+[trident.allocations.range_auction]
+pod_a = 0.20
+pod_b = 0.70
+pod_c = 0.10
+
+[trident.allocations.panic_squeeze]
+pod_a = 0.10
+pod_b = 0.00
+pod_c = 0.90
+
+[trident.allocations.dead_zone]
+pod_a = 0.00
+pod_b = 0.20
+pod_c = 0.00
+cash = 0.80
+
+[pod_a]
+enabled = true
+symbols = ["BTC", "ETH", "SOL", "HYPE"]
+max_allocation_pct = 0.60
+
+[pod_b]
+enabled = false
+symbols = ["DOGE", "XRP", "SUI"]
+passivbot_config_path = "./runtime/passivbot/live.json"
+launch_command = []
+launch_workdir = ""
+max_allocation_pct = 0.70
+paper_quote_width_bps = 6.0
+paper_order_size_pct = 0.25
+paper_max_inventory_skew_pct = 1.0
+paper_maker_fee_bps = 0.0
+paper_recent_fills_limit = 20
+
+[pod_c]
+enabled = false
+leader_symbols = ["BTC", "ETH"]
+follower_symbols = ["SOL", "HYPE", "SUI"]
+max_allocation_pct = 0.90
+impulse_threshold_bps = 10.0
+min_lag_bps = 4.0
+max_spread_bps = 6.0
+time_stop_hours = 4
