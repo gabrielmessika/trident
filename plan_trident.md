@@ -295,6 +295,7 @@
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider en dry-run live le socle `500 USD` et confirmer le comportement d'upgrade / allocation active sur une plage plus longue |
 | 5. Pod B range engine natif | 92% | Lancer le premier dry-run 24h 3 pods avec `Pod B` en mode conservateur, puis recalibrer les seuils d'activation range/toxicite sur les observations runtime |
+| 5bis. Routing dynamique symbols / ownership | 0% | Definir les scores d'affinite par pod, puis attribuer automatiquement chaque coin au meilleur pod sans overlap |
 | 6. Reporting par pod | 100% | Rien, etape fermee |
 | 7. Research Pod pour Pod C | 100% | Rien, etape fermee |
 | 8. Pod C minimal | 100% | Rien, etape fermee |
@@ -2391,6 +2392,111 @@ Strategie pratique pour aller vite vers le dry-run 3 pods:
 Decision actuelle:
 
 - GO ferme pour considerer le moteur Pod B natif comme la V1 de reference dans `trident`
+
+---
+
+## Etape 5bis — Routing dynamique des symbols / ownership
+
+### Statut
+
+`A FAIRE — l'intention existe dans l'architecture, mais l'attribution dynamique coin par coin n'est pas encore implementee`
+
+### Pourquoi cette etape existe
+
+Le superviseur actuel:
+
+- detecte le regime,
+- alloue le capital par pod,
+- impose un ownership exclusif,
+- mais ne choisit pas encore automatiquement quel pod doit recevoir chaque coin.
+
+Aujourd'hui, chaque pod declare encore principalement son univers en config, puis le superviseur tranche les collisions avec une priorite fixe:
+
+- `pod_c` > `pod_a` > `pod_b`
+
+Cette logique securise bien la cohabitation V1, mais elle ne correspond pas encore a l'objectif cible:
+
+- observer le marche coin par coin,
+- mesurer quel pod est le plus adapte a ce coin a cet instant,
+- attribuer ce coin automatiquement au meilleur pod,
+- eviter les conflits sans se reposer sur une liste statique de symbols.
+
+### Objectif
+
+Faire evoluer l'ownership depuis un arbitrage statique vers un vrai routage dynamique des symbols par pod.
+
+### Principe cible
+
+Pour chaque coin observe, le superviseur devra produire un score d'affinite par pod, puis choisir un owner unique:
+
+- `Pod A` si le coin ressemble a un contexte trend / continuation / reclaim structurel
+- `Pod B` si le coin ressemble a un contexte range / maker / inventory-friendly
+- `Pod C` si le coin ressemble a un contexte evenementiel / impulsif / lead-lag exploitable
+
+Le routage doit rester:
+
+- deterministe
+- explicable dans le dashboard
+- stable dans le temps
+- borne par hysteresis pour eviter le flip-flop permanent
+
+### Travail
+
+- definir un `symbol routing snapshot` par coin avec les features deja disponibles:
+  - regime local
+  - adx / atr ratio
+  - range width
+  - structure score
+  - spread
+  - flow toxicity
+  - signaux qualifies de `Pod A`
+  - eligibility maker de `Pod B`
+  - eligibility event de `Pod C`
+- calculer un score simple par pod:
+  - `pod_a_affinity`
+  - `pod_b_affinity`
+  - `pod_c_affinity`
+- choisir un owner unique avec:
+  - seuil minimal
+  - priorite de secours seulement en fallback
+  - hysteresis / cooldown avant reattribution
+- separer explicitement:
+  - `observation_universe`
+  - `candidate_symbols`
+  - `owned_symbols`
+- exposer dans l'API/dashboard:
+  - score par pod
+  - raison du choix
+  - raison du non-choix
+  - delai depuis la derniere reattribution
+- garder une possibilite de `pin manuel` par coin pour le live si besoin
+
+### Livrables cibles
+
+- `app/trident/symbol_router.py`
+- extension de `app/trident/supervisor.py`
+- enrichissement de `app/trident/types.py`
+- exposition dans `app/observability/api.py`
+- tests dedies sur:
+  - attribution initiale
+  - hysteresis
+  - reattribution apres changement de regime
+  - absence d'overlap
+
+### Critere de done
+
+- aucun conflit d'ownership normal en dry-run quand plusieurs pods sont actifs
+- les symbols sont attribues automatiquement sans avoir a bricoler la config a la main
+- le dashboard explique clairement pourquoi un coin appartient a `Pod A`, `Pod B` ou `Pod C`
+- les reallocations restent rares, lisibles et non chaotiques
+
+### Remarque produit
+
+Cette etape n'est pas strictement necessaire pour lancer le premier dry-run 3 pods, mais elle devient importante des qu'on veut:
+
+- elargir l'univers de coins
+- laisser tourner les 3 pods ensemble sans micro-gestion manuelle
+- se rapprocher du comportement "orchestrateur intelligent" attendu par la vision du projet
 
 ---
 
