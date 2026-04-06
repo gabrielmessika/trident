@@ -3,23 +3,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.backtest.archive_replay import ArchiveReplayRunner, parse_dates
+from app.backtest.archive_replay_sweep import (
+    ArchiveReplaySweepRunner,
+    default_scenarios,
+)
 from app.settings import load_config
 
 
-class ArchiveReplayTests(unittest.TestCase):
+class ArchiveReplaySweepTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = load_config("config/trident.toml")
-        self.runner = ArchiveReplayRunner(self.config)
+        self.runner = ArchiveReplaySweepRunner(self.config)
 
-    def test_parse_dates_single_day_and_range(self) -> None:
-        self.assertEqual(parse_dates(date_from="2026-04-01", date_to=None), ["2026-04-01"])
-        self.assertEqual(
-            parse_dates(date_from="2026-04-01", date_to="2026-04-03"),
-            ["2026-04-01", "2026-04-02", "2026-04-03"],
-        )
-
-    def test_archive_replay_converts_and_runs_backtest(self) -> None:
+    def test_sweep_runs_multiple_scenarios_and_writes_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_dir = Path(tmpdir) / "archive"
             for side in ("l2", "trades"):
@@ -81,37 +77,35 @@ class ArchiveReplayTests(unittest.TestCase):
                 ],
             )
 
-            snapshot_dir = Path(tmpdir) / "snapshots"
-            report_output = Path(tmpdir) / "report.json"
-            journal_output = Path(tmpdir) / "journal.jsonl"
-
+            report_output = Path(tmpdir) / "sweep_report.json"
             result = self.runner.run(
                 data_dir=archive_dir,
                 dates=["2026-04-01"],
                 coins=["BTC", "ETH"],
-                snapshot_dir=snapshot_dir,
-                journal_output=journal_output,
+                scenarios=default_scenarios(
+                    reference_equity_usd=500.0,
+                    leverages=[1.0, 2.0, 3.0, 5.0, 10.0],
+                ),
                 report_output=report_output,
-                reference_equity_usd=500.0,
-                pod_a_default_leverage=2.0,
-                pod_a_max_leverage=2.0,
             )
 
             self.assertEqual(result.snapshot_files_written, 1)
-            self.assertEqual(result.snapshot_records_written, 1)
-            self.assertEqual(result.reference_equity_usd, 500.0)
-            self.assertEqual(result.pod_a_default_leverage, 2.0)
-            self.assertEqual(result.pod_a_max_leverage, 2.0)
-            self.assertTrue((snapshot_dir / "2026-04-01.jsonl").exists())
+            self.assertEqual(len(result.scenarios), 5)
+            self.assertEqual(
+                [scenario.scenario.name for scenario in result.scenarios],
+                ["500usd_1x", "500usd_2x", "500usd_3x", "500usd_5x", "500usd_10x"],
+            )
+            self.assertIn(
+                result.recommended_scenario,
+                {"500usd_1x", "500usd_2x", "500usd_3x", "500usd_5x", "500usd_10x"},
+            )
             self.assertTrue(report_output.exists())
-            self.assertTrue(journal_output.exists())
             payload = json.loads(report_output.read_text(encoding="utf-8"))
-            self.assertEqual(payload["dates"], ["2026-04-01"])
-            self.assertEqual(payload["snapshot_records_written"], 1)
-            self.assertEqual(payload["reference_equity_usd"], 500.0)
-            self.assertIn("backtest", payload)
-            self.assertIn("trades_by_symbol", payload["backtest"])
-            self.assertEqual(payload["backtest"]["reference_equity_usd"], 500.0)
+            self.assertEqual(payload["recommended_scenario"], result.recommended_scenario)
+            self.assertEqual(len(payload["scenarios"]), 5)
+            self.assertEqual(payload["scenarios"][0]["scenario"]["reference_equity_usd"], 500.0)
+            self.assertIn("realized_pnl_pct", payload["scenarios"][0])
+            self.assertIn("max_open_expected_loss_pct", payload["scenarios"][0])
 
     def _write_jsonl(self, path: Path, rows: list[dict[str, object]]) -> None:
         with path.open("w", encoding="utf-8") as handle:

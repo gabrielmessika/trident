@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from app.backtest.pod_a_runner import PodABacktestRunner
-from app.settings import load_config
+from app.settings import load_config, override_app_config
 
 
 class PodABacktestRunnerTests(unittest.TestCase):
@@ -84,6 +84,7 @@ class PodABacktestRunnerTests(unittest.TestCase):
             result = self.runner.run_jsonl(input_path, output_path)
 
             self.assertEqual(result.records_processed, 2)
+            self.assertEqual(result.reference_equity_usd, 1000.0)
             self.assertEqual(result.signal_count, 2)
             self.assertEqual(result.accepted_count, 2)
             self.assertEqual(result.rejected_count, 0)
@@ -118,7 +119,24 @@ class PodABacktestRunnerTests(unittest.TestCase):
             self.assertLess(result.average_confidence, 0.95)
             self.assertEqual(result.close_reasons, {"end_of_backtest": 2})
             self.assertEqual(result.trades_by_symbol, {"ETH": 1, "SOL": 1})
+            self.assertEqual(
+                result.trades_by_setup,
+                {"trend_pullback_long": 1, "trend_pullback_short": 1},
+            )
+            self.assertEqual(
+                result.accepted_by_setup,
+                {"trend_pullback_long": 1, "trend_pullback_short": 1},
+            )
+            self.assertEqual(
+                result.opened_by_setup,
+                {"trend_pullback_long": 1, "trend_pullback_short": 1},
+            )
             self.assertIn("2026-04-04", result.pnl_by_date)
+            self.assertIn("trend_pullback_long", result.pnl_by_setup)
+            self.assertGreater(result.max_open_positions, 0)
+            self.assertGreater(result.max_open_margin_usd, 0.0)
+            self.assertGreater(result.max_open_notional_usd, 0.0)
+            self.assertGreater(result.max_open_expected_loss_usd, 0.0)
             self.assertEqual(len(result.closed_trade_log), 2)
             self.assertEqual(result.closed_trade_log[0]["date"], "2026-04-04")
             self.assertTrue(output_path.exists())
@@ -182,12 +200,89 @@ class PodABacktestRunnerTests(unittest.TestCase):
             self.assertEqual(result.skipped_open_count, 0)
             self.assertEqual(result.closed_trade_count, 0)
             self.assertEqual(result.trades_by_symbol, {})
+            self.assertEqual(result.trades_by_setup, {})
             self.assertEqual(result.pnl_by_symbol, {})
+            self.assertEqual(result.pnl_by_setup, {})
             self.assertEqual(result.records_by_date, {"2026-04-04": 1})
             self.assertEqual(result.signals_by_date, {"2026-04-04": 1})
             self.assertEqual(result.accepted_by_date, {})
+            self.assertEqual(result.accepted_by_setup, {})
             self.assertEqual(result.rejected_by_date, {"2026-04-04": 1})
             self.assertEqual(result.rejections_by_reason, {"confidence_below_min": 1})
+            self.assertEqual(result.rejected_by_setup, {"trend_pullback_long": 1})
+
+    def test_runner_respects_small_wallet_override(self) -> None:
+        config = override_app_config(
+            self.config,
+            reference_equity_usd=500.0,
+            pod_a_default_leverage=2.0,
+            pod_a_max_leverage=2.0,
+        )
+        runner = PodABacktestRunner(config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.jsonl"
+            records = [
+                {
+                    "timestamp": "2026-04-04T00:00:00Z",
+                    "regime_snapshot": {
+                        "ready": True,
+                        "adx": 32.0,
+                        "atr_ratio": 1.2,
+                        "range_width_bps": 180.0,
+                        "structure_score": 0.55,
+                        "btc_impulse": False,
+                    },
+                    "symbols": [
+                        {
+                            "symbol": "ETH",
+                            "price": 3100.0,
+                            "ema_fast": 3090.0,
+                            "ema_slow": 3050.0,
+                            "vwap_distance_bps": -8.0,
+                            "structure_score": 0.62,
+                            "funding_rate": 0.0001,
+                            "spread_bps": 1.2,
+                            "btc_aligned": True,
+                        }
+                    ],
+                },
+                {
+                    "timestamp": "2026-04-05T00:30:00Z",
+                    "regime_snapshot": {
+                        "ready": True,
+                        "adx": 32.0,
+                        "atr_ratio": 1.2,
+                        "range_width_bps": 180.0,
+                        "structure_score": 0.55,
+                        "btc_impulse": False,
+                    },
+                    "symbols": [
+                        {
+                            "symbol": "ETH",
+                            "price": 3075.0,
+                            "ema_fast": 3080.0,
+                            "ema_slow": 3045.0,
+                            "vwap_distance_bps": -6.0,
+                            "structure_score": 0.58,
+                            "funding_rate": 0.0001,
+                            "spread_bps": 1.3,
+                            "btc_aligned": True,
+                        }
+                    ],
+                },
+            ]
+            with input_path.open("w", encoding="utf-8") as handle:
+                for record in records:
+                    handle.write(json.dumps(record) + "\n")
+
+            result = runner.run_jsonl(input_path)
+
+            self.assertEqual(result.reference_equity_usd, 500.0)
+            self.assertEqual(result.accepted_count, 1)
+            self.assertLessEqual(result.max_open_margin_usd, 80.0)
+            self.assertLessEqual(result.max_open_notional_usd, 150.0)
+            self.assertLessEqual(result.max_open_expected_loss_usd, 2.5)
 
 
 if __name__ == "__main__":

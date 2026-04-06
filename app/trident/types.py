@@ -127,6 +127,14 @@ class TradePlan:
     stop_bps: float
     time_stop_hours: int
     confidence_components: dict[str, float] = field(default_factory=dict)
+    margin_usd: float = 0.0
+    requested_leverage: float = 1.0
+    effective_leverage: float = 1.0
+    risk_budget_usd: float = 0.0
+    expected_loss_usd: float = 0.0
+    invalidation_price: float | None = None
+    isolated: bool = True
+    setup_details: dict[str, float | str | bool] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

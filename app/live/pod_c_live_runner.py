@@ -188,6 +188,7 @@ class PodCLiveRunner:
         for decision in risk_decisions:
             self.report.add_decision(
                 date_key=date_key,
+                setup=decision.trade_plan.setup,
                 accepted=decision.accepted,
                 reason=decision.reason,
             )
@@ -195,6 +196,15 @@ class PodCLiveRunner:
             opened_symbols=execution.opened_symbols,
             skipped_open_symbols=execution.skipped_open_symbols,
         )
+        decisions_by_symbol = {decision.trade_plan.symbol: decision for decision in risk_decisions}
+        for symbol in execution.opened_symbols:
+            decision = decisions_by_symbol.get(symbol)
+            if decision is not None:
+                self.report.add_opened_setup(decision.trade_plan.setup)
+        for symbol in execution.skipped_open_symbols:
+            decision = decisions_by_symbol.get(symbol)
+            if decision is not None:
+                self.report.add_skipped_open_setup(decision.trade_plan.setup)
         for trade in execution.closed_trades:
             if journal is not None:
                 journal.append(

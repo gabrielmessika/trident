@@ -2,6 +2,132 @@
 
 TRIDENT est un orchestrateur de pods de trading pour Hyperliquid.
 
+## Explication très simple
+
+Si on oublie le vocabulaire technique, `Trident` est surtout un **chef d'orchestre**.
+
+Son rôle est simple :
+
+- regarder ce qu'il se passe sur le marché crypto en direct ;
+- reconnaître le type de marché du moment ;
+- répartir l'argent entre plusieurs modules spécialisés ;
+- s'assurer qu'une même crypto n'est gérée que par un seul module à la fois ;
+- vérifier que le niveau de risque reste acceptable avant d'agir.
+
+### Qu'est-ce qu'un pod ?
+
+Ici, un `pod`, c'est simplement un **spécialiste**.
+
+Chaque pod a sa propre façon de chercher des opportunités :
+
+- `Pod A` aime les mouvements déjà bien lancés ;
+- `Pod B` préfère les marchés plus calmes, qui tournent un peu sur place ;
+- `Pod C` cherche des mouvements plus rapides et plus rares.
+
+On peut imaginer `Trident` comme une petite équipe :
+
+- un observateur qui regarde le marché ;
+- un manager qui décide qui travaille ;
+- trois spécialistes (`Pod A`, `Pod B`, `Pod C`) ;
+- un gardien du risque qui peut dire : "non, on n'y va pas".
+
+### Comment fonctionne Trident, sans jargon
+
+1. `Trident` reçoit des données en direct sur plusieurs cryptos.
+2. Il essaie de comprendre l'ambiance du marché : est-ce que ça monte franchement, est-ce que ça tourne en rond, ou est-ce que ça devient très agité ?
+3. En fonction de cette lecture, il donne plus ou moins de place à chaque pod.
+4. Chaque pod ne travaille que sur les cryptos qui lui ont été attribuées.
+5. Le pod peut proposer une action : acheter, vendre, ou ne rien faire.
+6. `Trident` vérifie ensuite que cette action n'est pas trop risquée.
+7. Si tout est correct, l'action est envoyée au système d'exécution, ou simplement simulée en `dry-run`.
+8. Tout est enregistré dans des journaux et visible dans le dashboard.
+
+### Le rôle de chaque pod, très simplement
+
+#### Pod A : le suiveur de tendance
+
+`Pod A` cherche les cryptos qui ont déjà commencé un mouvement clair.
+
+En pratique :
+
+- si un prix monte de manière assez propre, `Pod A` peut essayer de suivre la hausse ;
+- si un prix baisse de manière assez propre, `Pod A` peut essayer de suivre la baisse ;
+- il préfère les mouvements nets au bruit et aux hésitations.
+
+Autrement dit, `Pod A` ne cherche pas à deviner un retournement. Il préfère **monter dans un train déjà en marche**.
+
+#### Pod B : le pod des petits allers-retours
+
+`Pod B` est pensé pour les moments où le marché n'avance pas vraiment dans une direction claire.
+
+En pratique :
+
+- il place des ordres un peu au-dessus et un peu en dessous du prix ;
+- il essaie de profiter des petits va-et-vient ;
+- il vise plutôt des petits gains répétés qu'un grand mouvement unique.
+
+Autrement dit, `Pod B` travaille mieux quand le marché **tourne en rond** que lorsqu'il part très fort dans une direction.
+
+#### Pod C : le pod opportuniste
+
+`Pod C` surveille surtout les réactions rapides entre plusieurs cryptos.
+
+L'idée simple est la suivante :
+
+- une grosse crypto comme `BTC` ou `ETH` bouge fortement ;
+- une autre crypto peut réagir juste après ;
+- `Pod C` essaie de profiter de ce petit décalage.
+
+Donc `Pod C` ne cherche pas les situations ordinaires du marché. Il attend surtout des **moments rares, rapides et opportunistes**.
+
+### Qui décide quel pod gère quelle crypto ?
+
+C'est `Trident` qui décide.
+
+La règle importante est la suivante :
+
+- **une crypto ne doit être gérée que par un seul pod à la fois**.
+
+Pourquoi ?
+
+- pour éviter que deux pods prennent des décisions contradictoires sur la même crypto ;
+- pour garder une répartition claire de l'argent et du risque.
+
+### À quoi servent les "modes de marché" ?
+
+`Trident` essaie de reconnaître l'ambiance générale du marché :
+
+- **marché en tendance** : le prix part clairement dans un sens ;
+- **marché en range** : le prix monte et baisse sans vraie direction ;
+- **marché très agité** : le prix bouge vite et fort ;
+- **marché peu intéressant** : il vaut parfois mieux attendre.
+
+Ensuite, il adapte la répartition :
+
+- plus de place pour `Pod A` si le marché a une vraie direction ;
+- plus de place pour `Pod B` si le marché tourne sur place ;
+- plus de place pour `Pod C` si le marché devient très nerveux ;
+- parfois, une partie de l'argent reste simplement en cash si rien n'est propre.
+
+### Les mots utiles à connaître
+
+- `crypto` ou `coin` : une monnaie comme `BTC`, `ETH`, `SOL` ;
+- `acheter` : parier que le prix va monter ;
+- `vendre` ou `short` : parier que le prix va baisser ;
+- `tendance` : un mouvement assez clair dans une direction ;
+- `range` : un marché qui monte et baisse sans partir franchement ;
+- `signal` : une idée d'action proposée par un pod ;
+- `dry-run` : une simulation, sans argent réel engagé.
+
+### La phrase la plus importante
+
+`Trident` n'est pas "un bot unique qui fait tout". C'est **un coordinateur** qui :
+
+- observe ;
+- choisit le bon spécialiste ;
+- limite le risque ;
+- et évite que plusieurs spécialistes se marchent dessus.
+
 Etat actuel:
 
 - socle Python initialise,

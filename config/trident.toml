@@ -56,7 +56,9 @@ min_symbol_allocation_usd = 25
 [trident.risk]
 min_confidence = 0.50
 max_trade_plans_per_batch = 2
-min_trade_notional_usd = 50
+min_trade_notional_usd = 10
+max_risk_per_trade_pct = 0.01
+max_total_open_risk_pct = 0.03
 
 [trident.execution]
 dry_run_taker_fee_bps = 3.5
@@ -88,6 +90,27 @@ cash = 0.80
 enabled = true
 symbols = ["BTC", "ETH", "SOL", "HYPE"]
 max_allocation_pct = 0.60
+default_leverage = 2.0
+max_leverage = 3.0
+prefer_isolated = true
+sizing_mode = "risk_based"
+risk_per_trade_pct = 0.0075
+min_margin_usd = 20
+min_notional_usd = 10
+allow_partial_take_profit = false
+allow_break_even = true
+
+[pod_a.max_leverage_by_symbol]
+BTC = 40
+ETH = 25
+SOL = 20
+HYPE = 10
+DOGE = 10
+XRP = 20
+SUI = 10
+AVAX = 10
+LINK = 10
+ARB = 10
 
 [pod_b]
 enabled = false

@@ -92,6 +92,27 @@ class DirectionalExecutor:
             snapshot = snapshot_by_symbol.get(decision.trade_plan.symbol)
             if snapshot is None:
                 continue
+            existing = self.portfolio.open_positions.get(decision.trade_plan.symbol)
+            if existing is not None and self._should_upgrade(existing, decision.trade_plan):
+                close_fill = self.venue.close_fill(
+                    symbol=decision.trade_plan.symbol,
+                    side=existing.side,
+                    mid_price=snapshot.price,
+                    spread_bps=snapshot.spread_bps,
+                    notional_usd=existing.target_notional_usd,
+                    timestamp=timestamp,
+                )
+                trade = self.portfolio.close_position(
+                    decision.trade_plan.symbol,
+                    close_fill.price,
+                    close_fill.fee_usd,
+                    timestamp,
+                    "upgrade_setup",
+                )
+                if trade is not None:
+                    closed_trades.append(trade)
+                    fills.append(asdict(close_fill))
+                    close_reasons_by_symbol[trade.symbol] = trade.close_reason
             fill = self.venue.open_fill(
                 symbol=decision.trade_plan.symbol,
                 side=decision.trade_plan.side,
@@ -122,6 +143,27 @@ class DirectionalExecutor:
             },
             close_reasons_by_symbol=close_reasons_by_symbol,
         )
+
+    def _should_upgrade(self, existing: object, plan: object) -> bool:
+        existing_side = getattr(existing, "side", "")
+        existing_setup = getattr(existing, "setup", "")
+        existing_confidence = float(getattr(existing, "confidence", 0.0))
+        if existing_side != getattr(plan, "side", ""):
+            return False
+        return self._setup_rank(getattr(plan, "setup", "")) > self._setup_rank(existing_setup) and (
+            float(getattr(plan, "confidence", 0.0)) >= existing_confidence - 0.05
+        )
+
+    def _setup_rank(self, setup: str) -> int:
+        if setup.startswith("liquidity_sweep_reclaim"):
+            return 4
+        if setup.startswith("bos_retest"):
+            return 3
+        if setup.startswith("vwap_reclaim"):
+            return 2
+        if setup.startswith("trend_pullback"):
+            return 1
+        return 0
 
     def finalize(
         self,

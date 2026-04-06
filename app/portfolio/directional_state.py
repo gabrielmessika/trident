@@ -25,6 +25,12 @@ class OpenPosition:
     stop_bps: float
     opened_at: datetime | None
     time_stop_hours: int
+    margin_usd: float = 0.0
+    effective_leverage: float = 1.0
+    risk_budget_usd: float = 0.0
+    expected_loss_usd: float = 0.0
+    invalidation_price: float | None = None
+    isolated: bool = True
 
 
 @dataclass(slots=True)
@@ -44,6 +50,12 @@ class ClosedTrade:
     close_reason: str
     opened_at: datetime | None
     closed_at: datetime | None
+    margin_usd: float = 0.0
+    effective_leverage: float = 1.0
+    risk_budget_usd: float = 0.0
+    expected_loss_usd: float = 0.0
+    invalidation_price: float | None = None
+    isolated: bool = True
 
 
 @dataclass(slots=True)
@@ -75,6 +87,12 @@ class DirectionalPortfolioState:
             stop_bps=plan.stop_bps,
             opened_at=parse_timestamp(timestamp),
             time_stop_hours=plan.time_stop_hours,
+            margin_usd=plan.margin_usd,
+            effective_leverage=plan.effective_leverage,
+            risk_budget_usd=plan.risk_budget_usd,
+            expected_loss_usd=plan.expected_loss_usd,
+            invalidation_price=plan.invalidation_price,
+            isolated=plan.isolated,
         )
         return True
 
@@ -109,6 +127,12 @@ class DirectionalPortfolioState:
             close_reason=reason,
             opened_at=position.opened_at,
             closed_at=parse_timestamp(timestamp),
+            margin_usd=position.margin_usd,
+            effective_leverage=position.effective_leverage,
+            risk_budget_usd=position.risk_budget_usd,
+            expected_loss_usd=position.expected_loss_usd,
+            invalidation_price=position.invalidation_price,
+            isolated=position.isolated,
         )
         self.closed_trades.append(trade)
         self.realized_pnl_usd = round(self.realized_pnl_usd + pnl_usd, 2)

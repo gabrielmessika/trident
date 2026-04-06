@@ -111,6 +111,7 @@ class CohabitationReplayRunner:
             for decision in risk_decisions:
                 pod_a_report.add_decision(
                     date_key=date_key,
+                    setup=decision.trade_plan.setup,
                     accepted=decision.accepted,
                     reason=decision.reason,
                 )

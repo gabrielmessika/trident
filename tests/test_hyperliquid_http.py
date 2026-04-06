@@ -6,7 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from app.hyperliquid.info_client import HyperliquidInfoClient
+from app.hyperliquid.info_client import (
+    HyperliquidInfoClient,
+    apply_live_asset_leverage_caps,
+    extract_max_leverage_by_symbol,
+)
 from app.live.errors import HyperliquidRateLimitError
 from app.settings import load_config
 
@@ -27,6 +31,39 @@ class _FakeResponse:
 
 
 class HyperliquidHttpTests(unittest.TestCase):
+    def test_extracts_max_leverage_by_symbol_from_meta_payload(self) -> None:
+        payload = [
+            {
+                "universe": [
+                    {"name": "BTC", "maxLeverage": 40, "marginTableId": 56},
+                    {"name": "ETH", "maxLeverage": 25, "marginTableId": 55},
+                    {"name": "MATIC", "maxLeverage": 20, "isDelisted": True},
+                ]
+            },
+            [],
+        ]
+
+        caps = extract_max_leverage_by_symbol(payload, symbols=["BTC", "ETH", "MATIC"])
+
+        self.assertEqual(caps, {"BTC": 40.0, "ETH": 25.0})
+
+    def test_apply_live_asset_leverage_caps_merges_fetched_limits(self) -> None:
+        config = load_config("config/trident.toml")
+
+        with patch.object(
+            HyperliquidInfoClient,
+            "fetch_max_leverage_by_symbol",
+            return_value={"ETH": 17.0},
+        ):
+            runtime = apply_live_asset_leverage_caps(
+                config,
+                symbols=["ETH"],
+                sleep_fn=lambda _: None,
+            )
+
+        self.assertEqual(runtime.pod_a.max_leverage_by_symbol["ETH"], 17.0)
+        self.assertEqual(runtime.pod_a.max_leverage_by_symbol["BTC"], 40.0)
+
     def test_retries_rate_limit_then_succeeds(self) -> None:
         config = load_config("config/trident.toml").hyperliquid
         with tempfile.TemporaryDirectory() as tmpdir:

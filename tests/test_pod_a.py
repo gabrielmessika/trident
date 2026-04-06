@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from app.settings import load_config
 from app.trident.capital_allocator import CapitalAllocator
@@ -13,9 +14,105 @@ from app.trident.types import PodName, Regime, SymbolMarketSnapshot
 
 class AnchorTrendServiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.config = load_config("config/trident.toml")
         self.service = AnchorTrendService()
         self.context_service = MarketContextService()
-        self.planner = AnchorTrendPlanner()
+        self.planner = AnchorTrendPlanner(self.config)
+
+    def test_generates_bos_retest_signal_for_stronger_structure(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3102.0,
+                ema_fast=3095.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=3.0,
+                structure_score=0.78,
+                funding_rate=0.0001,
+                spread_bps=1.0,
+                btc_aligned=True,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "bos_retest_long")
+        self.assertIsNotNone(signal.invalidation_price)
+
+    def test_generates_vwap_reclaim_signal_when_flow_confirms_reclaim(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="SOL",
+                regime="TrendExpansion",
+                price=152.0,
+                ema_fast=151.6,
+                ema_slow=150.8,
+                vwap_distance_bps=2.0,
+                structure_score=0.58,
+                funding_rate=0.0001,
+                spread_bps=1.0,
+                btc_aligned=True,
+                book_imbalance=0.15,
+                trade_flow_bias=0.18,
+                bucket_range_bps=12.0,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "vwap_reclaim_long")
+
+    def test_generates_vwap_reclaim_signal_in_range_auction_when_mtf_is_already_strong(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="RangeAuction",
+                price=3120.0,
+                ema_fast=3115.0,
+                ema_slow=3102.0,
+                vwap_distance_bps=-3.0,
+                structure_score=0.56,
+                funding_rate=0.0,
+                spread_bps=1.0,
+                btc_aligned=True,
+                book_imbalance=0.22,
+                trade_flow_bias=0.24,
+                bucket_range_bps=14.0,
+                trend_1h_bps=32.0,
+                trend_4h_bps=48.0,
+                mtf_bias_score=40.0,
+                candles_ready=True,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "vwap_reclaim_long")
+
+    def test_generates_liquidity_sweep_reclaim_signal_when_range_and_flow_expand(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="HYPE",
+                regime="TrendExpansion",
+                price=20.2,
+                ema_fast=20.1,
+                ema_slow=19.9,
+                vwap_distance_bps=-12.0,
+                structure_score=0.67,
+                funding_rate=0.0,
+                spread_bps=1.1,
+                btc_aligned=True,
+                book_imbalance=0.28,
+                trade_flow_bias=0.22,
+                bucket_range_bps=26.0,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "liquidity_sweep_reclaim_long")
+        self.assertGreater(signal.confidence, 0.75)
 
     def test_generates_long_signal_in_trend_expansion(self) -> None:
         signal = self.service.evaluate(
@@ -99,6 +196,82 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertEqual(contexts[0].regime, "TrendExpansion")
         self.assertEqual(contexts[0].symbol, "ETH")
 
+    def test_market_context_service_accumulates_multi_timeframe_bias(self) -> None:
+        timestamps = [
+            "2026-04-04T00:00:00Z",
+            "2026-04-04T01:00:00Z",
+            "2026-04-04T02:00:00Z",
+            "2026-04-04T03:00:00Z",
+            "2026-04-04T04:00:00Z",
+        ]
+        prices = [100.0, 101.0, 102.0, 103.0, 104.0]
+
+        last_context = None
+        for timestamp, price in zip(timestamps, prices, strict=True):
+            contexts = self.context_service.build_contexts(
+                regime=Regime.TREND_EXPANSION,
+                timestamp=timestamp,
+                snapshots=[
+                    SymbolMarketSnapshot(
+                        symbol="ETH",
+                        price=price,
+                        ema_fast=price - 0.2,
+                        ema_slow=price - 0.8,
+                        vwap_distance_bps=1.0,
+                        structure_score=0.65,
+                        funding_rate=0.0,
+                        spread_bps=1.0,
+                        btc_aligned=True,
+                    )
+                ],
+            )
+            last_context = contexts[0]
+
+        assert last_context is not None
+        self.assertTrue(last_context.candles_ready)
+        self.assertGreater(last_context.trend_15m_bps, 0.0)
+        self.assertGreater(last_context.trend_1h_bps, 0.0)
+        self.assertGreater(last_context.trend_4h_bps, 0.0)
+        self.assertGreater(last_context.mtf_bias_score, 0.0)
+
+    def test_market_context_service_detects_hourly_structure_break(self) -> None:
+        timestamps = [
+            "2026-04-04T00:00:00Z",
+            "2026-04-04T01:00:00Z",
+            "2026-04-04T02:00:00Z",
+            "2026-04-04T03:00:00Z",
+            "2026-04-04T04:00:00Z",
+            "2026-04-04T05:00:00Z",
+        ]
+        prices = [100.0, 102.0, 101.0, 103.0, 102.0, 104.0]
+
+        last_context = None
+        for timestamp, price in zip(timestamps, prices, strict=True):
+            contexts = self.context_service.build_contexts(
+                regime=Regime.TREND_EXPANSION,
+                timestamp=timestamp,
+                snapshots=[
+                    SymbolMarketSnapshot(
+                        symbol="ETH",
+                        price=price,
+                        ema_fast=price - 0.2,
+                        ema_slow=price - 0.8,
+                        vwap_distance_bps=0.5,
+                        structure_score=0.75,
+                        funding_rate=0.0,
+                        spread_bps=1.0,
+                        btc_aligned=True,
+                    )
+                ],
+            )
+            last_context = contexts[0]
+
+        assert last_context is not None
+        self.assertTrue(last_context.structure_ready)
+        self.assertGreater(last_context.swing_high_1h, 0.0)
+        self.assertGreater(last_context.range_high_1h, 0.0)
+        self.assertTrue(last_context.bos_long_confirmed)
+
     def test_best_signal_returns_highest_confidence_candidate(self) -> None:
         contexts = [
             AnchorTrendContext(
@@ -134,8 +307,7 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertEqual(signal.symbol, "ETH")
 
     def test_trade_planner_uses_symbol_allocation(self) -> None:
-        config = load_config("config/trident.toml")
-        allocation = CapitalAllocator(config).build_plan(
+        allocation = CapitalAllocator(self.config).build_plan(
             Regime.TREND_EXPANSION,
             {
                 PodName.POD_A: ["BTC", "ETH", "HYPE", "SOL"],
@@ -164,8 +336,55 @@ class AnchorTrendServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(trade_plan)
         assert trade_plan is not None
-        self.assertEqual(trade_plan.target_notional_usd, 150.0)
+        self.assertEqual(trade_plan.target_notional_usd, 450.0)
+        self.assertEqual(trade_plan.margin_usd, 150.0)
+        self.assertEqual(trade_plan.effective_leverage, 3.0)
+        self.assertEqual(trade_plan.stop_bps, 160.0)
+        self.assertGreater(trade_plan.expected_loss_usd, 0.0)
         self.assertEqual(trade_plan.time_stop_hours, 24)
+
+    def test_trade_planner_clamps_leverage_to_asset_limit(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                default_leverage=10.0,
+                max_leverage=10.0,
+                max_leverage_by_symbol={"ETH": 2.0},
+            ),
+        )
+        planner = AnchorTrendPlanner(config)
+        allocation = CapitalAllocator(config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["BTC", "ETH", "HYPE", "SOL"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+            )
+        )
+
+        assert signal is not None
+        trade_plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertIsNotNone(trade_plan)
+        assert trade_plan is not None
+        self.assertEqual(trade_plan.requested_leverage, 2.0)
+        self.assertEqual(trade_plan.effective_leverage, 2.0)
+        self.assertEqual(trade_plan.target_notional_usd, 300.0)
 
 
 if __name__ == "__main__":

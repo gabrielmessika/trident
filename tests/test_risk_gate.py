@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from app.risk.pod_a_gate import PodARiskGate
 from app.settings import load_config
@@ -18,9 +19,13 @@ class PodARiskGateTests(unittest.TestCase):
                     side="long",
                     setup="trend_pullback_long",
                     confidence=0.62,
-                    target_notional_usd=150.0,
+                    target_notional_usd=450.0,
                     stop_bps=80.0,
                     time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
                 )
             ]
         )
@@ -37,12 +42,70 @@ class PodARiskGateTests(unittest.TestCase):
                     side="long",
                     setup="trend_pullback_long",
                     confidence=0.49,
-                    target_notional_usd=150.0,
+                    target_notional_usd=450.0,
                     stop_bps=80.0,
                     time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
                 )
             ]
         )
 
         self.assertFalse(decisions[0].accepted)
         self.assertEqual(decisions[0].reason, "confidence_below_min")
+
+    def test_rejects_trade_plan_when_risk_budget_is_exceeded(self) -> None:
+        decisions = self.gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.62,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=2.0,
+                    expected_loss_usd=3.6,
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "risk_budget_exceeded")
+
+    def test_rejects_trade_plan_when_asset_leverage_limit_is_exceeded(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                max_leverage=10.0,
+                max_leverage_by_symbol={"ETH": 5.0},
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.62,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=75.0,
+                    effective_leverage=6.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "leverage_above_asset_limit")

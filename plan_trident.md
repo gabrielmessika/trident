@@ -293,12 +293,14 @@
 | 2. Regime allocator deterministe | 100% | Rien, etape fermee |
 | 3. Capital allocator + cash mode | 100% | Rien, etape fermee |
 | 4. Pod A minimal | 100% | Rien, etape fermee |
-| 5. Pod B range engine natif | 100% | Rien, etape fermee |
+| 4bis. Pod A complet / t-bot+ | 99% | Valider en dry-run live le socle `500 USD` et confirmer le comportement d'upgrade / allocation active sur une plage plus longue |
+| 5. Pod B range engine natif | 85% | Finaliser la validation paper 72h et le benchmark offline |
 | 6. Reporting par pod | 100% | Rien, etape fermee |
 | 7. Research Pod pour Pod C | 100% | Rien, etape fermee |
 | 8. Pod C minimal | 100% | Rien, etape fermee |
 | 9. Hardening deployment | 100% | Rien, etape fermee |
 | 10. Passage live progressif | 20% | Lancer le premier dry-run 24h sur serveur et auditer avec `trident_dry_run_review.sh` |
+| 11. Pistes futures Hydra revisitees | 10% | Prioriser la collecte funding native et la note de faisabilite OI / liquidation |
 
 Regle de maintenance:
 
@@ -497,24 +499,105 @@ Moteur principal de tendance. Il doit produire la majorite du P&L lors des phase
 - Timing: 15m
 - Hold: plusieurs heures a 2 jours
 
-### Setups V1
+### Ecart actuel a combler
+
+L'implementation actuelle de `Pod A` est volontairement minimale:
+
+- 1 seul setup reellement code: trend pullback EMA / VWAP
+- contexte surtout derive des snapshots instantanes
+- sizing par allocation cible, pas encore par budget de risque
+- pas de levier explicite dans `TradePlan`
+- stop/time stop presents, mais pas encore stop structurel complet issu des swings HTF / LTF
+
+Conclusion:
+
+- `Pod A` est aujourd'hui une ancre de tendance fonctionnelle,
+- mais pas encore un equivalent complet des meilleures idees de `t-bot`.
+
+### Setups cibles Pod A complet
+
+Ordre de priorite recommande:
 
 - Trend continuation apres pullback sur EMA / VWAP
-- Liquidity sweep + reclaim
-- Break of structure avec confirmation BTC
-- Deviation VWAP / retour en tendance
+- Break of structure + retest avec confirmation BTC / regime
+- Liquidity sweep + reclaim sur niveau structurel clair
+- Deviation VWAP / AVWAP + retour en tendance
 
-### Filtres V1
+Contraintes:
 
+- chaque setup doit etre backtestable separement
+- chaque setup doit exposer son invalidation structurelle
+- chaque setup doit pouvoir etre active / desactive par config
+- ne pas fusionner plusieurs idees dans un score opaque avant d'avoir des stats separees
+
+### Filtres cibles
+
+- biais multi-timeframe reel:
+  - 4H pour la direction dominante
+  - 1H pour la structure / confirmation
+  - 15m pour le timing d'entree
 - BTC regime compatible avec le setup
-- Funding pas extremement oppose
-- Spread / liquidite minimum
-- Pas de trade si regime global = `DeadZone`
+- alignement BTC / ETH quand pertinent, pas comme filtre binaire universel
+- funding pas extremement oppose
+- spread / liquidite minimum
+- ATR / volatilite dans une zone exploitable
+- pas de trade si regime global = `DeadZone`
+- cooldown optionnel apres stop ou faux breakout sur le meme symbol
 
-### Sorties V1
+### Sizing, levier et gestion des petits portefeuilles
+
+Objectif:
+
+- permettre a `Pod A` de trader proprement avec un petit portefeuille; la base de validation actuelle est `500 USD`
+- sans forcer des tailles absurdes,
+- tout en respectant la taille minimale d'ordre exchange.
+
+Principes obligatoires:
+
+- separer `margin_usd` et `target_notional_usd`
+- ajouter un levier explicite au plan de trade
+- calculer la taille a partir du risque du stop, pas seulement a partir d'un pourcentage d'allocation
+- rejeter un trade si la taille minimale n'est pas atteignable sans depasser le budget de risque
+
+Champs a ajouter au modele de plan:
+
+- `margin_usd`
+- `requested_leverage`
+- `effective_leverage`
+- `risk_budget_usd`
+- `expected_loss_usd`
+- `invalidation_price` ou equivalent structurel
+
+Regle de sizing cible:
+
+- `risk_budget_usd = equity * risk_per_trade_pct`
+- `target_notional_usd = min(notional_from_risk, notional_from_pod_cap, notional_from_symbol_cap)`
+- `margin_usd = target_notional_usd / leverage`
+- si `target_notional_usd` est sous la taille minimale exchange ou sous la taille interne voulue:
+  - augmenter via levier dans les bornes autorisees
+  - sinon refuser le trade proprement
+
+Regles de levier recommandees pour le premier live:
+
+- `isolated` par defaut
+- levier par defaut `2x`
+- plafond operatoire initial `3x`
+- pas d'augmentation dynamique agressive du levier selon la confiance
+- le levier sert d'abord a atteindre une taille de trade praticable, pas a maximiser le P&L
+
+Exemple cible:
+
+- portefeuille `500 USD`
+- risque par trade `0.5% a 1.0%`
+- si `Pod A` recoit `100 a 300 USD` d'allocation selon le regime et prend `2x` a `3x`, il peut viser plusieurs positions autour de `100 a 300 USD` notionnels
+- cela permet de rester au-dessus du minimum exchange tout en gardant un risque borne par le stop
+
+### Sorties cibles
 
 - Stop structurel et non ultra-serre
+- Stop base sur swing invalide / reclaim invalide, pas seulement sur un coefficient fixe
 - TP partiel optionnel uniquement si backtest le justifie
+- Break-even uniquement apres mouvement significatif, pas trop tot
 - Pas de trailing agressif par defaut
 - Time stop max configurable
 
@@ -527,6 +610,11 @@ Creer dans le repo:
 - `app/trident/pod_a/filters.py`
 - `app/trident/pod_a/exits.py`
 - `app/trident/pod_a/service.py`
+- `app/trident/pod_a/structure.py`
+- `app/trident/pod_a/candles.py`
+- `app/trident/pod_a/setups.py`
+- `app/trident/pod_a/sizing.py`
+- `app/trident/pod_a/leverage.py`
 
 Reutiliser si possible:
 
@@ -539,8 +627,51 @@ Ajouter:
 
 - un `CandleService` pour charger / bufferiser les candles 15m, 1h, 4h,
 - un `MarketContextService` pour BTC, ETH, funding, ATR, ADX,
+- un detecteur de structure:
+  - swings
+  - break of structure
+  - reclaim
+  - deviation / retour VWAP
+- un moteur de setup separe par idee:
+  - `trend_pullback`
+  - `bos_retest`
+  - `liquidity_sweep_reclaim`
+  - `vwap_reclaim`
+- un `PositionSizer` base sur le risque du stop
+- un `LeveragePolicy` avec bornes par pod / symbol / regime
 - un `PodIntent` standardise pour integrer A, B et C dans le meme superviseur.
 - un `HyperliquidClient` async partage pour REST et WS.
+
+Faire evoluer les types:
+
+- `TradePlan` doit porter:
+  - `margin_usd`
+  - `target_notional_usd`
+  - `requested_leverage`
+  - `effective_leverage`
+  - `risk_budget_usd`
+  - `expected_loss_usd`
+  - `stop_bps`
+  - `time_stop_hours`
+  - `setup`
+  - `setup_details` si necessaire
+
+Faire evoluer le risk gate:
+
+- verifier le budget de risque en USD, pas seulement la confiance
+- verifier la compatibilite avec le levier max autorise
+- verifier la taille minimale exchange
+- refuser les trades qui n'atteignent la taille minimale qu'avec un levier excessif
+
+Faire evoluer le journal / reporting:
+
+- journaliser `margin_usd`, `leverage`, `expected_loss_usd`, `invalidation_price`
+- comparer les performances par setup, pas seulement globalement
+- afficher les rejets:
+  - `risk_budget_exceeded`
+  - `min_notional_unreachable`
+  - `leverage_above_limit`
+  - `structure_not_clean`
 
 Arborescence cible V1:
 
@@ -915,6 +1046,11 @@ adx_trend_threshold = 25
 atr_ratio_panic_threshold = 1.8
 dead_zone_atr_threshold = 0.6
 
+[trident.risk]
+max_risk_per_trade_pct = 0.01
+max_total_open_risk_pct = 0.03
+min_trade_notional_usd = 10
+
 [trident.allocations.trend_expansion]
 pod_a = 0.60
 pod_b = 0.10
@@ -939,6 +1075,15 @@ cash = 0.80
 [pod_a]
 enabled = true
 symbols = ["BTC", "ETH", "SOL", "HYPE"]
+default_leverage = 2.0
+max_leverage = 3.0
+prefer_isolated = true
+sizing_mode = "risk_based"
+risk_per_trade_pct = 0.0075
+min_margin_usd = 20
+min_notional_usd = 10
+allow_partial_take_profit = false
+allow_break_even = true
 
 [pod_b]
 enabled = false
@@ -1772,6 +1917,254 @@ Decision actuelle:
 
 - Etape 4 fermee
 
+Constat complementaire:
+
+- `Pod A` minimal est termine,
+- mais une `Etape 4bis` reste necessaire pour converger vers un vrai moteur proche des meilleures briques de `t-bot`,
+- en particulier sur le multi-timeframe, les setups structurels, le sizing par risque et le levier.
+
+---
+
+## Etape 4bis — Pod A complet / t-bot+
+
+### Statut
+
+`EN COURS — leverage/risk sizing, setups structurels, buffer MTF, detecteurs de structure explicites, allocation active hors TrendExpansion et socle replay 500 USD termines`
+
+### Objectif
+
+Faire passer `Pod A` d'une ancre trend minimale a un moteur directionnel complet, capable de:
+
+- exploiter plusieurs setups structures prometteurs,
+- gerer correctement un petit portefeuille,
+- utiliser un levier modere et borne,
+- raisonner en risque reel par trade.
+
+### Travail
+
+Bloc 1 — contexte et structure
+
+- ajouter un vrai contexte multi-timeframe 4H / 1H / 15m
+- stocker swings, BOS, reclaim, deviations VWAP / AVWAP
+- enrichir les snapshots ou ajouter un buffer candle dedie
+
+Bloc 2 — setups manquants
+
+- ajouter `bos_retest`
+- ajouter `liquidity_sweep_reclaim`
+- ajouter `vwap_reclaim`
+- garder des stats, journaux et flags d'activation separes par setup
+
+Bloc 3 — sizing et levier
+
+- etendre `TradePlan` avec `margin_usd`, `requested_leverage`, `effective_leverage`
+- ajouter un `PositionSizer` base sur `risk_budget_usd`
+- ajouter un `LeveragePolicy`
+- utiliser `isolated` par defaut
+- garantir une taille de trade exploitable meme avec `500 USD` de portefeuille
+
+Bloc 4 — risk gate
+
+- budget de risque cumule par pod
+- budget de risque par trade
+- refus explicites quand:
+  - taille mini impossible
+  - levier requis trop eleve
+  - stop trop large pour le budget
+
+Bloc 5 — validation
+
+- backtests par setup puis combines
+- replay sur petit portefeuille `500 USD`
+- comparaison:
+  - sans levier
+  - `2x`
+  - `3x`
+- validation live progressive:
+  - `Pod A` seul
+  - taille minimale
+  - nombre de symbols limite
+
+Travail realise:
+
+- `TradePlan` enrichi avec:
+  - `margin_usd`
+  - `requested_leverage`
+  - `effective_leverage`
+  - `risk_budget_usd`
+  - `expected_loss_usd`
+  - `invalidation_price`
+- config `Pod A` enrichie avec:
+  - levier par defaut
+  - levier max
+  - mode `risk_based`
+  - risque par trade
+  - minimum de marge
+  - minimum de notionnel
+- `PositionSizer` ajoute dans `app/trident/pod_a/sizing.py`
+- `LeveragePolicy` ajoute dans `app/trident/pod_a/leverage.py`
+- `AnchorTrendPlanner` passe d'un sizing par allocation simple a un sizing par risque avec levier borne
+- `PodARiskGate` enrichi avec:
+  - controle budget de risque
+  - controle levier max
+  - controle marge mini
+  - controle risque total cumule du batch
+- nouveau setup `bos_retest_long/short` ajoute en plus du setup `trend_pullback`
+- nouveaux setups `vwap_reclaim_long/short` et `liquidity_sweep_reclaim_long/short` ajoutes
+- `AnchorTrendContext` enrichi avec:
+  - `book_imbalance`
+  - `trade_flow_bias`
+  - `bucket_volume`
+  - `bucket_trade_count`
+  - `bucket_range_bps`
+- `CandleService` ajoute dans `app/trident/pod_a/candles.py`
+- `MarketContextService` maintient maintenant un buffer MTF `15m / 1h / 4h`
+- le contexte expose maintenant:
+  - `trend_15m_bps`
+  - `trend_1h_bps`
+  - `trend_4h_bps`
+  - `mtf_bias_score`
+  - `candles_ready`
+- les setups Pod A utilisent maintenant aussi le biais MTF quand l'historique est suffisant
+- le contexte expose maintenant aussi:
+  - `range_high_1h`
+  - `range_low_1h`
+  - `swing_high_1h`
+  - `swing_low_1h`
+  - `bos_long_confirmed`
+  - `bos_short_confirmed`
+- `bos_retest` consomme maintenant ces signaux de structure explicites quand ils sont disponibles
+- logique d'invalidation structurelle ajoutee dans `app/trident/pod_a/structure.py`
+- `stop_bps` derive maintenant de l'invalidation quand elle est disponible, avec bornes de securite
+- journaux, runtime payloads et closed trade logs enrichis avec les nouveaux champs de sizing / levier
+- dashboard compatible via alias `leverage`
+- `override_app_config(...)` ajoute pour rejouer `Pod A` avec une equity / un levier / un risque par trade forces sans modifier `config/trident.toml`
+- `ArchiveReplayRunner` supporte maintenant:
+  - `reference_equity_usd`
+  - `pod_a_default_leverage`
+  - `pod_a_max_leverage`
+  - `pod_a_risk_per_trade_pct`
+- les rapports de backtest/replay exposent maintenant aussi:
+  - `reference_equity_usd`
+  - `trades_by_setup`
+  - `pnl_by_setup`
+  - `max_open_positions`
+  - `max_open_margin_usd`
+  - `max_open_notional_usd`
+  - `max_open_expected_loss_usd`
+- le levier max n'est plus seulement borne globalement:
+  - `Pod A` applique maintenant une borne par asset
+  - les replays CLI et le live runner chargent en priorite les vraies limites via l'API Hyperliquid `metaAndAssetCtxs`
+  - un fallback statique par symbole reste present en config pour les usages offline
+- un test dedie valide maintenant le comportement sur petit portefeuille `500 USD` avec levier borne
+- `ArchiveReplaySweepRunner` ajoute dans `app/backtest/archive_replay_sweep.py` pour comparer plusieurs scenarios `1x / 2x / 3x / 5x / 10x` sur une seule conversion de snapshots
+- premier sweep reel execute le `2026-04-06` sur `2026-04-01 -> 2026-04-05`, `BTC, ETH, SOL, HYPE`:
+  - `200usd_1x`: `+3.86 USD`, `+1.93%`, `max drawdown 0.18 USD`, `max open expected loss 0.9344 USD`
+  - `200usd_2x`: `+7.74 USD`, `+3.87%`, `max drawdown 0.36 USD`, `max open expected loss 1.8688 USD`
+  - `200usd_3x`: `+11.60 USD`, `+5.80%`, `max drawdown 0.53 USD`, `max open expected loss 2.8032 USD`
+  - scenario recommande par le sweep initial: `200usd_3x`
+  - artefact: `data/replay_reports/archive_replay_sweep_200usd_2026-04-01_2026-04-05.json`
+- les setups structurels sont maintenant aussi autorises en pre-trend `RangeAuction` / `DeadZone` quand le MTF est deja fortement oriente
+- le sweep reel montre maintenant une vraie diversification des signaux:
+  - `trend_pullback_short`: `8`
+  - `vwap_reclaim_short`: `1`
+  - `trend_pullback_long`: `24`
+  - `liquidity_sweep_reclaim_long`: `13`
+- le reporting de replay expose maintenant aussi:
+  - `accepted_by_setup`
+  - `rejected_by_setup`
+  - `opened_by_setup`
+  - `skipped_open_by_setup`
+- logique d'upgrade ajoutee dans l'execution:
+  - si un setup plus fort apparait sur le meme symbole et dans le meme sens
+  - l'ancien trade peut etre ferme avec raison `upgrade_setup`
+  - puis remplace par le nouveau setup
+- avec cette logique, le sweep reel actuel convertit maintenant une partie des setups structurels en vraies ouvertures:
+  - `liquidity_sweep_reclaim_long`: `4` signaux acceptes
+  - `3` ouvertures reelles
+  - `3` trades fermes
+  - `+0.66 USD` en `1x`, `+1.32 USD` en `2x`, `+1.98 USD` en `3x`
+- le replay `200 USD` apres upgrade donne:
+  - `200usd_1x`: `+4.13 USD`, `+2.07%`, `11` trades fermes
+  - `200usd_2x`: `+8.25 USD`, `+4.13%`, `11` trades fermes
+  - `200usd_3x`: `+12.38 USD`, `+6.19%`, `11` trades fermes
+- `upgrade_setup` apparait maintenant comme raison de cloture legitime sur le replay reel
+- calibration supplementaire appliquee sur les priorites de setups:
+  - `bos_retest` passe devant quand la cassure horaire est explicitement confirmee
+  - `liquidity_sweep_reclaim` est plus selectif en pre-trend `RangeAuction` / `DeadZone`
+- le replay reel emet maintenant aussi:
+  - `bos_retest_long`: `4` signaux
+  - `vwap_reclaim_long`: `1` signal
+  - `vwap_reclaim_short`: `1` signal
+- allocation active ajoutee dans le superviseur:
+  - hors `TrendExpansion`, `Pod A` realloue maintenant son budget sur les symboles qui ont vraiment un signal
+  - ce comportement debloque enfin les trade plans `bos_retest` / `vwap_reclaim` sur petit wallet `200 USD`
+- sur le sweep reel `200 USD` apres cette correction:
+  - `vwap_reclaim_long`: `1` signal, `1` acceptation risk gate
+  - `bos_retest_long`: `4` signaux, `2` acceptations risk gate
+  - ces setups restent encore majoritairement classes en `skipped_open`, car ils arrivent souvent quand une position est deja ouverte sur le symbole
+- correction structurelle supplementaire sur l'allocation active:
+  - hors `TrendExpansion`, `Pod A` recentre maintenant aussi son budget de planification sur les seuls symboles effectivement signales, meme si le plan de base contenait deja tout l'univers du pod
+  - cela evite qu'un `RangeAuction` confortable en capital conserve artificiellement une allocation diluee sur des symboles sans signal
+- nouveau sweep reel execute le `2026-04-06` sur `2026-04-01 -> 2026-04-05`, `BTC, ETH, SOL, HYPE`, base `500 USD`:
+  - `500usd_1x`: `+10.31 USD`, `+2.062%`, `max drawdown 0.58 USD`, `max open expected loss 2.3360 USD`
+  - `500usd_2x`: `+20.57 USD`, `+4.114%`, `max drawdown 1.16 USD`, `max open expected loss 4.6721 USD`
+  - `500usd_3x`: `+30.83 USD`, `+6.166%`, `max drawdown 1.74 USD`, `max open expected loss 7.0081 USD`
+  - `500usd_5x`: `+51.21 USD`, `+10.242%`, `max drawdown 2.89 USD`, `max open expected loss 11.4957 USD`
+  - `500usd_10x`: `+84.49 USD`, `+16.898%`, `max drawdown 4.66 USD`, `max open expected loss 15.0 USD`
+  - scenario recommande par le score de sweep: `500usd_10x`
+  - note: cette recommandation reste mecanique et optimisee sur le PnL du replay; elle ne constitue pas encore une recommandation live
+  - artefact: `data/replay_reports/archive_replay_sweep_500usd_2026-04-01_2026-04-05.json`
+  - sur `500usd_3x`:
+    - `vwap_reclaim_long`: `1` signal, `1` acceptation risk gate
+    - `bos_retest_long`: `4` signaux, `2` acceptations risk gate
+    - l'absence d'ouverture reelle sur ces setups ne vient plus d'une starvation d'allocation; elle vient surtout du fait qu'une position plus forte est deja ouverte sur le meme symbole
+
+Validation reelle effectuee:
+
+- `python3.12 -m unittest tests.test_pod_a tests.test_risk_gate tests.test_pod_a_executor tests.test_supervisor tests.test_pod_c tests.test_backtest_runner -v` -> OK
+- `python3.12 -m unittest discover -s tests -v` -> OK, `87 tests`
+
+Reste a faire pour fermer l'etape:
+
+- detecteurs de structure plus riches:
+  - swings plus robustes
+  - break of structure plus robuste qu'un simple breakout de range recent
+  - reclaim / sweep plus fidele
+- calibration plus fine des seuils MTF et des nouveaux setups sur historique plus long
+- verifier en dry-run live que `upgrade_setup` ne cree pas de churn excessif
+- rendre `bos_retest` / `liquidity_sweep_reclaim` plus presents en replay reel, actuellement le sweep est encore domine par `trend_pullback`
+
+### Criteres de go
+
+- expectancy nette positive par setup principal
+- pas de dependance a un levier excessif pour rester tradable
+- drawdown et open risk bornes
+- comportements stables avec `500 USD`, `2x` et `3x`
+
+### Briques mutualisables avec les pistes Hydra
+
+L'`Etape 4bis` doit, quand c'est pertinent, preparer des briques reutilisables par les pistes Hydra deja listees plus loin dans le document.
+
+Briques a mutualiser des maintenant:
+
+- buffer / stockage multi-timeframe exploitable aussi par les recherches Hydra
+- detecteurs de structure et d'invalidation objectivables
+- sizing par risque et levier borne reutilisables par tout pod directionnel futur
+- journal / reporting par setup avec `expected_loss_usd`, utile pour comparer Pod A et futurs pods Hydra
+- enrichissement du snapshot avec des features observables-first:
+  - funding
+  - trade flow
+  - book imbalance
+  - spread regime
+  - open interest si la source est assez propre
+
+Frontiere a respecter:
+
+- ne pas melanger trop tot les hypotheses Hydra dans le moteur principal de `Pod A`
+- mutualiser les primitives de donnees et de risk
+- garder les hypotheses alpha Hydra en research / shadow tant qu'elles ne sont pas validees
+
 ---
 
 ## Etape 5 — Pod B range engine natif
@@ -2350,6 +2743,19 @@ Elles suivent obligatoirement la sequence:
 - backtest/replay
 - dry-run shadow
 - decision `go / park / kill`
+
+Statut de planification:
+
+- elles font maintenant partie explicite du plan global
+- elles ne sont pas sur le chemin critique du premier live `Pod A`
+- les briques communes utiles doivent toutefois etre prises en compte pendant l'`Etape 4bis`
+
+Briques communes a favoriser:
+
+- collecte de donnees natives propres
+- features observables-first plutot que reconstructions fragiles
+- risk sizing partage
+- reporting comparable entre pods / prototypes / shadow runs
 
 ### Piste A - Funding Mean Reversion revisitee
 

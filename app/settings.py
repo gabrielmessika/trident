@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -38,6 +38,8 @@ class RiskLimits:
     min_confidence: float = 0.50
     max_trade_plans_per_batch: int = 2
     min_trade_notional_usd: float = 50.0
+    max_risk_per_trade_pct: float = 0.01
+    max_total_open_risk_pct: float = 0.03
 
 
 @dataclass(slots=True)
@@ -103,6 +105,16 @@ class PodAConfig:
     enabled: bool
     symbols: list[str]
     max_allocation_pct: float
+    default_leverage: float
+    max_leverage: float
+    max_leverage_by_symbol: dict[str, float]
+    prefer_isolated: bool
+    sizing_mode: str
+    risk_per_trade_pct: float
+    min_margin_usd: float
+    min_notional_usd: float
+    allow_partial_take_profit: bool
+    allow_break_even: bool
 
 
 @dataclass(slots=True)
@@ -157,6 +169,15 @@ def _allocations(data: dict[str, object], name: str) -> AllocationConfig:
         pod_c=float(section.get("pod_c", 0.0)),
         cash=float(section.get("cash", 0.0)),
     )
+
+
+def _float_map(raw: object) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    parsed: dict[str, float] = {}
+    for key, value in raw.items():
+        parsed[str(key).upper()] = float(value)
+    return parsed
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
@@ -289,6 +310,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 min_trade_notional_usd=float(
                     risk_data.get("min_trade_notional_usd", 50.0)
                 ),
+                max_risk_per_trade_pct=float(
+                    risk_data.get("max_risk_per_trade_pct", 0.01)
+                ),
+                max_total_open_risk_pct=float(
+                    risk_data.get("max_total_open_risk_pct", 0.03)
+                ),
             ),
             execution=ExecutionConfig(
                 dry_run_taker_fee_bps=float(
@@ -312,6 +339,18 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             enabled=_env_bool("TRIDENT_ENABLE_POD_A", bool(pod_a_data.get("enabled", True))),
             symbols=list(pod_a_data.get("symbols", [])),
             max_allocation_pct=float(pod_a_data.get("max_allocation_pct", 1.0)),
+            default_leverage=float(pod_a_data.get("default_leverage", 1.0)),
+            max_leverage=float(pod_a_data.get("max_leverage", 1.0)),
+            max_leverage_by_symbol=_float_map(pod_a_data.get("max_leverage_by_symbol", {})),
+            prefer_isolated=bool(pod_a_data.get("prefer_isolated", True)),
+            sizing_mode=str(pod_a_data.get("sizing_mode", "allocation_only")),
+            risk_per_trade_pct=float(pod_a_data.get("risk_per_trade_pct", 0.01)),
+            min_margin_usd=float(pod_a_data.get("min_margin_usd", 25.0)),
+            min_notional_usd=float(pod_a_data.get("min_notional_usd", 50.0)),
+            allow_partial_take_profit=bool(
+                pod_a_data.get("allow_partial_take_profit", False)
+            ),
+            allow_break_even=bool(pod_a_data.get("allow_break_even", False)),
         ),
         pod_b=PodBConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_B", bool(pod_b_data.get("enabled", False))),
@@ -341,3 +380,59 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             time_stop_hours=int(pod_c_data.get("time_stop_hours", 4)),
         ),
     )
+
+
+def override_app_config(
+    config: AppConfig,
+    *,
+    reference_equity_usd: float | None = None,
+    pod_a_default_leverage: float | None = None,
+    pod_a_max_leverage: float | None = None,
+    pod_a_max_leverage_by_symbol: dict[str, float] | None = None,
+    pod_a_risk_per_trade_pct: float | None = None,
+    pod_a_min_margin_usd: float | None = None,
+    pod_a_min_notional_usd: float | None = None,
+) -> AppConfig:
+    capital = replace(
+        config.trident.capital,
+        reference_equity_usd=(
+            config.trident.capital.reference_equity_usd
+            if reference_equity_usd is None
+            else float(reference_equity_usd)
+        ),
+    )
+    trident = replace(config.trident, capital=capital)
+    pod_a = replace(
+        config.pod_a,
+        default_leverage=(
+            config.pod_a.default_leverage
+            if pod_a_default_leverage is None
+            else float(pod_a_default_leverage)
+        ),
+        max_leverage=(
+            config.pod_a.max_leverage
+            if pod_a_max_leverage is None
+            else float(pod_a_max_leverage)
+        ),
+        max_leverage_by_symbol=(
+            dict(config.pod_a.max_leverage_by_symbol)
+            if pod_a_max_leverage_by_symbol is None
+            else _float_map(pod_a_max_leverage_by_symbol)
+        ),
+        risk_per_trade_pct=(
+            config.pod_a.risk_per_trade_pct
+            if pod_a_risk_per_trade_pct is None
+            else float(pod_a_risk_per_trade_pct)
+        ),
+        min_margin_usd=(
+            config.pod_a.min_margin_usd
+            if pod_a_min_margin_usd is None
+            else float(pod_a_min_margin_usd)
+        ),
+        min_notional_usd=(
+            config.pod_a.min_notional_usd
+            if pod_a_min_notional_usd is None
+            else float(pod_a_min_notional_usd)
+        ),
+    )
+    return replace(config, trident=trident, pod_a=pod_a)

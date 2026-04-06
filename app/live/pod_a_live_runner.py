@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.backtest.pod_a_executor import PodAExecutor
 from app.backtest.pod_report import PodABacktestReport
+from app.hyperliquid.info_client import apply_live_asset_leverage_caps
 from app.live.collector import HyperliquidLiveCollector
 from app.live.runtime_status import write_runtime_status
 from app.persistence.journal import (
@@ -23,7 +24,13 @@ from app.trident.types import RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
 class PodALiveRunner:
     """Runs Pod A on top of the native Hyperliquid live collector."""
 
-    def __init__(self, config: AppConfig, coins: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        coins: list[str] | None = None,
+        *,
+        use_live_asset_caps: bool = False,
+    ) -> None:
         self.config = config
         self.coins = (
             coins
@@ -31,14 +38,19 @@ class PodALiveRunner:
             or config.hyperliquid.default_coins
             or config.pod_a.symbols
         )
-        self.collector = HyperliquidLiveCollector(config, coins=self.coins)
+        if use_live_asset_caps:
+            self.config = apply_live_asset_leverage_caps(
+                self.config,
+                symbols=self.coins,
+            )
+        self.collector = HyperliquidLiveCollector(self.config, coins=self.coins)
         self.supervisor = TridentSupervisor(
-            config=config,
+            config=self.config,
             profile="trident-live-pod-a",
             mode="dry-run",
         )
-        self.risk_gate = PodARiskGate(config)
-        self.executor = PodAExecutor(config)
+        self.risk_gate = PodARiskGate(self.config)
+        self.executor = PodAExecutor(self.config)
         self.report = PodABacktestReport()
         self._latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
 
@@ -160,8 +172,8 @@ class PodALiveRunner:
 
         snapshots = [SymbolMarketSnapshot(**item) for item in symbols if isinstance(item, dict)]
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
-        previews = self.supervisor.preview_pod_a_signals(snapshots)
-        trade_plans = self.supervisor.build_pod_a_trade_plans(snapshots)
+        previews = self.supervisor.preview_pod_a_signals(snapshots, timestamp=timestamp)
+        trade_plans = self.supervisor.build_pod_a_trade_plans(snapshots, timestamp=timestamp)
         risk_decisions = self.risk_gate.evaluate_many(trade_plans)
         execution = self.executor.process_record(
             snapshots=snapshots,
@@ -220,6 +232,31 @@ class PodALiveRunner:
                                     if preview.symbol in decisions_by_symbol
                                     else 0.0
                                 ),
+                                "margin_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.margin_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "effective_leverage": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.effective_leverage
+                                    if preview.symbol in decisions_by_symbol
+                                    else 1.0
+                                ),
+                                "risk_budget_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.risk_budget_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "expected_loss_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.expected_loss_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "invalidation_price": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.invalidation_price
+                                    if preview.symbol in decisions_by_symbol
+                                    else None
+                                ),
                                 "stop_bps": (
                                     decisions_by_symbol[preview.symbol].trade_plan.stop_bps
                                     if preview.symbol in decisions_by_symbol
@@ -258,6 +295,7 @@ class PodALiveRunner:
         for decision in risk_decisions:
             self.report.add_decision(
                 date_key=date_key,
+                setup=decision.trade_plan.setup,
                 accepted=decision.accepted,
                 reason=decision.reason,
             )
@@ -265,6 +303,14 @@ class PodALiveRunner:
             opened_symbols=execution.opened_symbols,
             skipped_open_symbols=execution.skipped_open_symbols,
         )
+        for symbol in execution.opened_symbols:
+            decision = decisions_by_symbol.get(symbol)
+            if decision is not None:
+                self.report.add_opened_setup(decision.trade_plan.setup)
+        for symbol in execution.skipped_open_symbols:
+            decision = decisions_by_symbol.get(symbol)
+            if decision is not None:
+                self.report.add_skipped_open_setup(decision.trade_plan.setup)
         for trade in execution.closed_trades:
             if journal is not None:
                 journal.append(
@@ -284,6 +330,11 @@ class PodALiveRunner:
                 entry_price=getattr(trade, "entry_price", None),
                 exit_price=getattr(trade, "exit_price", None),
                 target_notional_usd=getattr(trade, "target_notional_usd", None),
+                margin_usd=getattr(trade, "margin_usd", None),
+                effective_leverage=getattr(trade, "effective_leverage", None),
+                risk_budget_usd=getattr(trade, "risk_budget_usd", None),
+                expected_loss_usd=getattr(trade, "expected_loss_usd", None),
+                invalidation_price=getattr(trade, "invalidation_price", None),
                 stop_bps=getattr(trade, "stop_bps", None),
                 time_stop_hours=getattr(trade, "time_stop_hours", None),
                 pnl_usd=trade.pnl_usd,
@@ -312,6 +363,12 @@ class PodALiveRunner:
             "entry_price": trade.entry_price,
             "exit_price": trade.exit_price,
             "target_notional_usd": trade.target_notional_usd,
+            "margin_usd": getattr(trade, "margin_usd", None),
+            "leverage": getattr(trade, "effective_leverage", None),
+            "effective_leverage": getattr(trade, "effective_leverage", None),
+            "risk_budget_usd": getattr(trade, "risk_budget_usd", None),
+            "expected_loss_usd": getattr(trade, "expected_loss_usd", None),
+            "invalidation_price": getattr(trade, "invalidation_price", None),
             "stop_bps": getattr(trade, "stop_bps", None),
             "time_stop_hours": getattr(trade, "time_stop_hours", None),
             "gross_pnl_usd": trade.gross_pnl_usd,
@@ -374,6 +431,13 @@ class PodALiveRunner:
                     "entry_price": position.entry_price,
                     "current_price": current_price,
                     "target_notional_usd": position.target_notional_usd,
+                    "margin_usd": position.margin_usd,
+                    "leverage": position.effective_leverage,
+                    "effective_leverage": position.effective_leverage,
+                    "risk_budget_usd": position.risk_budget_usd,
+                    "expected_loss_usd": position.expected_loss_usd,
+                    "invalidation_price": position.invalidation_price,
+                    "isolated": position.isolated,
                     "current_notional_usd": current_notional_usd,
                     "unrealized_pnl_usd": unrealized_pnl_usd,
                     "stop_bps": position.stop_bps,
@@ -400,7 +464,7 @@ async def _run_from_args() -> None:
     coins = None
     if args.coins:
         coins = [coin.strip().upper() for coin in args.coins.split(",") if coin.strip()]
-    result = await PodALiveRunner(config, coins=coins).run(
+    result = await PodALiveRunner(config, coins=coins, use_live_asset_caps=True).run(
         max_runtime_seconds=args.max_runtime_seconds,
         max_messages=args.max_messages,
         journal_path=args.journal_output,

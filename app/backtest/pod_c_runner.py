@@ -144,6 +144,7 @@ class PodCBacktestRunner:
             for decision in risk_decisions:
                 report.add_decision(
                     date_key=date_key,
+                    setup=decision.trade_plan.setup,
                     accepted=decision.accepted,
                     reason=decision.reason,
                 )
@@ -151,6 +152,15 @@ class PodCBacktestRunner:
                 opened_symbols=execution.opened_symbols,
                 skipped_open_symbols=execution.skipped_open_symbols,
             )
+            decisions_by_symbol = {decision.trade_plan.symbol: decision for decision in risk_decisions}
+            for symbol in execution.opened_symbols:
+                decision = decisions_by_symbol.get(symbol)
+                if decision is not None:
+                    report.add_opened_setup(decision.trade_plan.setup)
+            for symbol in execution.skipped_open_symbols:
+                decision = decisions_by_symbol.get(symbol)
+                if decision is not None:
+                    report.add_skipped_open_setup(decision.trade_plan.setup)
             for trade in execution.closed_trades:
                 if output_journal is not None:
                     output_journal.append(

@@ -20,6 +20,7 @@ from app.trident.types import RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
 
 @dataclass(slots=True)
 class PodABacktestResult:
+    reference_equity_usd: float
     records_processed: int
     signal_count: int
     accepted_count: int
@@ -44,13 +45,23 @@ class PodABacktestResult:
     accepted_by_date: dict[str, int]
     rejected_by_date: dict[str, int]
     rejections_by_reason: dict[str, int]
+    accepted_by_setup: dict[str, int]
+    rejected_by_setup: dict[str, int]
     regime_transition_count: int
     regime_transitions: dict[str, int]
     regime_transitions_by_date: dict[str, dict[str, int]]
     close_reasons: dict[str, int]
+    opened_by_setup: dict[str, int]
+    skipped_open_by_setup: dict[str, int]
     trades_by_symbol: dict[str, int]
+    trades_by_setup: dict[str, int]
     pnl_by_symbol: dict[str, float]
+    pnl_by_setup: dict[str, float]
     pnl_by_date: dict[str, float]
+    max_open_positions: int
+    max_open_margin_usd: float
+    max_open_notional_usd: float
+    max_open_expected_loss_usd: float
     closed_trade_log: list[dict[str, object]]
     average_confidence: float
     output_path: str | None = None
@@ -76,7 +87,9 @@ class PodABacktestRunner:
             mode="observation",
         )
         output_journal = JsonlJournal(output_path) if output_path is not None else None
-        report = PodABacktestReport()
+        report = PodABacktestReport(
+            reference_equity_usd=self.config.trident.capital.reference_equity_usd,
+        )
 
         last_snapshot_by_symbol: dict[str, SymbolMarketSnapshot] = {}
         last_timestamp: str | None = None
@@ -96,8 +109,8 @@ class PodABacktestRunner:
                 )
             report.add_record_regime(supervisor.state.regime.value)
             snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
-            previews = supervisor.preview_pod_a_signals(snapshots)
-            trade_plans = supervisor.build_pod_a_trade_plans(snapshots)
+            previews = supervisor.preview_pod_a_signals(snapshots, timestamp=record.timestamp)
+            trade_plans = supervisor.build_pod_a_trade_plans(snapshots, timestamp=record.timestamp)
             risk_decisions = self.risk_gate.evaluate_many(trade_plans)
             execution = self.executor.process_record(
                 snapshots=snapshots,
@@ -144,6 +157,31 @@ class PodABacktestRunner:
                                     decisions_by_symbol[preview.symbol].trade_plan.target_notional_usd
                                     if preview.symbol in decisions_by_symbol
                                     else 0.0
+                                ),
+                                "margin_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.margin_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "effective_leverage": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.effective_leverage
+                                    if preview.symbol in decisions_by_symbol
+                                    else 1.0
+                                ),
+                                "risk_budget_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.risk_budget_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "expected_loss_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.expected_loss_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "invalidation_price": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.invalidation_price
+                                    if preview.symbol in decisions_by_symbol
+                                    else None
                                 ),
                                 "stop_bps": (
                                     decisions_by_symbol[preview.symbol].trade_plan.stop_bps
@@ -194,12 +232,24 @@ class PodABacktestRunner:
             for decision in risk_decisions:
                 report.add_decision(
                     date_key=date_key,
+                    setup=decision.trade_plan.setup,
                     accepted=decision.accepted,
                     reason=decision.reason,
                 )
             report.add_execution_batch(
                 opened_symbols=execution.opened_symbols,
                 skipped_open_symbols=execution.skipped_open_symbols,
+            )
+            for symbol in execution.opened_symbols:
+                decision = decisions_by_symbol.get(symbol)
+                if decision is not None:
+                    report.add_opened_setup(decision.trade_plan.setup)
+            for symbol in execution.skipped_open_symbols:
+                decision = decisions_by_symbol.get(symbol)
+                if decision is not None:
+                    report.add_skipped_open_setup(decision.trade_plan.setup)
+            report.observe_open_exposure(
+                list(self.executor.portfolio.open_positions.values())
             )
             for trade in execution.closed_trades:
                 if output_journal is not None:
@@ -222,6 +272,11 @@ class PodABacktestRunner:
                     entry_price=getattr(trade, "entry_price", None),
                     exit_price=getattr(trade, "exit_price", None),
                     target_notional_usd=getattr(trade, "target_notional_usd", None),
+                    margin_usd=getattr(trade, "margin_usd", None),
+                    effective_leverage=getattr(trade, "effective_leverage", None),
+                    risk_budget_usd=getattr(trade, "risk_budget_usd", None),
+                    expected_loss_usd=getattr(trade, "expected_loss_usd", None),
+                    invalidation_price=getattr(trade, "invalidation_price", None),
                     stop_bps=getattr(trade, "stop_bps", None),
                     time_stop_hours=getattr(trade, "time_stop_hours", None),
                     pnl_usd=trade.pnl_usd,
@@ -261,6 +316,11 @@ class PodABacktestRunner:
                 entry_price=getattr(trade, "entry_price", None),
                 exit_price=getattr(trade, "exit_price", None),
                 target_notional_usd=getattr(trade, "target_notional_usd", None),
+                margin_usd=getattr(trade, "margin_usd", None),
+                effective_leverage=getattr(trade, "effective_leverage", None),
+                risk_budget_usd=getattr(trade, "risk_budget_usd", None),
+                expected_loss_usd=getattr(trade, "expected_loss_usd", None),
+                invalidation_price=getattr(trade, "invalidation_price", None),
                 stop_bps=getattr(trade, "stop_bps", None),
                 time_stop_hours=getattr(trade, "time_stop_hours", None),
                 pnl_usd=trade.pnl_usd,
@@ -273,6 +333,7 @@ class PodABacktestRunner:
             )
 
         return PodABacktestResult(
+            reference_equity_usd=report.reference_equity_usd,
             records_processed=report.records_processed,
             signal_count=report.signal_count,
             accepted_count=report.accepted_count,
@@ -297,13 +358,23 @@ class PodABacktestRunner:
             accepted_by_date=report.accepted_by_date,
             rejected_by_date=report.rejected_by_date,
             rejections_by_reason=report.rejections_by_reason,
+            accepted_by_setup=report.accepted_by_setup,
+            rejected_by_setup=report.rejected_by_setup,
             regime_transition_count=report.regime_transition_count,
             regime_transitions=report.regime_transitions,
             regime_transitions_by_date=report.regime_transitions_by_date,
             close_reasons=report.close_reasons,
+            opened_by_setup=report.opened_by_setup,
+            skipped_open_by_setup=report.skipped_open_by_setup,
             trades_by_symbol=report.trades_by_symbol,
+            trades_by_setup=report.trades_by_setup,
             pnl_by_symbol=report.pnl_by_symbol,
+            pnl_by_setup=report.pnl_by_setup,
             pnl_by_date=report.pnl_by_date,
+            max_open_positions=report.max_open_positions,
+            max_open_margin_usd=report.max_open_margin_usd,
+            max_open_notional_usd=report.max_open_notional_usd,
+            max_open_expected_loss_usd=report.max_open_expected_loss_usd,
             closed_trade_log=report.closed_trade_log,
             average_confidence=report.average_confidence,
             output_path=str(output_path) if output_path is not None else None,
@@ -323,6 +394,12 @@ class PodABacktestRunner:
             "entry_price": trade.entry_price,
             "exit_price": trade.exit_price,
             "target_notional_usd": trade.target_notional_usd,
+            "margin_usd": getattr(trade, "margin_usd", None),
+            "leverage": getattr(trade, "effective_leverage", None),
+            "effective_leverage": getattr(trade, "effective_leverage", None),
+            "risk_budget_usd": getattr(trade, "risk_budget_usd", None),
+            "expected_loss_usd": getattr(trade, "expected_loss_usd", None),
+            "invalidation_price": getattr(trade, "invalidation_price", None),
             "gross_pnl_usd": trade.gross_pnl_usd,
             "fees_usd": trade.fees_usd,
             "pnl_usd": trade.pnl_usd,

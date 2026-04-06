@@ -2,9 +2,9 @@ import unittest
 from pathlib import Path
 import tempfile
 
-from app.settings import load_config
+from app.settings import load_config, override_app_config
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import RegimeSnapshot, SymbolMarketSnapshot
+from app.trident.types import Regime, RegimeSnapshot, SignalPreview, SymbolMarketSnapshot
 
 
 class SupervisorTests(unittest.TestCase):
@@ -154,7 +154,38 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0].symbol, "ETH")
-        self.assertEqual(plans[0].target_notional_usd, 150.0)
+        self.assertEqual(plans[0].target_notional_usd, 450.0)
+        self.assertEqual(plans[0].effective_leverage, 3.0)
+
+    def test_supervisor_rebalances_pod_a_allocation_over_active_signals_on_small_wallet(self) -> None:
+        config = override_app_config(
+            self.config,
+            reference_equity_usd=500.0,
+            pod_a_default_leverage=2.0,
+            pod_a_max_leverage=3.0,
+        )
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.state.regime = Regime.RANGE_AUCTION
+        supervisor.capital_plan = supervisor._build_capital_plan()
+        allocation = supervisor._pod_a_planning_allocation(
+            [
+                SignalPreview(
+                    symbol="ETH",
+                    side="long",
+                    setup="vwap_reclaim_long",
+                    confidence=0.82,
+                )
+            ]
+        )
+
+        self.assertEqual(allocation.target_usd, 100.0)
+        self.assertEqual(len(allocation.symbols), 1)
+        self.assertEqual(allocation.symbols[0].symbol, "ETH")
+        self.assertEqual(allocation.symbols[0].target_usd, 100.0)
 
     def test_supervisor_filters_observation_only_symbols_out_of_pod_a(self) -> None:
         supervisor = TridentSupervisor(

@@ -16,9 +16,13 @@ class PodAExecutorTests(unittest.TestCase):
                 side="long",
                 setup="trend_pullback_long",
                 confidence=0.62,
-                target_notional_usd=150.0,
+                target_notional_usd=450.0,
                 stop_bps=80.0,
                 time_stop_hours=24,
+                margin_usd=150.0,
+                effective_leverage=3.0,
+                risk_budget_usd=7.5,
+                expected_loss_usd=3.6,
             ),
         )
 
@@ -79,9 +83,13 @@ class PodAExecutorTests(unittest.TestCase):
                 side="long",
                 setup="trend_pullback_long",
                 confidence=0.62,
-                target_notional_usd=150.0,
+                target_notional_usd=450.0,
                 stop_bps=80.0,
                 time_stop_hours=24,
+                margin_usd=150.0,
+                effective_leverage=3.0,
+                risk_budget_usd=7.5,
+                expected_loss_usd=3.6,
             ),
         )
 
@@ -131,3 +139,86 @@ class PodAExecutorTests(unittest.TestCase):
         self.assertEqual(batch.has_open_position_after["ETH"], False)
         self.assertEqual(batch.close_reasons_by_symbol["ETH"], "stop_hit")
         self.assertEqual(len(batch.fills), 1)
+
+    def test_upgrades_open_position_when_stronger_same_side_setup_arrives(self) -> None:
+        executor = PodAExecutor(load_config("config/trident.toml"))
+        initial = RiskDecision(
+            accepted=True,
+            reason="accepted",
+            trade_plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.64,
+                target_notional_usd=150.0,
+                stop_bps=90.0,
+                time_stop_hours=24,
+                margin_usd=75.0,
+                effective_leverage=2.0,
+                risk_budget_usd=1.5,
+                expected_loss_usd=1.35,
+            ),
+        )
+        stronger = RiskDecision(
+            accepted=True,
+            reason="accepted",
+            trade_plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="liquidity_sweep_reclaim_long",
+                confidence=0.91,
+                target_notional_usd=180.0,
+                stop_bps=80.0,
+                time_stop_hours=24,
+                margin_usd=60.0,
+                effective_leverage=3.0,
+                risk_budget_usd=1.5,
+                expected_loss_usd=1.44,
+            ),
+        )
+
+        executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3000.0,
+                    ema_fast=2990.0,
+                    ema_slow=2950.0,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.6,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[initial],
+            signal_sides_by_symbol={"ETH": "long"},
+            timestamp="2026-04-04T00:00:00Z",
+        )
+
+        batch = executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3010.0,
+                    ema_fast=3005.0,
+                    ema_slow=2970.0,
+                    vwap_distance_bps=-4.0,
+                    structure_score=0.72,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[stronger],
+            signal_sides_by_symbol={"ETH": "long"},
+            timestamp="2026-04-04T00:15:00Z",
+        )
+
+        self.assertEqual(batch.opened_symbols, ["ETH"])
+        self.assertEqual(batch.skipped_open_symbols, [])
+        self.assertEqual(len(batch.closed_trades), 1)
+        self.assertEqual(batch.closed_trades[0].close_reason, "upgrade_setup")
+        self.assertEqual(batch.close_reasons_by_symbol["ETH"], "upgrade_setup")
+        self.assertEqual(len(batch.fills), 2)
+        self.assertEqual(executor.portfolio.open_positions["ETH"].setup, "liquidity_sweep_reclaim_long")

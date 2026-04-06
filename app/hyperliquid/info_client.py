@@ -8,7 +8,7 @@ from urllib import error, request
 
 from app.live.errors import HyperliquidAPIError, HyperliquidRateLimitError, is_rate_limit_message
 from app.hyperliquid.rate_limiter import SharedRateLimiter, jitter_seconds
-from app.settings import HyperliquidConfig
+from app.settings import AppConfig, HyperliquidConfig, override_app_config
 
 
 @dataclass(slots=True)
@@ -50,7 +50,7 @@ class HyperliquidInfoClient:
         *,
         max_attempts: int = 3,
         timeout: float | None = None,
-    ) -> dict[str, object]:
+    ) -> object:
         timeout_seconds = timeout or self.config.connect_timeout_seconds
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
@@ -108,6 +108,19 @@ class HyperliquidInfoClient:
 
         raise HyperliquidAPIError("Exhausted Hyperliquid info retries")
 
+    def fetch_max_leverage_by_symbol(
+        self,
+        *,
+        symbols: list[str] | None = None,
+        include_delisted: bool = False,
+    ) -> dict[str, float]:
+        payload = self.post_info({"type": "metaAndAssetCtxs"})
+        return extract_max_leverage_by_symbol(
+            payload,
+            symbols=symbols,
+            include_delisted=include_delisted,
+        )
+
     def _register_retry(
         self,
         status_code: int | None,
@@ -134,3 +147,57 @@ class HyperliquidInfoClient:
         if status_code == 429 or is_rate_limit_message(message):
             return HyperliquidRateLimitError(message or f"HTTP {status_code}")
         return HyperliquidAPIError(message or f"HTTP {status_code}")
+
+
+def extract_max_leverage_by_symbol(
+    payload: object,
+    *,
+    symbols: list[str] | None = None,
+    include_delisted: bool = False,
+) -> dict[str, float]:
+    if not isinstance(payload, list) or not payload:
+        return {}
+    meta = payload[0]
+    if not isinstance(meta, dict):
+        return {}
+    universe = meta.get("universe", [])
+    if not isinstance(universe, list):
+        return {}
+    requested = None if symbols is None else {str(symbol).upper() for symbol in symbols}
+    parsed: dict[str, float] = {}
+    for item in universe:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).upper()
+        if not name:
+            continue
+        if requested is not None and name not in requested:
+            continue
+        if not include_delisted and bool(item.get("isDelisted", False)):
+            continue
+        max_leverage = item.get("maxLeverage")
+        if max_leverage in (None, ""):
+            continue
+        parsed[name] = float(max_leverage)
+    return parsed
+
+
+def apply_live_asset_leverage_caps(
+    config: AppConfig,
+    *,
+    symbols: list[str] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+) -> AppConfig:
+    client = HyperliquidInfoClient(config.hyperliquid, sleep_fn=sleep_fn)
+    try:
+        live_caps = client.fetch_max_leverage_by_symbol(symbols=symbols)
+    except HyperliquidAPIError:
+        return config
+    if not live_caps:
+        return config
+    merged_caps = dict(config.pod_a.max_leverage_by_symbol)
+    merged_caps.update(live_caps)
+    return override_app_config(
+        config,
+        pod_a_max_leverage_by_symbol=merged_caps,
+    )

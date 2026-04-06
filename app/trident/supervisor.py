@@ -16,9 +16,11 @@ from app.trident.types import (
     OwnershipConflict,
     PodHealth,
     PodName,
+    PodAllocation,
     RegimeSnapshot,
     RegimeTransition,
     SignalPreview,
+    SymbolAllocation,
     SymbolMarketSnapshot,
     SupervisorState,
     TradePlan,
@@ -38,7 +40,7 @@ class TridentSupervisor:
         self.capital_allocator = CapitalAllocator(config)
         self.pod_a_context_service = MarketContextService()
         self.pod_a_service = AnchorTrendService()
-        self.pod_a_planner = AnchorTrendPlanner()
+        self.pod_a_planner = AnchorTrendPlanner(config)
         self.pod_c_context_service = EventContextService(config.pod_c)
         self.pod_c_service = EventRaiderService(config.pod_c)
         self.pod_c_planner = EventRaiderPlanner(config.pod_c)
@@ -146,10 +148,12 @@ class TridentSupervisor:
     def preview_pod_a_signals(
         self,
         snapshots: list[SymbolMarketSnapshot],
+        timestamp: str | None = None,
     ) -> list[SignalPreview]:
         contexts = self.pod_a_context_service.build_contexts(
             self.state.regime,
             self._owned_snapshots(PodName.POD_A, snapshots),
+            timestamp=timestamp,
         )
         signals = self.pod_a_service.evaluate_many(contexts)
         previews = [
@@ -167,19 +171,65 @@ class TridentSupervisor:
     def build_pod_a_trade_plans(
         self,
         snapshots: list[SymbolMarketSnapshot],
+        timestamp: str | None = None,
     ) -> list[TradePlan]:
         contexts = self.pod_a_context_service.build_contexts(
             self.state.regime,
             self._owned_snapshots(PodName.POD_A, snapshots),
+            timestamp=timestamp,
         )
         signals = self.pod_a_service.evaluate_many(contexts)
-        pod_allocation = self.capital_plan.pod_allocations[PodName.POD_A]
+        pod_allocation = self._pod_a_planning_allocation(signals)
         plans: list[TradePlan] = []
         for signal in signals:
             plan = self.pod_a_planner.build_trade_plan(signal, pod_allocation)
             if plan is not None:
                 plans.append(plan)
         return plans
+
+    def _pod_a_planning_allocation(self, signals: list[object]) -> PodAllocation:
+        base = self.capital_plan.pod_allocations[PodName.POD_A]
+        if not signals:
+            return base
+
+        signal_symbols = list(dict.fromkeys(str(signal.symbol) for signal in signals))
+        if self.state.regime.value == "TrendExpansion":
+            return base
+        base_symbols = [item.symbol for item in base.symbols]
+        if base_symbols == signal_symbols:
+            return base
+
+        total_equity = max(self.capital_plan.total_equity_usd, 1e-9)
+        target_pct = min(
+            self.capital_allocator.allocations_for(self.state.regime).get("pod_a", 0.0),
+            self.config.pod_a.max_allocation_pct,
+        )
+        target_usd = round(target_pct * total_equity, 2)
+        if target_usd <= 0:
+            return base
+        max_symbol_usd = (
+            self.config.trident.capital.max_allocation_per_symbol_pct * total_equity
+        )
+        per_symbol_usd = min(target_usd / len(signal_symbols), max_symbol_usd)
+        if per_symbol_usd <= 0:
+            return base
+
+        symbols = [
+            SymbolAllocation(
+                symbol=symbol,
+                target_pct=round(per_symbol_usd / total_equity, 6),
+                target_usd=round(per_symbol_usd, 2),
+            )
+            for symbol in signal_symbols
+        ]
+        allocated_usd = round(sum(item.target_usd for item in symbols), 2)
+        return PodAllocation(
+            pod=base.pod,
+            target_pct=round(allocated_usd / total_equity, 6),
+            target_usd=allocated_usd,
+            capped_by_pod_limit=target_pct < self.capital_allocator.allocations_for(self.state.regime).get("pod_a", 0.0),
+            symbols=symbols,
+        )
 
     def preview_pod_c_signals(
         self,
