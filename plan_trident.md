@@ -294,12 +294,12 @@
 | 3. Capital allocator + cash mode | 100% | Rien, etape fermee |
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider en dry-run live le socle `500 USD` et confirmer le comportement d'upgrade / allocation active sur une plage plus longue |
-| 5. Pod B range engine natif | 85% | Finaliser la validation paper 72h et le benchmark offline |
+| 5. Pod B range engine natif | 85% | Ajouter les guardrails de range, le quoting adaptatif minimal et lancer le premier dry-run 3 pods avec `Pod B` en mode conservateur |
 | 6. Reporting par pod | 100% | Rien, etape fermee |
 | 7. Research Pod pour Pod C | 100% | Rien, etape fermee |
 | 8. Pod C minimal | 100% | Rien, etape fermee |
 | 9. Hardening deployment | 100% | Rien, etape fermee |
-| 10. Passage live progressif | 20% | Lancer le premier dry-run 24h sur serveur et auditer avec `trident_dry_run_review.sh` |
+| 10. Passage live progressif | 30% | Utiliser le lanceur dry-run 3 pods pour lancer un premier dry-run 24h sur serveur, puis auditer avec `trident_dry_run_review.sh` |
 | 11. Pistes futures Hydra revisitees | 10% | Prioriser la collecte funding native et la note de faisabilite OI / liquidation |
 
 Regle de maintenance:
@@ -2242,6 +2242,7 @@ Travail realise:
   - suit un fichier ou un repertoire de snapshots
   - met a jour le `status.json` en continu
   - supporte `poll_seconds`, `max_runtime_seconds`, `max_idle_loops`
+  - relit maintenant la config runtime Pod B pour suivre les changements de symbols / allocation du superviseur pendant le dry-run
 - `launch_workdir` ajoute a la config Pod B
 - `PassivbotManager.start(...)` supporte maintenant un vrai wrapper runtime Python via `launch_command`
 - `CohabitationReplayRunner` implemente:
@@ -2316,6 +2317,36 @@ Validation reelle effectuee supplementaire:
 Validation restante:
 
 - dette de nommage interne `passivbot_*` optionnelle seulement, pas bloquante pour l'etape
+- ajouter un filtre d'activation plus strict:
+  - ne quoter que les vrais contextes `RangeAuction`
+  - pause immediate en `TrendExpansion` ou quand le flow devient toxique
+- rendre la largeur de quote plus adaptative:
+  - elargir davantage quand la vol / le range bucket montent
+  - eviter les quotes trop serre dans les phases de trend cache
+- mieux gerer l'inventory:
+  - skew plus fort quand l'inventory est deja desequilibree
+  - autoriser des phases one-sided pour d'abord se desencombrer
+- reduire l'agressivite initiale:
+  - taille d'ordre plus petite
+  - nombre de symbols actifs limite
+  - budget Pod B plus conservateur au premier dry-run 3 pods
+- mieux selectionner les symbols:
+  - prioriser 1 a 2 symbols ranges propres plutot qu'un panier trop large
+- ajouter des metrics de toxicite:
+  - adverse selection proxy
+  - fill burst contre inventory
+  - temps passe en inventory trop asymetrique
+- garder le wrapper paper branche sur la config runtime du superviseur:
+  - relecture reguliere de la config Pod B
+  - prise en compte des changements de symbols / allocation pendant le dry-run
+
+Strategie pratique pour aller vite vers le dry-run 3 pods:
+
+- lancer `Pod B` en mode conservateur plutot qu'en mode "optimise PnL"
+- accepter un `Pod B` encore imparfait tant qu'il:
+  - ne cree pas de runaway inventory
+  - ne perturbe pas la cohabitation
+  - reste lisible en status / reporting
 
 ### Validation
 
@@ -2632,6 +2663,7 @@ Monter le risque en paliers.
 - live avec Pod A seulement
 - live A + B ensuite
 - live A + B + C en dernier
+- dry-run 3 pods via `python -m app.live.trident_dry_run_launcher`
 - revue de chaque palier avec `scripts/trident_dry_run_review.sh`
 - statut auto quand le verdict est mecanique
 - prompt LLM genere quand la decision demande un jugement qualitatif
@@ -2680,6 +2712,9 @@ uv run python -m app.main --mode observation --profile trident
 
 # trident dry-run
 uv run python -m app.main --mode dry-run --profile trident
+
+# trident dry-run 3 pods
+uv run python -m app.live.trident_dry_run_launcher --config config/trident.toml --max-runtime-seconds 86400
 
 # trident backtest
 uv run python -m app.backtest.runner --profile trident --date 2026-04-01

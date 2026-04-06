@@ -56,6 +56,7 @@ class PodBPaperLiveRunner(PodBPaperRunner):
 
         try:
             while True:
+                self.reload_runtime_config()
                 new_records_processed = 0
                 files = [input_path] if input_path.is_file() else sorted(input_path.glob("*.jsonl"))
                 for file_path in files:

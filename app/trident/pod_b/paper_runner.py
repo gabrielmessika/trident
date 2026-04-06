@@ -41,18 +41,16 @@ class PodBPaperRunner:
 
     def __init__(self, config_path: str | Path) -> None:
         self.config_path = Path(config_path)
-        self.runtime_config = json.loads(self.config_path.read_text(encoding="utf-8"))
-        trident = self.runtime_config.get("trident", {})
-        self.managed_symbols = [
-            str(symbol).upper() for symbol in trident.get("managed_symbols", [])
-        ]
-        self.target_usd = float(trident.get("target_usd", 0.0))
-        self.paper_config = self._build_paper_config(trident)
+        self.runtime_config: dict[str, object] = {}
+        self.managed_symbols: list[str] = []
+        self.target_usd: float = 0.0
+        self.paper_config = self._build_paper_config({})
         self.engine = PodBPaperEngine(
-            managed_symbols=self.managed_symbols,
-            target_usd=self.target_usd,
+            managed_symbols=[],
+            target_usd=0.0,
             config=self.paper_config,
         )
+        self.reload_runtime_config()
 
     def run(
         self,
@@ -164,6 +162,22 @@ class PodBPaperRunner:
             ),
             paper_maker_fee_bps=float(trident.get("paper_maker_fee_bps", 0.0)),
             paper_recent_fills_limit=int(trident.get("paper_recent_fills_limit", 20)),
+        )
+
+    def reload_runtime_config(self) -> None:
+        self.runtime_config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        trident = self.runtime_config.get("trident", {})
+        if not isinstance(trident, dict):
+            trident = {}
+        self.managed_symbols = [
+            str(symbol).upper() for symbol in trident.get("managed_symbols", [])
+        ]
+        self.target_usd = float(trident.get("target_usd", 0.0))
+        self.paper_config = self._build_paper_config(trident)
+        self.engine.config = self.paper_config
+        self.engine.update_allocation(
+            managed_symbols=self.managed_symbols,
+            target_usd=self.target_usd,
         )
 
     def _status_meta(self, status_path: Path) -> dict[str, object]:

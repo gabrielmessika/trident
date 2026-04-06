@@ -44,6 +44,58 @@ def _snapshot_record(timestamp: str, symbol: str, price: float) -> dict[str, obj
 
 
 class PodBPaperRunnerTests(unittest.TestCase):
+    def test_paper_runner_reloads_runtime_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "runtime.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "live": {"leverage": 3},
+                        "trident": {
+                            "managed_symbols": ["DOGE"],
+                            "target_usd": 200.0,
+                            "paper_quote_width_bps": 6.0,
+                            "paper_order_size_pct": 0.25,
+                            "paper_max_inventory_skew_pct": 1.0,
+                            "paper_maker_fee_bps": 0.0,
+                            "paper_recent_fills_limit": 20,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            runner = PodBPaperRunner(config_path)
+            self.assertEqual(runner.managed_symbols, ["DOGE"])
+            self.assertEqual(runner.target_usd, 200.0)
+
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "live": {"leverage": 3},
+                        "trident": {
+                            "managed_symbols": ["DOGE", "XRP"],
+                            "target_usd": 120.0,
+                            "paper_quote_width_bps": 9.0,
+                            "paper_order_size_pct": 0.1,
+                            "paper_max_inventory_skew_pct": 0.5,
+                            "paper_maker_fee_bps": 0.0,
+                            "paper_recent_fills_limit": 5,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            runner.reload_runtime_config()
+
+            self.assertEqual(runner.managed_symbols, ["DOGE", "XRP"])
+            self.assertEqual(runner.target_usd, 120.0)
+            self.assertEqual(runner.engine.managed_symbols, ["DOGE", "XRP"])
+            self.assertEqual(runner.engine.target_usd, 120.0)
+            self.assertEqual(runner.engine.config.paper_quote_width_bps, 9.0)
+
     def test_paper_runner_writes_status_with_positions_orders_and_fills(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_b.enabled = True
