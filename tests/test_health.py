@@ -63,6 +63,37 @@ class HealthApiTests(unittest.TestCase):
                             "cash_usd": 200.0,
                             "pods": {},
                         },
+                        "symbol_ownership": [
+                            {
+                                "symbol": "ETH",
+                                "owner": "pod_a",
+                                "routing_mode": "dynamic_affinity",
+                                "routing_reason": "best_affinity:pod_a (0.82)",
+                            }
+                        ],
+                        "ownership_conflicts": [],
+                        "symbol_routing": [
+                            {
+                                "symbol": "ETH",
+                                "owner": "pod_a",
+                                "previous_owner": None,
+                                "mode": "dynamic_affinity",
+                                "reason": "best_affinity:pod_a (0.82)",
+                                "candidate_pods": ["pod_a"],
+                                "pod_scores": {"pod_a": 0.82},
+                            }
+                        ],
+                        "pods": {
+                            "pod_a": {
+                                "enabled": True,
+                                "candidate_symbols": ["BTC", "ETH"],
+                                "desired_symbols": ["BTC", "ETH"],
+                                "owned_symbols": ["ETH"],
+                                "target_pct": 0.6,
+                                "target_usd": 600.0,
+                                "capped_by_pod_limit": False,
+                            }
+                        },
                         "regime_snapshot": {
                             "ready": True,
                             "adx": 30.0,
@@ -90,6 +121,9 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["pod_a_signal_preview"][0]["symbol"], "ETH")
         self.assertEqual(payload["runtime_report"]["regime"], "TrendExpansion")
         self.assertEqual(payload["runtime_report"]["cash_usd"], 200.0)
+        self.assertEqual(payload["symbol_ownership"][0]["routing_mode"], "dynamic_affinity")
+        self.assertEqual(payload["symbol_routing"][0]["mode"], "dynamic_affinity")
+        self.assertEqual(payload["pods"]["pod_a"]["owned_symbols"], ["ETH"])
         self.assertNotIn("pod_b_status", payload["pod_a_runtime"]["supervisor"])
         self.assertEqual(
             payload["pod_a_runtime"]["supervisor"]["source"],

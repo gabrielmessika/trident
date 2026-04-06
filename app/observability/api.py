@@ -13,7 +13,11 @@ from typing import Callable
 
 from app.observability.metrics import MetricsRegistry
 from app.reporting.multi_pod import build_runtime_report
-from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
+from app.live.runtime_status import (
+    load_runtime_status,
+    runtime_status_age_seconds,
+    runtime_status_is_fresh,
+)
 from app.trident.supervisor import TridentSupervisor
 
 
@@ -458,17 +462,18 @@ def _merge_runtime_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
             merged_health.append(merged)
         snapshot["pod_health"] = merged_health
 
-    runtime_supervisor = None
-    if runtime_status_is_fresh(pod_a_runtime):
-        runtime_supervisor = pod_a_runtime.get("supervisor")
-    if runtime_supervisor is None and runtime_status_is_fresh(pod_c_runtime):
-        runtime_supervisor = pod_c_runtime.get("supervisor")
+    runtime_supervisor = _fresh_runtime_supervisor(pod_a_runtime, pod_c_runtime)
     if not isinstance(runtime_supervisor, dict):
         return snapshot
 
     for key in (
+        "enabled_pods",
         "regime",
         "raw_regime",
+        "symbol_ownership",
+        "ownership_conflicts",
+        "symbol_routing",
+        "pods",
         "allocations",
         "capital_plan",
         "regime_snapshot",
@@ -497,6 +502,26 @@ def _normalized_runtime_payload(payload: dict[str, object] | None) -> dict[str, 
     return copy.deepcopy(payload)
 
 
+def _fresh_runtime_supervisor(*payloads: dict[str, object] | None) -> dict[str, object] | None:
+    freshest_payload: dict[str, object] | None = None
+    freshest_age: float | None = None
+    for payload in payloads:
+        if not runtime_status_is_fresh(payload):
+            continue
+        age = runtime_status_age_seconds(payload)
+        if age is None:
+            continue
+        if freshest_age is None or age < freshest_age:
+            freshest_payload = payload
+            freshest_age = age
+    if not isinstance(freshest_payload, dict):
+        return None
+    supervisor = freshest_payload.get("supervisor")
+    if not isinstance(supervisor, dict):
+        return None
+    return supervisor
+
+
 def _embedded_supervisor_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
     payload: dict[str, object] = {}
     for key in (
@@ -509,6 +534,7 @@ def _embedded_supervisor_snapshot(snapshot: dict[str, object]) -> dict[str, obje
         "pod_health",
         "symbol_ownership",
         "ownership_conflicts",
+        "symbol_routing",
         "pods",
         "allocations",
         "capital_plan",
