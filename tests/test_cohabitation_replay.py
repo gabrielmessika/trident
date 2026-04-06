@@ -101,8 +101,8 @@ class CohabitationReplayTests(unittest.TestCase):
             result = CohabitationReplayRunner(config).run_jsonl(input_path)
 
             self.assertEqual(result.records_processed, 3)
-            self.assertEqual(result.ownership_conflict_count, 1)
-            self.assertEqual(result.ownership_conflicts[0]["symbol"], "ETH")
+            self.assertEqual(result.ownership_conflict_count, 0)
+            self.assertEqual(result.ownership_conflicts, [])
             self.assertEqual(result.pod_a_owned_symbols, ["BTC", "ETH"])
             self.assertEqual(result.pod_b_owned_symbols, ["XRP"])
             self.assertTrue(result.no_symbol_overlap)

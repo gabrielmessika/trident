@@ -288,18 +288,18 @@
 
 | Etape | Avancement | Prochain milestone |
 |-------|------------|--------------------|
-| 0. Cadrage et branchement | 100% | Rien, etape fermee |
-| 1. Superviseur + ownership | 100% | Rien, etape fermee |
-| 2. Regime allocator deterministe | 100% | Rien, etape fermee |
-| 3. Capital allocator + cash mode | 100% | Rien, etape fermee |
+| 0. Cadrage et branchement | 100% | Rien, étape fermée |
+| 1. Superviseur + ownership | 100% | Rien, étape fermée |
+| 2. Regime allocator deterministe | 100% | Rien, étape fermée |
+| 3. Capital allocator + cash mode | 100% | Rien, étape fermée |
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider en dry-run live le socle `500 USD` et confirmer le comportement d'upgrade / allocation active sur une plage plus longue |
 | 5. Pod B range engine natif | 92% | Lancer le premier dry-run 24h 3 pods avec `Pod B` en mode conservateur, puis recalibrer les seuils d'activation range/toxicite sur les observations runtime |
-| 5bis. Routing dynamique symbols / ownership | 0% | Definir les scores d'affinite par pod, puis attribuer automatiquement chaque coin au meilleur pod sans overlap |
-| 6. Reporting par pod | 100% | Rien, etape fermee |
-| 7. Research Pod pour Pod C | 100% | Rien, etape fermee |
-| 8. Pod C minimal | 100% | Rien, etape fermee |
-| 9. Hardening deployment | 100% | Rien, etape fermee |
+| 5bis. Routing dynamique symbols / ownership | 75% | Brancher le routage dynamique dans le dry-run 3 pods partagé et affiner l'explication des choix de routage dans l'UI |
+| 6. Reporting par pod | 100% | Rien, étape fermée |
+| 7. Research Pod pour Pod C | 100% | Rien, étape fermée |
+| 8. Pod C minimal | 100% | Rien, étape fermée |
+| 9. Hardening deployment | 100% | Rien, étape fermée |
 | 10. Passage live progressif | 30% | Utiliser le lanceur dry-run 3 pods pour lancer un premier dry-run 24h sur serveur, puis auditer avec `trident_dry_run_review.sh` |
 | 11. Pistes futures Hydra revisitees | 10% | Prioriser la collecte funding native et la note de faisabilite OI / liquidation |
 
@@ -2399,7 +2399,7 @@ Decision actuelle:
 
 ### Statut
 
-`A FAIRE — l'intention existe dans l'architecture, mais l'attribution dynamique coin par coin n'est pas encore implementee`
+`EN COURS — routeur dynamique, scores d'affinité, fallback par priorité et hystérèse sont en place dans le superviseur`
 
 ### Pourquoi cette etape existe
 
@@ -2410,11 +2410,11 @@ Le superviseur actuel:
 - impose un ownership exclusif,
 - mais ne choisit pas encore automatiquement quel pod doit recevoir chaque coin.
 
-Aujourd'hui, chaque pod declare encore principalement son univers en config, puis le superviseur tranche les collisions avec une priorite fixe:
+Aujourd'hui, chaque pod déclare encore principalement son univers en config, puis le superviseur tranche les collisions avec une priorité fixe:
 
 - `pod_c` > `pod_a` > `pod_b`
 
-Cette logique securise bien la cohabitation V1, mais elle ne correspond pas encore a l'objectif cible:
+Cette logique sécurise bien la cohabitation V1, mais elle ne correspond pas encore complètement à l'objectif cible:
 
 - observer le marche coin par coin,
 - mesurer quel pod est le plus adapte a ce coin a cet instant,
@@ -2423,33 +2423,33 @@ Cette logique securise bien la cohabitation V1, mais elle ne correspond pas enco
 
 ### Objectif
 
-Faire evoluer l'ownership depuis un arbitrage statique vers un vrai routage dynamique des symbols par pod.
+Faire évoluer l'ownership depuis un arbitrage statique vers un vrai routage dynamique des symbols par pod.
 
 ### Principe cible
 
-Pour chaque coin observe, le superviseur devra produire un score d'affinite par pod, puis choisir un owner unique:
+Pour chaque coin observé, le superviseur doit produire un score d'affinité par pod, puis choisir un owner unique:
 
-- `Pod A` si le coin ressemble a un contexte trend / continuation / reclaim structurel
-- `Pod B` si le coin ressemble a un contexte range / maker / inventory-friendly
-- `Pod C` si le coin ressemble a un contexte evenementiel / impulsif / lead-lag exploitable
+- `Pod A` si le coin ressemble à un contexte trend / continuation / reclaim structurel
+- `Pod B` si le coin ressemble à un contexte range / maker / inventory-friendly
+- `Pod C` si le coin ressemble à un contexte événementiel / impulsif / lead-lag exploitable
 
 Le routage doit rester:
 
-- deterministe
+- déterministe
 - explicable dans le dashboard
 - stable dans le temps
-- borne par hysteresis pour eviter le flip-flop permanent
+- borné par hystérèse pour éviter le flip-flop permanent
 
 ### Travail
 
-- definir un `symbol routing snapshot` par coin avec les features deja disponibles:
-  - regime local
+- définir un `symbol routing snapshot` par coin avec les features déjà disponibles:
+  - régime local
   - adx / atr ratio
   - range width
   - structure score
   - spread
   - flow toxicity
-  - signaux qualifies de `Pod A`
+  - signaux qualifiés de `Pod A`
   - eligibility maker de `Pod B`
   - eligibility event de `Pod C`
 - calculer un score simple par pod:
@@ -2458,9 +2458,9 @@ Le routage doit rester:
   - `pod_c_affinity`
 - choisir un owner unique avec:
   - seuil minimal
-  - priorite de secours seulement en fallback
-  - hysteresis / cooldown avant reattribution
-- separer explicitement:
+  - priorité de secours seulement en fallback
+  - hystérèse / cooldown avant réattribution
+- séparer explicitement:
   - `observation_universe`
   - `candidate_symbols`
   - `owned_symbols`
@@ -2468,8 +2468,25 @@ Le routage doit rester:
   - score par pod
   - raison du choix
   - raison du non-choix
-  - delai depuis la derniere reattribution
-- garder une possibilite de `pin manuel` par coin pour le live si besoin
+  - délai depuis la dernière réattribution
+- garder une possibilité de `pin manuel` par coin pour le live si besoin
+
+Travail réalisé:
+
+- `app/trident/symbol_router.py` créé
+- scoring d'affinité simple pour `Pod A`, `Pod B` et `Pod C`
+- fallback par priorité conservé quand il manque des snapshots ou quand les scores restent trop faibles
+- hystérèse de conservation d'owner ajoutée pour éviter les bascules trop fréquentes
+- `app/trident/supervisor.py` branche maintenant le routeur dans le cycle de preview / planification
+- `snapshot()` expose désormais:
+  - `symbol_routing`
+  - `routing_mode`
+  - `routing_reason`
+- l'onglet `System` du dashboard affiche maintenant le mode et la raison de routage par symbole
+- tests dédiés ajoutés sur:
+  - résolution des overlaps sans conflit
+  - attribution dynamique par contexte marché
+  - hystérèse de conservation
 
 ### Livrables cibles
 
@@ -2477,26 +2494,32 @@ Le routage doit rester:
 - extension de `app/trident/supervisor.py`
 - enrichissement de `app/trident/types.py`
 - exposition dans `app/observability/api.py`
-- tests dedies sur:
+- tests dédiés sur:
   - attribution initiale
-  - hysteresis
-  - reattribution apres changement de regime
+  - hystérèse
+  - réattribution après changement de régime
   - absence d'overlap
 
 ### Critere de done
 
 - aucun conflit d'ownership normal en dry-run quand plusieurs pods sont actifs
-- les symbols sont attribues automatiquement sans avoir a bricoler la config a la main
+- les symbols sont attribués automatiquement sans avoir à bricoler la config à la main
 - le dashboard explique clairement pourquoi un coin appartient a `Pod A`, `Pod B` ou `Pod C`
-- les reallocations restent rares, lisibles et non chaotiques
+- les réallocations restent rares, lisibles et non chaotiques
 
 ### Remarque produit
 
-Cette etape n'est pas strictement necessaire pour lancer le premier dry-run 3 pods, mais elle devient importante des qu'on veut:
+Cette étape n'est pas strictement nécessaire pour lancer le premier dry-run 3 pods, mais elle devient importante dès qu'on veut:
 
-- elargir l'univers de coins
+- élargir l'univers de coins
 - laisser tourner les 3 pods ensemble sans micro-gestion manuelle
 - se rapprocher du comportement "orchestrateur intelligent" attendu par la vision du projet
+
+Validation restante:
+
+- brancher le même routage dynamique dans une boucle live 3 pods réellement partagée, plutôt que dans des runners encore séparés
+- enrichir les raisons de routage quand un coin n'est pas retenu par un pod
+- ajouter si besoin un `pin manuel` et un cooldown explicite configurable par symbole
 
 ---
 

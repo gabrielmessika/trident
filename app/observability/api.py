@@ -23,7 +23,7 @@ def _latest_snapshot_status(snapshot_dir: Path = Path("data/live_snapshots")) ->
         return {
             "status": "bad",
             "label": "No snapshots",
-            "comment": "Aucun snapshot live trouve.",
+            "comment": "Aucun snapshot live trouvé.",
             "age_minutes": None,
             "path": None,
         }
@@ -309,7 +309,7 @@ def _dashboard_status_items(
         items.append(
             {
                 "status": "warn",
-                "label": "Pods a surveiller",
+                "label": "Pods à surveiller",
                 "comment": f"{healthy_count}/{enabled_count} pod(s) OK.",
             }
         )
@@ -327,7 +327,7 @@ def _dashboard_status_items(
         {
             "status": "good" if conflicts == 0 else "bad",
             "label": "Aucun conflit" if conflicts == 0 else "Conflit ownership",
-            "comment": "Ownership propre." if conflicts == 0 else f"{conflicts} conflit(s) detecte(s).",
+            "comment": "Ownership propre." if conflicts == 0 else f"{conflicts} conflit(s) détecté(s).",
         }
     )
 
@@ -337,16 +337,16 @@ def _dashboard_status_items(
         items.append(
             {
                 "status": "good",
-                "label": "Activite visible",
-                "comment": f"{fill_count} execution(s), PnL realise {realized_pnl:.4f} USD.",
+                "label": "Activité visible",
+                "comment": f"{fill_count} exécution(s), PnL réalisé {realized_pnl:.4f} USD.",
             }
         )
     else:
         items.append(
             {
                 "status": "warn",
-                "label": "Pas d'execution",
-                "comment": "Runtime actif, aucune execution visible.",
+                "label": "Pas d'exécution",
+                "comment": "Runtime actif, aucune exécution visible.",
             }
         )
 
@@ -363,14 +363,14 @@ def _dashboard_commentary(
     fill_count = int(runtime_report.get("total_fill_count", 0))
     latest_snapshot = _latest_snapshot_status()
     if latest_snapshot["status"] == "bad":
-        return "Collector en retard. Verifie la collecte live et les logs API."
+        return "Collector en retard. Vérifie la collecte live et les logs API."
     if healthy < enabled:
-        return "Un pod actif est a surveiller."
+        return "Un pod actif est à surveiller."
     if conflicts > 0:
-        return "Conflit d'ownership detecte. Corriger avant d'augmenter le risque."
+        return "Conflit d'ownership détecté. Corriger avant d'augmenter le risque."
     if fill_count == 0:
-        return "Runtime OK. Pas encore d'execution visible."
-    return "Runtime OK. Activite recente visible."
+        return "Runtime OK. Pas encore d'exécution visible."
+    return "Runtime OK. Activité récente visible."
 
 
 def health_payload(supervisor: TridentSupervisor) -> dict[str, object]:
@@ -628,7 +628,7 @@ def _control_center_html(
         if not enabled:
             tone = "neutral"
             badge = "Off"
-            comment = "Pod coupe."
+            comment = "Pod coupé."
         elif healthy:
             tone = "good"
             badge = "OK"
@@ -638,14 +638,14 @@ def _control_center_html(
             badge = "Check"
             comment = str(
                 pod_health.get("message")
-                or "Pod a verifier."
+                or "Pod à vérifier."
             )
         else:
             tone = "bad"
             badge = "KO"
             comment = str(
                 pod_health.get("message")
-                or "Statut runtime absent ou stale."
+                or "Statut runtime absent ou obsolète."
             )
         if enabled and pod_name == "pod_b":
             if int(pod_report.get("open_order_count", 0)) > 0:
@@ -710,29 +710,29 @@ def _control_center_html(
     focus_items: list[dict[str, str]] = []
     if latest_snapshot["status"] == "bad":
         focus_items.append(
-            {
-                "tone": "bad",
-                "label": "Maintenant",
-                "title": "Collector en retard",
-                "comment": str(latest_snapshot["comment"]),
+                {
+                    "tone": "bad",
+                    "label": "Maintenant",
+                    "title": "Collector en retard",
+                    "comment": str(latest_snapshot["comment"]),
             }
         )
     if conflict_count > 0:
         focus_items.append(
-            {
-                "tone": "bad",
-                "label": "Maintenant",
-                "title": "Corriger l'ownership",
-                "comment": f"{conflict_count} conflit(s) detecte(s) entre pods.",
-            }
-        )
+                {
+                    "tone": "bad",
+                    "label": "Maintenant",
+                    "title": "Corriger l'ownership",
+                    "comment": f"{conflict_count} conflit(s) détecté(s) entre pods.",
+                }
+            )
     for pod in pod_summaries:
         if bool(pod["enabled"]) and str(pod["tone"]) in {"warn", "bad"}:
             focus_items.append(
                 {
                     "tone": str(pod["tone"]),
-                    "label": "Verifier",
-                    "title": f"{pod['label']} a verifier",
+                    "label": "Vérifier",
+                    "title": f"{pod['label']} à vérifier",
                     "comment": str(pod["comment"]),
                 }
             )
@@ -742,7 +742,7 @@ def _control_center_html(
                 "tone": "good",
                 "label": "RAS",
                 "title": "Aucune urgence",
-                "comment": "Pas d'execution visible, mais aucun incident runtime.",
+                "comment": "Pas d'exécution visible, mais aucun incident runtime.",
             }
         )
     if not focus_items:
@@ -751,7 +751,7 @@ def _control_center_html(
                 "tone": "good",
                 "label": "RAS",
                 "title": "Runtime stable",
-                "comment": "Statuts frais et activite visible.",
+                "comment": "Statuts frais et activité visible.",
             }
         )
     focus_tone = "good"
@@ -783,9 +783,9 @@ def _control_center_html(
     summary_cards = render_stat_cards(
         [
             {
-                "label": "Regime",
+                "label": "Régime",
                 "value": str(snapshot["regime"]),
-                "note": "Etat de marche courant",
+                "note": "État de marché courant",
             },
             {
                 "label": "Pods",
@@ -798,9 +798,9 @@ def _control_center_html(
                 "note": "Exposition visible maintenant",
             },
             {
-                "label": "Executions",
+                "label": "Exécutions",
                 "value": str(total_fills),
-                "note": "Fills / trades observes",
+                "note": "Fills / trades observés",
             },
             {
                 "label": "Realized PnL",
@@ -810,7 +810,7 @@ def _control_center_html(
             {
                 "label": "Cash",
                 "value": f"{float(snapshot['capital_plan']['cash_usd']):.2f} USD",
-                "note": "Capital non deploye",
+                "note": "Capital non déployé",
             },
         ]
     )
@@ -826,7 +826,7 @@ def _control_center_html(
             f"<div><dt>Symbols</dt><dd>{', '.join(escape(str(symbol)) for symbol in pod['owned_symbols']) or '-'}</dd></div>"
             f"<div><dt>Allocation</dt><dd>{float(pod['target_pct']):.2f} · {float(pod['target_usd']):.2f} USD</dd></div>"
             f"<div><dt>Ouvert</dt><dd>{int(pod['position_count'])} pos · {int(pod['open_order_count'])} ordres</dd></div>"
-            f"<div><dt>Execution</dt><dd>{int(pod['total_fill_count'])} exec · {float(pod['realized_pnl_usd']):.4f} USD</dd></div>"
+            f"<div><dt>Exécution</dt><dd>{int(pod['total_fill_count'])} exec · {float(pod['realized_pnl_usd']):.4f} USD</dd></div>"
             "</dl>"
             f"<button class='tab-link' type='button' data-jump-tab='{escape(str(pod['label']).lower().replace(' ', '_'))}'>Voir l'onglet {escape(str(pod['label']))}</button>"
             "</article>"
@@ -868,7 +868,7 @@ def _control_center_html(
             if str(item.get("pod")) == pod_name and str(item.get("status")) == "closed"
         ]
         if not rows:
-            return "<tr><td colspan='10'>Aucun trade ferme visible pour le moment.</td></tr>"
+            return "<tr><td colspan='10'>Aucun trade fermé visible pour le moment.</td></tr>"
         return "".join(
             (
                 "<tr>"
@@ -912,7 +912,7 @@ def _control_center_html(
 
     def render_activity_event_rows() -> str:
         if not event_rows:
-            return "<tr><td colspan='12'>Aucun evenement de trade recent visible pour le moment.</td></tr>"
+            return "<tr><td colspan='12'>Aucun évènement de trade récent visible pour le moment.</td></tr>"
         return "".join(
             (
                 "<tr "
@@ -954,8 +954,8 @@ def _control_center_html(
     )
     if not recent_activity_rows:
         recent_activity_rows = (
-            "<tr><td colspan='10'>Aucune execution recente visible. "
-            "Les trades apparaitront ici des qu'un pod ecrira un trade close ou un fill recent.</td></tr>"
+            "<tr><td colspan='10'>Aucune exécution récente visible. "
+            "Les trades apparaîtront ici dès qu'un pod écrira un trade close ou un fill récent.</td></tr>"
         )
 
     pod_b_positions_rows = "".join(
@@ -1040,7 +1040,7 @@ def _control_center_html(
         )
     )
     if not pod_b_fill_rows:
-        pod_b_fill_rows = "<tr><td colspan='8'>Aucun fill recent visible pour Pod B.</td></tr>"
+        pod_b_fill_rows = "<tr><td colspan='8'>Aucun fill récent visible pour Pod B.</td></tr>"
 
     runtime_report_rows = "".join(
         (
@@ -1062,10 +1062,12 @@ def _control_center_html(
             "<tr>"
             f"<td>{escape(str(item['symbol']))}</td>"
             f"<td>{escape(str(item['owner'] or 'unassigned'))}</td>"
+            f"<td>{escape(str(item.get('routing_mode') or '-'))}</td>"
+            f"<td>{escape(str(item.get('routing_reason') or '-'))}</td>"
             "</tr>"
         )
         for item in snapshot["symbol_ownership"]
-    ) or "<tr><td colspan='2'>Aucune ownership visible.</td></tr>"
+    ) or "<tr><td colspan='4'>Aucune ownership visible.</td></tr>"
     conflict_rows = "".join(
         (
             "<tr>"
@@ -1088,7 +1090,7 @@ def _control_center_html(
         )
         for item in snapshot["regime_history"]
         if isinstance(item, dict)
-    ) or "<tr><td colspan='5'>Aucune transition de regime enregistree.</td></tr>"
+    ) or "<tr><td colspan='5'>Aucune transition de régime enregistrée.</td></tr>"
     metric_rows = "".join(
         (
             "<tr>"
@@ -1626,7 +1628,7 @@ def _control_center_html(
       <div class="chip-row">
         <span class="chip">Profile {escape(str(snapshot['profile']))}</span>
         <span class="chip">Mode {escape(str(snapshot['mode']))}</span>
-        <span class="chip">Regime {escape(str(snapshot['regime']))}</span>
+        <span class="chip">Régime {escape(str(snapshot['regime']))}</span>
         <span class="chip">Auto-refresh {refresh_seconds}s</span>
       </div>
       <div class="eyebrow">TRIDENT Supervisor Dashboard</div>
@@ -1655,7 +1657,7 @@ def _control_center_html(
           </div>
           <div>
             {_status_badge(global_tone, global_label)}
-            <span class="meta-chip">Regime {escape(str(snapshot['regime']))}</span>
+            <span class="meta-chip">Régime {escape(str(snapshot['regime']))}</span>
             <span class="meta-chip">{healthy_count}/{enabled_count} pod(s) sain(s)</span>
             <span class="meta-chip">{active_positions} position(s)</span>
             <span class="meta-chip">{active_orders} ordre(s)</span>
@@ -1664,8 +1666,8 @@ def _control_center_html(
 
         <div class="panel panel-{escape(_panel_tone(focus_tone))}">
           <div class="panel-header">
-            <h2>A faire maintenant</h2>
-            <p>Liste courte et concrete. Si tu ne dois lire qu'un bloc sur cette page, c'est celui-ci.</p>
+            <h2>À faire maintenant</h2>
+            <p>Liste courte et concrète. Si tu ne dois lire qu'un bloc sur cette page, c'est celui-ci.</p>
           </div>
           <div class="focus-grid">
             {focus_rows}
@@ -1675,7 +1677,7 @@ def _control_center_html(
         <div class="panel panel-{escape(_panel_tone(global_tone))}">
           <div class="panel-header">
             <h2>Status</h2>
-            <p>Etat general tres compact: collecte, sante des pods, ownership et activite recente. Le detail est volontairement renvoye vers les onglets de pod et systeme.</p>
+            <p>État général très compact : collecte, santé des pods, ownership et activité récente. Le détail est volontairement renvoyé vers les onglets de pod et système.</p>
           </div>
           <div class="status-grid">
             {status_rows}
@@ -1684,8 +1686,8 @@ def _control_center_html(
 
         <div class="panel panel-neutral">
           <div class="panel-header">
-            <h2>En un coup d'oeil</h2>
-            <p>Quelques chiffres seulement: regime, sante, exposition, executions et cash disponible.</p>
+            <h2>En un coup d’œil</h2>
+            <p>Quelques chiffres seulement : régime, santé, exposition, exécutions et cash disponible.</p>
           </div>
           <div class="metric-grid">
             {summary_cards}
@@ -1695,7 +1697,7 @@ def _control_center_html(
         <div class="panel panel-neutral">
           <div class="panel-header">
             <h2>Pods</h2>
-            <p>Chaque carte dit simplement si le pod est OK, a surveiller, ou s'il merite qu'on ouvre son onglet detail.</p>
+            <p>Chaque carte dit simplement si le pod est OK, à surveiller, ou s'il mérite qu'on ouvre son onglet détail.</p>
           </div>
           <div class="pod-grid">
             {pod_cards}
@@ -1707,7 +1709,7 @@ def _control_center_html(
         <div class="panel panel-{escape(_panel_tone(pod_a_summary['tone']))}">
           <div class="panel-header">
             <h2>Pod A</h2>
-            <p>Pod directionnel trend / structure. On suit ici les positions ouvertes, les trades fermes, le levier, le stop et la raison exacte d'ouverture / fermeture.</p>
+            <p>Pod directionnel trend / structure. On suit ici les positions ouvertes, les trades fermés, le levier, le stop et la raison exacte d'ouverture / fermeture.</p>
           </div>
           <div class="metric-grid">
             {render_stat_cards([
@@ -1715,7 +1717,7 @@ def _control_center_html(
                 {"label": "Target", "value": f"{float(pod_a_summary['target_usd']):.2f} USD", "note": f"{float(pod_a_summary['target_pct']):.2f} du capital"},
                 {"label": "Open positions", "value": str(pod_a_summary['position_count']), "note": "Positions directionnelles ouvertes"},
                 {"label": "Signals", "value": str(pod_a_summary['preview_count']), "note": "Previews actuellement visibles"},
-                {"label": "Exec", "value": str(pod_a_summary['total_fill_count']), "note": "Trades/fills observes"},
+                {"label": "Exec", "value": str(pod_a_summary['total_fill_count']), "note": "Trades/fills observés"},
                 {"label": "Realized PnL", "value": f"{float(pod_a_summary['realized_pnl_usd']):.4f} USD", "note": "Cumul runtime"},
             ])}
           </div>
@@ -1725,12 +1727,12 @@ def _control_center_html(
           <div class="panel panel-{escape(_panel_tone(pod_a_summary['tone']))}">
             <div class="panel-header">
               <h3>Trades ouverts</h3>
-              <p>Ce tableau repond a la question: qu'est-ce qui est en risque maintenant, pourquoi, et avec quel levier/stop.</p>
+              <p>Ce tableau répond à la question : qu'est-ce qui est en risque maintenant, pourquoi, et avec quel levier/stop.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison ouverture", "Setup ou raison d'entree.")}{_table_header("Prix entree", "Prix moyen d'entree.")}{_table_header("Notional USD", "Valeur notionnelle de la position.")}{_table_header("Leverage", "Levier configure.")}{_table_header("Confiance", "Score de confiance du signal.")}{_table_header("SL bps", "Distance du stop en basis points.")}{_table_header("Time stop", "Duree maximale du trade si elle existe.")}{_table_header("Ouvert le", "Horodatage d'ouverture.")}{_table_header("Commentaire", "Champ utile pour garder le contexte a l'ecran.")}</tr>
+                  <tr>{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison ouverture", "Setup ou raison d'entrée.")}{_table_header("Prix entrée", "Prix moyen d'entrée.")}{_table_header("Notional USD", "Valeur notionnelle de la position.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("Confiance", "Score de confiance du signal.")}{_table_header("SL bps", "Distance du stop en basis points.")}{_table_header("Time stop", "Durée maximale du trade si elle existe.")}{_table_header("Ouvert le", "Horodatage d'ouverture.")}{_table_header("Commentaire", "Champ utile pour garder le contexte à l'écran.")}</tr>
                 </thead>
                 <tbody>{render_directional_open_rows("pod_a")}</tbody>
               </table>
@@ -1739,7 +1741,7 @@ def _control_center_html(
           <div class="panel panel-neutral">
             <div class="panel-header">
               <h3>Signal preview</h3>
-              <p>Signaux vus par le superviseur mais pas encore forcement convertis en position.</p>
+              <p>Signaux vus par le superviseur mais pas encore forcément convertis en position.</p>
             </div>
             {render_preview_list(snapshot.get("pod_a_signal_preview"))}
           </div>
@@ -1747,13 +1749,13 @@ def _control_center_html(
 
         <div class="panel panel-neutral">
           <div class="panel-header">
-            <h3>Trades fermes recents</h3>
-            <p>Tableau de lecture rapide pour comprendre ce qui a marche, ce qui a coupe, et pourquoi.</p>
+            <h3>Trades fermés récents</h3>
+            <p>Tableau de lecture rapide pour comprendre ce qui a marché, ce qui a coupé, et pourquoi.</p>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr>{_table_header("Ferme le", "Horodatage de sortie.")}{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Sens du trade.")}{_table_header("Raison ouverture", "Setup d'origine.")}{_table_header("Raison fermeture", "Cause de sortie: stop, time stop, upgrade, etc.")}{_table_header("Prix entree", "Prix d'entree connu.")}{_table_header("Prix sortie", "Prix de sortie connu.")}{_table_header("Notional USD", "Valeur notionnelle du trade.")}{_table_header("Leverage", "Levier configure quand disponible.")}{_table_header("PnL USD", "Resultat net du trade.")}</tr>
+                <tr>{_table_header("Fermé le", "Horodatage de sortie.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens du trade.")}{_table_header("Raison ouverture", "Setup d'origine.")}{_table_header("Raison fermeture", "Cause de sortie : stop, time stop, upgrade, etc.")}{_table_header("Prix entrée", "Prix d'entrée connu.")}{_table_header("Prix sortie", "Prix de sortie connu.")}{_table_header("Notional USD", "Valeur notionnelle du trade.")}{_table_header("Leverage", "Levier configuré quand disponible.")}{_table_header("PnL USD", "Résultat net du trade.")}</tr>
               </thead>
               <tbody>{render_directional_closed_rows("pod_a")}</tbody>
             </table>
@@ -1765,7 +1767,7 @@ def _control_center_html(
         <div class="panel panel-{escape(_panel_tone(pod_b_summary['tone']))}">
           <div class="panel-header">
             <h2>Pod B</h2>
-            <p>Pod B ne se lit pas comme une liste de trades directionnels. Il faut surtout voir son inventory, ses ordres maker ouverts, ses fills recents et sa capacite a rester propre dans un marche range.</p>
+            <p>Pod B ne se lit pas comme une liste de trades directionnels. Il faut surtout voir son inventory, ses ordres maker ouverts, ses fills récents et sa capacité à rester propre dans un marché range.</p>
           </div>
           <div class="metric-grid">
             {render_stat_cards([
@@ -1773,7 +1775,7 @@ def _control_center_html(
                 {"label": "Process", "value": str(pod_b_summary["process_state"]), "note": f"Sync reason {escape(str(pod_b_status.get('last_sync_reason', '-')))}"},
                 {"label": "Managed symbols", "value": str(len(pod_b_status.get("managed_symbols", []) if isinstance(pod_b_status, dict) else [])), "note": ", ".join(str(x) for x in (pod_b_status.get("managed_symbols", []) if isinstance(pod_b_status, dict) else [])) or "-"},
                 {"label": "Open orders", "value": str(pod_b_summary["open_order_count"]), "note": "Quotes maker visibles"},
-                {"label": "Fills", "value": str(pod_b_summary["total_fill_count"]), "note": "Executions observees"},
+                {"label": "Fills", "value": str(pod_b_summary["total_fill_count"]), "note": "Exécutions observées"},
                 {"label": "Realized PnL", "value": f"{float(pod_b_summary['realized_pnl_usd']):.4f} USD", "note": f"Unrealized {float(pod_b_summary['total_unrealized_pnl_usd']):.4f} USD"},
             ])}
           </div>
@@ -1783,12 +1785,12 @@ def _control_center_html(
           <div class="panel panel-{escape(_panel_tone(pod_b_summary['tone']))}">
             <div class="panel-header">
               <h3>Inventory</h3>
-              <p>Le tableau cle pour Pod B: on voit si l'inventory reste propre, si le skew devient trop fort et si les ordres ouverts suffisent encore a la reequilibrer.</p>
+              <p>Le tableau clé pour Pod B : on voit si l'inventory reste propre, si le skew devient trop fort et si les ordres ouverts suffisent encore à la rééquilibrer.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Symbol", "Marche suivi.")}{_table_header("Target USD", "Notionnel cible sur ce symbole.")}{_table_header("Current USD", "Notionnel actuellement porte.")}{_table_header("Skew %", "Decalage entre cible et inventory actuelle.")}{_table_header("Position", "Indique si une position est actuellement ouverte.")}{_table_header("Open orders", "Nombre d'ordres maker en attente sur ce symbole.")}</tr>
+                  <tr>{_table_header("Symbol", "Marché suivi.")}{_table_header("Target USD", "Notionnel cible sur ce symbole.")}{_table_header("Current USD", "Notionnel actuellement porté.")}{_table_header("Skew %", "Décalage entre cible et inventory actuelle.")}{_table_header("Position", "Indique si une position est actuellement ouverte.")}{_table_header("Open orders", "Nombre d'ordres maker en attente sur ce symbole.")}</tr>
                 </thead>
                 <tbody>{pod_b_inventory_rows}</tbody>
               </table>
@@ -1797,12 +1799,12 @@ def _control_center_html(
           <div class="panel panel-neutral">
             <div class="panel-header">
               <h3>Positions d'inventory</h3>
-              <p>Quand Pod B est charge dans un sens, c'est ici qu'on voit son exposition reelle et son PnL latent.</p>
+              <p>Quand Pod B est chargé dans un sens, c'est ici qu'on voit son exposition réelle et son PnL latent.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Sens de l'inventory.")}{_table_header("Size", "Taille unitaire.")}{_table_header("Entry", "Prix moyen d'entree.")}{_table_header("Mark", "Prix courant marque.")}{_table_header("Notional USD", "Valeur notionnelle actuelle.")}{_table_header("Unrealized", "PnL latent actuel.")}</tr>
+                  <tr>{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de l'inventory.")}{_table_header("Size", "Taille unitaire.")}{_table_header("Entry", "Prix moyen d'entrée.")}{_table_header("Mark", "Prix courant marqué.")}{_table_header("Notional USD", "Valeur notionnelle actuelle.")}{_table_header("Unrealized", "PnL latent actuel.")}</tr>
                 </thead>
                 <tbody>{pod_b_positions_rows}</tbody>
               </table>
@@ -1814,12 +1816,12 @@ def _control_center_html(
           <div class="panel panel-neutral">
             <div class="panel-header">
               <h3>Ordres maker ouverts</h3>
-              <p>La lecture la plus utile pour savoir si Pod B quote bilateralement ou s'il reste seulement en mode de desencombrement.</p>
+              <p>La lecture la plus utile pour savoir si Pod B quote bilatéralement ou s'il reste seulement en mode de désencombrement.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Cote du quote.")}{_table_header("Prix", "Prix du quote.")}{_table_header("Size", "Taille de l'ordre.")}{_table_header("Type", "Type d'ordre, ici generalement maker.")}{_table_header("Status", "Statut de l'ordre dans le status runtime.")}</tr>
+                  <tr>{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Côté du quote.")}{_table_header("Prix", "Prix du quote.")}{_table_header("Size", "Taille de l'ordre.")}{_table_header("Type", "Type d'ordre, ici généralement maker.")}{_table_header("Status", "Statut de l'ordre dans le status runtime.")}</tr>
                 </thead>
                 <tbody>{pod_b_orders_rows}</tbody>
               </table>
@@ -1827,13 +1829,13 @@ def _control_center_html(
           </div>
           <div class="panel panel-neutral">
             <div class="panel-header">
-              <h3>Fills recents</h3>
-              <p>Vue execution de Pod B: on suit la cadence, la fee et le sens des fills, pas une logique TP/SL directionnelle.</p>
+              <h3>Fills récents</h3>
+              <p>Vue exécution de Pod B : on suit la cadence, la fee et le sens des fills, pas une logique TP/SL directionnelle.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Timestamp", "Horodatage du fill.")}{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Sens du fill.")}{_table_header("Action", "Type d'action enregistree.")}{_table_header("Prix", "Prix d'execution.")}{_table_header("Size", "Taille executee.")}{_table_header("Notional USD", "Valeur notionnelle du fill.")}{_table_header("Fee USD", "Frais du fill.")}</tr>
+                  <tr>{_table_header("Timestamp", "Horodatage du fill.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens du fill.")}{_table_header("Action", "Type d'action enregistrée.")}{_table_header("Prix", "Prix d'exécution.")}{_table_header("Size", "Taille exécutée.")}{_table_header("Notional USD", "Valeur notionnelle du fill.")}{_table_header("Fee USD", "Frais du fill.")}</tr>
                 </thead>
                 <tbody>{pod_b_fill_rows}</tbody>
               </table>
@@ -1854,7 +1856,7 @@ def _control_center_html(
                 {"label": "Target", "value": f"{float(pod_c_summary['target_usd']):.2f} USD", "note": f"{float(pod_c_summary['target_pct']):.2f} du capital"},
                 {"label": "Open positions", "value": str(pod_c_summary['position_count']), "note": "Positions event-driven ouvertes"},
                 {"label": "Signals", "value": str(pod_c_summary['preview_count']), "note": "Previews actuellement visibles"},
-                {"label": "Exec", "value": str(pod_c_summary['total_fill_count']), "note": "Trades/fills observes"},
+                {"label": "Exec", "value": str(pod_c_summary['total_fill_count']), "note": "Trades/fills observés"},
                 {"label": "Realized PnL", "value": f"{float(pod_c_summary['realized_pnl_usd']):.4f} USD", "note": "Cumul runtime"},
             ])}
           </div>
@@ -1864,12 +1866,12 @@ def _control_center_html(
           <div class="panel panel-{escape(_panel_tone(pod_c_summary['tone']))}">
             <div class="panel-header">
               <h3>Trades ouverts</h3>
-              <p>Les positions event-driven vivantes et les informations de risque associees.</p>
+              <p>Les positions event-driven vivantes et les informations de risque associées.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison ouverture", "Signal ou setup d'entree.")}{_table_header("Prix entree", "Prix moyen d'entree.")}{_table_header("Notional USD", "Valeur notionnelle de la position.")}{_table_header("Leverage", "Levier configure.")}{_table_header("Confiance", "Score de confiance du signal.")}{_table_header("SL bps", "Distance du stop en basis points.")}{_table_header("Time stop", "Duree maximale du trade si elle existe.")}{_table_header("Ouvert le", "Horodatage d'ouverture.")}{_table_header("Commentaire", "Champ utile pour garder le contexte a l'ecran.")}</tr>
+                  <tr>{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison ouverture", "Signal ou setup d'entrée.")}{_table_header("Prix entrée", "Prix moyen d'entrée.")}{_table_header("Notional USD", "Valeur notionnelle de la position.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("Confiance", "Score de confiance du signal.")}{_table_header("SL bps", "Distance du stop en basis points.")}{_table_header("Time stop", "Durée maximale du trade si elle existe.")}{_table_header("Ouvert le", "Horodatage d'ouverture.")}{_table_header("Commentaire", "Champ utile pour garder le contexte à l'écran.")}</tr>
                 </thead>
                 <tbody>{render_directional_open_rows("pod_c")}</tbody>
               </table>
@@ -1878,7 +1880,7 @@ def _control_center_html(
           <div class="panel panel-neutral">
             <div class="panel-header">
               <h3>Signal preview</h3>
-              <p>Signaux event / lead-lag vus mais pas encore transformes en position.</p>
+              <p>Signaux event / lead-lag vus mais pas encore transformés en position.</p>
             </div>
             {render_preview_list(snapshot.get("pod_c_signal_preview"))}
           </div>
@@ -1886,13 +1888,13 @@ def _control_center_html(
 
         <div class="panel panel-neutral">
           <div class="panel-header">
-            <h3>Trades fermes recents</h3>
-            <p>Lecture rapide des sorties reussies ou coupees, avec la raison de fermeture.</p>
+            <h3>Trades fermés récents</h3>
+            <p>Lecture rapide des sorties réussies ou coupées, avec la raison de fermeture.</p>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr>{_table_header("Ferme le", "Horodatage de sortie.")}{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Sens du trade.")}{_table_header("Raison ouverture", "Signal d'origine.")}{_table_header("Raison fermeture", "Cause de sortie.")}{_table_header("Prix entree", "Prix d'entree connu.")}{_table_header("Prix sortie", "Prix de sortie connu.")}{_table_header("Notional USD", "Valeur notionnelle du trade.")}{_table_header("Leverage", "Levier configure quand disponible.")}{_table_header("PnL USD", "Resultat net du trade.")}</tr>
+                <tr>{_table_header("Fermé le", "Horodatage de sortie.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens du trade.")}{_table_header("Raison ouverture", "Signal d'origine.")}{_table_header("Raison fermeture", "Cause de sortie.")}{_table_header("Prix entrée", "Prix d'entrée connu.")}{_table_header("Prix sortie", "Prix de sortie connu.")}{_table_header("Notional USD", "Valeur notionnelle du trade.")}{_table_header("Leverage", "Levier configuré quand disponible.")}{_table_header("PnL USD", "Résultat net du trade.")}</tr>
               </thead>
               <tbody>{render_directional_closed_rows("pod_c")}</tbody>
             </table>
@@ -1904,7 +1906,7 @@ def _control_center_html(
         <div class="panel">
           <div class="panel-header">
             <h2>Activity</h2>
-            <p>Onglet transversal pour les positions ouvertes et les evenements recents. Il remplace l'ancienne page de trades, mais reste organise par filtres pour ne pas noyer la vue principale.</p>
+            <p>Onglet transversal pour les positions ouvertes et les évènements récents. Il remplace l'ancienne page de trades, mais reste organisé par filtres pour ne pas noyer la vue principale.</p>
           </div>
           <div class="filter-row" aria-label="Filtres activity">
             <button class="filter-chip is-active" type="button" data-filter-group="status" data-filter-value="open">Open</button>
@@ -1913,7 +1915,7 @@ def _control_center_html(
             <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_b">Pod B</button>
             <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_c">Pod C</button>
           </div>
-          <p class="soft-note" style="margin-bottom:16px;">Les fills maker de Pod B restent visibles ici comme de l'activite d'inventory. Pour comprendre vraiment Pod B, son onglet dedie reste la meilleure vue.</p>
+          <p class="soft-note" style="margin-bottom:16px;">Les fills maker de Pod B restent visibles ici comme de l'activité d'inventory. Pour comprendre vraiment Pod B, son onglet dédié reste la meilleure vue.</p>
 
           <div class="panel" style="box-shadow:none;">
             <div class="panel-header">
@@ -1923,7 +1925,7 @@ def _control_center_html(
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Pod", "Pod qui porte actuellement la position.")}{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Sens actuel de la position.")}{_table_header("Open reason", "Pourquoi la position a ete ouverte.")}{_table_header("Entry", "Prix d'entree connu ou prix moyen.")}{_table_header("Notional USD", "Valeur notionnelle actuelle ou cible.")}{_table_header("Leverage", "Levier configure quand disponible.")}{_table_header("Confidence", "Confiance du signal directionnel quand elle existe.")}{_table_header("Stop bps", "Distance du stop pour les pods directionnels.")}{_table_header("Time stop h", "Duree maximale de detention prevue.")}{_table_header("Opened at", "Horodatage d'ouverture si connu.")}</tr>
+                  <tr>{_table_header("Pod", "Pod qui porte actuellement la position.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens actuel de la position.")}{_table_header("Open reason", "Pourquoi la position a été ouverte.")}{_table_header("Entry", "Prix d'entrée connu ou prix moyen.")}{_table_header("Notional USD", "Valeur notionnelle actuelle ou cible.")}{_table_header("Leverage", "Levier configuré quand disponible.")}{_table_header("Confidence", "Confiance du signal directionnel quand elle existe.")}{_table_header("Stop bps", "Distance du stop pour les pods directionnels.")}{_table_header("Time stop h", "Durée maximale de détention prévue.")}{_table_header("Opened at", "Horodatage d'ouverture si connu.")}</tr>
                 </thead>
                 <tbody>{render_activity_open_rows()}</tbody>
               </table>
@@ -1933,12 +1935,12 @@ def _control_center_html(
           <div class="panel" style="box-shadow:none;">
             <div class="panel-header">
               <h3>Recent trade events</h3>
-              <p>Historique recent des sorties directionnelles et fills Pod B.</p>
+              <p>Historique récent des sorties directionnelles et fills Pod B.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Timestamp", "Horodatage de l'evenement.")}{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Sens buy/sell ou long/short.")}{_table_header("Status", "closed pour un trade ferme, fill pour un fill Pod B.")}{_table_header("Open reason", "Pourquoi la position ou l'execution a ete initiee.")}{_table_header("Close reason", "Pourquoi le trade s'est ferme.")}{_table_header("Entry", "Prix d'entree si connu.")}{_table_header("Exit", "Prix de sortie si connu.")}{_table_header("Notional USD", "Valeur notionnelle concernee.")}{_table_header("Leverage", "Levier configure quand il est disponible.")}{_table_header("PnL USD", "PnL net quand disponible.")}</tr>
+                  <tr>{_table_header("Timestamp", "Horodatage de l'évènement.")}{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens buy/sell ou long/short.")}{_table_header("Status", "closed pour un trade fermé, fill pour un fill Pod B.")}{_table_header("Open reason", "Pourquoi la position ou l'exécution a été initiée.")}{_table_header("Close reason", "Pourquoi le trade s'est fermé.")}{_table_header("Entry", "Prix d'entrée si connu.")}{_table_header("Exit", "Prix de sortie si connu.")}{_table_header("Notional USD", "Valeur notionnelle concernée.")}{_table_header("Leverage", "Levier configuré quand il est disponible.")}{_table_header("PnL USD", "PnL net quand disponible.")}</tr>
                 </thead>
                 <tbody>{render_activity_event_rows()}</tbody>
               </table>
@@ -1948,12 +1950,12 @@ def _control_center_html(
           <div class="panel" style="box-shadow:none;">
             <div class="panel-header">
               <h3>Recent trading activity</h3>
-              <p>Resume mixte des derniers journaux live visibles.</p>
+              <p>Résumé mixte des derniers journaux live visibles.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Timestamp", "Heure de l'evenement.")}{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marche concerne.")}{_table_header("Side", "Sens de l'ordre ou de la position.")}{_table_header("Event", "Type d'evenement.")}{_table_header("Price", "Prix d'execution ou de sortie.")}{_table_header("Notional USD", "Valeur notionnelle approx.")}{_table_header("Leverage", "Levier configure quand il est modelise.")}{_table_header("PnL USD", "PnL net si connu.")}{_table_header("Comment", "Contexte utile: fee, raison de sortie, etc.")}</tr>
+                  <tr>{_table_header("Timestamp", "Heure de l'évènement.")}{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de l'ordre ou de la position.")}{_table_header("Event", "Type d'évènement.")}{_table_header("Price", "Prix d'exécution ou de sortie.")}{_table_header("Notional USD", "Valeur notionnelle approx.")}{_table_header("Leverage", "Levier configuré quand il est modélisé.")}{_table_header("PnL USD", "PnL net si connu.")}{_table_header("Comment", "Contexte utile : fee, raison de sortie, etc.")}</tr>
                 </thead>
                 <tbody>{recent_activity_rows}</tbody>
               </table>
@@ -1966,18 +1968,18 @@ def _control_center_html(
         <div class="panel">
           <div class="panel-header">
             <h2>System</h2>
-            <p>Onglet reserve aux details operatoires: ownership, conflits, transitions de regime et metriques brutes. On le sort de la vue principale pour garder l'ecran Status vraiment lisible.</p>
+            <p>Onglet réservé aux détails opératoires : ownership, conflits, transitions de régime et métriques brutes. On le sort de la vue principale pour garder l'écran Status vraiment lisible.</p>
           </div>
           <div class="pod-detail-grid">
             <div class="panel" style="box-shadow:none;">
               <div class="panel-header">
                 <h3>Runtime pod report</h3>
-                <p>Resume structurel par pod.</p>
+                <p>Résumé structurel par pod.</p>
               </div>
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr>{_table_header("Pod", "Nom logique du pod.")}{_table_header("Healthy", "Etat runtime selon la fraicheur du status.")}{_table_header("Process", "Etat du process ou runner associe.")}{_table_header("Positions", "Nombre de positions ouvertes.")}{_table_header("Open orders", "Nombre d'ordres suivis.")}{_table_header("Fills", "Nombre cumule d'executions.")}{_table_header("Realized PnL", "PnL realise cumule.")}{_table_header("Unrealized PnL", "PnL latent courant.")}</tr>
+                    <tr>{_table_header("Pod", "Nom logique du pod.")}{_table_header("Healthy", "État runtime selon la fraîcheur du status.")}{_table_header("Process", "État du process ou runner associé.")}{_table_header("Positions", "Nombre de positions ouvertes.")}{_table_header("Open orders", "Nombre d'ordres suivis.")}{_table_header("Fills", "Nombre cumulé d'exécutions.")}{_table_header("Realized PnL", "PnL réalisé cumulé.")}{_table_header("Unrealized PnL", "PnL latent courant.")}</tr>
                   </thead>
                   <tbody>{runtime_report_rows}</tbody>
                 </table>
@@ -1986,7 +1988,7 @@ def _control_center_html(
             <div class="panel" style="box-shadow:none;">
               <div class="panel-header">
                 <h3>Ownership conflicts</h3>
-                <p>Conflits d'ownership a regler avant d'augmenter le risque.</p>
+                <p>Conflits d'ownership à régler avant d'augmenter le risque.</p>
               </div>
               <div class="table-wrap">
                 <table>
@@ -2001,11 +2003,11 @@ def _control_center_html(
             <div class="panel" style="box-shadow:none;">
               <div class="panel-header">
                 <h3>Symbol ownership</h3>
-                <p>Qui possede quoi en ce moment.</p>
+                <p>Qui possède quoi en ce moment.</p>
               </div>
               <div class="table-wrap">
                 <table>
-                  <thead><tr><th>Symbol</th><th>Owner</th></tr></thead>
+                  <thead><tr><th>Symbol</th><th>Owner</th><th>Routing</th><th>Reason</th></tr></thead>
                   <tbody>{ownership_rows}</tbody>
                 </table>
               </div>
@@ -2013,7 +2015,7 @@ def _control_center_html(
             <div class="panel" style="box-shadow:none;">
               <div class="panel-header">
                 <h3>Regime history</h3>
-                <p>Transitions recentes du regime de marche.</p>
+                <p>Transitions récentes du régime de marché.</p>
               </div>
               <div class="table-wrap">
                 <table>
@@ -2027,7 +2029,7 @@ def _control_center_html(
           <div class="panel" style="box-shadow:none;">
             <div class="panel-header">
               <h3>Metrics</h3>
-              <p>Metriques brutes exposees par l'API d'observabilite.</p>
+              <p>Métriques brutes exposées par l'API d'observabilité.</p>
             </div>
             <div class="table-wrap">
               <table>
@@ -2147,8 +2149,8 @@ def dashboard_html(
         active_tab="status",
         title="TRIDENT Control Center",
         subtitle=(
-            "Une seule interface pour piloter les trois pods: un onglet Status tres lisible pour savoir "
-            "si tout tourne bien, puis un onglet detail par pod et un onglet systeme pour les informations operatoires."
+            "Une seule interface pour piloter les trois pods : un onglet Status très lisible pour savoir "
+            "si tout tourne bien, puis un onglet détail par pod et un onglet système pour les informations opératoires."
         ),
     )
 
@@ -2163,7 +2165,7 @@ def trades_html(
         active_tab="activity",
         title="TRIDENT Trades",
         subtitle=(
-            "Vue activity ouverte directement sur l'onglet execution. Les details par pod restent accessibles "
+            "Vue activity ouverte directement sur l'onglet exécution. Les détails par pod restent accessibles "
             "dans les autres onglets sans changer d'interface."
         ),
     )

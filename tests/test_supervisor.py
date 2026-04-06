@@ -23,11 +23,11 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC", "ETH", "HYPE", "SOL"])
         self.assertEqual(snapshot["ownership_conflicts"], [])
 
-    def test_supervisor_detects_ownership_conflicts_using_priority(self) -> None:
+    def test_supervisor_resolves_overlaps_using_priority_fallback(self) -> None:
         self.config.pod_b.enabled = True
-        self.config.pod_b.symbols = ["SOL", "XRP"]
+        self.config.pod_b.symbols = ["DOGE", "SOL", "XRP"]
         self.config.pod_c.enabled = True
-        self.config.pod_c.follower_symbols = ["HYPE", "SOL"]
+        self.config.pod_c.follower_symbols = ["HYPE", "SOL", "SUI"]
 
         supervisor = TridentSupervisor(
             config=self.config,
@@ -37,16 +37,13 @@ class SupervisorTests(unittest.TestCase):
 
         snapshot = supervisor.snapshot()
 
-        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["HYPE", "SOL"])
+        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["HYPE", "SOL", "SUI"])
         self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC", "ETH"])
-        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["XRP"])
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["DOGE", "XRP"])
+        self.assertEqual(snapshot["ownership_conflicts"], [])
         self.assertEqual(
-            snapshot["ownership_conflicts"],
-            [
-                {"symbol": "SOL", "requested_by": "pod_a", "owner": "pod_c"},
-                {"symbol": "HYPE", "requested_by": "pod_a", "owner": "pod_c"},
-                {"symbol": "SOL", "requested_by": "pod_b", "owner": "pod_c"},
-            ],
+            snapshot["symbol_routing"][0]["mode"],
+            "fallback_priority",
         )
 
     def test_supervisor_exposes_capital_plan_and_regime_snapshot(self) -> None:
@@ -298,6 +295,199 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["regime_history"][0]["new_regime"], "DeadZone")
         self.assertEqual(snapshot["regime_history"][1]["new_regime"], "TrendExpansion")
         self.assertEqual(snapshot["raw_regime"], "TrendExpansion")
+
+    def test_supervisor_routes_symbols_dynamically_by_market_context(self) -> None:
+        self.config.pod_b.enabled = True
+        self.config.pod_c.enabled = True
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=28.0,
+                atr_ratio=1.1,
+                range_width_bps=150.0,
+                structure_score=0.45,
+            )
+        )
+
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="BTC",
+                    price=68000.0,
+                    ema_fast=68120.0,
+                    ema_slow=67980.0,
+                    vwap_distance_bps=-4.0,
+                    structure_score=0.58,
+                    funding_rate=0.0,
+                    spread_bps=0.8,
+                    btc_aligned=True,
+                    book_imbalance=0.05,
+                    trade_flow_bias=0.04,
+                    bucket_range_bps=42.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3100.0,
+                    ema_fast=3115.0,
+                    ema_slow=3088.0,
+                    vwap_distance_bps=-7.0,
+                    structure_score=0.61,
+                    funding_rate=0.0001,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.08,
+                    trade_flow_bias=0.06,
+                    bucket_range_bps=46.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=180.0,
+                    ema_fast=181.5,
+                    ema_slow=179.3,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.72,
+                    funding_rate=0.0002,
+                    spread_bps=1.6,
+                    btc_aligned=True,
+                    book_imbalance=0.07,
+                    trade_flow_bias=0.06,
+                    bucket_range_bps=48.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="HYPE",
+                    price=22.0,
+                    ema_fast=22.25,
+                    ema_slow=21.85,
+                    vwap_distance_bps=-9.0,
+                    structure_score=0.66,
+                    funding_rate=0.0002,
+                    spread_bps=2.2,
+                    btc_aligned=True,
+                    book_imbalance=0.09,
+                    trade_flow_bias=0.08,
+                    bucket_range_bps=52.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="DOGE",
+                    price=0.18,
+                    ema_fast=0.1802,
+                    ema_slow=0.1799,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.04,
+                    funding_rate=0.0,
+                    spread_bps=1.2,
+                    btc_aligned=True,
+                    book_imbalance=0.02,
+                    trade_flow_bias=0.02,
+                    bucket_range_bps=28.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="XRP",
+                    price=0.64,
+                    ema_fast=0.6405,
+                    ema_slow=0.6398,
+                    vwap_distance_bps=-1.5,
+                    structure_score=0.08,
+                    funding_rate=0.0,
+                    spread_bps=1.4,
+                    btc_aligned=True,
+                    book_imbalance=0.03,
+                    trade_flow_bias=0.02,
+                    bucket_range_bps=34.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="SUI",
+                    price=1.42,
+                    ema_fast=1.421,
+                    ema_slow=1.419,
+                    vwap_distance_bps=-2.0,
+                    structure_score=0.05,
+                    funding_rate=0.0,
+                    spread_bps=2.0,
+                    btc_aligned=True,
+                    book_imbalance=0.03,
+                    trade_flow_bias=0.02,
+                    bucket_range_bps=30.0,
+                ),
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+
+        self.assertEqual(snapshot["ownership_conflicts"], [])
+        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC", "ETH", "HYPE", "SOL"])
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["DOGE", "SUI", "XRP"])
+        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], [])
+        sui_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SUI")
+        self.assertEqual(sui_routing["owner"], "pod_b")
+        self.assertEqual(sui_routing["mode"], "dynamic_affinity")
+
+    def test_supervisor_routing_uses_hysteresis_before_switching_owner(self) -> None:
+        self.config.pod_c.enabled = True
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=30.0,
+                atr_ratio=1.15,
+                range_width_bps=150.0,
+                structure_score=0.55,
+            )
+        )
+
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=180.0,
+                    ema_fast=181.5,
+                    ema_slow=179.3,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.72,
+                    funding_rate=0.0002,
+                    spread_bps=1.4,
+                    btc_aligned=True,
+                    book_imbalance=0.05,
+                    trade_flow_bias=0.04,
+                    bucket_range_bps=44.0,
+                )
+            ]
+        )
+
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=180.0,
+                    ema_fast=180.55,
+                    ema_slow=180.45,
+                    vwap_distance_bps=-12.0,
+                    structure_score=0.55,
+                    funding_rate=0.0002,
+                    spread_bps=1.4,
+                    btc_aligned=True,
+                    book_imbalance=0.20,
+                    trade_flow_bias=0.18,
+                    bucket_range_bps=120.0,
+                )
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+        sol_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SOL")
+
+        self.assertEqual(sol_routing["owner"], "pod_a")
+        self.assertEqual(sol_routing["mode"], "dynamic_hysteresis")
+        self.assertIn("hysteresis_hold:pod_a", sol_routing["reason"])
 
 
 if __name__ == "__main__":

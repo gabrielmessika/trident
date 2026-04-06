@@ -10,6 +10,7 @@ from app.trident.pod_b import PassivbotManager
 from app.trident.pod_c import EventContextService, EventRaiderPlanner, EventRaiderService
 from app.trident.pod_runtime import ConfiguredPod
 from app.trident.regime_allocator import RegimeAllocator
+from app.trident.symbol_router import SymbolRouter
 from app.trident.symbol_registry import SymbolRegistry
 from app.trident.types import (
     CapitalPlan,
@@ -22,6 +23,7 @@ from app.trident.types import (
     SignalPreview,
     SymbolAllocation,
     SymbolMarketSnapshot,
+    SymbolRoutingDecision,
     SupervisorState,
     TradePlan,
 )
@@ -38,6 +40,7 @@ class TridentSupervisor:
         self.kill_switch = KillSwitch()
         self.regime_allocator = RegimeAllocator(config)
         self.capital_allocator = CapitalAllocator(config)
+        self.symbol_router = SymbolRouter(config)
         self.pod_a_context_service = MarketContextService()
         self.pod_a_service = AnchorTrendService()
         self.pod_a_planner = AnchorTrendPlanner(config)
@@ -91,25 +94,43 @@ class TridentSupervisor:
         return [PodName.POD_C, PodName.POD_A, PodName.POD_B]
 
     def sync_symbol_ownership(self) -> None:
+        self.refresh_symbol_routing([])
+
+    def refresh_symbol_routing(
+        self,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> None:
+        previous_owners = {
+            item.symbol: item.owner for item in self.registry.snapshot()
+        }
+        decisions = self.symbol_router.route(
+            regime=self.state.regime,
+            desired_symbols_by_pod={
+                pod_name: list(pod.desired_symbols)
+                for pod_name, pod in self.pods.items()
+                if pod.enabled
+            },
+            snapshots=snapshots,
+            previous_owners=previous_owners,
+        )
+        self._apply_symbol_routing(decisions)
+
+    def _apply_symbol_routing(self, decisions: list[SymbolRoutingDecision]) -> None:
         self.registry.clear()
         self.state.ownership_conflicts = []
-        for pod_name in self._pod_priority():
-            pod = self.pods[pod_name]
-            if not pod.enabled:
-                continue
-            for symbol in pod.desired_symbols:
-                if self.registry.claim(symbol, pod_name):
-                    continue
-                owner = self.registry.owner_of(symbol)
-                if owner is None:
-                    continue
-                self.state.ownership_conflicts.append(
-                    OwnershipConflict(
-                        symbol=symbol,
-                        requested_by=pod_name,
-                        owner=owner,
+        self.state.symbol_routing = decisions
+        for decision in decisions:
+            if decision.owner is None:
+                if len(decision.candidate_pods) > 1:
+                    self.state.ownership_conflicts.append(
+                        OwnershipConflict(
+                            symbol=decision.symbol,
+                            requested_by=decision.candidate_pods[0],
+                            owner=decision.candidate_pods[1],
+                        )
                     )
-                )
+                continue
+            self.registry.claim(decision.symbol, decision.owner)
         self.capital_plan = self._build_capital_plan()
         self.sync_pod_b()
 
@@ -150,6 +171,7 @@ class TridentSupervisor:
         snapshots: list[SymbolMarketSnapshot],
         timestamp: str | None = None,
     ) -> list[SignalPreview]:
+        self.refresh_symbol_routing(snapshots)
         contexts = self.pod_a_context_service.build_contexts(
             self.state.regime,
             self._owned_snapshots(PodName.POD_A, snapshots),
@@ -173,6 +195,7 @@ class TridentSupervisor:
         snapshots: list[SymbolMarketSnapshot],
         timestamp: str | None = None,
     ) -> list[TradePlan]:
+        self.refresh_symbol_routing(snapshots)
         contexts = self.pod_a_context_service.build_contexts(
             self.state.regime,
             self._owned_snapshots(PodName.POD_A, snapshots),
@@ -235,6 +258,7 @@ class TridentSupervisor:
         self,
         snapshots: list[SymbolMarketSnapshot],
     ) -> list[SignalPreview]:
+        self.refresh_symbol_routing(snapshots)
         contexts = self.pod_c_context_service.build_contexts(
             self.state.regime,
             self._pod_c_relevant_snapshots(snapshots),
@@ -256,6 +280,7 @@ class TridentSupervisor:
         self,
         snapshots: list[SymbolMarketSnapshot],
     ) -> list[TradePlan]:
+        self.refresh_symbol_routing(snapshots)
         contexts = self.pod_c_context_service.build_contexts(
             self.state.regime,
             self._pod_c_relevant_snapshots(snapshots),
@@ -332,6 +357,22 @@ class TridentSupervisor:
                 {
                     "symbol": item.symbol,
                     "owner": item.owner.value if item.owner else None,
+                    "routing_mode": next(
+                        (
+                            decision.mode
+                            for decision in self.state.symbol_routing
+                            if decision.symbol == item.symbol
+                        ),
+                        None,
+                    ),
+                    "routing_reason": next(
+                        (
+                            decision.reason
+                            for decision in self.state.symbol_routing
+                            if decision.symbol == item.symbol
+                        ),
+                        None,
+                    ),
                 }
                 for item in self.registry.snapshot()
             ],
@@ -346,6 +387,7 @@ class TridentSupervisor:
             "pods": {
                 pod_name.value: {
                     "enabled": pod.enabled,
+                    "candidate_symbols": pod.desired_symbols,
                     "desired_symbols": pod.desired_symbols,
                     "owned_symbols": self.registry.symbols_for(pod_name),
                     "target_pct": self.capital_plan.pod_allocations[pod_name].target_pct,
@@ -426,6 +468,24 @@ class TridentSupervisor:
                     "confidence": signal.confidence,
                 }
                 for signal in self.state.pod_c_signal_preview
+            ],
+            "symbol_routing": [
+                {
+                    "symbol": decision.symbol,
+                    "owner": decision.owner.value if decision.owner is not None else None,
+                    "previous_owner": (
+                        decision.previous_owner.value
+                        if decision.previous_owner is not None
+                        else None
+                    ),
+                    "mode": decision.mode,
+                    "reason": decision.reason,
+                    "candidate_pods": [pod.value for pod in decision.candidate_pods],
+                    "pod_scores": {
+                        pod.value: score for pod, score in decision.pod_scores.items()
+                    },
+                }
+                for decision in self.state.symbol_routing
             ],
             "pod_b_status": self.state.pod_b_status,
         }

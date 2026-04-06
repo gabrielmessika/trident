@@ -57,6 +57,17 @@ class OwnershipConflict:
 
 
 @dataclass(slots=True)
+class SymbolRoutingDecision:
+    symbol: str
+    owner: PodName | None
+    mode: str
+    reason: str
+    previous_owner: PodName | None = None
+    candidate_pods: list[PodName] = field(default_factory=list)
+    pod_scores: dict[PodName, float] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class RegimeSnapshot:
     ready: bool = False
     adx: float = 0.0
@@ -173,6 +184,7 @@ class SupervisorState:
     profile: str = "trident"
     enabled_pods: list[PodName] = field(default_factory=list)
     ownership_conflicts: list[OwnershipConflict] = field(default_factory=list)
+    symbol_routing: list[SymbolRoutingDecision] = field(default_factory=list)
     regime_snapshot: RegimeSnapshot = field(default_factory=RegimeSnapshot)
     regime_history: list[RegimeTransition] = field(default_factory=list)
     regime_evaluation_count: int = 0
