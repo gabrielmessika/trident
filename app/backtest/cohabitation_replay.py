@@ -149,6 +149,7 @@ class CohabitationReplayRunner:
                     timestamp=record.timestamp,
                     snapshots=pod_b_snapshots,
                     status_meta={"config_path": "", "status_path": ""},
+                    regime_snapshot=record.regime_snapshot,
                     last_sync_reason="cohabitation_tick",
                 )
 

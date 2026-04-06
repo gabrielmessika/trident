@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from app.settings import PodBConfig
 from app.trident.pod_b.models import (
@@ -50,6 +51,7 @@ class PodBPaperEngine:
         timestamp: str | None,
         snapshots: list[SymbolMarketSnapshot],
         status_meta: dict[str, object],
+        regime_snapshot: dict[str, object] | None = None,
         last_sync_reason: str = "paper_runner_tick",
     ) -> tuple[PassivbotStatus, list[PassivbotFill]]:
         relevant_snapshots = [
@@ -62,7 +64,10 @@ class PodBPaperEngine:
             fills.extend(self._execute_resting_orders(snapshot=snapshot, timestamp=timestamp))
 
         for snapshot in relevant_snapshots:
-            self.open_orders_by_symbol[snapshot.symbol] = self._build_quotes(snapshot)
+            self.open_orders_by_symbol[snapshot.symbol] = self._build_quotes(
+                snapshot,
+                regime_snapshot=regime_snapshot,
+            )
 
         if fills:
             self.recent_fills.extend(fills)
@@ -205,7 +210,12 @@ class PodBPaperEngine:
         if abs(position.signed_size) < 1e-12:
             self.positions_by_symbol.pop(fill.symbol, None)
 
-    def _build_quotes(self, snapshot: SymbolMarketSnapshot) -> list[PassivbotOrder]:
+    def _build_quotes(
+        self,
+        snapshot: SymbolMarketSnapshot,
+        *,
+        regime_snapshot: dict[str, object] | None = None,
+    ) -> list[PassivbotOrder]:
         target_per_symbol = self._target_per_symbol()
         if target_per_symbol <= 0:
             return []
@@ -215,13 +225,24 @@ class PodBPaperEngine:
             self.config.paper_max_inventory_skew_pct,
             0.1,
         )
+        toxicity = self._toxicity_score(snapshot)
+        toxicity_size_discount = self._clamp(
+            1.0 - toxicity * max(self.config.paper_order_size_toxicity_discount, 0.0),
+            0.25,
+            1.0,
+        )
         order_notional = max(
-            target_per_symbol * self.config.paper_order_size_pct,
+            target_per_symbol * self.config.paper_order_size_pct * toxicity_size_discount,
             25.0,
         )
         base_width_bps = max(
             self.config.paper_quote_width_bps,
             snapshot.spread_bps * 8.0,
+            snapshot.bucket_range_bps * self.config.paper_quote_width_bucket_multiplier,
+        )
+        base_width_bps *= 1.0 + toxicity * max(
+            self.config.paper_quote_width_toxicity_multiplier,
+            0.0,
         )
         skew_ratio = signed_notional / target_per_symbol if target_per_symbol > 0 else 0.0
         bid_width_bps = base_width_bps * self._clamp(
@@ -235,8 +256,34 @@ class PodBPaperEngine:
             2.5,
         )
 
+        allow_buy = signed_notional < abs_inventory_limit
+        allow_sell = signed_notional > -abs_inventory_limit
+        one_sided_threshold = max(
+            self.config.paper_one_sided_inventory_threshold_pct,
+            0.1,
+        )
+        if skew_ratio >= one_sided_threshold:
+            allow_buy = False
+        elif skew_ratio <= -one_sided_threshold:
+            allow_sell = False
+
+        if not self._regime_allows_quoting(regime_snapshot):
+            return self._unwind_only_quotes(
+                snapshot=snapshot,
+                signed_notional=signed_notional,
+                order_notional=order_notional,
+                width_bps=base_width_bps * 2.0,
+            )
+        if self._is_toxic_flow(snapshot):
+            return self._unwind_only_quotes(
+                snapshot=snapshot,
+                signed_notional=signed_notional,
+                order_notional=order_notional,
+                width_bps=base_width_bps * 1.5,
+            )
+
         orders: list[PassivbotOrder] = []
-        if signed_notional < abs_inventory_limit:
+        if allow_buy:
             bid_price = round(snapshot.price * (1.0 - bid_width_bps / 10_000.0), 8)
             if bid_price > 0:
                 orders.append(
@@ -247,7 +294,7 @@ class PodBPaperEngine:
                         size=round(order_notional / bid_price, 8),
                     )
                 )
-        if signed_notional > -abs_inventory_limit:
+        if allow_sell:
             ask_price = round(snapshot.price * (1.0 + ask_width_bps / 10_000.0), 8)
             if ask_price > 0:
                 orders.append(
@@ -259,6 +306,86 @@ class PodBPaperEngine:
                     )
                 )
         return orders
+
+    def _unwind_only_quotes(
+        self,
+        *,
+        snapshot: SymbolMarketSnapshot,
+        signed_notional: float,
+        order_notional: float,
+        width_bps: float,
+    ) -> list[PassivbotOrder]:
+        if abs(signed_notional) < 1e-9:
+            return []
+        if signed_notional > 0:
+            ask_price = round(snapshot.price * (1.0 + width_bps / 10_000.0), 8)
+            if ask_price <= 0:
+                return []
+            return [
+                PassivbotOrder(
+                    symbol=snapshot.symbol,
+                    side="sell",
+                    price=ask_price,
+                    size=round(order_notional / ask_price, 8),
+                )
+            ]
+        bid_price = round(snapshot.price * (1.0 - width_bps / 10_000.0), 8)
+        if bid_price <= 0:
+            return []
+        return [
+            PassivbotOrder(
+                symbol=snapshot.symbol,
+                side="buy",
+                price=bid_price,
+                size=round(order_notional / bid_price, 8),
+            )
+        ]
+
+    def _regime_allows_quoting(self, regime_snapshot: dict[str, object] | None) -> bool:
+        if not self.config.paper_pause_outside_range:
+            return True
+        if not isinstance(regime_snapshot, dict):
+            return True
+        if not bool(regime_snapshot.get("ready", False)):
+            return False
+        if bool(regime_snapshot.get("btc_impulse", False)):
+            return False
+        adx = self._float_value(regime_snapshot.get("adx"))
+        atr_ratio = self._float_value(regime_snapshot.get("atr_ratio"))
+        range_width_bps = self._float_value(regime_snapshot.get("range_width_bps"))
+        structure_score = abs(self._float_value(regime_snapshot.get("structure_score")))
+        return (
+            adx <= self.config.paper_guard_max_adx
+            and atr_ratio <= self.config.paper_guard_max_atr_ratio
+            and structure_score <= self.config.paper_guard_max_abs_structure_score
+            and range_width_bps <= self.config.paper_guard_max_range_width_bps
+        )
+
+    def _toxicity_score(self, snapshot: SymbolMarketSnapshot) -> float:
+        return self._clamp(
+            max(
+                abs(snapshot.trade_flow_bias),
+                abs(snapshot.book_imbalance),
+            ),
+            0.0,
+            1.0,
+        )
+
+    def _is_toxic_flow(self, snapshot: SymbolMarketSnapshot) -> bool:
+        threshold = max(self.config.paper_flow_toxicity_threshold, 0.0)
+        if threshold <= 0:
+            return False
+        if snapshot.trade_flow_bias >= threshold and snapshot.book_imbalance >= threshold:
+            return True
+        if snapshot.trade_flow_bias <= -threshold and snapshot.book_imbalance <= -threshold:
+            return True
+        return False
+
+    def _float_value(self, value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _positions(self) -> list[PassivbotPosition]:
         positions: list[PassivbotPosition] = []

@@ -81,6 +81,7 @@ class CohabitationReplayTests(unittest.TestCase):
         config.pod_a.symbols = ["BTC", "ETH"]
         config.pod_b.enabled = True
         config.pod_b.symbols = ["ETH", "XRP"]
+        config.pod_b.paper_pause_outside_range = False
 
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "snapshots.jsonl"

@@ -124,6 +124,16 @@ paper_order_size_pct = 0.25
 paper_max_inventory_skew_pct = 1.0
 paper_maker_fee_bps = 0.0
 paper_recent_fills_limit = 20
+paper_pause_outside_range = true
+paper_guard_max_adx = 20.0
+paper_guard_max_atr_ratio = 0.9
+paper_guard_max_abs_structure_score = 0.2
+paper_guard_max_range_width_bps = 90.0
+paper_flow_toxicity_threshold = 0.2
+paper_one_sided_inventory_threshold_pct = 0.6
+paper_quote_width_bucket_multiplier = 0.35
+paper_quote_width_toxicity_multiplier = 1.5
+paper_order_size_toxicity_discount = 0.5
 
 [pod_c]
 enabled = false

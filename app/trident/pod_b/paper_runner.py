@@ -87,6 +87,7 @@ class PodBPaperRunner:
                 timestamp=record.timestamp,
                 snapshots=snapshots,
                 status_meta=meta,
+                regime_snapshot=record.regime_snapshot,
             )
             records_processed += 1
             fills_emitted += len(fills)
@@ -162,6 +163,32 @@ class PodBPaperRunner:
             ),
             paper_maker_fee_bps=float(trident.get("paper_maker_fee_bps", 0.0)),
             paper_recent_fills_limit=int(trident.get("paper_recent_fills_limit", 20)),
+            paper_pause_outside_range=bool(trident.get("paper_pause_outside_range", True)),
+            paper_guard_max_adx=float(trident.get("paper_guard_max_adx", 20.0)),
+            paper_guard_max_atr_ratio=float(
+                trident.get("paper_guard_max_atr_ratio", 0.9)
+            ),
+            paper_guard_max_abs_structure_score=float(
+                trident.get("paper_guard_max_abs_structure_score", 0.2)
+            ),
+            paper_guard_max_range_width_bps=float(
+                trident.get("paper_guard_max_range_width_bps", 90.0)
+            ),
+            paper_flow_toxicity_threshold=float(
+                trident.get("paper_flow_toxicity_threshold", 0.2)
+            ),
+            paper_one_sided_inventory_threshold_pct=float(
+                trident.get("paper_one_sided_inventory_threshold_pct", 0.6)
+            ),
+            paper_quote_width_bucket_multiplier=float(
+                trident.get("paper_quote_width_bucket_multiplier", 0.35)
+            ),
+            paper_quote_width_toxicity_multiplier=float(
+                trident.get("paper_quote_width_toxicity_multiplier", 1.5)
+            ),
+            paper_order_size_toxicity_discount=float(
+                trident.get("paper_order_size_toxicity_discount", 0.5)
+            ),
         )
 
     def reload_runtime_config(self) -> None:

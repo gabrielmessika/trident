@@ -47,6 +47,16 @@ class PassivbotManager:
                 "paper_max_inventory_skew_pct": self.config.pod_b.paper_max_inventory_skew_pct,
                 "paper_maker_fee_bps": self.config.pod_b.paper_maker_fee_bps,
                 "paper_recent_fills_limit": self.config.pod_b.paper_recent_fills_limit,
+                "paper_pause_outside_range": self.config.pod_b.paper_pause_outside_range,
+                "paper_guard_max_adx": self.config.pod_b.paper_guard_max_adx,
+                "paper_guard_max_atr_ratio": self.config.pod_b.paper_guard_max_atr_ratio,
+                "paper_guard_max_abs_structure_score": self.config.pod_b.paper_guard_max_abs_structure_score,
+                "paper_guard_max_range_width_bps": self.config.pod_b.paper_guard_max_range_width_bps,
+                "paper_flow_toxicity_threshold": self.config.pod_b.paper_flow_toxicity_threshold,
+                "paper_one_sided_inventory_threshold_pct": self.config.pod_b.paper_one_sided_inventory_threshold_pct,
+                "paper_quote_width_bucket_multiplier": self.config.pod_b.paper_quote_width_bucket_multiplier,
+                "paper_quote_width_toxicity_multiplier": self.config.pod_b.paper_quote_width_toxicity_multiplier,
+                "paper_order_size_toxicity_discount": self.config.pod_b.paper_order_size_toxicity_discount,
             },
         )
         rendered = self.renderer.render(runtime_config)

@@ -294,7 +294,7 @@
 | 3. Capital allocator + cash mode | 100% | Rien, etape fermee |
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider en dry-run live le socle `500 USD` et confirmer le comportement d'upgrade / allocation active sur une plage plus longue |
-| 5. Pod B range engine natif | 85% | Ajouter les guardrails de range, le quoting adaptatif minimal et lancer le premier dry-run 3 pods avec `Pod B` en mode conservateur |
+| 5. Pod B range engine natif | 92% | Lancer le premier dry-run 24h 3 pods avec `Pod B` en mode conservateur, puis recalibrer les seuils d'activation range/toxicite sur les observations runtime |
 | 6. Reporting par pod | 100% | Rien, etape fermee |
 | 7. Research Pod pour Pod C | 100% | Rien, etape fermee |
 | 8. Pod C minimal | 100% | Rien, etape fermee |
@@ -2171,7 +2171,7 @@ Frontiere a respecter:
 
 ### Statut
 
-`EN COURS — moteur natif, wrapper de process, paper-run, wrapper live et cohabitation en place`
+`EN COURS — moteur natif, wrapper de process, paper-run, wrapper live, cohabitation et premiers guardrails range/toxicite en place`
 
 ### Objectif
 
@@ -2243,6 +2243,24 @@ Travail realise:
   - met a jour le `status.json` en continu
   - supporte `poll_seconds`, `max_runtime_seconds`, `max_idle_loops`
   - relit maintenant la config runtime Pod B pour suivre les changements de symbols / allocation du superviseur pendant le dry-run
+- `PodBPaperEngine` integre maintenant des garde-fous minimaux de V1:
+  - pause de quoting hors contexte range-friendly
+  - elargissement adaptatif des quotes selon `bucket_range_bps`
+  - elargissement supplementaire et reduction de taille quand le flow devient toxique
+  - passage one-sided pour desencombrer l'inventory quand le skew devient trop fort
+  - mode `unwind_only` quand le regime ou le flow ne permettent plus un market making bilaterale propre
+- la config Pod B expose maintenant les seuils de ces garde-fous:
+  - `paper_pause_outside_range`
+  - `paper_guard_max_adx`
+  - `paper_guard_max_atr_ratio`
+  - `paper_guard_max_abs_structure_score`
+  - `paper_guard_max_range_width_bps`
+  - `paper_flow_toxicity_threshold`
+  - `paper_one_sided_inventory_threshold_pct`
+  - `paper_quote_width_bucket_multiplier`
+  - `paper_quote_width_toxicity_multiplier`
+  - `paper_order_size_toxicity_discount`
+- `PassivbotManager.sync(...)` republie aussi ces seuils dans la config runtime Pod B pour que le wrapper paper puisse les relire a chaud
 - `launch_workdir` ajoute a la config Pod B
 - `PassivbotManager.start(...)` supporte maintenant un vrai wrapper runtime Python via `launch_command`
 - `CohabitationReplayRunner` implemente:
@@ -2313,25 +2331,37 @@ Validation reelle effectuee supplementaire:
   - `realized_pnl_usd = -16.5853`
   - `total_unrealized_pnl_usd = -1.8381`
   - `max_drawdown_usd = 16.5989`
+- replay comparatif Pod B sur archives converties `BTC, DOGE, XRP, SUI`, `2026-04-01 -> 2026-04-05`:
+  - baseline simplifiee sans garde-fous:
+    - `records_processed = 5124`
+    - `fills_emitted = 240`
+    - `realized_pnl_usd = -21.7142`
+    - `max_drawdown_usd = 21.7291`
+  - moteur ameliore avec guardrails range/toxicite:
+    - `records_processed = 5124`
+    - `fills_emitted = 64`
+    - `realized_pnl_usd = -6.3760`
+    - `max_drawdown_usd = 7.2291`
+  - artefacts:
+    - `data/replay_reports/pod_b_replay_baseline_2026-04-01_2026-04-05.json`
+    - `data/replay_reports/pod_b_replay_improved_2026-04-01_2026-04-05.json`
 
 Validation restante:
 
 - dette de nommage interne `passivbot_*` optionnelle seulement, pas bloquante pour l'etape
-- ajouter un filtre d'activation plus strict:
-  - ne quoter que les vrais contextes `RangeAuction`
-  - pause immediate en `TrendExpansion` ou quand le flow devient toxique
-- rendre la largeur de quote plus adaptative:
-  - elargir davantage quand la vol / le range bucket montent
-  - eviter les quotes trop serre dans les phases de trend cache
-- mieux gerer l'inventory:
-  - skew plus fort quand l'inventory est deja desequilibree
-  - autoriser des phases one-sided pour d'abord se desencombrer
+- recalibrer les guardrails de range:
+  - verifier si `paper_guard_max_adx = 20`, `paper_guard_max_atr_ratio = 0.9` et `paper_guard_max_range_width_bps = 90` sont bien les bons seuils pour le dry-run live
+  - mesurer la part de temps en `unwind_only` vs vrai quoting bilaterale
+- rendre la largeur de quote encore plus adaptative:
+  - eventuellement relier davantage la largeur a la vol courte et au spread instantane
+  - eviter de rester trop actif sur des buckets faiblement lisibles
+- mieux selectionner les symbols ranges:
+  - prioriser 1 a 2 symbols propres plutot qu'un panier statique trop large
+  - brancher si besoin une petite logique de ranking `range cleanliness`
 - reduire l'agressivite initiale:
-  - taille d'ordre plus petite
-  - nombre de symbols actifs limite
+  - garder une taille d'ordre petite en dry-run
+  - limiter si besoin a `DOGE` + `XRP` au premier run 24h
   - budget Pod B plus conservateur au premier dry-run 3 pods
-- mieux selectionner les symbols:
-  - prioriser 1 a 2 symbols ranges propres plutot qu'un panier trop large
 - ajouter des metrics de toxicite:
   - adverse selection proxy
   - fill burst contre inventory

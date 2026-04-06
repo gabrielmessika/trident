@@ -78,6 +78,7 @@ class PodBPaperLiveRunner(PodBPaperRunner):
                             timestamp=record.timestamp,
                             snapshots=snapshots,
                             status_meta=meta,
+                            regime_snapshot=record.regime_snapshot,
                             last_sync_reason="paper_live_runner_tick",
                         )
                         new_records_processed += 1

@@ -7,10 +7,177 @@ from pathlib import Path
 
 from app.settings import load_config
 from app.trident.pod_b import PassivbotConfig, PassivbotConfigRenderer, PassivbotManager
+from app.trident.pod_b.paper_engine import PaperPositionState, PodBPaperEngine
+from app.trident.types import SymbolMarketSnapshot
 from app.trident.types import PodAllocation, PodName
 
 
 class PodBTests(unittest.TestCase):
+    def test_pod_b_engine_pauses_quotes_when_regime_is_not_range_friendly(self) -> None:
+        config = load_config("config/trident.toml")
+        engine = PodBPaperEngine(
+            managed_symbols=["DOGE"],
+            target_usd=200.0,
+            config=config.pod_b,
+        )
+
+        status, fills = engine.process_record(
+            timestamp="2026-04-05T10:00:00Z",
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="DOGE",
+                    price=100.0,
+                    ema_fast=100.0,
+                    ema_slow=100.0,
+                    vwap_distance_bps=0.0,
+                    structure_score=0.0,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.0,
+                    trade_flow_bias=0.0,
+                    bucket_volume=10.0,
+                    bucket_trade_count=5,
+                    bucket_range_bps=12.0,
+                )
+            ],
+            status_meta={"config_path": "", "status_path": ""},
+            regime_snapshot={
+                "ready": True,
+                "adx": 30.0,
+                "atr_ratio": 1.1,
+                "range_width_bps": 160.0,
+                "structure_score": 0.35,
+                "btc_impulse": True,
+            },
+        )
+
+        self.assertEqual(fills, [])
+        self.assertEqual(status.total_open_order_count, 0)
+
+    def test_pod_b_engine_switches_to_unwind_only_when_inventory_is_skewed(self) -> None:
+        config = load_config("config/trident.toml")
+        engine = PodBPaperEngine(
+            managed_symbols=["DOGE"],
+            target_usd=200.0,
+            config=config.pod_b,
+        )
+        engine.positions_by_symbol["DOGE"] = PaperPositionState(
+            signed_size=1.5,
+            avg_entry_price=100.0,
+        )
+
+        status, _ = engine.process_record(
+            timestamp="2026-04-05T10:00:00Z",
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="DOGE",
+                    price=100.0,
+                    ema_fast=100.0,
+                    ema_slow=100.0,
+                    vwap_distance_bps=0.0,
+                    structure_score=0.0,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.0,
+                    trade_flow_bias=0.0,
+                    bucket_volume=10.0,
+                    bucket_trade_count=5,
+                    bucket_range_bps=12.0,
+                )
+            ],
+            status_meta={"config_path": "", "status_path": ""},
+            regime_snapshot={
+                "ready": True,
+                "adx": 10.0,
+                "atr_ratio": 0.4,
+                "range_width_bps": 40.0,
+                "structure_score": 0.0,
+                "btc_impulse": False,
+            },
+        )
+
+        self.assertEqual(status.total_open_order_count, 1)
+        self.assertEqual(status.open_orders[0].side, "sell")
+
+    def test_pod_b_engine_widens_quotes_and_reduces_size_in_toxic_conditions(self) -> None:
+        config = load_config("config/trident.toml")
+        calm_engine = PodBPaperEngine(
+            managed_symbols=["DOGE"],
+            target_usd=200.0,
+            config=config.pod_b,
+        )
+        toxic_engine = PodBPaperEngine(
+            managed_symbols=["DOGE"],
+            target_usd=200.0,
+            config=config.pod_b,
+        )
+        regime_snapshot = {
+            "ready": True,
+            "adx": 10.0,
+            "atr_ratio": 0.4,
+            "range_width_bps": 40.0,
+            "structure_score": 0.0,
+            "btc_impulse": False,
+        }
+
+        calm_status, _ = calm_engine.process_record(
+            timestamp="2026-04-05T10:00:00Z",
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="DOGE",
+                    price=100.0,
+                    ema_fast=100.0,
+                    ema_slow=100.0,
+                    vwap_distance_bps=0.0,
+                    structure_score=0.0,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.0,
+                    trade_flow_bias=0.0,
+                    bucket_volume=10.0,
+                    bucket_trade_count=5,
+                    bucket_range_bps=12.0,
+                )
+            ],
+            status_meta={"config_path": "", "status_path": ""},
+            regime_snapshot=regime_snapshot,
+        )
+        toxic_status, _ = toxic_engine.process_record(
+            timestamp="2026-04-05T10:00:00Z",
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="DOGE",
+                    price=100.0,
+                    ema_fast=100.0,
+                    ema_slow=100.0,
+                    vwap_distance_bps=4.0,
+                    structure_score=0.0,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.0,
+                    trade_flow_bias=0.18,
+                    bucket_volume=10.0,
+                    bucket_trade_count=5,
+                    bucket_range_bps=80.0,
+                )
+            ],
+            status_meta={"config_path": "", "status_path": ""},
+            regime_snapshot=regime_snapshot,
+        )
+
+        calm_buy = next(order for order in calm_status.open_orders if order.side == "buy")
+        toxic_buy = next(order for order in toxic_status.open_orders if order.side == "buy")
+        calm_ask = next(order for order in calm_status.open_orders if order.side == "sell")
+        toxic_ask = next(order for order in toxic_status.open_orders if order.side == "sell")
+
+        self.assertLess(toxic_buy.price, calm_buy.price)
+        self.assertGreater(toxic_ask.price, calm_ask.price)
+        self.assertLess(toxic_buy.size, calm_buy.size)
+
     def test_renderer_builds_minimal_passivbot_live_config(self) -> None:
         renderer = PassivbotConfigRenderer()
         payload = renderer.render(

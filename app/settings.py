@@ -130,6 +130,16 @@ class PodBConfig:
     paper_max_inventory_skew_pct: float
     paper_maker_fee_bps: float
     paper_recent_fills_limit: int
+    paper_pause_outside_range: bool
+    paper_guard_max_adx: float
+    paper_guard_max_atr_ratio: float
+    paper_guard_max_abs_structure_score: float
+    paper_guard_max_range_width_bps: float
+    paper_flow_toxicity_threshold: float
+    paper_one_sided_inventory_threshold_pct: float
+    paper_quote_width_bucket_multiplier: float
+    paper_quote_width_toxicity_multiplier: float
+    paper_order_size_toxicity_discount: float
 
 
 @dataclass(slots=True)
@@ -368,6 +378,34 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             paper_maker_fee_bps=float(pod_b_data.get("paper_maker_fee_bps", 0.0)),
             paper_recent_fills_limit=int(pod_b_data.get("paper_recent_fills_limit", 20)),
+            paper_pause_outside_range=bool(
+                pod_b_data.get("paper_pause_outside_range", True)
+            ),
+            paper_guard_max_adx=float(pod_b_data.get("paper_guard_max_adx", 20.0)),
+            paper_guard_max_atr_ratio=float(
+                pod_b_data.get("paper_guard_max_atr_ratio", 0.9)
+            ),
+            paper_guard_max_abs_structure_score=float(
+                pod_b_data.get("paper_guard_max_abs_structure_score", 0.2)
+            ),
+            paper_guard_max_range_width_bps=float(
+                pod_b_data.get("paper_guard_max_range_width_bps", 90.0)
+            ),
+            paper_flow_toxicity_threshold=float(
+                pod_b_data.get("paper_flow_toxicity_threshold", 0.2)
+            ),
+            paper_one_sided_inventory_threshold_pct=float(
+                pod_b_data.get("paper_one_sided_inventory_threshold_pct", 0.6)
+            ),
+            paper_quote_width_bucket_multiplier=float(
+                pod_b_data.get("paper_quote_width_bucket_multiplier", 0.35)
+            ),
+            paper_quote_width_toxicity_multiplier=float(
+                pod_b_data.get("paper_quote_width_toxicity_multiplier", 1.5)
+            ),
+            paper_order_size_toxicity_discount=float(
+                pod_b_data.get("paper_order_size_toxicity_discount", 0.5)
+            ),
         ),
         pod_c=PodCConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_C", bool(pod_c_data.get("enabled", False))),
