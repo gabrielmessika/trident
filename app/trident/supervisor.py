@@ -147,7 +147,10 @@ class TridentSupervisor:
         self,
         snapshots: list[SymbolMarketSnapshot],
     ) -> list[SignalPreview]:
-        contexts = self.pod_a_context_service.build_contexts(self.state.regime, snapshots)
+        contexts = self.pod_a_context_service.build_contexts(
+            self.state.regime,
+            self._owned_snapshots(PodName.POD_A, snapshots),
+        )
         signals = self.pod_a_service.evaluate_many(contexts)
         previews = [
             SignalPreview(
@@ -165,7 +168,10 @@ class TridentSupervisor:
         self,
         snapshots: list[SymbolMarketSnapshot],
     ) -> list[TradePlan]:
-        contexts = self.pod_a_context_service.build_contexts(self.state.regime, snapshots)
+        contexts = self.pod_a_context_service.build_contexts(
+            self.state.regime,
+            self._owned_snapshots(PodName.POD_A, snapshots),
+        )
         signals = self.pod_a_service.evaluate_many(contexts)
         pod_allocation = self.capital_plan.pod_allocations[PodName.POD_A]
         plans: list[TradePlan] = []
@@ -179,7 +185,10 @@ class TridentSupervisor:
         self,
         snapshots: list[SymbolMarketSnapshot],
     ) -> list[SignalPreview]:
-        contexts = self.pod_c_context_service.build_contexts(self.state.regime, snapshots)
+        contexts = self.pod_c_context_service.build_contexts(
+            self.state.regime,
+            self._pod_c_relevant_snapshots(snapshots),
+        )
         signals = self.pod_c_service.evaluate_many(contexts)
         previews = [
             SignalPreview(
@@ -197,7 +206,10 @@ class TridentSupervisor:
         self,
         snapshots: list[SymbolMarketSnapshot],
     ) -> list[TradePlan]:
-        contexts = self.pod_c_context_service.build_contexts(self.state.regime, snapshots)
+        contexts = self.pod_c_context_service.build_contexts(
+            self.state.regime,
+            self._pod_c_relevant_snapshots(snapshots),
+        )
         signals = self.pod_c_service.evaluate_many(contexts)
         pod_allocation = self.capital_plan.pod_allocations[PodName.POD_C]
         plans: list[TradePlan] = []
@@ -214,6 +226,27 @@ class TridentSupervisor:
                 pod_name: self.registry.symbols_for(pod_name) for pod_name in self.pods
             },
         )
+
+    def _owned_snapshots(
+        self,
+        pod_name: PodName,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> list[SymbolMarketSnapshot]:
+        owned_symbols = set(self.registry.symbols_for(pod_name))
+        if not owned_symbols:
+            return []
+        return [snapshot for snapshot in snapshots if snapshot.symbol.upper() in owned_symbols]
+
+    def _pod_c_relevant_snapshots(
+        self,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> list[SymbolMarketSnapshot]:
+        owned_followers = set(self.registry.symbols_for(PodName.POD_C))
+        leader_symbols = {symbol.upper() for symbol in self.config.pod_c.leader_symbols}
+        allowed_symbols = owned_followers | leader_symbols
+        if not allowed_symbols:
+            return []
+        return [snapshot for snapshot in snapshots if snapshot.symbol.upper() in allowed_symbols]
 
     def sync_pod_b(self) -> None:
         allocation = self.capital_plan.pod_allocations[PodName.POD_B]

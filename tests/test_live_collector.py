@@ -6,6 +6,19 @@ from app.settings import load_config
 
 
 class LiveCollectorTests(unittest.TestCase):
+    def test_collector_shards_observation_universe_by_connection_limit(self) -> None:
+        config = load_config("config/trident.toml")
+        config.hyperliquid.max_coins_per_connection = 3
+        collector = HyperliquidLiveCollector(
+            config,
+            coins=["BTC", "ETH", "SOL", "HYPE", "DOGE", "XRP", "BTC"],
+        )
+        self.assertEqual(collector.coins, ["BTC", "ETH", "SOL", "HYPE", "DOGE", "XRP"])
+        self.assertEqual(
+            collector.coin_shards,
+            [["BTC", "ETH", "SOL"], ["HYPE", "DOGE", "XRP"]],
+        )
+
     def test_parse_message_counts_invalid_json(self) -> None:
         collector = HyperliquidLiveCollector(load_config("config/trident.toml"), coins=["BTC"])
         payload = collector._parse_message("{bad json")

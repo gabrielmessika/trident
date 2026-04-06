@@ -74,6 +74,9 @@ PROFILE_ARGS=()
 [ -n "$WITH_POD_C" ] && PROFILE_ARGS+=(--profile pod_c)
 
 compose() {
+    TRIDENT_ENABLE_POD_A="true" \
+    TRIDENT_ENABLE_POD_B="${WITH_POD_B:+true}" \
+    TRIDENT_ENABLE_POD_C="${WITH_POD_C:+true}" \
     docker compose -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"
 }
 

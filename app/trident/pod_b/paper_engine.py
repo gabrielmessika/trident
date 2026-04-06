@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from app.settings import PodBConfig
 from app.trident.pod_b.models import (
@@ -92,6 +93,12 @@ class PodBPaperEngine:
             status_path=str(status_meta.get("status_path", "")),
             target_usd=self.target_usd,
             last_sync_reason=last_sync_reason,
+            leverage=(
+                float(status_meta["leverage"])
+                if status_meta.get("leverage") not in (None, "")
+                else None
+            ),
+            updated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             pid=(
                 int(status_meta["pid"])
                 if status_meta.get("pid") not in (None, "")

@@ -109,6 +109,7 @@ echo ">>> Configuration du firewall..."
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow ssh
+ufw allow 3000/tcp
 ufw --force enable
 
 echo ">>> Activation de fail2ban..."

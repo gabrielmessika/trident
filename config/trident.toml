@@ -22,6 +22,17 @@ ws_messages_per_second = 8
 shared_rate_limit_jitter_seconds = 0.1
 circuit_breaker_threshold = 3
 circuit_breaker_seconds = 30.0
+# Lecons de gbot:
+# - ~10 coins / connexion WS est la limite empirique stable
+# - au-dela, il faut shard l'observation sur plusieurs connexions
+observation_universe = [
+  "BTC", "ETH", "SOL", "HYPE",
+  "DOGE", "XRP", "SUI",
+  "AVAX", "LINK", "ARB",
+]
+max_coins_per_connection = 10
+subscription_pacing_ms = 250
+# Backward compat pour les anciennes commandes/tests.
 default_coins = ["BTC", "ETH", "SOL", "HYPE"]
 
 [trident]

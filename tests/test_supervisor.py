@@ -156,6 +156,53 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(plans[0].symbol, "ETH")
         self.assertEqual(plans[0].target_notional_usd, 150.0)
 
+    def test_supervisor_filters_observation_only_symbols_out_of_pod_a(self) -> None:
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=32.0,
+                atr_ratio=1.2,
+                range_width_bps=180.0,
+                structure_score=0.55,
+            )
+        )
+
+        snapshots = [
+            SymbolMarketSnapshot(
+                symbol="ETH",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+            ),
+            SymbolMarketSnapshot(
+                symbol="DOGE",
+                price=0.18,
+                ema_fast=0.179,
+                ema_slow=0.175,
+                vwap_distance_bps=-6.0,
+                structure_score=0.70,
+                funding_rate=0.0,
+                spread_bps=1.5,
+                btc_aligned=True,
+            ),
+        ]
+
+        previews = supervisor.preview_pod_a_signals(snapshots)
+        plans = supervisor.build_pod_a_trade_plans(snapshots)
+
+        self.assertEqual([preview.symbol for preview in previews], ["ETH"])
+        self.assertEqual([plan.symbol for plan in plans], ["ETH"])
+
     def test_supervisor_syncs_pod_b_runtime_status(self) -> None:
         self.config.pod_b.enabled = True
         self.config.pod_b.symbols = ["DOGE", "XRP"]

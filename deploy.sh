@@ -20,6 +20,12 @@ Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
 - build Docker sur le serveur
 - optionnellement démarre les services
+
+Par défaut :
+- host SSH : trident-hetzner
+- démarrage avec `--start` : API + Pod A
+- `--with-pod-b` ajoute Pod B
+- `--with-pod-c` ajoute Pod C
 EOF
 }
 
@@ -32,6 +38,22 @@ START=""
 WITH_POD_B=""
 WITH_POD_C=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+selected_pods_label() {
+    local pods=("API" "Pod A")
+    [ -n "$WITH_POD_B" ] && pods+=("Pod B")
+    [ -n "$WITH_POD_C" ] && pods+=("Pod C")
+    local joined=""
+    local pod
+    for pod in "${pods[@]}"; do
+        if [ -z "$joined" ]; then
+            joined="$pod"
+        else
+            joined="${joined}, $pod"
+        fi
+    done
+    printf '%s' "$joined"
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -138,6 +160,7 @@ start_remote() {
     local extra_args=""
     [ -n "$WITH_POD_B" ] && extra_args="${extra_args} --with-pod-b"
     [ -n "$WITH_POD_C" ] && extra_args="${extra_args} --with-pod-c"
+    info "Services demandés: $(selected_pods_label)"
     ssh_remote "cd ${DEPLOY_DIR} && ./scripts/trident_server.sh update${extra_args}"
     ok "Services démarrés"
 }
@@ -163,12 +186,16 @@ ok "DÉPLOIEMENT TERMINÉ"
 echo "========================================="
 echo ""
 if [ -n "$START" ]; then
-    echo "Services actifs sur ${HOST}"
+    echo "Services actifs sur ${HOST}: $(selected_pods_label)"
     echo "  SSH : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST}"
-    echo "  Tunnel UI : ssh -i ${IDENTITY_FILE} -L 3000:127.0.0.1:3000 ${SSH_USER}@${HOST}"
-    echo "  Contrôle serveur : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST} 'cd ${DEPLOY_DIR} && ./scripts/trident_server.sh status'"
+    echo "  Dashboard public : http://<server-ip-or-dns>:3000/dashboard"
+    echo "  API health : http://<server-ip-or-dns>:3000/health"
+    echo "  État runtime : http://<server-ip-or-dns>:3000/api/state"
+    echo "  Note : si ${HOST} est un alias SSH local (ex: trident-hetzner), utilise l'IP publique ou le DNS du serveur dans le navigateur."
+    echo "  Contrôle serveur : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST} 'cd ${DEPLOY_DIR} && ./scripts/trident_server.sh status${WITH_POD_B:+ --with-pod-b}${WITH_POD_C:+ --with-pod-c}'"
 else
     echo "Pour démarrer après déploiement :"
-    echo "  ./deploy.sh --host ${HOST} --start"
+    echo "  ./deploy.sh --start"
+    echo "  ./deploy.sh --start --with-pod-b"
 fi
 echo ""

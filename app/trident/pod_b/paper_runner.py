@@ -173,6 +173,7 @@ class PodBPaperRunner:
         return {
             "config_path": str(self.config_path),
             "status_path": str(status_path),
+            "leverage": self.runtime_config.get("live", {}).get("leverage"),
             "pid": (
                 payload.get("pid")
                 if payload.get("pid") not in (None, "")

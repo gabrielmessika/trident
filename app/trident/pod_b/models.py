@@ -111,6 +111,8 @@ class PassivbotStatus:
     status_path: str
     target_usd: float
     last_sync_reason: str
+    leverage: float | None = None
+    updated_at: str | None = None
     pid: int | None = None
     launch_command: list[str] = field(default_factory=list)
     stdout_path: str = ""
@@ -136,6 +138,8 @@ class PassivbotStatus:
             "status_path": self.status_path,
             "target_usd": self.target_usd,
             "last_sync_reason": self.last_sync_reason,
+            "leverage": self.leverage,
+            "updated_at": self.updated_at,
             "pid": self.pid,
             "launch_command": self.launch_command,
             "stdout_path": self.stdout_path,

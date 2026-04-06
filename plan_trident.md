@@ -113,6 +113,61 @@
       - `bash -n prepare_server.sh deploy.sh scripts/trident_*.sh` -> OK
       - `./deploy.sh --help` -> OK
       - `./scripts/trident_server.sh --help` -> OK
+  - outillage de revue dry-run ajoute:
+    - `scripts/trident_dry_run_review.sh` collecte les artefacts depuis le serveur
+    - checks deterministes:
+      - API /health
+      - containers actifs
+      - fraicheur du dernier snapshot
+      - conflits d'ownership
+      - tracebacks recents dans les logs
+    - sorties generees:
+      - `review_summary.md`
+      - `review_summary.json`
+      - prompts LLM par etape quand une revue qualitative est necessaire
+  - dashboard runtime enrichi:
+    - pastilles de statut vert / orange / rouge
+    - commentaire synthese "est-ce que ca tourne bien ?"
+    - section `Recent trading activity`
+    - les trades de Pod A / Pod C y apparaissent depuis les journaux `trade_close`
+    - les fills recents de Pod B y apparaissent depuis `pod_b_status.recent_fills`
+    - colonne `Leverage` ajoutee dans l'activite recente
+    - tooltips visuels CSS sur les colonnes pour expliquer les champs affiches
+    - vue dediee `/trades` ajoutee:
+      - positions ouvertes
+      - evenements de trades recents
+      - raison d'ouverture (`setup` / fill maker)
+      - raison de fermeture (`stop_hit`, `time_stop`, `opposite_signal`, etc.) quand connue
+      - filtres visuels client-side:
+        - `Open`
+        - `Closed`
+        - `Pod A`
+        - `Pod B`
+        - `Pod C`
+    - auto-refresh du dashboard toutes les 10 secondes avec indication de la derniere mise a jour
+  - univers d'observation elargi sans casser la limite WS connue de `gbot`:
+    - `hyperliquid.observation_universe` separe de l'univers tradable des pods
+    - sharding automatique du collector par groupes de `max_coins_per_connection = 10`
+    - pacing de subscription `250ms` entre coins
+    - filtrage superviseur pour empecher Pod A de trader un coin seulement observe
+  - coherence deployment/runtime amelioree:
+    - `--with-pod-b` / `--with-pod-c` activent aussi les pods logiquement dans le superviseur
+    - l'UI ne peut plus montrer `container up` mais `enabled = no` pour un pod explicitement demande au lancement
+    - `deploy.sh` affiche maintenant les services reellement demandes et des URLs publiques generiques, sans supposer a tort que l'alias SSH est resolvable dans le navigateur
+  - API/dashboard relies au runtime reel:
+    - `/api/state` resynchronise `pod_b_status` a chaque requete
+    - Pod A et Pod C ecrivent un status runtime partage dans `logs/`
+    - l'API fusionne ces status runtime pour afficher le regime et l'activite reels, au lieu d'un superviseur fige au demarrage
+  - verification UI/runtime durcie:
+    - `/api/metrics` et `/api/report` lisent aussi les status runtime de Pod A / Pod C
+    - le dashboard utilise maintenant les memes sources runtime que `state/report/metrics`
+    - la sante des pods A / C depend de la fraicheur de leur status runtime, pas seulement d'un flag `configured`
+    - l'activite de trading agregée compte les trades fermes de Pod A / Pod C et les fills de Pod B
+  - coherence finale state/report/runtime verrouillee:
+    - `runtime_report` utilise le snapshot runtime fusionne comme source d'autorite quand il est disponible
+    - `capital_plan.regime`, `cash_usd` et les allocations du report ne peuvent plus diverger du top-level `regime`
+    - les blocs `pod_a_runtime.supervisor` et `pod_c_runtime.supervisor` sont normalises en vue API fusionnee, pour ne plus exposer un `pod_b_status` stale imbrique
+    - les fusions runtime n'acceptent plus de fichiers de status anciens: seul un status frais peut override le snapshot du superviseur
   - smoke online valide:
     - `records_processed = 1`
     - `signal_count = 0`
@@ -229,7 +284,7 @@
 | 7. Research Pod pour Pod C | 100% | Rien, etape fermee |
 | 8. Pod C minimal | 100% | Rien, etape fermee |
 | 9. Hardening deployment | 100% | Rien, etape fermee |
-| 10. Passage live progressif | 0% | Definir le rollout dry-run -> live limite |
+| 10. Passage live progressif | 20% | Lancer le premier dry-run 24h sur serveur et auditer avec `trident_dry_run_review.sh` |
 
 Regle de maintenance:
 
@@ -2170,6 +2225,9 @@ Monter le risque en paliers.
 - live avec Pod A seulement
 - live A + B ensuite
 - live A + B + C en dernier
+- revue de chaque palier avec `scripts/trident_dry_run_review.sh`
+- statut auto quand le verdict est mecanique
+- prompt LLM genere quand la decision demande un jugement qualitatif
 
 ### Validation
 
@@ -2177,6 +2235,10 @@ Monter le risque en paliers.
 - revue quotidienne,
 - comparaison dry-run / live,
 - aucune hausse anormale du fee drag ou des conflits.
+- artefacts de revue conserves a chaque palier:
+  - `review_summary.md`
+  - `review_summary.json`
+  - prompts LLM eventuels
 
 ### Go / no-go
 

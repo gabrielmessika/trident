@@ -12,8 +12,8 @@ Déployer `trident` sur un serveur Hetzner Cloud sans surcouches inutiles :
 Le workflow est inspiré de `gbot`, mais adapté à l'architecture actuelle de `trident` :
 
 - `docker-compose.trident.yml`
-- API liée à `127.0.0.1:3000` uniquement
-- accès UI via tunnel SSH
+- API exposée publiquement sur `0.0.0.0:3000`
+- dashboard accessible directement via l'IP ou le DNS du serveur
 
 Par défaut, `deploy.sh` utilise l'alias SSH :
 
@@ -22,6 +22,11 @@ trident-hetzner
 ```
 
 Tu n'as donc pas besoin de passer `--host` si cet alias existe dans `~/.ssh/config`.
+
+Par défaut, `deploy.sh` utilise aussi :
+
+- l'utilisateur SSH `trident-deploy`
+- la clé `~/.ssh/trident_hetzner_ed25519`
 
 ---
 
@@ -39,7 +44,7 @@ Exemple de `~/.ssh/config` :
 ```sshconfig
 Host trident-hetzner
     HostName 46.224.43.198
-    User root
+    User trident-deploy
     IdentityFile ~/.ssh/trident_hetzner_ed25519
 ```
 
@@ -75,6 +80,7 @@ Le script :
 - prépare `/opt/trident`
 - désactive l'authentification SSH par mot de passe
 - augmente les limites `nofile`
+- ouvre `3000/tcp` dans `ufw`
 
 Répertoire cible sur le serveur :
 
@@ -152,6 +158,9 @@ Important :
 
 - Pod B nécessite `runtime/passivbot/live.json` sur le serveur
 - Pod C n'a de sens que si sa recherche a conclu à un `go`
+- `--with-pod-b` et `--with-pod-c` activent maintenant aussi logiquement les pods côté superviseur/UI, pas seulement leurs containers Docker
+- les noms `pod-a-live`, `pod-b-live`, `pod-c-live` sont des noms de services Docker historiques
+- aujourd'hui, `Pod A`, `Pod B` et `Pod C` tournent encore en dry-run / paper trading, pas en exécution réelle exchange
 
 ---
 
@@ -240,6 +249,16 @@ Health check :
 ./scripts/trident_server.sh health
 ```
 
+Point pratique :
+
+- `status`, `restart`, `stop` et `logs` doivent recevoir les mêmes flags `--with-pod-b` / `--with-pod-c` si tu veux voir ou piloter exactement le même sous-ensemble de services que celui lancé
+- exemple :
+
+```bash
+./scripts/trident_server.sh status --with-pod-b
+./scripts/trident_server.sh logs --with-pod-b pod-b-live
+```
+
 Scripts raccourcis également disponibles :
 
 ```bash
@@ -253,24 +272,26 @@ Scripts raccourcis également disponibles :
 
 ## 5. Accéder à l'UI
 
-L'API n'est pas exposée publiquement. Le port `3000` est lié à `127.0.0.1` sur le serveur.
+L'API est exposée publiquement sur le port `3000`.
 
-Depuis la machine locale :
-
-```bash
-ssh -L 3000:127.0.0.1:3000 trident-hetzner
-```
-
-Ou, si ton alias `trident-hetzner` utilise `root`, avec l'utilisateur de déploiement :
-
-```bash
-ssh -i ~/.ssh/trident_hetzner_ed25519 -L 3000:127.0.0.1:3000 trident-deploy@46.224.43.198
-```
-
-Puis ouvrir :
+Depuis n'importe quelle machine, ouvrir :
 
 ```text
-http://localhost:3000
+http://46.224.43.198:3000
+```
+
+Ou, si tu as un DNS devant le serveur :
+
+```text
+http://ton-domaine:3000
+```
+
+Si le serveur a ete prepare avant cette modification, ouvre aussi le firewall une fois :
+
+```bash
+ssh trident-hetzner
+sudo ufw allow 3000/tcp
+sudo ufw status
 ```
 
 Routes utiles :
@@ -281,6 +302,11 @@ Routes utiles :
 - `/api/state`
 - `/api/metrics`
 - `/api/report`
+
+Important :
+
+- l'alias SSH `trident-hetzner` est pratique pour `ssh` et `deploy.sh`
+- dans le navigateur, utilise l'IP publique ou un vrai DNS, pas forcément l'alias SSH local
 
 ---
 
@@ -347,7 +373,7 @@ Rate limiter partagé HL :
 ## 8. Points d'attention
 
 - ne pas commiter de secrets
-- ne pas exposer le port `3000` publiquement
+- si le dashboard est expose publiquement, considerer qu'il revele l'etat runtime et le PnL
 - Pod B ne doit pas être lancé sans `runtime/passivbot/live.json`
 - Pod C ne doit pas être activé par réflexe si la recherche est `no-go`
 - le rate limiter partagé HL vit sur disque et doit rester persistant entre les runs
@@ -372,6 +398,12 @@ Déployer + démarrer :
 
 ```bash
 ./deploy.sh --start
+```
+
+Déployer + démarrer Pod A et Pod B :
+
+```bash
+./deploy.sh --start --with-pod-b
 ```
 
 Contrôler sur le serveur :

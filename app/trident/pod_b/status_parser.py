@@ -26,6 +26,7 @@ class PassivbotStatusParser:
         default_reason: str,
     ) -> PassivbotStatus:
         path = Path(status_path)
+        config_leverage = self._read_config_leverage(config_path)
         if not path.exists():
             inventory = self._build_inventory_defaults(
                 managed_symbols=managed_symbols,
@@ -41,6 +42,7 @@ class PassivbotStatusParser:
                 status_path=status_path,
                 target_usd=target_usd,
                 last_sync_reason=default_reason,
+                leverage=config_leverage,
                 inventory=inventory,
             )
 
@@ -100,6 +102,16 @@ class PassivbotStatusParser:
             status_path=status_path,
             target_usd=float(payload.get("target_usd", target_usd)),
             last_sync_reason=str(payload.get("last_sync_reason", default_reason)),
+            leverage=(
+                float(payload["leverage"])
+                if payload.get("leverage") not in (None, "")
+                else config_leverage
+            ),
+            updated_at=(
+                str(payload.get("updated_at"))
+                if payload.get("updated_at") not in (None, "")
+                else None
+            ),
             pid=(
                 int(payload["pid"])
                 if payload.get("pid") not in (None, "")
@@ -210,3 +222,19 @@ class PassivbotStatusParser:
                 )
             )
         return inventory
+
+    def _read_config_leverage(self, config_path: str) -> float | None:
+        path = Path(config_path)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        live = payload.get("live", {})
+        if not isinstance(live, dict):
+            return None
+        leverage = live.get("leverage")
+        if leverage in (None, ""):
+            return None
+        return float(leverage)

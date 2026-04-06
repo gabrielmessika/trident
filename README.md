@@ -48,6 +48,10 @@ Decision d'architecture actuelle:
 
 - Pod B V1 est natif a `trident`.
 - Passivbot reste une reference de benchmark et d'inspiration, pas une dependance runtime obligatoire.
+- univers observe et univers trade sont separes:
+  - `hyperliquid.observation_universe` = coins observes par le collector
+  - `pod_a.symbols`, `pod_b.symbols`, `pod_c.*` = coins reellement tradables par pod
+  - le collector est automatiquement sharde si l'univers observe depasse la limite empirique stable de ~10 coins par connexion WS
 
 Comment ca marche, en version simple:
 

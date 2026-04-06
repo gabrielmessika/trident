@@ -4,6 +4,10 @@ services:
       context: .
       dockerfile: Dockerfile.trident
     container_name: trident-api
+    environment:
+      TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
+      TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
+      TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
     command:
       - python
       - -m
@@ -17,7 +21,7 @@ services:
       - --port
       - "3000"
     ports:
-      - "127.0.0.1:3000:3000"
+      - "3000:3000"
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs
@@ -41,6 +45,10 @@ services:
       context: .
       dockerfile: Dockerfile.trident
     container_name: trident-pod-a-live
+    environment:
+      TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
+      TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
+      TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
     command:
       - python
       - -m
@@ -68,6 +76,10 @@ services:
       context: .
       dockerfile: Dockerfile.trident
     container_name: trident-pod-b-live
+    environment:
+      TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
+      TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
+      TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
     command:
       - python
       - -m
@@ -103,6 +115,10 @@ services:
       context: .
       dockerfile: Dockerfile.trident
     container_name: trident-pod-c-live
+    environment:
+      TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
+      TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
+      TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
     command:
       - python
       - -m

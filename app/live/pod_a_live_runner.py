@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.backtest.pod_a_executor import PodAExecutor
 from app.backtest.pod_report import PodABacktestReport
 from app.live.collector import HyperliquidLiveCollector
+from app.live.runtime_status import write_runtime_status
 from app.persistence.journal import (
     JsonlJournal,
     build_signal_journal_record,
@@ -23,7 +25,12 @@ class PodALiveRunner:
 
     def __init__(self, config: AppConfig, coins: list[str] | None = None) -> None:
         self.config = config
-        self.coins = coins or config.hyperliquid.default_coins or config.pod_a.symbols
+        self.coins = (
+            coins
+            or config.hyperliquid.observation_universe
+            or config.hyperliquid.default_coins
+            or config.pod_a.symbols
+        )
         self.collector = HyperliquidLiveCollector(config, coins=self.coins)
         self.supervisor = TridentSupervisor(
             config=config,
@@ -42,16 +49,20 @@ class PodALiveRunner:
         journal_path: str | Path | None = None,
     ) -> dict[str, object]:
         journal = JsonlJournal(journal_path) if journal_path is not None else None
+        status_path = Path("logs/pod_a_live_status.json")
+        self._write_runtime_status(status_path)
         async for record in self._iter_live_records(
             max_runtime_seconds=max_runtime_seconds,
             max_messages=max_messages,
         ):
             self._process_record(record, journal=journal)
+            self._write_runtime_status(status_path)
 
         final_records = self.collector.builder.finalize()
         self.collector.stats.snapshots_written += len(self.collector.writer.append_many(final_records))
         for record in final_records:
             self._process_record(record, journal=journal)
+            self._write_runtime_status(status_path)
 
         final_trades, _ = self.executor.finalize(
             snapshots=[],
@@ -71,6 +82,13 @@ class PodALiveRunner:
                 date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else "unknown"),
                 symbol=trade.symbol,
                 side=trade.side,
+                setup=getattr(trade, "setup", None),
+                confidence=getattr(trade, "confidence", None),
+                entry_price=getattr(trade, "entry_price", None),
+                exit_price=getattr(trade, "exit_price", None),
+                target_notional_usd=getattr(trade, "target_notional_usd", None),
+                stop_bps=getattr(trade, "stop_bps", None),
+                time_stop_hours=getattr(trade, "time_stop_hours", None),
                 pnl_usd=trade.pnl_usd,
                 gross_pnl_usd=trade.gross_pnl_usd,
                 fees_usd=trade.fees_usd,
@@ -79,6 +97,7 @@ class PodALiveRunner:
                 opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
                 closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
             )
+            self._write_runtime_status(status_path)
 
         result = self.report.to_dict()
         result["collector"] = {
@@ -95,6 +114,7 @@ class PodALiveRunner:
             "snapshot_output_dir": self.config.hyperliquid.snapshot_output_dir,
         }
         result["journal_path"] = str(journal_path) if journal_path is not None else None
+        self._write_runtime_status(status_path)
         return result
 
     async def _iter_live_records(
@@ -257,6 +277,13 @@ class PodALiveRunner:
                 date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else date_key),
                 symbol=trade.symbol,
                 side=trade.side,
+                setup=getattr(trade, "setup", None),
+                confidence=getattr(trade, "confidence", None),
+                entry_price=getattr(trade, "entry_price", None),
+                exit_price=getattr(trade, "exit_price", None),
+                target_notional_usd=getattr(trade, "target_notional_usd", None),
+                stop_bps=getattr(trade, "stop_bps", None),
+                time_stop_hours=getattr(trade, "time_stop_hours", None),
                 pnl_usd=trade.pnl_usd,
                 gross_pnl_usd=trade.gross_pnl_usd,
                 fees_usd=trade.fees_usd,
@@ -277,9 +304,14 @@ class PodALiveRunner:
         return {
             "symbol": trade.symbol,
             "side": trade.side,
+            "setup": getattr(trade, "setup", None),
+            "open_reason": getattr(trade, "setup", None),
+            "confidence": getattr(trade, "confidence", None),
             "entry_price": trade.entry_price,
             "exit_price": trade.exit_price,
             "target_notional_usd": trade.target_notional_usd,
+            "stop_bps": getattr(trade, "stop_bps", None),
+            "time_stop_hours": getattr(trade, "time_stop_hours", None),
             "gross_pnl_usd": trade.gross_pnl_usd,
             "fees_usd": trade.fees_usd,
             "pnl_usd": trade.pnl_usd,
@@ -288,6 +320,47 @@ class PodALiveRunner:
             "opened_at": trade.opened_at.isoformat() if trade.opened_at else None,
             "closed_at": trade.closed_at.isoformat() if trade.closed_at else None,
         }
+
+    def _write_runtime_status(self, path: str | Path) -> None:
+        write_runtime_status(
+            path,
+            {
+                "pod": "pod_a",
+                "process_state": "running",
+                "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "collector": {
+                    "coins": self.collector.coins,
+                    "messages_processed": self.collector.stats.messages_processed,
+                    "snapshots_written": self.collector.stats.snapshots_written,
+                    "reconnect_count": self.collector.stats.reconnect_count,
+                    "heartbeat_count": self.collector.stats.heartbeat_count,
+                    "pong_count": self.collector.stats.pong_count,
+                    "timeout_count": self.collector.stats.timeout_count,
+                    "api_error_count": self.collector.stats.api_error_count,
+                    "rate_limit_error_count": self.collector.stats.rate_limit_error_count,
+                    "last_error": self.collector.stats.last_error,
+                },
+                "report": self.report.to_dict(),
+                "open_positions": [
+                    {
+                        "symbol": position.symbol,
+                        "side": position.side,
+                        "setup": position.setup,
+                        "open_reason": position.setup,
+                        "confidence": position.confidence,
+                        "entry_price": position.entry_price,
+                        "target_notional_usd": position.target_notional_usd,
+                        "stop_bps": position.stop_bps,
+                        "time_stop_hours": position.time_stop_hours,
+                        "opened_at": (
+                            position.opened_at.isoformat() if position.opened_at else None
+                        ),
+                    }
+                    for position in self.executor.portfolio.open_positions.values()
+                ],
+                "supervisor": self.supervisor.snapshot(),
+            },
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

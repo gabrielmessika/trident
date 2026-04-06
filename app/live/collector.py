@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from app.hyperliquid.rate_limiter import SharedRateLimiter, jitter_seconds
 from app.live.errors import (
@@ -39,7 +40,17 @@ class HyperliquidLiveCollector:
 
     def __init__(self, config: AppConfig, coins: list[str] | None = None) -> None:
         self.config = config
-        self.coins = coins or config.hyperliquid.default_coins or config.pod_a.symbols
+        self.coins = self._normalize_coins(
+            coins
+            or config.hyperliquid.observation_universe
+            or config.hyperliquid.default_coins
+            or config.pod_a.symbols
+        )
+        max_per_connection = max(1, int(config.hyperliquid.max_coins_per_connection))
+        self.coin_shards = [
+            self.coins[index : index + max_per_connection]
+            for index in range(0, len(self.coins), max_per_connection)
+        ]
         self.builder = LiveSnapshotBuilder(
             coins=self.coins,
             bucket_ms=config.hyperliquid.bucket_ms,
@@ -82,9 +93,67 @@ class HyperliquidLiveCollector:
                 "websockets is required for the live collector. Install project dependencies first."
             ) from exc
 
+        if not self.coins:
+            return
+
         started = asyncio.get_running_loop().time()
-        while True:
+        stop_event = asyncio.Event()
+        if len(self.coin_shards) <= 1:
+            async for record in self._iter_records_single(
+                websockets=websockets,
+                shard_coins=self.coin_shards[0] if self.coin_shards else [],
+                started=started,
+                stop_event=stop_event,
+                max_runtime_seconds=max_runtime_seconds,
+                max_messages=max_messages,
+            ):
+                yield record
+            return
+
+        queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+
+        async def worker(shard_coins: list[str]) -> None:
+            try:
+                async for record in self._iter_records_single(
+                    websockets=websockets,
+                    shard_coins=shard_coins,
+                    started=started,
+                    stop_event=stop_event,
+                    max_runtime_seconds=max_runtime_seconds,
+                    max_messages=max_messages,
+                ):
+                    await queue.put(record)
+            finally:
+                await queue.put(None)
+
+        tasks = [asyncio.create_task(worker(shard)) for shard in self.coin_shards]
+        remaining = len(tasks)
+        try:
+            while remaining > 0:
+                item = await queue.get()
+                if item is None:
+                    remaining -= 1
+                    continue
+                yield item
+        finally:
+            stop_event.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _iter_records_single(
+        self,
+        *,
+        websockets: Any,
+        shard_coins: list[str],
+        started: float,
+        stop_event: asyncio.Event,
+        max_runtime_seconds: float | None,
+        max_messages: int | None,
+    ):
+        while not stop_event.is_set():
             if self._deadline_reached(started, max_runtime_seconds):
+                stop_event.set()
                 break
             try:
                 await self._respect_rate_limit(
@@ -100,9 +169,9 @@ class HyperliquidLiveCollector:
                 async with websocket:
                     self.stats.consecutive_failures = 0
                     self.rate_limiter.record_success("ws_connect")
-                    await self._subscribe(websocket)
+                    await self._subscribe(websocket, shard_coins)
                     idle_heartbeats = 0
-                    while True:
+                    while not stop_event.is_set():
                         raw_message = await self._recv_message(websocket)
                         if raw_message is None:
                             idle_heartbeats += 1
@@ -119,11 +188,11 @@ class HyperliquidLiveCollector:
                         for record in records:
                             yield record
                         if max_messages is not None and self.stats.messages_processed >= max_messages:
-                            raise StopAsyncIteration
+                            stop_event.set()
+                            break
                         if self._deadline_reached(started, max_runtime_seconds):
-                            raise StopAsyncIteration
-            except StopAsyncIteration:
-                break
+                            stop_event.set()
+                            break
             except HyperliquidRateLimitError as exc:
                 self.stats.api_error_count += 1
                 self.stats.rate_limit_error_count += 1
@@ -148,13 +217,15 @@ class HyperliquidLiveCollector:
                 self.stats.reconnect_count += 1
                 await asyncio.sleep(self._backoff_delay())
             except Exception as exc:
+                if stop_event.is_set():
+                    break
                 self.stats.last_error = repr(exc)
                 self._register_failure()
                 self.stats.reconnect_count += 1
                 await asyncio.sleep(self._backoff_delay())
 
-    async def _subscribe(self, websocket: object) -> None:
-        for coin in self.coins:
+    async def _subscribe(self, websocket: object, shard_coins: list[str]) -> None:
+        for index, coin in enumerate(shard_coins):
             await self._send_json(
                 websocket,
                 {
@@ -169,6 +240,11 @@ class HyperliquidLiveCollector:
                     "subscription": {"type": "trades", "coin": coin},
                 },
             )
+            if (
+                index + 1 < len(shard_coins)
+                and self.config.hyperliquid.subscription_pacing_ms > 0
+            ):
+                await asyncio.sleep(self.config.hyperliquid.subscription_pacing_ms / 1000.0)
 
     async def _recv_message(self, websocket: object) -> str | None:
         try:
@@ -262,11 +338,25 @@ class HyperliquidLiveCollector:
             total_wait += wait_seconds
             await asyncio.sleep(wait_seconds)
 
+    def _normalize_coins(self, coins: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for coin in coins:
+            symbol = coin.strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            normalized.append(symbol)
+            seen.add(symbol)
+        return normalized
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Collect live Hyperliquid snapshots into TRIDENT JSONL files")
     parser.add_argument("--config", default="config/trident.toml")
-    parser.add_argument("--coins", help="Comma-separated coin list. Defaults to hyperliquid.default_coins or pod_a symbols.")
+    parser.add_argument(
+        "--coins",
+        help="Comma-separated coin list. Defaults to hyperliquid.observation_universe and is sharded automatically if needed.",
+    )
     parser.add_argument("--max-runtime-seconds", type=float, help="Optional limit for local smoke runs.")
     parser.add_argument("--max-messages", type=int, help="Optional max websocket messages before exit.")
     return parser

@@ -69,6 +69,9 @@ class HyperliquidConfig:
     info_url: str = "https://api.hyperliquid.xyz/info"
     rate_limit_state_path: str = "./runtime/hyperliquid_rate_limits.json"
     snapshot_output_dir: str = "./data/live_snapshots"
+    observation_universe: list[str] | None = None
+    max_coins_per_connection: int = 10
+    subscription_pacing_ms: int = 250
     bucket_ms: int = 60_000
     reconnect_delay_seconds: float = 5.0
     max_reconnect_delay_seconds: float = 30.0
@@ -139,6 +142,13 @@ class AppConfig:
     pod_c: PodCConfig
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _allocations(data: dict[str, object], name: str) -> AllocationConfig:
     section = data[name]
     return AllocationConfig(
@@ -188,6 +198,18 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             snapshot_output_dir=str(
                 hyperliquid_data.get("snapshot_output_dir", "./data/live_snapshots")
+            ),
+            observation_universe=list(
+                hyperliquid_data.get(
+                    "observation_universe",
+                    hyperliquid_data.get("default_coins", []),
+                )
+            ),
+            max_coins_per_connection=int(
+                hyperliquid_data.get("max_coins_per_connection", 10)
+            ),
+            subscription_pacing_ms=int(
+                hyperliquid_data.get("subscription_pacing_ms", 250)
             ),
             bucket_ms=int(hyperliquid_data.get("bucket_ms", 60_000)),
             reconnect_delay_seconds=float(
@@ -287,12 +309,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
         ),
         pod_a=PodAConfig(
-            enabled=bool(pod_a_data.get("enabled", True)),
+            enabled=_env_bool("TRIDENT_ENABLE_POD_A", bool(pod_a_data.get("enabled", True))),
             symbols=list(pod_a_data.get("symbols", [])),
             max_allocation_pct=float(pod_a_data.get("max_allocation_pct", 1.0)),
         ),
         pod_b=PodBConfig(
-            enabled=bool(pod_b_data.get("enabled", False)),
+            enabled=_env_bool("TRIDENT_ENABLE_POD_B", bool(pod_b_data.get("enabled", False))),
             symbols=list(pod_b_data.get("symbols", [])),
             passivbot_config_path=str(
                 pod_b_data.get("passivbot_config_path", "./runtime/passivbot/live.json")
@@ -309,7 +331,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             paper_recent_fills_limit=int(pod_b_data.get("paper_recent_fills_limit", 20)),
         ),
         pod_c=PodCConfig(
-            enabled=bool(pod_c_data.get("enabled", False)),
+            enabled=_env_bool("TRIDENT_ENABLE_POD_C", bool(pod_c_data.get("enabled", False))),
             leader_symbols=list(pod_c_data.get("leader_symbols", [])),
             follower_symbols=list(pod_c_data.get("follower_symbols", [])),
             max_allocation_pct=float(pod_c_data.get("max_allocation_pct", 1.0)),

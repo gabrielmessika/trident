@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.reporting.export_daily import build_daily_summary, render_daily_markdown
 from app.reporting.multi_pod import build_cohabitation_summary, build_runtime_report
@@ -17,7 +18,8 @@ class ReportingTests(unittest.TestCase):
             mode="observation",
         )
 
-        report = build_runtime_report(supervisor).to_dict()
+        with patch("app.reporting.multi_pod.load_runtime_status", side_effect=[None, None]):
+            report = build_runtime_report(supervisor).to_dict()
 
         self.assertEqual(report["profile"], "trident-reporting")
         self.assertEqual(report["enabled_pod_count"], 2)

@@ -31,9 +31,13 @@ class OpenPosition:
 class ClosedTrade:
     symbol: str
     side: str
+    setup: str
+    confidence: float
     entry_price: float
     exit_price: float
     target_notional_usd: float
+    stop_bps: float
+    time_stop_hours: int
     gross_pnl_usd: float
     fees_usd: float
     pnl_usd: float
@@ -92,9 +96,13 @@ class DirectionalPortfolioState:
         trade = ClosedTrade(
             symbol=position.symbol,
             side=position.side,
+            setup=position.setup,
+            confidence=position.confidence,
             entry_price=position.entry_price,
             exit_price=price,
             target_notional_usd=position.target_notional_usd,
+            stop_bps=position.stop_bps,
+            time_stop_hours=position.time_stop_hours,
             gross_pnl_usd=gross_pnl_usd,
             fees_usd=fees_usd,
             pnl_usd=pnl_usd,
