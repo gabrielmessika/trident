@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
+ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/fetch_trident_data.sh [options]
+
+Rapatrie les donnees utiles du serveur TRIDENT pour analyse locale, puis
+peut lancer automatiquement la revue locale avec suggestions de prompts LLM.
+
+Modes principaux:
+  (aucun flag)          Snapshots des dernieres 24h + logs/runtime courants + revue
+  --all                 Tous les snapshots live + logs/runtime courants + revue
+  --date YYYY-MM-DD     Snapshots d'une date precise + logs/runtime courants + revue
+  --days N              Snapshots des N derniers jours + logs/runtime courants + revue
+  --logs-only           Uniquement logs/runtime/API courants
+  --snapshots-only      Uniquement snapshots live (et revue optionnelle)
+  --review-only         Ne rapatrie rien, relance seulement la revue distante
+
+Options:
+  --host <host>                 Host SSH. Defaut: trident-hetzner
+  --user <user>                 User SSH. Defaut: trident-deploy
+  --identity <path>             Cle SSH. Defaut: ~/.ssh/trident_hetzner_ed25519
+  --remote-dir <path>           Repertoire TRIDENT sur le serveur. Defaut: /opt/trident
+  --local-dir <path>            Dossier local de sortie. Defaut: ./server-data
+  --output-dir <path>           Dossier de revue local. Defaut: <local-dir>/reviews/<timestamp>
+  --log-lines N                 Nombre de lignes de logs Docker a rapatrier. Defaut: 300
+  --snapshot-max-age-minutes N  Seuil de fraicheur pour la revue. Defaut: 15
+  --skip-review                 Ne lance pas la revue locale apres fetch
+  --dry-run                     Affiche ce qui serait fait sans telecharger
+  -h, --help                    Affiche cette aide
+EOF
+}
+
+MODE="recent"
+DATE_FILTER=""
+DAYS=1
+LOGS_ONLY=""
+SNAPSHOTS_ONLY=""
+REVIEW_ONLY=""
+SKIP_REVIEW=""
+DRY_RUN=""
+LOG_LINES=300
+SNAPSHOT_MAX_AGE_MINUTES=15
+
+HOST="${TRIDENT_DEPLOY_HOST:-trident-hetzner}"
+SSH_USER="${TRIDENT_DEPLOY_USER:-trident-deploy}"
+IDENTITY_FILE="${TRIDENT_DEPLOY_IDENTITY:-${HOME}/.ssh/trident_hetzner_ed25519}"
+REMOTE_DIR="${TRIDENT_DEPLOY_DIR:-/opt/trident}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
+LOCAL_DIR="${ROOT_DIR}/server-data"
+OUTPUT_DIR=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --all) MODE="all"; shift ;;
+        --date) MODE="date"; DATE_FILTER="$2"; shift 2 ;;
+        --days) MODE="days"; DAYS="$2"; shift 2 ;;
+        --logs-only) LOGS_ONLY="true"; shift ;;
+        --snapshots-only) SNAPSHOTS_ONLY="true"; shift ;;
+        --review-only) REVIEW_ONLY="true"; shift ;;
+        --skip-review) SKIP_REVIEW="true"; shift ;;
+        --dry-run) DRY_RUN="true"; shift ;;
+        --host) HOST="$2"; shift 2 ;;
+        --user) SSH_USER="$2"; shift 2 ;;
+        --identity) IDENTITY_FILE="$2"; shift 2 ;;
+        --remote-dir) REMOTE_DIR="$2"; shift 2 ;;
+        --local-dir) LOCAL_DIR="$2"; shift 2 ;;
+        --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
+        --log-lines) LOG_LINES="$2"; shift 2 ;;
+        --snapshot-max-age-minutes) SNAPSHOT_MAX_AGE_MINUTES="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) error "Option inconnue: $1"; usage; exit 1 ;;
+    esac
+done
+
+OUTPUT_DIR="${OUTPUT_DIR:-${LOCAL_DIR}/reviews/${TIMESTAMP_UTC}}"
+RAW_DIR="${LOCAL_DIR}/raw/${TIMESTAMP_UTC}"
+SNAPSHOT_DIR="${LOCAL_DIR}/live_snapshots"
+LOG_DIR="${LOCAL_DIR}/logs"
+API_DIR="${LOCAL_DIR}/api"
+RUNTIME_DIR="${LOCAL_DIR}/runtime"
+DOCKER_DIR="${LOCAL_DIR}/docker"
+
+mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${OUTPUT_DIR}"
+
+SSH_ARGS=()
+if [[ -f "${IDENTITY_FILE}" ]]; then
+    SSH_ARGS+=(-i "${IDENTITY_FILE}")
+else
+    warn "Cle SSH absente: ${IDENTITY_FILE}. Utilisation de la config SSH systeme uniquement."
+fi
+SSH_TARGET="${SSH_USER}@${HOST}"
+
+ssh_remote() {
+    ssh "${SSH_ARGS[@]}" "${SSH_TARGET}" "$@"
+}
+
+rsync_remote() {
+    rsync "$@" -e "ssh ${SSH_ARGS[*]}"
+}
+
+if [[ "${REVIEW_ONLY}" != "true" ]]; then
+    if ! ssh_remote true 2>/dev/null; then
+        error "Impossible de se connecter a ${SSH_TARGET}."
+        exit 1
+    fi
+fi
+
+build_snapshot_filter() {
+    local filter_file
+    filter_file="$(mktemp)"
+    case "${MODE}" in
+        all)
+            echo "+ *" > "${filter_file}"
+            ;;
+        date)
+            echo "+ */" > "${filter_file}"
+            echo "+ *${DATE_FILTER}*" >> "${filter_file}"
+            echo "- *" >> "${filter_file}"
+            ;;
+        days)
+            echo "+ */" > "${filter_file}"
+            for i in $(seq 0 $((DAYS - 1))); do
+                d="$(date -u -d "-${i} days" +%Y-%m-%d 2>/dev/null || date -u -v-"${i}"d +%Y-%m-%d 2>/dev/null)"
+                echo "+ *${d}*" >> "${filter_file}"
+            done
+            echo "- *" >> "${filter_file}"
+            ;;
+        recent)
+            local today yesterday
+            today="$(date -u +%Y-%m-%d)"
+            yesterday="$(date -u -d "-1 day" +%Y-%m-%d 2>/dev/null || date -u -v-1d +%Y-%m-%d 2>/dev/null)"
+            echo "+ */" > "${filter_file}"
+            echo "+ *${today}*" >> "${filter_file}"
+            echo "+ *${yesterday}*" >> "${filter_file}"
+            echo "- *" >> "${filter_file}"
+            ;;
+        *)
+            echo "+ *" > "${filter_file}"
+            ;;
+    esac
+    echo "${filter_file}"
+}
+
+fetch_api_snapshot() {
+    info "Rapatriement des snapshots API courants..."
+    local ts
+    ts="$(date -u +%Y-%m-%d_%H%M%S)"
+    local commands=(
+        "curl -fsS http://127.0.0.1:3000/health"
+        "curl -fsS http://127.0.0.1:3000/api/state"
+        "curl -fsS http://127.0.0.1:3000/api/metrics"
+        "curl -fsS http://127.0.0.1:3000/api/report"
+    )
+    local names=(
+        "health-${ts}.json"
+        "state-${ts}.json"
+        "metrics-${ts}.json"
+        "report-${ts}.json"
+    )
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        printf '  [dry-run] %s -> %s\n' "API snapshots" "${API_DIR}/"
+        return
+    fi
+
+    local i
+    for i in "${!commands[@]}"; do
+        if ssh_remote "bash -lc $(printf '%q' "cd '${REMOTE_DIR}' && ${commands[$i]}")" > "${API_DIR}/${names[$i]}" 2>/dev/null; then
+            :
+        else
+            warn "Impossible de recuperer ${names[$i]} (API inaccessible ?)"
+            rm -f "${API_DIR}/${names[$i]}"
+        fi
+    done
+    ok "Snapshots API sauvegardes dans ${API_DIR}/"
+}
+
+fetch_remote_file() {
+    local remote_path="$1"
+    local local_path="$2"
+    local label="$3"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        printf '  [dry-run] %s -> %s\n' "${remote_path}" "${local_path}"
+        return
+    fi
+
+    mkdir -p "$(dirname "${local_path}")"
+    if ssh_remote "test -f '${REMOTE_DIR}/${remote_path}'" 2>/dev/null; then
+        rsync -azP -e "ssh ${SSH_ARGS[*]}" "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}" "${local_path}"
+        ok "${label} rapatrie"
+    else
+        warn "${label} absent sur le serveur (${remote_path})"
+    fi
+}
+
+fetch_snapshots() {
+    info "Rapatriement des snapshots live..."
+    local remote_snapshot_dir="${REMOTE_DIR}/data/live_snapshots/"
+
+    if ! ssh_remote "test -d '${REMOTE_DIR}/data/live_snapshots'" 2>/dev/null; then
+        warn "Dossier data/live_snapshots absent sur le serveur"
+        return
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        local filter_file
+        if [[ "${MODE}" == "all" ]]; then
+            printf '  [dry-run] %s -> %s\n' "${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
+        else
+            filter_file="$(build_snapshot_filter)"
+            rsync -azP -n --filter="merge ${filter_file}" -e "ssh ${SSH_ARGS[*]}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
+            rm -f "${filter_file}"
+        fi
+        return
+    fi
+
+    if [[ "${MODE}" == "all" ]]; then
+        rsync -azP -e "ssh ${SSH_ARGS[*]}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
+    else
+        local filter_file
+        filter_file="$(build_snapshot_filter)"
+        rsync -azP --filter="merge ${filter_file}" -e "ssh ${SSH_ARGS[*]}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
+        rm -f "${filter_file}"
+    fi
+    local snapshot_count
+    snapshot_count="$(find "${SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | wc -l | tr -d ' ')"
+    ok "Snapshots live rapatries (${snapshot_count} fichier(s) locaux)"
+}
+
+fetch_logs_and_runtime() {
+    info "Rapatriement des logs runtime et statuses..."
+    fetch_remote_file "logs/pod_a_live.jsonl" "${LOG_DIR}/pod_a_live.jsonl" "Journal Pod A"
+    fetch_remote_file "logs/pod_b_live.jsonl" "${LOG_DIR}/pod_b_live.jsonl" "Journal Pod B"
+    fetch_remote_file "logs/pod_c_live.jsonl" "${LOG_DIR}/pod_c_live.jsonl" "Journal Pod C"
+    fetch_remote_file "logs/pod_b_live_report.json" "${LOG_DIR}/pod_b_live_report.json" "Report Pod B"
+    fetch_remote_file "logs/pod_a_live_status.json" "${RUNTIME_DIR}/pod_a_live_status.json" "Runtime status Pod A"
+    fetch_remote_file "logs/pod_c_live_status.json" "${RUNTIME_DIR}/pod_c_live_status.json" "Runtime status Pod C"
+    fetch_remote_file "runtime/passivbot/live.status.json" "${RUNTIME_DIR}/pod_b_live_status.json" "Runtime status Pod B"
+    fetch_remote_file "runtime/passivbot/live.json" "${RUNTIME_DIR}/pod_b_live_config.json" "Config runtime Pod B"
+}
+
+fetch_docker_logs() {
+    info "Rapatriement des tails de logs Docker..."
+    local services=("trident-api" "pod-a-live" "pod-b-live" "pod-c-live")
+    local files=("trident-api.log" "pod-a-live.log" "pod-b-live.log" "pod-c-live.log")
+    local i
+
+    for i in "${!services[@]}"; do
+        if [[ "${DRY_RUN}" == "true" ]]; then
+            printf '  [dry-run] docker compose logs --tail %s %s -> %s/%s\n' "${LOG_LINES}" "${services[$i]}" "${DOCKER_DIR}" "${files[$i]}"
+            continue
+        fi
+
+        if ssh_remote "bash -lc $(printf '%q' "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} ${services[$i]} 2>&1")" > "${DOCKER_DIR}/${files[$i]}" 2>/dev/null; then
+            ok "Logs Docker ${services[$i]} rapatries"
+        else
+            warn "Impossible de recuperer les logs Docker ${services[$i]}"
+            rm -f "${DOCKER_DIR}/${files[$i]}"
+        fi
+    done
+}
+
+run_review() {
+    if [[ "${SKIP_REVIEW}" == "true" ]]; then
+        warn "Revue locale skippee (--skip-review)"
+        return
+    fi
+
+    info "Lancement de la revue locale dry-run..."
+    local review_cmd=(
+        "${ROOT_DIR}/scripts/trident_dry_run_review.sh"
+        --host "${HOST}"
+        --user "${SSH_USER}"
+        --identity "${IDENTITY_FILE}"
+        --remote-dir "${REMOTE_DIR}"
+        --output-dir "${OUTPUT_DIR}"
+        --snapshot-max-age-minutes "${SNAPSHOT_MAX_AGE_MINUTES}"
+        --log-lines "${LOG_LINES}"
+    )
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        printf '  [dry-run] %q ' "${review_cmd[@]}"
+        printf '\n'
+        return
+    fi
+
+    "${review_cmd[@]}"
+}
+
+echo
+echo "========================================="
+echo "  TRIDENT — Fetch local + review"
+echo "========================================="
+echo
+echo "  Host SSH : ${SSH_TARGET}"
+echo "  Remote   : ${REMOTE_DIR}"
+echo "  Local    : ${LOCAL_DIR}"
+echo "  Review   : ${OUTPUT_DIR}"
+echo
+
+if [[ "${REVIEW_ONLY}" == "true" ]]; then
+    run_review
+    exit 0
+fi
+
+if [[ "${LOGS_ONLY}" == "true" && "${SNAPSHOTS_ONLY}" == "true" ]]; then
+    error "Impossible de combiner --logs-only et --snapshots-only"
+    exit 1
+fi
+
+fetch_api_snapshot
+
+if [[ "${LOGS_ONLY}" != "true" ]]; then
+    fetch_snapshots
+fi
+
+if [[ "${SNAPSHOTS_ONLY}" != "true" ]]; then
+    fetch_logs_and_runtime
+    fetch_docker_logs
+fi
+
+run_review
+
+echo
+echo "========================================="
+ok "FETCH TERMINE"
+echo "========================================="
+echo
+
+if [[ "${DRY_RUN}" != "true" ]]; then
+    total_size="$(du -sh "${LOCAL_DIR}" 2>/dev/null | awk '{print $1}')"
+    total_files="$(find "${LOCAL_DIR}" -type f 2>/dev/null | wc -l | tr -d ' ')"
+    echo "  Dossier : ${LOCAL_DIR}"
+    echo "  Fichiers : ${total_files}"
+    echo "  Taille : ${total_size}"
+    echo
+    echo "  Artefacts principaux :"
+    echo "    - snapshots live : ${SNAPSHOT_DIR}"
+    echo "    - logs applicatifs : ${LOG_DIR}"
+    echo "    - runtime statuses : ${RUNTIME_DIR}"
+    echo "    - API snapshots : ${API_DIR}"
+    echo "    - docker logs : ${DOCKER_DIR}"
+    if [[ "${SKIP_REVIEW}" != "true" ]]; then
+        echo "    - review summary : ${OUTPUT_DIR}/review_summary.md"
+        echo "    - review json : ${OUTPUT_DIR}/review_summary.json"
+    fi
+    echo
+fi

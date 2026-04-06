@@ -42,6 +42,7 @@ Etat actuel:
   - `scripts/trident_restart.sh`
   - `scripts/trident_healthcheck.sh`
   - `scripts/trident_server.sh`
+  - `scripts/fetch_trident_data.sh`
   - `docs/deployment.md`
 
 Decision d'architecture actuelle:
@@ -164,8 +165,31 @@ python3.12 -m app.trident.pod_b.paper_live_runner --config-path /tmp/trident/run
 python3.12 -m app.backtest.cohabitation_replay --config config/trident.toml --input /tmp/trident_snapshots.jsonl --output /tmp/cohabitation_report.json
 python3.12 -m app.reporting.export_daily --pod-b-report /tmp/pod_b_report.json --reference-equity-usd 1000 --cash-balance-usd 1001 --output-json /tmp/trident_daily_summary.json --output-md /tmp/trident_daily_summary.md
 ./scripts/trident_healthcheck.sh
+./scripts/fetch_trident_data.sh
+./scripts/fetch_trident_data.sh --days 3
+./scripts/fetch_trident_data.sh --date 2026-04-05
 ./prepare_server.sh trident-hetzner
 ./deploy.sh --start
+```
+
+Rapatriement et analyse locale:
+
+- `./scripts/trident_dry_run_review.sh`
+  - revue distante legere
+  - recupere surtout l'etat courant, les tails de logs et genere les prompts LLM
+- `./scripts/fetch_trident_data.sh`
+  - rapatrie les snapshots live, logs runtime, statuses, snapshots API et logs Docker
+  - peut ensuite relancer automatiquement `trident_dry_run_review.sh`
+  - permet une vraie analyse locale plus complete sur plusieurs heures / jours
+
+Exemples:
+
+```bash
+./scripts/fetch_trident_data.sh
+./scripts/fetch_trident_data.sh --days 2
+./scripts/fetch_trident_data.sh --snapshots-only --days 5
+./scripts/fetch_trident_data.sh --logs-only
+./scripts/fetch_trident_data.sh --review-only
 ```
 
 Validation recente:

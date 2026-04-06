@@ -266,6 +266,7 @@ Scripts raccourcis également disponibles :
 ./scripts/trident_stop.sh
 ./scripts/trident_restart.sh
 ./scripts/trident_healthcheck.sh
+./scripts/fetch_trident_data.sh
 ```
 
 ---
@@ -370,7 +371,82 @@ Rate limiter partagé HL :
 
 ---
 
-## 8. Points d'attention
+## 8. Rapatrier les données pour analyse locale
+
+Deux niveaux existent :
+
+1. revue légère distante
+2. fetch complet pour analyse locale
+
+### Revue légère
+
+```bash
+cd /workspaces/trident
+./scripts/trident_dry_run_review.sh
+```
+
+Ce script :
+
+- récupère l'état courant (`/health`, `/api/state`, `/api/metrics`, `/api/report`)
+- récupère les tails de logs Docker
+- vérifie la fraîcheur des snapshots
+- génère :
+  - `review_summary.md`
+  - `review_summary.json`
+  - des prompts LLM quand un jugement qualitatif est utile
+
+### Fetch complet
+
+```bash
+cd /workspaces/trident
+./scripts/fetch_trident_data.sh
+```
+
+Ce script est inspiré de `gbot/fetch-data.sh`, mais garde les capacités de revue simple de `trident_dry_run_review.sh`.
+
+Il rapatrie localement :
+
+- `data/live_snapshots/*.jsonl`
+- `logs/pod_a_live.jsonl`
+- `logs/pod_b_live.jsonl`
+- `logs/pod_c_live.jsonl`
+- `logs/pod_b_live_report.json`
+- `logs/pod_a_live_status.json`
+- `logs/pod_c_live_status.json`
+- `runtime/passivbot/live.status.json`
+- `runtime/passivbot/live.json`
+- snapshots API courants
+- tails de logs Docker
+
+Puis il peut relancer automatiquement la revue locale avec suggestions de prompts.
+
+Exemples :
+
+```bash
+./scripts/fetch_trident_data.sh
+./scripts/fetch_trident_data.sh --days 3
+./scripts/fetch_trident_data.sh --date 2026-04-05
+./scripts/fetch_trident_data.sh --snapshots-only --days 5
+./scripts/fetch_trident_data.sh --logs-only
+./scripts/fetch_trident_data.sh --review-only
+./scripts/fetch_trident_data.sh --skip-review
+```
+
+Dossier local par défaut :
+
+```text
+/workspaces/trident/server-data
+```
+
+La revue générée par défaut est écrite dans :
+
+```text
+/workspaces/trident/server-data/reviews/<timestamp>
+```
+
+---
+
+## 9. Points d'attention
 
 - ne pas commiter de secrets
 - si le dashboard est expose publiquement, considerer qu'il revele l'etat runtime et le PnL
@@ -380,7 +456,7 @@ Rate limiter partagé HL :
 
 ---
 
-## 9. Commandes de base
+## 10. Commandes de base
 
 Préparer :
 

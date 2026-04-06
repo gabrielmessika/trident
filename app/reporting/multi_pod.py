@@ -78,6 +78,23 @@ def build_runtime_report(
     realized_pnl_usd = 0.0
     total_unrealized_pnl_usd = 0.0
 
+    def _directional_open_position_metrics(
+        runtime_payload: dict[str, object] | None,
+    ) -> tuple[int, float]:
+        if not isinstance(runtime_payload, dict):
+            return 0, 0.0
+        positions = runtime_payload.get("open_positions", [])
+        if not isinstance(positions, list):
+            return 0, 0.0
+        position_count = 0
+        unrealized_pnl_usd = 0.0
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            position_count += 1
+            unrealized_pnl_usd += float(position.get("unrealized_pnl_usd", 0.0))
+        return position_count, round(unrealized_pnl_usd, 4)
+
     for pod_name, pod in supervisor.pods.items():
         runtime_pod_state = (
             runtime_pods.get(pod_name.value, {}) if isinstance(runtime_pods, dict) else {}
@@ -120,6 +137,9 @@ def build_runtime_report(
                 if runtime_payload is not None
                 else None
             )
+            report.position_count, report.total_unrealized_pnl_usd = _directional_open_position_metrics(
+                runtime_payload
+            )
             report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
         if pod_name.value == "pod_c":
@@ -135,6 +155,9 @@ def build_runtime_report(
                 str(runtime_payload.get("process_state", "running"))
                 if runtime_payload is not None
                 else None
+            )
+            report.position_count, report.total_unrealized_pnl_usd = _directional_open_position_metrics(
+                runtime_payload
             )
             report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))

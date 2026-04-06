@@ -40,6 +40,7 @@ class PodALiveRunner:
         self.risk_gate = PodARiskGate(config)
         self.executor = PodAExecutor(config)
         self.report = PodABacktestReport()
+        self._latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
 
     async def run(
         self,
@@ -158,6 +159,7 @@ class PodALiveRunner:
         self.report.add_record_regime(current_regime)
 
         snapshots = [SymbolMarketSnapshot(**item) for item in symbols if isinstance(item, dict)]
+        self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
         previews = self.supervisor.preview_pod_a_signals(snapshots)
         trade_plans = self.supervisor.build_pod_a_trade_plans(snapshots)
         risk_decisions = self.risk_gate.evaluate_many(trade_plans)
@@ -341,26 +343,45 @@ class PodALiveRunner:
                     "last_error": self.collector.stats.last_error,
                 },
                 "report": self.report.to_dict(),
-                "open_positions": [
-                    {
-                        "symbol": position.symbol,
-                        "side": position.side,
-                        "setup": position.setup,
-                        "open_reason": position.setup,
-                        "confidence": position.confidence,
-                        "entry_price": position.entry_price,
-                        "target_notional_usd": position.target_notional_usd,
-                        "stop_bps": position.stop_bps,
-                        "time_stop_hours": position.time_stop_hours,
-                        "opened_at": (
-                            position.opened_at.isoformat() if position.opened_at else None
-                        ),
-                    }
-                    for position in self.executor.portfolio.open_positions.values()
-                ],
+                "open_positions": self._build_open_positions_payload(),
                 "supervisor": self.supervisor.snapshot(),
             },
         )
+
+    def _build_open_positions_payload(self) -> list[dict[str, object]]:
+        positions: list[dict[str, object]] = []
+        for position in self.executor.portfolio.open_positions.values():
+            current_snapshot = self._latest_snapshots_by_symbol.get(position.symbol)
+            current_price = current_snapshot.price if current_snapshot is not None else None
+            current_notional_usd = position.target_notional_usd
+            unrealized_pnl_usd = 0.0
+            if current_price is not None and position.entry_price > 0:
+                current_notional_usd = round(
+                    position.target_notional_usd * (current_price / position.entry_price),
+                    4,
+                )
+                unrealized_pnl_usd = self.executor.portfolio._gross_pnl_usd(
+                    position,
+                    current_price,
+                )
+            positions.append(
+                {
+                    "symbol": position.symbol,
+                    "side": position.side,
+                    "setup": position.setup,
+                    "open_reason": position.setup,
+                    "confidence": position.confidence,
+                    "entry_price": position.entry_price,
+                    "current_price": current_price,
+                    "target_notional_usd": position.target_notional_usd,
+                    "current_notional_usd": current_notional_usd,
+                    "unrealized_pnl_usd": unrealized_pnl_usd,
+                    "stop_bps": position.stop_bps,
+                    "time_stop_hours": position.time_stop_hours,
+                    "opened_at": position.opened_at.isoformat() if position.opened_at else None,
+                }
+            )
+        return positions
 
 
 def build_parser() -> argparse.ArgumentParser:

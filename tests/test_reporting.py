@@ -29,6 +29,39 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(pod_b["position_count"], 0)
         self.assertEqual(report["active_open_order_count"], 0)
 
+    def test_build_runtime_report_counts_directional_open_positions(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_b.enabled = True
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-reporting-open-positions",
+            mode="observation",
+        )
+        pod_a_runtime = {
+            "process_state": "running",
+            "open_positions": [
+                {"symbol": "ETH", "unrealized_pnl_usd": 1.25},
+                {"symbol": "SOL", "unrealized_pnl_usd": -0.5},
+            ],
+            "report": {
+                "closed_trade_count": 3,
+                "realized_pnl_usd": 2.75,
+            },
+        }
+
+        with patch(
+            "app.reporting.multi_pod.load_runtime_status",
+            side_effect=[pod_a_runtime, None],
+        ):
+            report = build_runtime_report(supervisor).to_dict()
+
+        pod_a = next(item for item in report["pods"] if item["pod"] == "pod_a")
+        self.assertEqual(pod_a["position_count"], 2)
+        self.assertEqual(pod_a["total_fill_count"], 3)
+        self.assertAlmostEqual(pod_a["total_unrealized_pnl_usd"], 0.75)
+        self.assertEqual(report["active_position_count"], 2)
+        self.assertAlmostEqual(report["total_unrealized_pnl_usd"], 0.75)
+
     def test_build_cohabitation_summary_aggregates_pnl(self) -> None:
         class DummyResult:
             records_processed = 42

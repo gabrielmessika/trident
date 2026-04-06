@@ -125,6 +125,17 @@
       - `review_summary.md`
       - `review_summary.json`
       - prompts LLM par etape quand une revue qualitative est necessaire
+  - outillage de fetch complet ajoute:
+    - `scripts/fetch_trident_data.sh` inspire de `gbot/fetch-data.sh`
+    - rapatrie snapshots live, logs runtime, statuses, snapshots API et logs Docker
+    - filtres supportes:
+      - `--all`
+      - `--date YYYY-MM-DD`
+      - `--days N`
+      - `--logs-only`
+      - `--snapshots-only`
+      - `--review-only`
+    - relance en option la revue locale avec prompts via `trident_dry_run_review.sh`
   - dashboard runtime enrichi:
     - pastilles de statut vert / orange / rouge
     - commentaire synthese "est-ce que ca tourne bien ?"
@@ -137,6 +148,9 @@
       - positions ouvertes
       - evenements de trades recents
       - raison d'ouverture (`setup` / fill maker)
+  - correction du reporting runtime directionnel:
+    - `Pod A` / `Pod C` publient maintenant le mark courant et le PnL latent de leurs positions ouvertes
+    - `runtime_report` compte enfin ces positions dans `active_position_count` et `total_unrealized_pnl_usd`
       - raison de fermeture (`stop_hit`, `time_stop`, `opposite_signal`, etc.) quand connue
       - filtres visuels client-side:
         - `Open`
@@ -2326,7 +2340,244 @@ Mitigation:
 
 ---
 
-## 16. Decision finale de conception
+## 16. Pistes futures Hydra revisitees
+
+Ces pistes ne doivent pas etre branchees directement dans le run principal.
+Elles suivent obligatoirement la sequence:
+
+- research note
+- prototype offline
+- backtest/replay
+- dry-run shadow
+- decision `go / park / kill`
+
+### Piste A - Funding Mean Reversion revisitee
+
+Statut:
+
+- a implementer plus tard
+- candidate prioritaire parmi les idees Hydra non reprises
+
+Pourquoi elle reste interessante:
+
+- hypothese testable proprement
+- mecanique claire
+- potentiellement structurelle si les episodes de funding extreme sont exploitables apres fees
+
+Ce qu'il faut implementer avant tout test live:
+
+- collecte native du funding history dans `trident`
+- dataset local dedie funding par coin / timestamp
+- strategie research explicite:
+  - seuils d'entree
+  - duree de hold
+  - regles de sortie
+  - filtres spread / liquidite / regime
+- backtest offline sur historique suffisant
+- replay sur snapshots/reports TRIDENT
+
+Conditions minimales pour promotion en dry-run:
+
+- expectancy positive apres frais
+- nombre d'occurrences suffisant
+- drawdown borne
+- comportement stable sur plusieurs coins et plusieurs jours
+
+Etat actuel:
+
+- aucun pod funding dedie
+- `funding_rate` n'est aujourd'hui qu'un champ de snapshot et un filtre mineur dans Pod A
+
+Mini roadmap technique:
+
+1. Collecte de donnees
+   - ajouter un collecteur funding natif HL
+   - persister `coin / timestamp / funding_rate / mark / open_interest si disponible`
+   - fichiers cibles:
+     - `app/hyperliquid/funding_client.py`
+     - `app/live/funding_collector.py`
+     - `data/funding_history/`
+
+2. Dataset research
+   - construire un dataset aligne:
+     - funding extremum
+     - rendement futur 1h / 8h / 24h
+     - spread moyen
+     - regime courant
+   - fichiers cibles:
+     - `app/research/pod_funding_dataset.py`
+     - `app/research/pod_funding_research.py`
+
+3. Prototype offline
+   - tester au minimum:
+     - version pure mean reversion
+     - version funding + filtre regime
+     - version funding + filtre spread/liquidite
+
+4. Backtest/replay
+   - convertir la logique research en runner deterministe
+   - fichiers cibles:
+     - `app/trident/pod_funding/`
+     - `app/backtest/pod_funding_runner.py`
+
+5. Dry-run shadow
+   - tourner separement du run principal
+   - report dedie obligatoire:
+     - expectancy nette
+     - PnL par coin
+     - taux de faux signaux
+     - drawdown max
+
+Critere `kill`:
+
+- edge positif seulement avant frais
+- trop peu d'occurrences
+- performance concentree sur 1 seul coin ou 1 seul jour
+
+Critere `go`:
+
+- expectancy nette > 0 apres frais
+- profit factor > 1.1
+- comportement stable sur au moins 2 sous-fenetres out-of-sample
+
+### Piste B - Liquidation / OI event engine revisite
+
+Statut:
+
+- a implementer plus tard
+- candidate secondaire
+
+Pourquoi elle n'est pas reprise telle quelle depuis Hydra:
+
+- la version Hydra reposait sur une hypothese de donnees trop fragile
+- on ne veut pas construire un pod sur une reconstruction de heatmap de liquidation non fiable
+
+Nouvelle approche demandee:
+
+- repartir des donnees vraiment observables
+- ne pas supposer l'existence d'une carte fiable des liquidation clusters
+
+Directions de recherche possibles:
+
+- variations rapides d'open interest si source exploitable
+- bursts de flow agressif
+- acceleration de spread / imbalance / trade flow avant moves violents
+- patterns post-liquidation visibles dans le tape et le book
+- dislocations prix / flow / microstructure autour d'evenements de squeeze
+
+Pipeline exige:
+
+- note de faisabilite data d'abord
+- seulement ensuite prototype research
+- seulement ensuite replay et dry-run shadow
+
+Conditions de promotion:
+
+- signal observable en temps reel
+- logique d'entree/sortie reproductible
+- edge non explique uniquement par quelques outliers
+
+Decision par defaut:
+
+- `park` tant que la source de donnees et la definition du signal ne sont pas propres
+
+Mini roadmap technique:
+
+1. Note de faisabilite data
+   - verifier exactement quelles donnees HL sont accessibles en historique et en live
+   - lister ce qui est:
+     - observable
+     - approximable
+     - non exploitable
+   - livrable:
+     - `docs/pod_liq_data_feasibility.md`
+
+2. Prototype observables-first
+   - ne pas coder de "liquidation map" au debut
+   - commencer par des features simples:
+     - acceleration de trade flow
+     - dislocation book imbalance / spread
+     - changement brutal d'intensite de prints
+     - eventuellement open interest delta si la source est propre
+   - fichiers cibles:
+     - `app/research/pod_liq_features.py`
+     - `app/research/pod_liq_research.py`
+
+3. Definition du signal
+   - un signal n'existe que s'il a:
+     - une entree objective
+     - une invalidation objective
+     - un horizon borne
+   - tant que ces 3 points ne sont pas fixes, on ne cree pas de pod
+
+4. Replay puis dry-run shadow
+   - seulement si une feature montre un edge reproductible
+   - fichiers cibles:
+     - `app/trident/pod_liq/`
+     - `app/backtest/pod_liq_runner.py`
+
+Critere `kill`:
+
+- impossibilite d'obtenir une source de donnees fiable
+- edge dependant d'une interpretation discretionary
+- perf expliquee par quelques evenements extrêmes non repetables
+
+Critere `go`:
+
+- signal data-driven clairement definissable
+- nombre d'occurrences suffisant
+- avantage net conserve hors echantillon
+
+### Piste C - Lead-lag inter-coins a garder en veille
+
+Statut:
+
+- deja implemente en research / Pod C
+- non promu car dernier memo = `no-go`
+
+Decision:
+
+- ne pas supprimer
+- ne pas activer par reflexe
+- rerun seulement quand:
+  - plus d'historique live a ete accumule
+  - ou une variante de l'hypothese est redefinie proprement
+
+Mini roadmap technique:
+
+1. Accumuler plus d'historique live natif
+   - objectif minimal:
+     - plusieurs jours multi-regimes
+     - davantage de leaders / followers
+
+2. Retester plusieurs variantes
+   - lead BTC seul
+   - lead ETH seul
+   - filtre regime explicite
+   - filtre spread / flow / book imbalance
+   - version taker defensive comparee a maker stricte
+
+3. Produire un memo comparatif
+   - livrables:
+     - `docs/pod_c_research_<date>.md`
+     - `docs/pod_c_research_<date>.json`
+   - conclusion obligatoire:
+     - `go`
+     - `park`
+     - `kill`
+
+4. Si `go`
+   - promouvoir seulement la variante gagnante
+   - conserver les memes regles d'execution et de risk que Pod A
+
+Critere `kill`:
+
+- `no-go` repete sur plusieurs fenetres independantes
+- signal qui disparait apres frais ou apres contraintes de fill realistes
+
+---
+
+## 17. Decision finale de conception
 
 TRIDENT n'est pas:
 
@@ -2338,7 +2589,7 @@ TRIDENT est:
 
 - un superviseur simple,
 - un moteur trend comme ancre,
-- un moteur range externalise via Passivbot,
+- un moteur range natif dans `trident`,
 - un moteur event live seulement si la recherche le justifie,
 - une machine orientee mesure, isolation, et discipline de deploiement.
 

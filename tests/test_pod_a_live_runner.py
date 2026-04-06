@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -118,6 +119,12 @@ class PodALiveRunnerTests(unittest.TestCase):
             self.assertEqual(result["opened_count"], 2)
             self.assertEqual(result["collector"]["snapshots_written"], 1)
             self.assertTrue(journal_path.exists())
+            runtime_status = json.loads(Path("logs/pod_a_live_status.json").read_text(encoding="utf-8"))
+            open_positions = runtime_status["open_positions"]
+            self.assertEqual(len(open_positions), 2)
+            eth_position = next(item for item in open_positions if item["symbol"] == "ETH")
+            self.assertEqual(eth_position["current_price"], 3100.0)
+            self.assertIn("unrealized_pnl_usd", eth_position)
 
 
 if __name__ == "__main__":

@@ -130,7 +130,11 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["regime_evaluation_count"], 7)
 
     def test_report_payload_exposes_multi_pod_runtime_report(self) -> None:
-        payload = report_payload(self.supervisor, self.metrics)
+        with patch(
+            "app.reporting.multi_pod.load_runtime_status",
+            side_effect=[None, None],
+        ):
+            payload = report_payload(self.supervisor, self.metrics)
         self.assertEqual(payload["profile"], "trident")
         self.assertEqual(payload["enabled_pod_count"], 1)
         self.assertIn("pods", payload)
