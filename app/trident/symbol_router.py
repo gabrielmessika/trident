@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import math
 
 from app.settings import AppConfig
@@ -12,6 +13,8 @@ from app.trident.types import (
     SymbolRoutingDecision,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
@@ -22,7 +25,20 @@ class SymbolRouter:
     config: AppConfig
     min_assign_score: float = 0.45
     min_hold_score: float = 0.35
-    hysteresis_margin: float = 0.12
+    hysteresis_margin: float = 0.15
+    reassignment_cooldown_seconds: int = 900
+    symbol_pod_overrides: dict[str, PodName] | None = None
+
+    def __post_init__(self) -> None:
+        routing = self.config.trident.routing
+        self.min_assign_score = float(routing.min_assign_score)
+        self.min_hold_score = float(routing.min_hold_score)
+        self.hysteresis_margin = float(routing.hysteresis_margin)
+        self.reassignment_cooldown_seconds = int(routing.reassignment_cooldown_seconds)
+        self.set_symbol_pod_overrides(routing.symbol_pod_overrides)
+
+    def set_symbol_pod_overrides(self, raw_overrides: dict[str, str]) -> None:
+        self.symbol_pod_overrides = self._normalize_symbol_pod_overrides(raw_overrides)
 
     def route(
         self,
@@ -31,9 +47,14 @@ class SymbolRouter:
         desired_symbols_by_pod: dict[PodName, list[str]],
         snapshots: list[SymbolMarketSnapshot],
         previous_owners: dict[str, PodName | None] | None = None,
+        reassignment_age_seconds_by_symbol: dict[str, float] | None = None,
     ) -> list[SymbolRoutingDecision]:
         snapshot_by_symbol = {snapshot.symbol.upper(): snapshot for snapshot in snapshots}
         previous = {symbol.upper(): owner for symbol, owner in (previous_owners or {}).items()}
+        reassignment_ages = {
+            symbol.upper(): age
+            for symbol, age in (reassignment_age_seconds_by_symbol or {}).items()
+        }
         candidate_symbols = sorted(
             {
                 symbol.upper()
@@ -49,6 +70,7 @@ class SymbolRouter:
             snapshot = snapshot_by_symbol.get(symbol)
             previous_owner = previous.get(symbol)
             local_regime, local_regime_reason = self._classify_local_regime(snapshot)
+            override_owner = self._override_owner(symbol)
             pod_scores = {
                 pod: (
                     self._score_pod(
@@ -68,10 +90,13 @@ class SymbolRouter:
                     symbol=symbol,
                     candidates=candidates,
                     pod_scores=pod_scores,
+                    regime=regime,
                     previous_owner=previous_owner,
                     snapshot=snapshot,
                     local_regime=local_regime,
                     local_regime_reason=local_regime_reason,
+                    reassignment_age_seconds=reassignment_ages.get(symbol),
+                    override_owner=override_owner,
                 )
             )
         return self._enforce_capacity_limits(decisions, regime=regime)
@@ -158,6 +183,11 @@ class SymbolRouter:
                 pod_scores=dict(decision.pod_scores),
                 local_regime=decision.local_regime,
                 local_regime_reason=decision.local_regime_reason,
+                pod_reasoning=dict(decision.pod_reasoning),
+                reassignment_cooldown_active=decision.reassignment_cooldown_active,
+                reassignment_cooldown_remaining_seconds=decision.reassignment_cooldown_remaining_seconds,
+                override_active=decision.override_active,
+                override_owner=decision.override_owner,
             )
 
         best_owner = sorted(
@@ -180,6 +210,11 @@ class SymbolRouter:
                 pod_scores=dict(decision.pod_scores),
                 local_regime=decision.local_regime,
                 local_regime_reason=decision.local_regime_reason,
+                pod_reasoning=dict(decision.pod_reasoning),
+                reassignment_cooldown_active=decision.reassignment_cooldown_active,
+                reassignment_cooldown_remaining_seconds=decision.reassignment_cooldown_remaining_seconds,
+                override_active=decision.override_active,
+                override_owner=decision.override_owner,
             )
 
         return SymbolRoutingDecision(
@@ -195,6 +230,11 @@ class SymbolRouter:
             pod_scores=dict(decision.pod_scores),
             local_regime=decision.local_regime,
             local_regime_reason=decision.local_regime_reason,
+            pod_reasoning=dict(decision.pod_reasoning),
+            reassignment_cooldown_active=decision.reassignment_cooldown_active,
+            reassignment_cooldown_remaining_seconds=decision.reassignment_cooldown_remaining_seconds,
+            override_active=decision.override_active,
+            override_owner=decision.override_owner,
         )
 
     def _pod_has_capacity(
@@ -295,11 +335,37 @@ class SymbolRouter:
         symbol: str,
         candidates: list[PodName],
         pod_scores: dict[PodName, float],
+        regime: Regime,
         previous_owner: PodName | None,
         snapshot: SymbolMarketSnapshot | None,
         local_regime: SymbolLocalRegime | None,
         local_regime_reason: str,
+        reassignment_age_seconds: float | None,
+        override_owner: PodName | None,
     ) -> SymbolRoutingDecision:
+        pod_reasoning = self._build_pod_reasoning(
+            candidates=candidates,
+            pod_scores=pod_scores,
+            local_regime=local_regime,
+            regime=regime,
+            override_owner=override_owner,
+        )
+        if override_owner is not None and override_owner in candidates:
+            override_score = pod_scores.get(override_owner, 0.0)
+            return SymbolRoutingDecision(
+                symbol=symbol,
+                owner=override_owner,
+                mode="manual_override",
+                reason=f"manual_override:{override_owner.value} ({override_score:.2f})",
+                previous_owner=previous_owner,
+                candidate_pods=list(candidates),
+                pod_scores=dict(pod_scores),
+                local_regime=local_regime,
+                local_regime_reason=local_regime_reason,
+                pod_reasoning=pod_reasoning,
+                override_active=True,
+                override_owner=override_owner,
+            )
         if snapshot is None:
             owner = previous_owner if previous_owner in candidates else self._priority_pick(candidates)
             reason = (
@@ -317,6 +383,8 @@ class SymbolRouter:
                 pod_scores=dict(pod_scores),
                 local_regime=local_regime,
                 local_regime_reason=local_regime_reason,
+                pod_reasoning=pod_reasoning,
+                override_owner=override_owner,
             )
 
         ranked = sorted(
@@ -331,6 +399,38 @@ class SymbolRouter:
             if previous_owner is not None and previous_owner in candidates
             else 0.0
         )
+        cooldown_active = (
+            previous_owner is not None
+            and previous_owner in candidates
+            and best_owner != previous_owner
+            and reassignment_age_seconds is not None
+            and reassignment_age_seconds < self.reassignment_cooldown_seconds
+            and previous_score >= self.min_hold_score
+        )
+
+        if cooldown_active:
+            remaining = max(
+                float(self.reassignment_cooldown_seconds) - float(reassignment_age_seconds),
+                0.0,
+            )
+            return SymbolRoutingDecision(
+                symbol=symbol,
+                owner=previous_owner,
+                mode="dynamic_cooldown",
+                reason=(
+                    f"reassignment_cooldown_hold:{previous_owner.value}"
+                    f" ({remaining:.0f}s remaining, {previous_score:.2f} vs {best_owner.value} {best_score:.2f})"
+                ),
+                previous_owner=previous_owner,
+                candidate_pods=list(candidates),
+                pod_scores=dict(pod_scores),
+                local_regime=local_regime,
+                local_regime_reason=local_regime_reason,
+                pod_reasoning=pod_reasoning,
+                reassignment_cooldown_active=True,
+                reassignment_cooldown_remaining_seconds=remaining,
+                override_owner=override_owner,
+            )
 
         if (
             previous_owner is not None
@@ -351,6 +451,8 @@ class SymbolRouter:
                 pod_scores=dict(pod_scores),
                 local_regime=local_regime,
                 local_regime_reason=local_regime_reason,
+                pod_reasoning=pod_reasoning,
+                override_owner=override_owner,
             )
 
         if best_score >= self.min_assign_score:
@@ -364,6 +466,8 @@ class SymbolRouter:
                 pod_scores=dict(pod_scores),
                 local_regime=local_regime,
                 local_regime_reason=local_regime_reason,
+                pod_reasoning=pod_reasoning,
+                override_owner=override_owner,
             )
 
         owner = previous_owner if previous_owner in candidates else self._priority_pick(candidates)
@@ -381,7 +485,77 @@ class SymbolRouter:
             pod_scores=dict(pod_scores),
             local_regime=local_regime,
             local_regime_reason=local_regime_reason,
+            pod_reasoning=pod_reasoning,
+            override_owner=override_owner,
         )
+
+    def _build_pod_reasoning(
+        self,
+        *,
+        candidates: list[PodName],
+        pod_scores: dict[PodName, float],
+        local_regime: SymbolLocalRegime | None,
+        regime: Regime,
+        override_owner: PodName | None,
+    ) -> dict[PodName, str]:
+        reasoning: dict[PodName, str] = {}
+        best_score = max((pod_scores.get(pod, 0.0) for pod in candidates), default=0.0)
+        best_pods = {
+            pod for pod in candidates if abs(pod_scores.get(pod, 0.0) - best_score) < 1e-9
+        }
+        for pod in candidates:
+            score = pod_scores.get(pod, 0.0)
+            affinity = self._local_regime_affinity(pod, local_regime)
+            override_note = (
+                f" override={override_owner.value}"
+                if override_owner is not None
+                else ""
+            )
+            if override_owner == pod:
+                reasoning[pod] = (
+                    f"manual_override score={score:.2f} local_affinity={affinity:.2f}"
+                    f" global_regime={regime.value}{override_note}"
+                )
+                continue
+            if score < self.min_assign_score:
+                reasoning[pod] = (
+                    f"below_assign_threshold score={score:.2f} local_affinity={affinity:.2f}"
+                    f" global_regime={regime.value}{override_note}"
+                )
+            elif pod in best_pods:
+                reasoning[pod] = (
+                    f"best_candidate score={score:.2f} local_affinity={affinity:.2f}"
+                    f" global_regime={regime.value}{override_note}"
+                )
+            else:
+                reasoning[pod] = (
+                    f"outscored score={score:.2f} best_score={best_score:.2f}"
+                    f" local_affinity={affinity:.2f} global_regime={regime.value}{override_note}"
+                )
+        return reasoning
+
+    def _override_owner(self, symbol: str) -> PodName | None:
+        if not self.symbol_pod_overrides:
+            return None
+        return self.symbol_pod_overrides.get(symbol.upper())
+
+    def _normalize_symbol_pod_overrides(
+        self,
+        raw_overrides: dict[str, str],
+    ) -> dict[str, PodName]:
+        normalized: dict[str, PodName] = {}
+        valid_pods = {pod.value: pod for pod in PodName}
+        for symbol, raw_pod in raw_overrides.items():
+            pod = valid_pods.get(str(raw_pod).strip().lower())
+            if pod is None:
+                logger.warning(
+                    "Ignoring invalid symbol routing override; symbol=%s target=%s",
+                    symbol,
+                    raw_pod,
+                )
+                continue
+            normalized[str(symbol).strip().upper()] = pod
+        return normalized
 
     def _priority_pick(self, candidates: list[PodName]) -> PodName | None:
         if not candidates:
@@ -457,9 +631,9 @@ class SymbolRouter:
         reclaim_quality = _clamp(1.0 - abs(snapshot.vwap_distance_bps) / 30.0)
         cluster_quality = 1.0 if snapshot.cluster_aligned else 0.3
         return (
-            local_quality * 0.30
-            + global_quality * 0.15
-            + trend_shape * 0.20
+            local_quality * 0.15
+            + global_quality * 0.25
+            + trend_shape * 0.25
             + structure_quality * 0.20
             + reclaim_quality * 0.10
             + cluster_quality * 0.05
@@ -494,11 +668,11 @@ class SymbolRouter:
         )
         spread_quality = _clamp(1.0 - snapshot.spread_bps / 8.0)
         return (
-            local_quality * 0.30
-            + global_quality * 0.15
+            local_quality * 0.15
+            + global_quality * 0.25
             + range_quality * 0.25
             + structure_quality * 0.20
-            + toxicity_quality * 0.15
+            + toxicity_quality * 0.10
             + spread_quality * 0.05
         )
 
@@ -523,12 +697,12 @@ class SymbolRouter:
         cluster_quality = 1.0 if snapshot.cluster_aligned else 0.2
         spread_quality = _clamp(1.0 - snapshot.spread_bps / max(self.config.pod_c.max_spread_bps * 1.5, 1.0))
         return (
-            local_quality * 0.30
-            + global_quality * 0.10
+            local_quality * 0.15
+            + global_quality * 0.20
             + impulse_quality * 0.25
             + range_quality * 0.15
             + structure_quality * 0.15
-            + cluster_quality * 0.10
+            + cluster_quality * 0.05
             + spread_quality * 0.05
         )
 

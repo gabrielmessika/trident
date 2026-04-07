@@ -50,6 +50,16 @@ class ExecutionConfig:
 
 
 @dataclass(slots=True)
+class RoutingConfig:
+    min_assign_score: float = 0.45
+    min_hold_score: float = 0.35
+    hysteresis_margin: float = 0.15
+    reassignment_cooldown_seconds: int = 900
+    runtime_override_path: str = "./runtime/trident/symbol_routing_overrides.json"
+    symbol_pod_overrides: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class RegimeAllocations:
     trend_expansion: AllocationConfig
     range_auction: AllocationConfig
@@ -103,6 +113,7 @@ class TridentConfigSection:
     capital: CapitalLimits
     risk: RiskLimits
     execution: ExecutionConfig
+    routing: RoutingConfig
     allocations: RegimeAllocations
 
 
@@ -242,6 +253,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     capital_data = trident_data.get("capital", {})
     risk_data = trident_data.get("risk", {})
     execution_data = trident_data.get("execution", {})
+    routing_data = trident_data.get("routing", {})
     pod_a_data = data.get("pod_a", {})
     pod_b_data = data.get("pod_b", {})
     pod_c_data = data.get("pod_c", {})
@@ -397,6 +409,25 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 ),
                 dry_run_spread_multiplier=float(
                     execution_data.get("dry_run_spread_multiplier", 0.5)
+                ),
+            ),
+            routing=RoutingConfig(
+                min_assign_score=float(routing_data.get("min_assign_score", 0.45)),
+                min_hold_score=float(routing_data.get("min_hold_score", 0.35)),
+                hysteresis_margin=float(routing_data.get("hysteresis_margin", 0.15)),
+                reassignment_cooldown_seconds=int(
+                    routing_data.get("reassignment_cooldown_seconds", 900)
+                ),
+                runtime_override_path=str(
+                    routing_data.get(
+                        "runtime_override_path",
+                        "./runtime/trident/symbol_routing_overrides.json",
+                    )
+                ),
+                symbol_pod_overrides=_str_map(
+                    routing_data.get("symbol_pod_overrides", {}),
+                    upper_keys=True,
+                    lower_values=True,
                 ),
             ),
             allocations=RegimeAllocations(

@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 import tempfile
@@ -612,6 +613,9 @@ class SupervisorTests(unittest.TestCase):
 
     def test_supervisor_routing_uses_hysteresis_before_switching_owner(self) -> None:
         self.config.pod_c.enabled = True
+        self.config.trident.routing.min_assign_score = 0.45
+        self.config.trident.routing.min_hold_score = 0.35
+        self.config.trident.routing.hysteresis_margin = 0.15
         supervisor = TridentSupervisor(
             config=self.config,
             profile="trident",
@@ -774,6 +778,315 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("bucket_notional_below_min", quality_by_symbol["ADA"]["reasons"])
         self.assertIn("bucket_trade_count_below_min", quality_by_symbol["ADA"]["reasons"])
         self.assertIn("funding_outlier", quality_by_symbol["PAXG"]["reasons"])
+
+    def test_supervisor_exposes_local_regime_by_symbol(self) -> None:
+        self.config.pod_b.enabled = True
+        self.config.pod_c.enabled = True
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=30.0,
+                atr_ratio=1.1,
+                range_width_bps=140.0,
+                structure_score=0.5,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=180.0,
+                    ema_fast=181.5,
+                    ema_slow=179.3,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.72,
+                    funding_rate=0.0002,
+                    spread_bps=1.4,
+                    btc_aligned=True,
+                    book_imbalance=0.05,
+                    trade_flow_bias=0.04,
+                    bucket_range_bps=44.0,
+                )
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+        sol_state = next(
+            item for item in snapshot["local_regime_by_symbol"] if item["symbol"] == "SOL"
+        )
+
+        self.assertEqual(sol_state["local_regime"], "TrendStructure")
+        self.assertEqual(sol_state["global_alignment"], "aligned")
+        self.assertEqual(sol_state["owner"], "pod_a")
+        self.assertEqual(sol_state["reassignment_count"], 0)
+        self.assertIn("pod_a", sol_state["pod_scores"])
+
+    def test_supervisor_tracks_local_regime_transitions(self) -> None:
+        self.config.pod_c.enabled = True
+        self.config.trident.routing.min_assign_score = 0.45
+        self.config.trident.routing.min_hold_score = 0.35
+        self.config.trident.routing.hysteresis_margin = 0.15
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=30.0,
+                atr_ratio=1.15,
+                range_width_bps=150.0,
+                structure_score=0.55,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=180.0,
+                    ema_fast=181.5,
+                    ema_slow=179.3,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.72,
+                    funding_rate=0.0002,
+                    spread_bps=1.4,
+                    btc_aligned=True,
+                    book_imbalance=0.05,
+                    trade_flow_bias=0.04,
+                    bucket_range_bps=44.0,
+                )
+            ]
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=180.0,
+                    ema_fast=180.55,
+                    ema_slow=180.45,
+                    vwap_distance_bps=-12.0,
+                    structure_score=0.55,
+                    funding_rate=0.0002,
+                    spread_bps=1.4,
+                    btc_aligned=True,
+                    book_imbalance=0.20,
+                    trade_flow_bias=0.18,
+                    bucket_range_bps=120.0,
+                )
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+        sol_transitions = [
+            item
+            for item in snapshot["local_regime_transitions"]
+            if item["symbol"] == "SOL"
+        ]
+
+        self.assertGreaterEqual(len(sol_transitions), 2)
+        self.assertEqual(sol_transitions[-1]["previous_local_regime"], "TrendStructure")
+        self.assertEqual(sol_transitions[-1]["new_local_regime"], "EventImpulse")
+        self.assertEqual(snapshot["symbol_reassignment_count_by_symbol"].get("SOL", 0), 0)
+
+    def test_supervisor_applies_reassignment_cooldown_after_owner_switch(self) -> None:
+        self.config.pod_c.enabled = True
+        self.config.trident.routing.reassignment_cooldown_seconds = 300
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=30.0,
+                atr_ratio=1.15,
+                range_width_bps=150.0,
+                structure_score=0.55,
+            )
+        )
+        trend_snapshot = SymbolMarketSnapshot(
+            symbol="SOL",
+            price=180.0,
+            ema_fast=181.5,
+            ema_slow=179.3,
+            vwap_distance_bps=-5.0,
+            structure_score=0.72,
+            funding_rate=0.0002,
+            spread_bps=1.4,
+            btc_aligned=True,
+            book_imbalance=0.05,
+            trade_flow_bias=0.04,
+            bucket_range_bps=44.0,
+        )
+        event_snapshot = SymbolMarketSnapshot(
+            symbol="SOL",
+            price=180.0,
+            ema_fast=180.2,
+            ema_slow=180.1,
+            vwap_distance_bps=-15.0,
+            structure_score=0.9,
+            funding_rate=0.0002,
+            spread_bps=1.4,
+            btc_aligned=True,
+            book_imbalance=0.55,
+            trade_flow_bias=0.52,
+            bucket_range_bps=180.0,
+        )
+
+        supervisor.refresh_symbol_routing([trend_snapshot])
+        supervisor.refresh_symbol_routing([event_snapshot])
+        supervisor.refresh_symbol_routing([trend_snapshot])
+
+        snapshot = supervisor.snapshot()
+        sol_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SOL")
+
+        self.assertEqual(sol_routing["owner"], "pod_c")
+        self.assertEqual(sol_routing["mode"], "dynamic_cooldown")
+        self.assertTrue(sol_routing["reassignment_cooldown_active"])
+        self.assertGreater(sol_routing["reassignment_cooldown_remaining_seconds"], 0)
+        self.assertEqual(snapshot["symbol_reassignment_count_by_symbol"].get("SOL"), 1)
+        self.assertIn("pod_a", sol_routing["pod_reasoning"])
+        self.assertIn("best_candidate", sol_routing["pod_reasoning"]["pod_a"])
+
+    def test_supervisor_applies_symbol_routing_override_to_pod_c(self) -> None:
+        self.config.pod_c.enabled = True
+        self.config.trident.routing.symbol_pod_overrides["BTC"] = "pod_c"
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=34.0,
+                atr_ratio=1.25,
+                range_width_bps=180.0,
+                structure_score=0.62,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="BTC",
+                    price=68000.0,
+                    ema_fast=68180.0,
+                    ema_slow=67920.0,
+                    vwap_distance_bps=-4.0,
+                    structure_score=0.66,
+                    funding_rate=0.0001,
+                    spread_bps=0.8,
+                    btc_aligned=True,
+                    book_imbalance=0.07,
+                    trade_flow_bias=0.05,
+                    bucket_volume=120.0,
+                    bucket_trade_count=220,
+                    bucket_range_bps=55.0,
+                )
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+        btc_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "BTC")
+        btc_state = next(
+            item for item in snapshot["local_regime_by_symbol"] if item["symbol"] == "BTC"
+        )
+        btc_ownership = next(
+            item for item in snapshot["symbol_ownership"] if item["symbol"] == "BTC"
+        )
+
+        self.assertEqual(snapshot["pods"]["pod_c"]["candidate_symbols"], ["BTC"])
+        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["BTC"])
+        self.assertEqual(btc_routing["owner"], "pod_c")
+        self.assertEqual(btc_routing["mode"], "manual_override")
+        self.assertTrue(btc_routing["override_active"])
+        self.assertEqual(btc_routing["override_owner"], "pod_c")
+        self.assertIn("manual_override", btc_routing["reason"])
+        self.assertTrue(btc_state["override_active"])
+        self.assertEqual(btc_state["override_owner"], "pod_c")
+        self.assertTrue(btc_ownership["override_active"])
+        self.assertEqual(btc_ownership["override_owner"], "pod_c")
+
+    def test_supervisor_reloads_runtime_symbol_override_without_redeploy(self) -> None:
+        self.config.pod_b.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            override_path = Path(temp_dir) / "runtime_routing_overrides.json"
+            self.config.trident.routing.runtime_override_path = str(override_path)
+            supervisor = TridentSupervisor(
+                config=self.config,
+                profile="trident",
+                mode="observation",
+            )
+            supervisor.apply_regime_snapshot(
+                RegimeSnapshot(
+                    ready=True,
+                    adx=30.0,
+                    atr_ratio=1.1,
+                    range_width_bps=140.0,
+                    structure_score=0.5,
+                )
+            )
+            trend_snapshot = SymbolMarketSnapshot(
+                symbol="SOL",
+                price=180.0,
+                ema_fast=181.5,
+                ema_slow=179.3,
+                vwap_distance_bps=-5.0,
+                structure_score=0.72,
+                funding_rate=0.0002,
+                spread_bps=1.4,
+                btc_aligned=True,
+                book_imbalance=0.05,
+                trade_flow_bias=0.04,
+                bucket_volume=200.0,
+                bucket_trade_count=160,
+                bucket_range_bps=48.0,
+            )
+
+            supervisor.refresh_symbol_routing([trend_snapshot])
+            initial_snapshot = supervisor.snapshot()
+            initial_sol = next(
+                item for item in initial_snapshot["symbol_routing"] if item["symbol"] == "SOL"
+            )
+            self.assertEqual(initial_sol["owner"], "pod_a")
+
+            override_path.write_text(
+                json.dumps(
+                    {
+                        "updated_at": "2026-04-07T22:00:00Z",
+                        "symbol_pod_overrides": {"SOL": "pod_b"},
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            supervisor.refresh_symbol_routing([trend_snapshot])
+            refreshed_snapshot = supervisor.snapshot()
+            refreshed_sol = next(
+                item for item in refreshed_snapshot["symbol_routing"] if item["symbol"] == "SOL"
+            )
+
+            self.assertEqual(refreshed_sol["owner"], "pod_b")
+            self.assertEqual(refreshed_sol["mode"], "manual_override")
+            self.assertTrue(refreshed_sol["override_active"])
+            self.assertEqual(refreshed_sol["override_owner"], "pod_b")
+            self.assertEqual(
+                refreshed_snapshot["routing_overrides"]["runtime"],
+                {"SOL": "pod_b"},
+            )
+            self.assertEqual(
+                refreshed_snapshot["routing_overrides"]["effective"],
+                {"SOL": "pod_b"},
+            )
 
     def test_supervisor_limits_pod_b_ownership_to_feasible_dead_zone_capacity(self) -> None:
         self.config.pod_b.enabled = True

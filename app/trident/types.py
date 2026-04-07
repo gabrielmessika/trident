@@ -74,6 +74,11 @@ class SymbolRoutingDecision:
     pod_scores: dict[PodName, float] = field(default_factory=dict)
     local_regime: SymbolLocalRegime | None = None
     local_regime_reason: str = ""
+    pod_reasoning: dict[PodName, str] = field(default_factory=dict)
+    reassignment_cooldown_active: bool = False
+    reassignment_cooldown_remaining_seconds: float = 0.0
+    override_active: bool = False
+    override_owner: PodName | None = None
 
 
 @dataclass(slots=True)
@@ -108,6 +113,8 @@ class LocalSymbolState:
     reason: str
     owner: PodName | None = None
     previous_owner: PodName | None = None
+    override_active: bool = False
+    override_owner: PodName | None = None
     global_alignment: str = "unknown"
     pod_scores: dict[PodName, float] = field(default_factory=dict)
 
@@ -237,6 +244,9 @@ class SupervisorState:
     local_regime_by_symbol: list[LocalSymbolState] = field(default_factory=list)
     local_regime_transitions: list[LocalSymbolTransition] = field(default_factory=list)
     symbol_reassignment_count_by_symbol: dict[str, int] = field(default_factory=dict)
+    symbol_last_reassignment_at: dict[str, str] = field(default_factory=dict)
+    runtime_symbol_pod_overrides: dict[str, str] = field(default_factory=dict)
+    runtime_symbol_pod_overrides_updated_at: str | None = None
     pod_a_signal_preview: list[SignalPreview] = field(default_factory=list)
     pod_c_signal_preview: list[SignalPreview] = field(default_factory=list)
     pod_b_status: dict[str, object] = field(default_factory=dict)

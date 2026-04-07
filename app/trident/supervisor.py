@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.settings import AppConfig
 from app.trident.capital_allocator import CapitalAllocator
@@ -10,6 +11,10 @@ from app.trident.market_clusters import all_cluster_leaders, enrich_snapshots
 from app.trident.pod_a import AnchorTrendPlanner, AnchorTrendService, MarketContextService
 from app.trident.pod_b import PassivbotManager
 from app.trident.pod_c import EventContextService, EventRaiderPlanner, EventRaiderService
+from app.trident.routing_overrides import (
+    load_runtime_symbol_pod_override_payload,
+    write_runtime_symbol_pod_override_payload,
+)
 from app.trident.pod_runtime import ConfiguredPod
 from app.trident.regime_allocator import RegimeAllocator
 from app.trident.symbol_router import SymbolRouter
@@ -24,6 +29,7 @@ from app.trident.types import (
     PodName,
     PodAllocation,
     RegimeSnapshot,
+    Regime,
     RegimeTransition,
     SignalPreview,
     SymbolAllocation,
@@ -56,6 +62,7 @@ class TridentSupervisor:
         self.pod_c_service = EventRaiderService(config.pod_c)
         self.pod_c_planner = EventRaiderPlanner(config.pod_c)
         self.pod_b_manager = PassivbotManager(config)
+        self._latest_snapshots: list[SymbolMarketSnapshot] = []
         self.state = SupervisorState(
             regime=self.regime_allocator.current_regime(),
             mode=mode,
@@ -63,6 +70,7 @@ class TridentSupervisor:
             enabled_pods=self._enabled_pods(),
         )
         self.pods = self._build_pods()
+        self.reload_runtime_routing_overrides()
         self.sync_symbol_ownership()
         self.capital_plan = self._build_capital_plan()
         self.sync_pod_b()
@@ -120,12 +128,15 @@ class TridentSupervisor:
         snapshots: list[SymbolMarketSnapshot],
     ) -> None:
         snapshots = self._prepare_snapshots(snapshots)
+        self._latest_snapshots = list(snapshots)
+        self.reload_runtime_routing_overrides()
         previous_status_by_symbol = {
             item.symbol: item for item in self.state.observed_symbol_status
         }
         previous_local_regimes = {
             item.symbol: item.local_regime for item in self.state.local_regime_by_symbol
         }
+        reassignment_age_seconds_by_symbol = self._reassignment_age_seconds_by_symbol()
         candidate_symbols_by_pod = self._candidate_symbols_by_pod(snapshots)
         current_status_by_symbol = {
             item.symbol: item for item in self.state.observed_symbol_status
@@ -144,12 +155,79 @@ class TridentSupervisor:
             desired_symbols_by_pod=candidate_symbols_by_pod,
             snapshots=snapshots,
             previous_owners=previous_owners,
+            reassignment_age_seconds_by_symbol=reassignment_age_seconds_by_symbol,
         )
         self._apply_symbol_routing(
             decisions,
             previous_owners=previous_owners,
             previous_local_regimes=previous_local_regimes,
         )
+
+    def runtime_routing_override_path(self) -> Path:
+        return Path(self.config.trident.routing.runtime_override_path)
+
+    def effective_symbol_pod_overrides(self) -> dict[str, str]:
+        merged = dict(self.config.trident.routing.symbol_pod_overrides)
+        merged.update(self.state.runtime_symbol_pod_overrides)
+        return {
+            str(symbol).strip().upper(): str(owner).strip().lower()
+            for symbol, owner in merged.items()
+            if str(symbol).strip() and str(owner).strip()
+        }
+
+    def reload_runtime_routing_overrides(self) -> None:
+        previous_runtime = dict(self.state.runtime_symbol_pod_overrides)
+        previous_updated_at = self.state.runtime_symbol_pod_overrides_updated_at
+        payload = load_runtime_symbol_pod_override_payload(
+            self.runtime_routing_override_path()
+        )
+        runtime_overrides = payload.get("symbol_pod_overrides", {})
+        updated_at = payload.get("updated_at")
+        self.state.runtime_symbol_pod_overrides = (
+            dict(runtime_overrides) if isinstance(runtime_overrides, dict) else {}
+        )
+        self.state.runtime_symbol_pod_overrides_updated_at = (
+            str(updated_at) if isinstance(updated_at, str) else None
+        )
+        self.symbol_router.set_symbol_pod_overrides(self.effective_symbol_pod_overrides())
+        if (
+            previous_runtime == self.state.runtime_symbol_pod_overrides
+            and previous_updated_at == self.state.runtime_symbol_pod_overrides_updated_at
+        ):
+            return
+        logger.info(
+            "Supervisor runtime routing overrides reloaded; runtime_overrides=%s updated_at=%s effective_overrides=%s path=%s",
+            self.state.runtime_symbol_pod_overrides,
+            self.state.runtime_symbol_pod_overrides_updated_at,
+            self.effective_symbol_pod_overrides(),
+            self.runtime_routing_override_path(),
+        )
+
+    def set_runtime_symbol_override(self, symbol: str, owner: PodName) -> None:
+        runtime_overrides = dict(self.state.runtime_symbol_pod_overrides)
+        runtime_overrides[str(symbol).strip().upper()] = owner.value
+        write_runtime_symbol_pod_override_payload(
+            self.runtime_routing_override_path(),
+            runtime_overrides,
+        )
+        self.reload_runtime_routing_overrides()
+        self._reroute_with_cached_snapshots()
+
+    def clear_runtime_symbol_override(self, symbol: str) -> None:
+        runtime_overrides = dict(self.state.runtime_symbol_pod_overrides)
+        runtime_overrides.pop(str(symbol).strip().upper(), None)
+        write_runtime_symbol_pod_override_payload(
+            self.runtime_routing_override_path(),
+            runtime_overrides,
+        )
+        self.reload_runtime_routing_overrides()
+        self._reroute_with_cached_snapshots()
+
+    def _reroute_with_cached_snapshots(self) -> None:
+        if self._latest_snapshots:
+            self.refresh_symbol_routing(self._latest_snapshots)
+            return
+        self.sync_symbol_ownership()
 
     def _candidate_symbols_by_pod(
         self,
@@ -172,7 +250,7 @@ class TridentSupervisor:
                 for pod_name, pod in self.pods.items()
                 if pod.enabled
             }
-        return {
+        candidates = {
             PodName.POD_A: tradable_symbols if self.config.pod_a.enabled else [],
             PodName.POD_B: tradable_symbols if self.config.pod_b.enabled else [],
             PodName.POD_C: (
@@ -180,6 +258,18 @@ class TridentSupervisor:
                 if self.config.pod_c.enabled
                 else []
             ),
+        }
+        override_symbols = self._routing_override_symbols_by_pod(tradable_symbols)
+        for pod_name, symbols in override_symbols.items():
+            merged = {item.upper() for item in candidates.get(pod_name, [])}
+            for symbol in symbols:
+                if symbol in merged:
+                    continue
+                candidates.setdefault(pod_name, []).append(symbol)
+                merged.add(symbol)
+        return {
+            pod_name: sorted(symbols)
+            for pod_name, symbols in candidates.items()
         }
 
     def _is_tradable_snapshot(self, snapshot: SymbolMarketSnapshot) -> bool:
@@ -546,6 +636,22 @@ class TridentSupervisor:
                 {
                     "symbol": item.symbol,
                     "owner": item.owner.value if item.owner else None,
+                    "override_active": next(
+                        (
+                            decision.override_active
+                            for decision in self.state.symbol_routing
+                            if decision.symbol == item.symbol
+                        ),
+                        False,
+                    ),
+                    "override_owner": next(
+                        (
+                            decision.override_owner.value
+                            for decision in self.state.symbol_routing
+                            if decision.symbol == item.symbol and decision.override_owner is not None
+                        ),
+                        None,
+                    ),
                     "routing_mode": next(
                         (
                             decision.mode
@@ -649,6 +755,10 @@ class TridentSupervisor:
                     "previous_owner": (
                         item.previous_owner.value if item.previous_owner is not None else None
                     ),
+                    "override_active": item.override_active,
+                    "override_owner": (
+                        item.override_owner.value if item.override_owner is not None else None
+                    ),
                     "global_alignment": item.global_alignment,
                     "pod_scores": {
                         pod.value: score for pod, score in item.pod_scores.items()
@@ -657,6 +767,10 @@ class TridentSupervisor:
                         item.symbol,
                         0,
                     ),
+                    "last_reassigned_at": self.state.symbol_last_reassignment_at.get(
+                        item.symbol
+                    ),
+                    "reassignment_age_seconds": self._reassignment_age_seconds(item.symbol),
                 }
                 for item in self.state.local_regime_by_symbol
             ],
@@ -677,6 +791,13 @@ class TridentSupervisor:
             "symbol_reassignment_count_by_symbol": dict(
                 self.state.symbol_reassignment_count_by_symbol
             ),
+            "routing_overrides": {
+                "config": dict(self.config.trident.routing.symbol_pod_overrides),
+                "runtime": dict(self.state.runtime_symbol_pod_overrides),
+                "effective": self.effective_symbol_pod_overrides(),
+                "runtime_updated_at": self.state.runtime_symbol_pod_overrides_updated_at,
+                "runtime_path": str(self.runtime_routing_override_path()),
+            },
             "pod_a_signal_preview": [
                 {
                     "symbol": signal.symbol,
@@ -716,6 +837,27 @@ class TridentSupervisor:
                         else None
                     ),
                     "local_regime_reason": decision.local_regime_reason,
+                    "pod_reasoning": {
+                        pod.value: reason
+                        for pod, reason in decision.pod_reasoning.items()
+                    },
+                    "reassignment_cooldown_active": decision.reassignment_cooldown_active,
+                    "reassignment_cooldown_remaining_seconds": round(
+                        decision.reassignment_cooldown_remaining_seconds,
+                        2,
+                    ),
+                    "override_active": decision.override_active,
+                    "override_owner": (
+                        decision.override_owner.value
+                        if decision.override_owner is not None
+                        else None
+                    ),
+                    "last_reassigned_at": self.state.symbol_last_reassignment_at.get(
+                        decision.symbol
+                    ),
+                    "reassignment_age_seconds": self._reassignment_age_seconds(
+                        decision.symbol
+                    ),
                 }
                 for decision in self.state.symbol_routing
             ],
@@ -748,10 +890,16 @@ class TridentSupervisor:
                     )
                 )
             previous_owner = previous_owners.get(decision.symbol)
-            if previous_owner != decision.owner:
+            if previous_owner != decision.owner and (
+                previous_owner is not None
+                or decision.symbol in self.state.symbol_reassignment_count_by_symbol
+            ):
                 self.state.symbol_reassignment_count_by_symbol[decision.symbol] = (
                     self.state.symbol_reassignment_count_by_symbol.get(decision.symbol, 0)
                     + 1
+                )
+                self.state.symbol_last_reassignment_at[decision.symbol] = (
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 )
             local_states.append(
                 LocalSymbolState(
@@ -760,6 +908,8 @@ class TridentSupervisor:
                     reason=decision.local_regime_reason,
                     owner=decision.owner,
                     previous_owner=decision.previous_owner,
+                    override_active=decision.override_active,
+                    override_owner=decision.override_owner,
                     global_alignment=self._local_global_alignment(
                         self.state.regime,
                         decision.local_regime,
@@ -793,6 +943,34 @@ class TridentSupervisor:
             Regime.CASH: {SymbolLocalRegime.NEUTRAL},
         }
         return "aligned" if local_regime in aligned[global_regime] else "divergent"
+
+    def _reassignment_age_seconds_by_symbol(self) -> dict[str, float]:
+        ages: dict[str, float] = {}
+        now = datetime.now(timezone.utc)
+        for symbol, recorded_at in self.state.symbol_last_reassignment_at.items():
+            age = self._parse_age_seconds(now=now, recorded_at=recorded_at)
+            if age is not None:
+                ages[symbol] = age
+        return ages
+
+    def _reassignment_age_seconds(self, symbol: str) -> float | None:
+        recorded_at = self.state.symbol_last_reassignment_at.get(symbol)
+        if recorded_at is None:
+            return None
+        return self._parse_age_seconds(
+            now=datetime.now(timezone.utc),
+            recorded_at=recorded_at,
+        )
+
+    def _parse_age_seconds(self, *, now: datetime, recorded_at: str) -> float | None:
+        normalized = recorded_at.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max((now - parsed.astimezone(timezone.utc)).total_seconds(), 0.0)
 
     def _log_tradable_pool_changes(
         self,
@@ -868,6 +1046,34 @@ class TridentSupervisor:
             changes,
             conflict_count,
         )
+
+    def _routing_override_symbols_by_pod(
+        self,
+        tradable_symbols: list[str],
+    ) -> dict[PodName, list[str]]:
+        tradable = {symbol.upper() for symbol in tradable_symbols}
+        overrides = self.effective_symbol_pod_overrides()
+        valid_pods = {pod.value: pod for pod in PodName}
+        symbols_by_pod: dict[PodName, list[str]] = {}
+        for raw_symbol, raw_pod in overrides.items():
+            symbol = str(raw_symbol).strip().upper()
+            if symbol not in tradable:
+                continue
+            pod = valid_pods.get(str(raw_pod).strip().lower())
+            if pod is None:
+                continue
+            if not self.pods[pod].enabled:
+                logger.warning(
+                    "Ignoring routing override for disabled pod; symbol=%s target=%s",
+                    symbol,
+                    pod.value,
+                )
+                continue
+            symbols_by_pod.setdefault(pod, []).append(symbol)
+        return {
+            pod: sorted(symbols)
+            for pod, symbols in symbols_by_pod.items()
+        }
 
     def _log_pod_b_sync_changes(
         self,

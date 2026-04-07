@@ -83,6 +83,17 @@ dry_run_taker_fee_bps = 3.5
 dry_run_slippage_bps = 0.5
 dry_run_spread_multiplier = 0.5
 
+[trident.routing]
+min_assign_score = 0.40
+min_hold_score = 0.30
+hysteresis_margin = 0.10
+reassignment_cooldown_seconds = 600
+runtime_override_path = "./runtime/trident/symbol_routing_overrides.json"
+
+[trident.routing.symbol_pod_overrides]
+# BTC = "pod_a"
+# ETH = "pod_b"
+
 [trident.allocations.trend_expansion]
 pod_a = 0.60
 pod_b = 0.10

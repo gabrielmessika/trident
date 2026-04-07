@@ -20,7 +20,7 @@ from app.live.runtime_status import (
     runtime_status_is_fresh,
 )
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import RegimeSnapshot, SymbolMarketSnapshot
+from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot
 
 
 def _latest_snapshot_status(snapshot_dir: Path = Path("data/live_snapshots")) -> dict[str, object]:
@@ -529,6 +529,10 @@ def _merge_runtime_snapshot(
         "symbol_ownership",
         "ownership_conflicts",
         "symbol_routing",
+        "local_regime_by_symbol",
+        "local_regime_transitions",
+        "symbol_reassignment_count_by_symbol",
+        "routing_overrides",
         "pods",
         "allocations",
         "capital_plan",
@@ -600,6 +604,10 @@ def _embedded_supervisor_snapshot(snapshot: dict[str, object]) -> dict[str, obje
         "symbol_ownership",
         "ownership_conflicts",
         "symbol_routing",
+        "local_regime_by_symbol",
+        "local_regime_transitions",
+        "symbol_reassignment_count_by_symbol",
+        "routing_overrides",
         "pods",
         "allocations",
         "capital_plan",
@@ -1203,12 +1211,93 @@ def _control_center_html(
             "<tr>"
             f"<td>{escape(str(item['symbol']))}</td>"
             f"<td>{escape(str(item['owner'] or 'unassigned'))}</td>"
+            f"<td>{escape(str(item.get('override_owner') or '-'))}</td>"
             f"<td>{escape(str(item.get('routing_mode') or '-'))}</td>"
             f"<td>{escape(str(item.get('routing_reason') or '-'))}</td>"
             "</tr>"
         )
         for item in snapshot["symbol_ownership"]
-    ) or "<tr><td colspan='4'>Aucune ownership visible.</td></tr>"
+    ) or "<tr><td colspan='5'>Aucune ownership visible.</td></tr>"
+    local_regime_rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(str(item.get('symbol') or '-'))}</td>"
+            f"<td>{escape(str(item.get('local_regime') or '-'))}</td>"
+            f"<td>{escape(str(item.get('global_alignment') or '-'))}</td>"
+            f"<td>{escape(str(item.get('owner') or 'unassigned'))}</td>"
+            f"<td>{escape(str(item.get('override_owner') or '-'))}</td>"
+            f"<td>{escape(str(item.get('reassignment_count') or 0))}</td>"
+            f"<td>{escape(str(item.get('reason') or '-'))}</td>"
+            "</tr>"
+        )
+        for item in snapshot.get("local_regime_by_symbol", [])
+        if isinstance(item, dict)
+    ) or "<tr><td colspan='7'>Aucun état local visible.</td></tr>"
+    routing_override_rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(str(symbol))}</td>"
+            f"<td>{escape(str(owner))}</td>"
+            f"<td>config</td>"
+            "</tr>"
+        )
+        for symbol, owner in sorted(
+            (
+                snapshot.get("routing_overrides", {}).get("config", {})
+                if isinstance(snapshot.get("routing_overrides"), dict)
+                else {}
+            ).items()
+        )
+    )
+    runtime_override_rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(str(symbol))}</td>"
+            f"<td>{escape(str(owner))}</td>"
+            f"<td>runtime</td>"
+            "</tr>"
+        )
+        for symbol, owner in sorted(
+            (
+                snapshot.get("routing_overrides", {}).get("runtime", {})
+                if isinstance(snapshot.get("routing_overrides"), dict)
+                else {}
+            ).items()
+        )
+    )
+    routing_override_rows = (
+        routing_override_rows + runtime_override_rows
+    ) or "<tr><td colspan='3'>Aucun override de routing actif.</td></tr>"
+    routing_override_meta = (
+        snapshot.get("routing_overrides", {})
+        if isinstance(snapshot.get("routing_overrides"), dict)
+        else {}
+    )
+    routing_override_runtime_updated_at = escape(
+        str(routing_override_meta.get("runtime_updated_at") or "-")
+    )
+    routing_override_runtime_path = escape(
+        str(routing_override_meta.get("runtime_path") or "-")
+    )
+    routing_decision_rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(str(item.get('symbol') or '-'))}</td>"
+            f"<td>{escape(str(item.get('owner') or 'unassigned'))}</td>"
+            f"<td>{escape(str(item.get('previous_owner') or '-'))}</td>"
+            f"<td>{escape(str(item.get('mode') or '-'))}</td>"
+            f"<td>{escape(', '.join(item.get('candidate_pods', [])) if isinstance(item.get('candidate_pods'), list) else '-')}</td>"
+            f"<td>{'<br>'.join(f'{escape(str(pod))}: {float(score):.2f}' for pod, score in sorted((item.get('pod_scores') or {}).items())) if isinstance(item.get('pod_scores'), dict) and item.get('pod_scores') else '-'}</td>"
+            f"<td>{escape(str(item.get('local_regime') or '-'))}</td>"
+            f"<td>{'on' if bool(item.get('reassignment_cooldown_active')) else 'off'}</td>"
+            f"<td>{escape(str(item.get('override_owner') or '-'))}</td>"
+            f"<td>{'<br>'.join(f'{escape(str(pod))}: {escape(str(reason))}' for pod, reason in sorted((item.get('pod_reasoning') or {}).items())) if isinstance(item.get('pod_reasoning'), dict) and item.get('pod_reasoning') else '-'}</td>"
+            f"<td>{escape(str(item.get('reason') or '-'))}</td>"
+            "</tr>"
+        )
+        for item in snapshot.get("symbol_routing", [])
+        if isinstance(item, dict)
+    ) or "<tr><td colspan='11'>Aucune décision de routing visible.</td></tr>"
     conflict_rows = "".join(
         (
             "<tr>"
@@ -1601,6 +1690,56 @@ def _control_center_html(
       color: var(--muted);
       line-height: 1.55;
     }}
+    .inline-form {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto auto;
+      gap: 10px;
+      align-items: end;
+    }}
+    .field-stack {{
+      display: grid;
+      gap: 6px;
+    }}
+    .field-stack label {{
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }}
+    .field-stack input,
+    .field-stack select {{
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      padding: 11px 12px;
+      color: var(--text);
+      font: inherit;
+    }}
+    .action-button {{
+      border: 0;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+    }}
+    .action-button.secondary {{
+      background: rgba(143, 103, 71, 0.12);
+      color: var(--accent);
+      border: 1px solid rgba(143, 103, 71, 0.22);
+    }}
+    .inline-status {{
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(143, 103, 71, 0.08);
+      color: var(--muted);
+      min-height: 22px;
+      line-height: 1.45;
+    }}
     .focus-item {{
       display: grid;
       gap: 12px;
@@ -1751,6 +1890,9 @@ def _control_center_html(
       display: none;
     }}
     @media (max-width: 980px) {{
+      .inline-form {{
+        grid-template-columns: 1fr;
+      }}
       .pod-detail-grid {{
         grid-template-columns: 1fr;
       }}
@@ -2149,11 +2291,26 @@ def _control_center_html(
               </div>
               <div class="table-wrap">
                 <table>
-                  <thead><tr><th>Symbol</th><th>Owner</th><th>Routing</th><th>Reason</th></tr></thead>
+                  <thead><tr><th>Symbol</th><th>Owner</th><th>Override</th><th>Routing</th><th>Reason</th></tr></thead>
                   <tbody>{ownership_rows}</tbody>
                 </table>
               </div>
             </div>
+            <div class="panel" style="box-shadow:none;">
+              <div class="panel-header">
+                <h3>Local symbol states</h3>
+                <p>Lecture locale par coin, alignement global/local et compteur de réattributions.</p>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Symbol</th><th>Local regime</th><th>Alignment</th><th>Owner</th><th>Override</th><th>Reassignments</th><th>Reason</th></tr></thead>
+                  <tbody>{local_regime_rows}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="pod-detail-grid">
             <div class="panel" style="box-shadow:none;">
               <div class="panel-header">
                 <h3>Regime history</h3>
@@ -2165,6 +2322,77 @@ def _control_center_html(
                   <tbody>{regime_rows}</tbody>
                 </table>
               </div>
+            </div>
+            <div class="panel" style="box-shadow:none;">
+              <div class="panel-header">
+                <h3>Local transitions</h3>
+                <p>Transitions locales récentes détectées coin par coin.</p>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Recorded at</th><th>Symbol</th><th>Previous</th><th>New</th><th>Reason</th></tr></thead>
+                  <tbody>{
+                    "".join(
+                        (
+                            "<tr>"
+                            f"<td>{escape(str(item.get('recorded_at') or '-'))}</td>"
+                            f"<td>{escape(str(item.get('symbol') or '-'))}</td>"
+                            f"<td>{escape(str(item.get('previous_local_regime') or '-'))}</td>"
+                            f"<td>{escape(str(item.get('new_local_regime') or '-'))}</td>"
+                            f"<td>{escape(str(item.get('reason') or '-'))}</td>"
+                            "</tr>"
+                        )
+                        for item in snapshot.get("local_regime_transitions", [])[-20:]
+                        if isinstance(item, dict)
+                    ) or "<tr><td colspan='5'>Aucune transition locale enregistrée.</td></tr>"
+                  }</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel" style="box-shadow:none;">
+            <div class="panel-header">
+              <h3>Routing overrides</h3>
+              <p>Overrides statiques et runtime actuellement pris en compte par le routeur. Runtime file: <code>{routing_override_runtime_path}</code>. Last runtime update: <code>{routing_override_runtime_updated_at}</code>.</p>
+            </div>
+            <form class="inline-form" data-routing-override-form>
+              <div class="field-stack">
+                <label for="routing-override-symbol">Symbol</label>
+                <input id="routing-override-symbol" name="symbol" type="text" placeholder="SOL" autocomplete="off">
+              </div>
+              <div class="field-stack">
+                <label for="routing-override-owner">Owner</label>
+                <select id="routing-override-owner" name="owner">
+                  <option value="pod_a">pod_a</option>
+                  <option value="pod_b">pod_b</option>
+                  <option value="pod_c">pod_c</option>
+                </select>
+              </div>
+              <button class="action-button" type="submit">Set runtime pin</button>
+              <button class="action-button secondary" type="button" data-routing-override-clear>Clear pin</button>
+            </form>
+            <div class="inline-status" data-routing-override-status>
+              Utilisez ce panneau pour forcer un symbole en live sans redémarrer le supervisor.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Symbol</th><th>Owner</th><th>Source</th></tr></thead>
+                <tbody>{routing_override_rows}</tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel" style="box-shadow:none;">
+            <div class="panel-header">
+              <h3>Routing decisions</h3>
+              <p>Vue détaillée des candidats, scores et raisons par symbole pour analyser le choix effectif.</p>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Symbol</th><th>Owner</th><th>Previous</th><th>Mode</th><th>Candidates</th><th>Scores</th><th>Local regime</th><th>Cooldown</th><th>Override</th><th>Reasoning</th><th>Decision</th></tr></thead>
+                <tbody>{routing_decision_rows}</tbody>
+              </table>
             </div>
           </div>
 
@@ -2198,6 +2426,9 @@ def _control_center_html(
       }};
       const filterButtons = Array.from(document.querySelectorAll("[data-filter-group]"));
       const filterRows = Array.from(document.querySelectorAll("tr[data-filter-status][data-filter-pod]"));
+      const routingOverrideForm = document.querySelector("[data-routing-override-form]");
+      const routingOverrideStatus = document.querySelector("[data-routing-override-status]");
+      const routingOverrideClearButton = document.querySelector("[data-routing-override-clear]");
 
       function normalizedTab(tabName) {{
         return validTabs.has(tabName) ? tabName : body.dataset.defaultTab || "status";
@@ -2293,6 +2524,60 @@ def _control_center_html(
         }});
       }});
 
+      async function submitRoutingOverride(ownerValue) {{
+        if (!routingOverrideForm || !routingOverrideStatus) return;
+        const formData = new window.FormData(routingOverrideForm);
+        const symbol = String(formData.get("symbol") || "").trim().toUpperCase();
+        if (!symbol) {{
+          routingOverrideStatus.textContent = "Symbol requis pour modifier un pin runtime.";
+          return;
+        }}
+        const owner =
+          ownerValue === null
+            ? null
+            : String(ownerValue || formData.get("owner") || "").trim().toLowerCase();
+        routingOverrideStatus.textContent = owner === null
+          ? `Suppression du pin runtime pour ${{symbol}}...`
+          : `Application du pin runtime ${{symbol}} -> ${{owner}}...`;
+        try {{
+          const response = await window.fetch("/api/routing/override", {{
+            method: "POST",
+            headers: {{
+              "Content-Type": "application/json",
+            }},
+            body: JSON.stringify({{ symbol, owner }}),
+          }});
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) {{
+            routingOverrideStatus.textContent = `Échec update runtime pin: ${{payload.error || response.status}}`;
+            return;
+          }}
+          routingOverrideStatus.textContent = owner === null
+            ? `Pin runtime supprimé pour ${{symbol}}. Rafraîchissement en cours...`
+            : `Pin runtime appliqué: ${{symbol}} -> ${{payload.owner || owner}}. Rafraîchissement en cours...`;
+          saveScrollPosition("system");
+          window.setTimeout(() => {{
+            window.location.hash = "#system";
+            window.location.reload();
+          }}, 450);
+        }} catch (_error) {{
+          routingOverrideStatus.textContent = "Erreur réseau pendant la mise à jour du pin runtime.";
+        }}
+      }}
+
+      if (routingOverrideForm) {{
+        routingOverrideForm.addEventListener("submit", (event) => {{
+          event.preventDefault();
+          void submitRoutingOverride(undefined);
+        }});
+      }}
+
+      if (routingOverrideClearButton) {{
+        routingOverrideClearButton.addEventListener("click", () => {{
+          void submitRoutingOverride(null);
+        }});
+      }}
+
       const hashTab = (window.location.hash || "").replace("#", "");
       setTab(hashTab || body.dataset.defaultTab || "status", false);
       refreshFilterRows();
@@ -2377,8 +2662,73 @@ def build_handler(
                 return
             self._send_json(HTTPStatus.OK, routes[self.path]())
 
+        def do_POST(self) -> None:  # noqa: N802
+            if self.path != "/api/routing/override":
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                return
+            payload = self._read_json_body()
+            if not isinstance(payload, dict):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
+                return
+            symbol = str(payload.get("symbol", "")).strip().upper()
+            if not symbol:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "missing_symbol"})
+                return
+            owner_raw = payload.get("owner")
+            if owner_raw in (None, ""):
+                supervisor.clear_runtime_symbol_override(symbol)
+                response_owner = None
+                action = "cleared"
+            else:
+                try:
+                    owner = PodName(str(owner_raw).strip().lower())
+                except ValueError:
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "invalid_owner", "valid_owners": [pod.value for pod in PodName]},
+                    )
+                    return
+                supervisor.set_runtime_symbol_override(symbol, owner)
+                response_owner = owner.value
+                action = "set"
+            metrics.refresh_from_supervisor(supervisor)
+            snapshot = supervisor.snapshot()
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "action": action,
+                    "symbol": symbol,
+                    "owner": response_owner,
+                    "routing_overrides": snapshot.get("routing_overrides", {}),
+                    "symbol_routing": next(
+                        (
+                            item
+                            for item in snapshot.get("symbol_routing", [])
+                            if isinstance(item, dict) and item.get("symbol") == symbol
+                        ),
+                        None,
+                    ),
+                },
+            )
+
         def log_message(self, format: str, *args: object) -> None:
             return
+
+        def _read_json_body(self) -> dict[str, object] | None:
+            raw_length = self.headers.get("Content-Length", "0")
+            try:
+                content_length = int(raw_length)
+            except ValueError:
+                return None
+            if content_length <= 0:
+                return None
+            body = self.rfile.read(content_length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            return payload if isinstance(payload, dict) else None
 
         def _send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
             body = json.dumps(payload).encode("utf-8")

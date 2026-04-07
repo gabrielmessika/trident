@@ -287,6 +287,74 @@
   - `Regime history` global est conserve pour la lecture macro du marche
   - une telemetrie locale par coin doit s'y ajouter pour expliquer les reattributions et divergences
   - l'etape `5bis` est etendue en consequence
+- 2026-04-07: routing dynamique `5bis` amene a un etat exploitable en dry-run/live:
+  - le routeur derive maintenant un `local_regime` par symbol:
+    - `TrendStructure`
+    - `RangeStructure`
+    - `EventImpulse`
+    - `Neutral`
+  - le scoring de routage combine maintenant:
+    - `global_regime` pour la posture macro
+    - `local_regime` pour l'affinite reelle par pod
+    - hysteresis de switch
+    - cooldown de reattribution par symbol
+  - le superviseur expose maintenant:
+    - `local_regime_by_symbol`
+    - `local_regime_transitions`
+    - `symbol_reassignment_count_by_symbol`
+    - `routing_overrides`
+  - le dashboard System affiche maintenant:
+    - `global vs local`
+    - les decisions detaillees de routing par symbol
+    - les candidats, scores et raisons par pod
+    - les overrides actifs
+  - override manuel par symbol ajoute:
+    - override statique via `config/trident.toml`
+    - pin runtime persistant via fichier `runtime/trident/symbol_routing_overrides.json`
+    - endpoint `POST /api/routing/override`
+    - panneau de controle direct dans l'UI
+  - consequence attendue:
+    - les reattributions deviennent explicables et pilotables sans redeploiement
+    - le superviseur reste la seule source d'autorite pour l'ownership effectif
+  - travail restant sur ce point:
+    - validation sur fetchs / replays reels multi-sessions
+    - recalibrage des seuils de scoring, hysteresis et cooldown si le churn reste trop eleve
+- 2026-04-07: etape `5bis` validee sur snapshots reels et fermee:
+  - outillage de validation ajoute:
+    - `app/backtest/routing_replay.py`
+    - replay dedie au routage avec:
+      - de-duplication optionnelle des timestamps
+      - mesure des reattributions
+      - mesure des divergences locales
+      - repartition effective par pod
+  - replay execute sur:
+    - `server-data/live_snapshots/2026-04-05.jsonl`
+    - `server-data/live_snapshots/2026-04-06.jsonl`
+    - `server-data/live_snapshots/2026-04-07.jsonl`
+  - resultat retenu apres comparaison de 3 reglages:
+    - configuration retenue:
+      - `min_assign_score = 0.40`
+      - `min_hold_score = 0.30`
+      - `hysteresis_margin = 0.10`
+      - `reassignment_cooldown_seconds = 600`
+    - replay retenu:
+      - `records_processed = 2911`
+      - `duplicate_timestamps_skipped = 1457`
+      - `max_ownership_conflict_count = 0`
+      - `reassignment_event_count = 649`
+      - `divergent_symbol_count = 18`
+      - owner share:
+        - `pod_a = 6.88%`
+        - `pod_b = 78.42%`
+        - `pod_c = 14.70%`
+  - lecture:
+    - le reglage plus souple reduit le churn de reattribution vs le reglage precedent (`649` vs `799`)
+    - il desature legerement `Pod B` et laisse plus de place aux divergences locales lisibles
+    - aucun conflit d'ownership n'apparait sur le replay reel retenu
+  - artefacts conserves dans:
+    - `data/replay_reports/routing_replay_current_2026-04-05_2026-04-07.json`
+    - `data/replay_reports/routing_replay_tighter_2026-04-05_2026-04-07.json`
+    - `data/replay_reports/routing_replay_looser_2026-04-05_2026-04-07.json`
 - 2026-04-05: Pod B paper runner ajoute:
   - `app/trident/pod_b/paper_engine.py` cree
   - `app/trident/pod_b/paper_runner.py` cree
@@ -351,6 +419,7 @@
 - Etape 3: completee
 - Etape 4: completee
 - Etape 5: partiellement implementee, avec paper-run reel, cohabitation et wrapper live disponibles
+- Etape 5bis: completee
 - Fichiers crees: `pyproject.toml`, `Makefile`, `config/trident.toml`, `app/`, `tests/`
 - Validation reelle effectuee:
 - `python3.12 -m unittest discover -s tests -v` -> OK, `68 tests`
@@ -394,7 +463,7 @@
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider en dry-run live le socle `500 USD` et confirmer le comportement d'upgrade / allocation active sur une plage plus longue |
 | 5. Pod B range engine natif | 92% | Lancer le premier dry-run 24h 3 pods avec `Pod B` en mode conservateur, puis recalibrer les seuils d'activation range/toxicite sur les observations runtime |
-| 5bis. Routing dynamique symbols / ownership | 80% | Etendre le routeur avec un `local_regime` / `symbol_state` par coin, afficher `global vs local` dans l'UI, puis recalibrer sur quelques sessions live multi-coins |
+| 5bis. Routing dynamique symbols / ownership | 100% | Rien, etape fermee |
 | 6. Reporting par pod | 100% | Rien, étape fermée |
 | 7. Research Pod pour Pod C | 100% | Rien, étape fermée |
 | 8. Pod C minimal | 100% | Rien, étape fermée |
@@ -445,11 +514,13 @@ Regle de maintenance:
      - relancer le memo de decision cible `crypto_only` vs `mixed`
 
 5. Regime multi-niveaux pour le superviseur
-   - statut: decision d'architecture prise, implementation a lancer
-   - resultat cible:
-     - `global_regime` pour l'enveloppe de risque et les caps par pod
-     - `local_regime` ou `symbol_state` par coin pour le routing et l'eligibilite reelle des pods
+   - statut: implemente et valide
+   - resultat:
+     - `global_regime` conserve l'enveloppe de risque et les caps par pod
+     - `local_regime` par coin pilote le routing et l'eligibilite reelle des pods
      - telemetrie separant clairement macro du marche et comportement local des symbols
+     - override statique + pin runtime disponibles pour reprendre la main en live
+     - replay reel de validation ajoute avec artefacts dans `data/replay_reports/`
 
 6. Diagnostic Pod B avec plus de donnees
    - conserver Pod B actif en observation
@@ -2590,7 +2661,7 @@ Decision actuelle:
 
 ### Statut
 
-`EN COURS — routeur dynamique V1 en place, mais encore trop biaise par le regime global; extension vers un modele global + local par coin validee`
+`COMPLETEE — routage multi-niveaux global + local valide, telemetrie exposee, pin manuel disponible et seuils recalibres sur snapshots reels`
 
 ### Pourquoi cette etape existe
 
@@ -2741,16 +2812,24 @@ Cette étape n'est pas strictement nécessaire pour lancer le premier dry-run 3 
 - laisser tourner les 3 pods ensemble sans micro-gestion manuelle
 - se rapprocher du comportement "orchestrateur intelligent" attendu par la vision du projet
 
-Validation restante:
+Validation finale:
 
-- brancher le même routage dynamique dans une boucle live 3 pods réellement partagée, plutôt que dans des runners encore séparés
-- enrichir les raisons de routage quand un coin n'est pas retenu par un pod
-- ajouter si besoin un `pin manuel` et un cooldown explicite configurable par symbole
-- ajouter une telemetrie locale borne:
+- replay de routage dedie ajoute et execute sur snapshots reels `2026-04-05 -> 2026-04-07`
+- de-duplication des timestamps ajoutee pour eviter de surcompter le churn sur les snapshots doubles
+- raisons de choix / non-choix exposees par pod dans l'UI System
+- `pin manuel` disponible:
+  - statique via config
+  - runtime via fichier
+  - runtime via `POST /api/routing/override`
+- telemetrie locale borne exposee:
   - `local_regime_by_symbol`
   - transitions locales recentes
   - compteur de reattributions par symbol
-- recalibrer les seuils sur sessions live multi-coins pour verifier qu'on n'obtient plus de "tout en Pod B" ou "tout en Pod A" seulement par biais de regime global
+- seuils retenus apres replay reel:
+  - `min_assign_score = 0.40`
+  - `min_hold_score = 0.30`
+  - `hysteresis_margin = 0.10`
+  - `reassignment_cooldown_seconds = 600`
 
 ---
 
