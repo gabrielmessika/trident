@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from app.trident.pod_a.filters import passes_anchor_filters
+from app.trident.pod_a.filters import (
+    max_abs_funding_rate_for_cluster,
+    max_spread_bps_for_cluster,
+    passes_anchor_filters,
+)
 from app.trident.pod_a.setups import (
     ema_separation_bps,
     is_bos_retest_long,
@@ -38,6 +42,8 @@ class AnchorTrendService:
                 setup="bos_retest_long",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=long_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -62,6 +68,8 @@ class AnchorTrendService:
                 setup="bos_retest_short",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=short_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -86,6 +94,8 @@ class AnchorTrendService:
                 setup="liquidity_sweep_reclaim_long",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=long_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -112,6 +122,8 @@ class AnchorTrendService:
                 setup="liquidity_sweep_reclaim_short",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=short_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -138,6 +150,8 @@ class AnchorTrendService:
                 setup="vwap_reclaim_long",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=long_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -163,6 +177,8 @@ class AnchorTrendService:
                 setup="vwap_reclaim_short",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=short_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -188,6 +204,8 @@ class AnchorTrendService:
                 setup="bos_retest_long",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=long_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -212,6 +230,8 @@ class AnchorTrendService:
                 setup="bos_retest_short",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=short_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -235,6 +255,8 @@ class AnchorTrendService:
                 setup="trend_pullback_long",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=long_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -252,6 +274,8 @@ class AnchorTrendService:
                 setup="trend_pullback_short",
                 confidence=round(self._aggregate_confidence(components), 3),
                 entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
                 invalidation_price=short_invalidation_price(
                     price=context.price,
                     ema_slow=context.ema_slow,
@@ -304,8 +328,14 @@ class AnchorTrendService:
         pullback_quality = _clamp(
             1.0 - abs(abs(context.vwap_distance_bps) - PULLBACK_ANCHOR_BPS) / 18.0,
         )
-        spread_quality = _clamp(1.0 - context.spread_bps / 8.0)
-        funding_quality = _clamp(1.0 - abs(context.funding_rate) / 0.0005)
+        spread_quality = _clamp(
+            1.0 - context.spread_bps / max_spread_bps_for_cluster(context.market_cluster)
+        )
+        funding_quality = _clamp(
+            1.0
+            - abs(context.funding_rate)
+            / max(max_abs_funding_rate_for_cluster(context.market_cluster), 1e-9)
+        )
         mtf_quality = 0.5
         if context.candles_ready:
             mtf_quality = _clamp(0.5 + context.mtf_bias_score / 120.0)

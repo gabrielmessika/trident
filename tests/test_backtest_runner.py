@@ -280,9 +280,20 @@ class PodABacktestRunnerTests(unittest.TestCase):
 
             self.assertEqual(result.reference_equity_usd, 500.0)
             self.assertEqual(result.accepted_count, 1)
-            self.assertLessEqual(result.max_open_margin_usd, 80.0)
-            self.assertLessEqual(result.max_open_notional_usd, 150.0)
-            self.assertLessEqual(result.max_open_expected_loss_usd, 2.5)
+            max_margin_cap = (
+                config.trident.capital.reference_equity_usd
+                * config.trident.capital.max_allocation_per_symbol_pct
+            )
+            max_risk_budget = (
+                config.trident.capital.reference_equity_usd
+                * config.pod_a.risk_per_trade_pct
+            )
+            self.assertLessEqual(result.max_open_margin_usd, max_margin_cap)
+            self.assertLessEqual(
+                result.max_open_notional_usd,
+                max_margin_cap * config.pod_a.max_leverage,
+            )
+            self.assertLessEqual(result.max_open_expected_loss_usd, max_risk_budget)
 
 
 if __name__ == "__main__":

@@ -177,8 +177,10 @@ Decision d'architecture actuelle:
 - Passivbot reste une reference de benchmark et d'inspiration, pas une dependance runtime obligatoire.
 - univers observe et univers trade sont separes:
   - `hyperliquid.observation_universe` = coins observes par le collector
-  - `pod_a.symbols`, `pod_b.symbols`, `pod_c.*` = enveloppe de symbols qu'un pod peut legalement recevoir
+  - le `supervisor` construit le pool tradable dynamiquement a partir des snapshots frais de cet univers observe
   - l'ownership effectif, l'allocation et le `managed_symbols` runtime sont decides par le `supervisor`, pas par la config runtime des pods
+  - les listes statiques `pod_a.symbols`, `pod_b.symbols` et `pod_c.follower_symbols` ne pilotent plus le routage live; elles restent seulement des artefacts legacy / de compatibilite tant qu'on ne les retire pas completement
+  - `pod_c.leader_symbols` reste utile pour exclure les leaders du pool follower de Pod C
   - le collector est automatiquement sharde si l'univers observe depasse la limite empirique stable de ~10 coins par connexion WS
 
 Comment ca marche, en version simple:

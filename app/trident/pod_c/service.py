@@ -26,6 +26,7 @@ class EventRaiderService:
             confidence=round(self._aggregate_confidence(components), 3),
             entry_price=context.price,
             leader_symbol=context.leader_symbol,
+            market_cluster=context.market_cluster,
             confidence_components=components,
         )
 
@@ -38,17 +39,18 @@ class EventRaiderService:
         return sorted(signals, key=lambda item: item.confidence, reverse=True)
 
     def _passes_filters(self, context: EventRaiderContext) -> bool:
-        if not context.btc_aligned:
+        if not context.cluster_aligned:
             return False
-        if context.spread_bps > self.config.max_spread_bps:
+        max_spread_bps = self._max_spread_bps(context.market_cluster)
+        if context.spread_bps > max_spread_bps:
             return False
         min_required_lag = max(
-            self.config.min_lag_bps,
-            self.config.impulse_threshold_bps * 0.6,
+            self._min_lag_bps(context.market_cluster),
+            self._impulse_threshold_bps(context.market_cluster) * 0.6,
         )
         if context.lag_bps < min_required_lag:
             return False
-        if abs(context.leader_impulse_bps) < self.config.impulse_threshold_bps * 1.1:
+        if abs(context.leader_impulse_bps) < self._impulse_threshold_bps(context.market_cluster) * 1.1:
             return False
         if abs(context.follower_move_bps) > abs(context.leader_impulse_bps) * 0.75:
             return False
@@ -64,12 +66,14 @@ class EventRaiderService:
         return True
 
     def _confidence_components(self, context: EventRaiderContext) -> dict[str, float]:
+        impulse_threshold = self._impulse_threshold_bps(context.market_cluster)
+        max_spread_bps = self._max_spread_bps(context.market_cluster)
         impulse_quality = _clamp(
-            (abs(context.leader_impulse_bps) - self.config.impulse_threshold_bps)
-            / max(self.config.impulse_threshold_bps, 1.0),
+            (abs(context.leader_impulse_bps) - impulse_threshold)
+            / max(impulse_threshold, 1.0),
         )
-        lag_quality = _clamp(context.lag_bps / max(self.config.impulse_threshold_bps, 1.0))
-        spread_quality = _clamp(1.0 - context.spread_bps / max(self.config.max_spread_bps, 1.0))
+        lag_quality = _clamp(context.lag_bps / max(impulse_threshold, 1.0))
+        spread_quality = _clamp(1.0 - context.spread_bps / max(max_spread_bps, 1.0))
         structure_quality = _clamp(0.5 + abs(context.structure_score) * 0.5)
         flow_alignment = self._flow_alignment_score(context)
         return {
@@ -94,3 +98,24 @@ class EventRaiderService:
             + components["structure_quality"] * 0.10
             + components["flow_alignment"] * 0.15
         )
+
+    def _impulse_threshold_bps(self, market_cluster: str) -> float:
+        if market_cluster == "index":
+            return max(self.config.impulse_threshold_bps * 0.8, 8.0)
+        if market_cluster == "gold":
+            return max(self.config.impulse_threshold_bps * 0.9, 8.0)
+        return self.config.impulse_threshold_bps
+
+    def _min_lag_bps(self, market_cluster: str) -> float:
+        if market_cluster == "index":
+            return max(self.config.min_lag_bps * 0.8, 3.0)
+        if market_cluster == "gold":
+            return max(self.config.min_lag_bps * 0.9, 3.5)
+        return self.config.min_lag_bps
+
+    def _max_spread_bps(self, market_cluster: str) -> float:
+        if market_cluster == "index":
+            return max(self.config.max_spread_bps * 0.8, 3.0)
+        if market_cluster == "gold":
+            return max(self.config.max_spread_bps * 0.9, 4.0)
+        return self.config.max_spread_bps

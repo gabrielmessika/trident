@@ -25,15 +25,33 @@ circuit_breaker_seconds = 30.0
 # Lecons de gbot:
 # - ~10 coins / connexion WS est la limite empirique stable
 # - au-dela, il faut shard l'observation sur plusieurs connexions
+# Le pool tradable du superviseur est derive de cet univers, puis filtre
+# par qualite live (spread, activite, funding aberrant).
 observation_universe = [
   "BTC", "ETH", "SOL", "HYPE",
   "DOGE", "XRP", "SUI",
   "AVAX", "LINK", "ARB",
+  "ADA", "BNB", "LTC",
+  "AAVE", "NEAR", "ZRO",
+  "SPX", "PAXG",
 ]
 max_coins_per_connection = 10
 subscription_pacing_ms = 250
+tradable_max_spread_bps = 10.0
+tradable_min_bucket_notional_usd = 100.0
+tradable_min_bucket_trade_count = 3
+tradable_max_abs_funding_rate = 0.01
 # Backward compat pour les anciennes commandes/tests.
 default_coins = ["BTC", "ETH", "SOL", "HYPE"]
+
+[hyperliquid.market_cluster_overrides]
+SPX = "index"
+PAXG = "gold"
+
+[hyperliquid.cluster_leaders]
+crypto = ["BTC", "ETH"]
+index = ["SPX"]
+gold = ["PAXG"]
 
 [trident]
 enabled = true

@@ -5,7 +5,7 @@ from app.trident.pod_a.exits import (
     initial_stop_bps,
     smart_exit_policy,
     stop_bps_for_signal,
-    time_stop_hours,
+    time_stop_hours_for_cluster,
 )
 from app.trident.pod_a.sizing import PositionSizer
 from app.trident.pod_a.signals import AnchorTrendSignal
@@ -44,7 +44,12 @@ class AnchorTrendPlanner:
         )
         if sized_trade is None:
             return None
-        exit_policy = smart_exit_policy(signal.setup, stop_bps, signal.confidence)
+        exit_policy = smart_exit_policy(
+            signal.setup,
+            stop_bps,
+            signal.confidence,
+            signal.market_cluster,
+        )
         return TradePlan(
             symbol=signal.symbol,
             side=signal.side,
@@ -52,7 +57,7 @@ class AnchorTrendPlanner:
             confidence=signal.confidence,
             target_notional_usd=sized_trade.target_notional_usd,
             stop_bps=stop_bps,
-            time_stop_hours=time_stop_hours(),
+            time_stop_hours=time_stop_hours_for_cluster(signal.market_cluster),
             take_profit_bps=exit_policy["take_profit_bps"],
             break_even_trigger_bps=exit_policy["break_even_trigger_bps"],
             trailing_activation_bps=exit_policy["trailing_activation_bps"],
@@ -65,5 +70,9 @@ class AnchorTrendPlanner:
             expected_loss_usd=sized_trade.expected_loss_usd,
             invalidation_price=signal.invalidation_price,
             isolated=self._config.pod_a.prefer_isolated,
-            setup_details=signal.setup_details,
+            setup_details={
+                **signal.setup_details,
+                "market_cluster": signal.market_cluster,
+                "cluster_leader": signal.cluster_leader,
+            },
         )

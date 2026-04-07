@@ -134,7 +134,7 @@ class HealthApiTests(unittest.TestCase):
         payload = metrics_payload(self.supervisor, self.metrics)
         self.assertEqual(payload["trident_bootstrap_ready"], 1)
         self.assertEqual(payload["enabled_pod_count"], 1)
-        self.assertEqual(payload["owned_symbol_count"], 4)
+        self.assertEqual(payload["owned_symbol_count"], 0)
 
     def test_metrics_payload_uses_runtime_status_when_present(self) -> None:
         with patch(

@@ -11,6 +11,7 @@ from app.backtest.snapshot_loader import SnapshotLoader
 from app.reporting.multi_pod import build_cohabitation_summary
 from app.risk.pod_a_gate import PodARiskGate
 from app.settings import AppConfig, load_config
+from app.trident.market_clusters import cluster_for_symbol
 from app.trident.pod_b.paper_engine import PodBPaperEngine
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot
@@ -81,6 +82,7 @@ class CohabitationReplayRunner:
             pod_a_report.records_processed += 1
             supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
             snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            supervisor.refresh_symbol_routing(snapshots)
             snapshot_by_symbol = {snapshot.symbol: snapshot for snapshot in snapshots}
 
             pod_a_owned = set(supervisor.registry.symbols_for(PodName.POD_A))
@@ -88,8 +90,8 @@ class CohabitationReplayRunner:
             pod_a_snapshots = [snapshot for snapshot in snapshots if snapshot.symbol in pod_a_owned]
             pod_b_snapshots = [snapshot for snapshot in snapshots if snapshot.symbol in pod_b_owned]
 
-            previews = supervisor.preview_pod_a_signals(pod_a_snapshots)
-            trade_plans = supervisor.build_pod_a_trade_plans(pod_a_snapshots)
+            previews = supervisor.preview_pod_a_signals(snapshots, timestamp=record.timestamp)
+            trade_plans = supervisor.build_pod_a_trade_plans(snapshots, timestamp=record.timestamp)
             risk_decisions = self.risk_gate.evaluate_many(trade_plans)
             execution = self.executor.process_record(
                 snapshots=pod_a_snapshots,
@@ -107,6 +109,7 @@ class CohabitationReplayRunner:
                     setup=preview.setup,
                     regime=supervisor.state.regime.value,
                     confidence=preview.confidence,
+                    market_cluster=cluster_for_symbol(self.config, preview.symbol),
                 )
             for decision in risk_decisions:
                 pod_a_report.add_decision(
@@ -126,6 +129,8 @@ class CohabitationReplayRunner:
                     side=trade.side,
                     setup=getattr(trade, "setup", None),
                     confidence=getattr(trade, "confidence", None),
+                    market_cluster=cluster_for_symbol(self.config, trade.symbol),
+                    close_regime=supervisor.state.regime.value,
                     entry_price=getattr(trade, "entry_price", None),
                     exit_price=getattr(trade, "exit_price", None),
                     target_notional_usd=getattr(trade, "target_notional_usd", None),
@@ -167,6 +172,8 @@ class CohabitationReplayRunner:
                 side=trade.side,
                 setup=getattr(trade, "setup", None),
                 confidence=getattr(trade, "confidence", None),
+                market_cluster=cluster_for_symbol(self.config, trade.symbol),
+                close_regime=supervisor.state.regime.value,
                 entry_price=getattr(trade, "entry_price", None),
                 exit_price=getattr(trade, "exit_price", None),
                 target_notional_usd=getattr(trade, "target_notional_usd", None),

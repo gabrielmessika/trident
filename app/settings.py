@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -88,6 +88,12 @@ class HyperliquidConfig:
     circuit_breaker_threshold: int = 3
     circuit_breaker_seconds: float = 30.0
     default_coins: list[str] | None = None
+    tradable_max_spread_bps: float = 10.0
+    tradable_min_bucket_notional_usd: float = 100.0
+    tradable_min_bucket_trade_count: int = 3
+    tradable_max_abs_funding_rate: float = 0.01
+    market_cluster_overrides: dict[str, str] = field(default_factory=dict)
+    cluster_leaders: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -192,6 +198,37 @@ def _float_map(raw: object) -> dict[str, float]:
     return parsed
 
 
+def _str_map(raw: object, *, upper_keys: bool = True, lower_values: bool = False) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    parsed: dict[str, str] = {}
+    for key, value in raw.items():
+        normalized_key = str(key).upper() if upper_keys else str(key)
+        normalized_value = str(value)
+        if lower_values:
+            normalized_value = normalized_value.lower()
+        parsed[normalized_key] = normalized_value
+    return parsed
+
+
+def _str_list_map(raw: object, *, lower_keys: bool = True, upper_values: bool = True) -> dict[str, list[str]]:
+    if not isinstance(raw, dict):
+        return {}
+    parsed: dict[str, list[str]] = {}
+    for key, value in raw.items():
+        if not isinstance(value, list):
+            continue
+        normalized_key = str(key).lower() if lower_keys else str(key)
+        normalized_values: list[str] = []
+        for item in value:
+            name = str(item).strip()
+            if not name:
+                continue
+            normalized_values.append(name.upper() if upper_values else name)
+        parsed[normalized_key] = normalized_values
+    return parsed
+
+
 def load_config(path: str | Path | None = None) -> AppConfig:
     config_path = Path(path or os.getenv("TRIDENT_CONFIG_PATH", "config/trident.toml"))
     with config_path.open("rb") as handle:
@@ -280,6 +317,28 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 hyperliquid_data.get("circuit_breaker_seconds", 30.0)
             ),
             default_coins=list(hyperliquid_data.get("default_coins", [])),
+            tradable_max_spread_bps=float(
+                hyperliquid_data.get("tradable_max_spread_bps", 10.0)
+            ),
+            tradable_min_bucket_notional_usd=float(
+                hyperliquid_data.get("tradable_min_bucket_notional_usd", 100.0)
+            ),
+            tradable_min_bucket_trade_count=int(
+                hyperliquid_data.get("tradable_min_bucket_trade_count", 3)
+            ),
+            tradable_max_abs_funding_rate=float(
+                hyperliquid_data.get("tradable_max_abs_funding_rate", 0.01)
+            ),
+            market_cluster_overrides=_str_map(
+                hyperliquid_data.get("market_cluster_overrides", {}),
+                upper_keys=True,
+                lower_values=True,
+            ),
+            cluster_leaders=_str_list_map(
+                hyperliquid_data.get("cluster_leaders", {}),
+                lower_keys=True,
+                upper_values=True,
+            ),
         ),
         trident=TridentConfigSection(
             enabled=bool(trident_data.get("enabled", True)),

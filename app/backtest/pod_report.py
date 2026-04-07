@@ -19,6 +19,7 @@ class PodABacktestReport:
     records_by_regime: dict[str, int] = field(default_factory=dict)
     records_by_date: dict[str, int] = field(default_factory=dict)
     signals_by_symbol: dict[str, int] = field(default_factory=dict)
+    signals_by_cluster: dict[str, int] = field(default_factory=dict)
     signals_by_side: dict[str, int] = field(default_factory=dict)
     signals_by_setup: dict[str, int] = field(default_factory=dict)
     signals_by_regime: dict[str, int] = field(default_factory=dict)
@@ -35,7 +36,11 @@ class PodABacktestReport:
     regime_transitions: dict[str, int] = field(default_factory=dict)
     regime_transitions_by_date: dict[str, dict[str, int]] = field(default_factory=dict)
     trades_by_symbol: dict[str, int] = field(default_factory=dict)
+    trades_by_cluster: dict[str, int] = field(default_factory=dict)
+    trades_by_regime: dict[str, int] = field(default_factory=dict)
     pnl_by_symbol: dict[str, float] = field(default_factory=dict)
+    pnl_by_cluster: dict[str, float] = field(default_factory=dict)
+    pnl_by_regime: dict[str, float] = field(default_factory=dict)
     pnl_by_date: dict[str, float] = field(default_factory=dict)
     gross_pnl_usd: float = 0.0
     fees_usd: float = 0.0
@@ -67,9 +72,15 @@ class PodABacktestReport:
         setup: str,
         regime: str,
         confidence: float,
+        market_cluster: str | None = None,
     ) -> None:
         self.signal_count += 1
         self.signals_by_symbol[symbol] = self.signals_by_symbol.get(symbol, 0) + 1
+        if market_cluster:
+            self.signals_by_cluster[market_cluster] = self.signals_by_cluster.get(
+                market_cluster,
+                0,
+            ) + 1
         self.signals_by_side[side] = self.signals_by_side.get(side, 0) + 1
         self.signals_by_setup[setup] = self.signals_by_setup.get(setup, 0) + 1
         self.signals_by_regime[regime] = self.signals_by_regime.get(regime, 0) + 1
@@ -159,6 +170,8 @@ class PodABacktestReport:
         side: str,
         setup: str | None = None,
         confidence: float | None = None,
+        market_cluster: str | None = None,
+        close_regime: str | None = None,
         entry_price: float | None = None,
         exit_price: float | None = None,
         target_notional_usd: float | None = None,
@@ -188,6 +201,21 @@ class PodABacktestReport:
         self.close_reasons[close_reason] = self.close_reasons.get(close_reason, 0) + 1
         self.trades_by_symbol[symbol] = self.trades_by_symbol.get(symbol, 0) + 1
         self.pnl_by_symbol[symbol] = round(self.pnl_by_symbol.get(symbol, 0.0) + pnl_usd, 2)
+        if market_cluster:
+            self.trades_by_cluster[market_cluster] = self.trades_by_cluster.get(
+                market_cluster,
+                0,
+            ) + 1
+            self.pnl_by_cluster[market_cluster] = round(
+                self.pnl_by_cluster.get(market_cluster, 0.0) + pnl_usd,
+                2,
+            )
+        if close_regime:
+            self.trades_by_regime[close_regime] = self.trades_by_regime.get(close_regime, 0) + 1
+            self.pnl_by_regime[close_regime] = round(
+                self.pnl_by_regime.get(close_regime, 0.0) + pnl_usd,
+                2,
+            )
         self.pnl_by_date[date_key] = round(self.pnl_by_date.get(date_key, 0.0) + pnl_usd, 2)
         if setup:
             self.trades_by_setup[setup] = self.trades_by_setup.get(setup, 0) + 1
@@ -204,6 +232,8 @@ class PodABacktestReport:
                 "setup": setup,
                 "open_reason": setup,
                 "confidence": confidence,
+                "market_cluster": market_cluster,
+                "close_regime": close_regime,
                 "entry_price": entry_price,
                 "exit_price": exit_price,
                 "target_notional_usd": target_notional_usd,
@@ -261,6 +291,7 @@ class PodABacktestReport:
             "records_by_regime": self.records_by_regime,
             "records_by_date": self.records_by_date,
             "signals_by_symbol": self.signals_by_symbol,
+            "signals_by_cluster": self.signals_by_cluster,
             "signals_by_side": self.signals_by_side,
             "signals_by_setup": self.signals_by_setup,
             "signals_by_regime": self.signals_by_regime,
@@ -277,8 +308,12 @@ class PodABacktestReport:
             "opened_by_setup": self.opened_by_setup,
             "skipped_open_by_setup": self.skipped_open_by_setup,
             "trades_by_symbol": self.trades_by_symbol,
+            "trades_by_cluster": self.trades_by_cluster,
+            "trades_by_regime": self.trades_by_regime,
             "trades_by_setup": self.trades_by_setup,
             "pnl_by_symbol": self.pnl_by_symbol,
+            "pnl_by_cluster": self.pnl_by_cluster,
+            "pnl_by_regime": self.pnl_by_regime,
             "pnl_by_setup": self.pnl_by_setup,
             "pnl_by_date": self.pnl_by_date,
             "average_confidence": self.average_confidence,

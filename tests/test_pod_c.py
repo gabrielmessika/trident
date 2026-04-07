@@ -94,7 +94,7 @@ class _FakeCollector:
 class PodCTests(unittest.TestCase):
     def test_service_emits_lead_lag_signal(self) -> None:
         config = load_config("config/trident.toml")
-        context_service = EventContextService(config.pod_c)
+        context_service = EventContextService(config)
         service = EventRaiderService(config.pod_c)
         planner = EventRaiderPlanner(config.pod_c)
         contexts = context_service.build_contexts(
@@ -143,6 +143,64 @@ class PodCTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertEqual(plan.symbol, "SOL")
         self.assertGreater(plan.confidence, 0.5)
+
+    def test_service_emits_index_cluster_signal_for_dynamic_follower(self) -> None:
+        config = load_config("config/trident.toml")
+        config.hyperliquid.market_cluster_overrides["NDX"] = "index"
+        context_service = EventContextService(config)
+        service = EventRaiderService(config.pod_c)
+        planner = EventRaiderPlanner(config.pod_c)
+        contexts = context_service.build_contexts(
+            Regime.TREND_EXPANSION,
+            [
+                SymbolMarketSnapshot(
+                    symbol="SPX",
+                    price=5005.0,
+                    ema_fast=4998.0,
+                    ema_slow=4980.0,
+                    vwap_distance_bps=9.0,
+                    structure_score=0.4,
+                    funding_rate=0.0,
+                    spread_bps=0.8,
+                    btc_aligned=False,
+                    book_imbalance=0.18,
+                    trade_flow_bias=0.16,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="NDX",
+                    price=210.0,
+                    ema_fast=209.9,
+                    ema_slow=209.7,
+                    vwap_distance_bps=1.5,
+                    structure_score=0.12,
+                    funding_rate=0.0,
+                    spread_bps=0.9,
+                    btc_aligned=False,
+                    book_imbalance=0.12,
+                    trade_flow_bias=0.1,
+                ),
+            ],
+        )
+
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0].symbol, "NDX")
+        self.assertEqual(contexts[0].market_cluster, "index")
+        self.assertEqual(contexts[0].leader_symbol, "SPX")
+        self.assertTrue(contexts[0].cluster_aligned)
+
+        signal = service.evaluate_many(contexts)[0]
+        allocation = PodAllocation(
+            pod=PodName.POD_C,
+            target_pct=0.2,
+            target_usd=200.0,
+            symbols=[SymbolAllocation(symbol="NDX", target_pct=0.2, target_usd=200.0)],
+        )
+        plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertEqual(signal.market_cluster, "index")
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertLess(plan.time_stop_hours, config.pod_c.time_stop_hours)
 
     def test_pod_c_risk_gate_uses_stricter_min_confidence(self) -> None:
         config = load_config("config/trident.toml")

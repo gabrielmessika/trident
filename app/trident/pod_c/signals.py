@@ -15,9 +15,11 @@ class EventRaiderContext:
     book_imbalance: float
     trade_flow_bias: float
     btc_aligned: bool
-    leader_impulse_bps: float
-    follower_move_bps: float
-    lag_bps: float
+    market_cluster: str = "crypto"
+    cluster_aligned: bool = True
+    leader_impulse_bps: float = 0.0
+    follower_move_bps: float = 0.0
+    lag_bps: float = 0.0
 
 
 @dataclass(slots=True)
@@ -28,4 +30,5 @@ class EventRaiderSignal:
     confidence: float
     entry_price: float
     leader_symbol: str
+    market_cluster: str = "crypto"
     confidence_components: dict[str, float] = field(default_factory=dict)

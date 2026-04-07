@@ -20,31 +20,57 @@ class SupervisorTests(unittest.TestCase):
 
         snapshot = supervisor.snapshot()
 
-        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC", "ETH", "HYPE", "SOL"])
+        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], [])
+        self.assertEqual(snapshot["pods"]["pod_a"]["candidate_symbols"], [])
         self.assertEqual(snapshot["ownership_conflicts"], [])
 
     def test_supervisor_resolves_overlaps_using_priority_fallback(self) -> None:
         self.config.pod_b.enabled = True
-        self.config.pod_b.symbols = ["DOGE", "SOL", "XRP"]
         self.config.pod_c.enabled = True
-        self.config.pod_c.follower_symbols = ["HYPE", "SOL", "SUI"]
 
         supervisor = TridentSupervisor(
             config=self.config,
             profile="trident",
             mode="observation",
         )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=10.0,
+                atr_ratio=0.6,
+                range_width_bps=40.0,
+                structure_score=0.05,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=180.0,
+                    ema_fast=180.2,
+                    ema_slow=180.0,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.04,
+                    funding_rate=0.0,
+                    spread_bps=1.2,
+                    btc_aligned=True,
+                    book_imbalance=0.02,
+                    trade_flow_bias=0.02,
+                    bucket_volume=1000.0,
+                    bucket_trade_count=25,
+                    bucket_range_bps=18.0,
+                )
+            ]
+        )
 
         snapshot = supervisor.snapshot()
 
-        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["HYPE", "SOL", "SUI"])
-        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC", "ETH"])
-        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["DOGE", "XRP"])
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["SOL"])
+        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], [])
+        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], [])
         self.assertEqual(snapshot["ownership_conflicts"], [])
-        self.assertEqual(
-            snapshot["symbol_routing"][0]["mode"],
-            "fallback_priority",
-        )
+        sol_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SOL")
+        self.assertEqual(sol_routing["mode"], "dynamic_affinity")
 
     def test_supervisor_exposes_capital_plan_and_regime_snapshot(self) -> None:
         supervisor = TridentSupervisor(
@@ -60,6 +86,74 @@ class SupervisorTests(unittest.TestCase):
                 range_width_bps=180.0,
                 structure_score=0.55,
             )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="BTC",
+                    price=68000.0,
+                    ema_fast=68120.0,
+                    ema_slow=67980.0,
+                    vwap_distance_bps=-4.0,
+                    structure_score=0.58,
+                    funding_rate=0.0,
+                    spread_bps=0.8,
+                    btc_aligned=True,
+                    book_imbalance=0.05,
+                    trade_flow_bias=0.04,
+                    bucket_volume=100.0,
+                    bucket_trade_count=200,
+                    bucket_range_bps=42.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3100.0,
+                    ema_fast=3115.0,
+                    ema_slow=3088.0,
+                    vwap_distance_bps=-7.0,
+                    structure_score=0.61,
+                    funding_rate=0.0001,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.08,
+                    trade_flow_bias=0.06,
+                    bucket_volume=120.0,
+                    bucket_trade_count=180,
+                    bucket_range_bps=46.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=180.0,
+                    ema_fast=181.5,
+                    ema_slow=179.3,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.72,
+                    funding_rate=0.0002,
+                    spread_bps=1.6,
+                    btc_aligned=True,
+                    book_imbalance=0.07,
+                    trade_flow_bias=0.06,
+                    bucket_volume=200.0,
+                    bucket_trade_count=160,
+                    bucket_range_bps=48.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="HYPE",
+                    price=22.0,
+                    ema_fast=22.25,
+                    ema_slow=21.85,
+                    vwap_distance_bps=-9.0,
+                    structure_score=0.66,
+                    funding_rate=0.0002,
+                    spread_bps=2.2,
+                    btc_aligned=True,
+                    book_imbalance=0.09,
+                    trade_flow_bias=0.08,
+                    bucket_volume=180.0,
+                    bucket_trade_count=140,
+                    bucket_range_bps=52.0,
+                ),
+            ]
         )
 
         snapshot = supervisor.snapshot()
@@ -151,8 +245,8 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0].symbol, "ETH")
-        self.assertEqual(plans[0].target_notional_usd, 450.0)
-        self.assertEqual(plans[0].effective_leverage, 3.0)
+        self.assertEqual(plans[0].target_notional_usd, 468.75)
+        self.assertEqual(plans[0].effective_leverage, 2.0)
 
     def test_supervisor_rebalances_pod_a_allocation_over_active_signals_on_small_wallet(self) -> None:
         config = override_app_config(
@@ -213,7 +307,7 @@ class SupervisorTests(unittest.TestCase):
                 btc_aligned=True,
             ),
             SymbolMarketSnapshot(
-                symbol="DOGE",
+                symbol="TEST",
                 price=0.18,
                 ema_fast=0.179,
                 ema_slow=0.175,
@@ -233,7 +327,6 @@ class SupervisorTests(unittest.TestCase):
 
     def test_supervisor_syncs_pod_b_runtime_status(self) -> None:
         self.config.pod_b.enabled = True
-        self.config.pod_b.symbols = ["DOGE", "XRP"]
         with tempfile.TemporaryDirectory() as tmpdir:
             self.config.pod_b.passivbot_config_path = str(
                 Path(tmpdir) / "runtime" / "passivbot" / "live.json"
@@ -242,6 +335,51 @@ class SupervisorTests(unittest.TestCase):
                 config=self.config,
                 profile="trident",
                 mode="observation",
+            )
+            supervisor.apply_regime_snapshot(
+                RegimeSnapshot(
+                    ready=True,
+                    adx=8.0,
+                    atr_ratio=0.5,
+                    range_width_bps=35.0,
+                    structure_score=0.05,
+                )
+            )
+            supervisor.refresh_symbol_routing(
+                [
+                    SymbolMarketSnapshot(
+                        symbol="DOGE",
+                        price=0.18,
+                        ema_fast=0.1801,
+                        ema_slow=0.18,
+                        vwap_distance_bps=-1.0,
+                        structure_score=0.03,
+                        funding_rate=0.0,
+                        spread_bps=1.0,
+                        btc_aligned=True,
+                        book_imbalance=0.01,
+                        trade_flow_bias=0.01,
+                        bucket_volume=5000.0,
+                        bucket_trade_count=30,
+                        bucket_range_bps=12.0,
+                    ),
+                    SymbolMarketSnapshot(
+                        symbol="XRP",
+                        price=0.64,
+                        ema_fast=0.6401,
+                        ema_slow=0.64,
+                        vwap_distance_bps=-1.0,
+                        structure_score=0.02,
+                        funding_rate=0.0,
+                        spread_bps=1.1,
+                        btc_aligned=True,
+                        book_imbalance=0.01,
+                        trade_flow_bias=0.01,
+                        bucket_volume=4000.0,
+                        bucket_trade_count=24,
+                        bucket_range_bps=14.0,
+                    ),
+                ]
             )
 
             snapshot = supervisor.snapshot()
@@ -427,6 +565,51 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(sui_routing["owner"], "pod_b")
         self.assertEqual(sui_routing["mode"], "dynamic_affinity")
 
+    def test_supervisor_routes_new_observation_symbol_without_static_pod_lists(self) -> None:
+        self.config.pod_b.enabled = True
+        self.config.pod_c.enabled = True
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=9.0,
+                atr_ratio=0.55,
+                range_width_bps=28.0,
+                structure_score=0.03,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="ADA",
+                    price=0.45,
+                    ema_fast=0.4501,
+                    ema_slow=0.45,
+                    vwap_distance_bps=-0.8,
+                    structure_score=0.02,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.01,
+                    trade_flow_bias=0.01,
+                    bucket_volume=3000.0,
+                    bucket_trade_count=20,
+                    bucket_range_bps=14.0,
+                )
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+        ada_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "ADA")
+
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["ADA"])
+        self.assertEqual(ada_routing["owner"], "pod_b")
+        self.assertEqual(ada_routing["mode"], "dynamic_affinity")
+
     def test_supervisor_routing_uses_hysteresis_before_switching_owner(self) -> None:
         self.config.pod_c.enabled = True
         supervisor = TridentSupervisor(
@@ -488,6 +671,109 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(sol_routing["owner"], "pod_a")
         self.assertEqual(sol_routing["mode"], "dynamic_hysteresis")
         self.assertIn("hysteresis_hold:pod_a", sol_routing["reason"])
+
+    def test_supervisor_filters_low_quality_live_symbols_out_of_tradable_pool(self) -> None:
+        self.config.pod_b.enabled = True
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=12.0,
+                atr_ratio=0.7,
+                range_width_bps=60.0,
+                structure_score=0.08,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="DOGE",
+                    price=0.18,
+                    ema_fast=0.1801,
+                    ema_slow=0.18,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.03,
+                    funding_rate=0.0,
+                    spread_bps=1.1,
+                    btc_aligned=True,
+                    book_imbalance=0.01,
+                    trade_flow_bias=0.01,
+                    bucket_volume=1200.0,
+                    bucket_trade_count=5,
+                    bucket_range_bps=10.0,
+                    source="test_live",
+                ),
+                SymbolMarketSnapshot(
+                    symbol="XRP",
+                    price=0.64,
+                    ema_fast=0.6401,
+                    ema_slow=0.64,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.02,
+                    funding_rate=0.0,
+                    spread_bps=12.5,
+                    btc_aligned=True,
+                    book_imbalance=0.01,
+                    trade_flow_bias=0.01,
+                    bucket_volume=50.0,
+                    bucket_trade_count=8,
+                    bucket_range_bps=12.0,
+                    source="test_live",
+                ),
+                SymbolMarketSnapshot(
+                    symbol="ADA",
+                    price=0.45,
+                    ema_fast=0.4501,
+                    ema_slow=0.45,
+                    vwap_distance_bps=-0.8,
+                    structure_score=0.02,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.01,
+                    trade_flow_bias=0.01,
+                    bucket_volume=2.0,
+                    bucket_trade_count=2,
+                    bucket_range_bps=14.0,
+                    source="test_live",
+                ),
+                SymbolMarketSnapshot(
+                    symbol="PAXG",
+                    price=3200.0,
+                    ema_fast=3200.5,
+                    ema_slow=3199.5,
+                    vwap_distance_bps=-0.4,
+                    structure_score=0.02,
+                    funding_rate=0.02,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.01,
+                    trade_flow_bias=0.01,
+                    bucket_volume=40.0,
+                    bucket_trade_count=10,
+                    bucket_range_bps=9.0,
+                    source="test_live",
+                ),
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+        quality_by_symbol = {
+            item["symbol"]: item for item in snapshot["observed_symbol_status"]
+        }
+
+        self.assertEqual(snapshot["tradable_pool"], ["DOGE"])
+        self.assertEqual(snapshot["pods"]["pod_b"]["candidate_symbols"], ["DOGE"])
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["DOGE"])
+        self.assertEqual(quality_by_symbol["DOGE"]["reasons"], [])
+        self.assertIn("spread_above_max", quality_by_symbol["XRP"]["reasons"])
+        self.assertIn("bucket_notional_below_min", quality_by_symbol["ADA"]["reasons"])
+        self.assertIn("bucket_trade_count_below_min", quality_by_symbol["ADA"]["reasons"])
+        self.assertIn("funding_outlier", quality_by_symbol["PAXG"]["reasons"])
 
 
 if __name__ == "__main__":

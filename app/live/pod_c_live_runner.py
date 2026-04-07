@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from app.live.runtime_status import write_runtime_status
 from app.persistence.journal import JsonlJournal, build_signal_journal_record, build_trade_journal_record
 from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import AppConfig, load_config
+from app.trident.market_clusters import cluster_for_symbol
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
 
@@ -28,8 +30,14 @@ class PodCLiveRunner:
             or config.pod_c.follower_symbols
         )
         self.collector = HyperliquidLiveCollector(config, coins=self.coins)
+        supervisor_config = replace(
+            config,
+            pod_a=replace(config.pod_a, enabled=False),
+            pod_b=replace(config.pod_b, enabled=False),
+            pod_c=replace(config.pod_c, enabled=True),
+        )
         self.supervisor = TridentSupervisor(
-            config=config,
+            config=supervisor_config,
             profile="trident-live-pod-c",
             mode="dry-run",
         )
@@ -137,6 +145,7 @@ class PodCLiveRunner:
                 setup=preview.setup,
                 regime=current_regime,
                 confidence=preview.confidence,
+                market_cluster=cluster_for_symbol(self.config, preview.symbol),
             )
             if journal is not None:
                 journal.append(
@@ -222,6 +231,8 @@ class PodCLiveRunner:
                 side=trade.side,
                 setup=getattr(trade, "setup", None),
                 confidence=getattr(trade, "confidence", None),
+                market_cluster=cluster_for_symbol(self.config, trade.symbol),
+                close_regime=current_regime,
                 entry_price=getattr(trade, "entry_price", None),
                 exit_price=getattr(trade, "exit_price", None),
                 target_notional_usd=getattr(trade, "target_notional_usd", None),

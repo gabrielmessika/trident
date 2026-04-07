@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from app.settings import AppConfig
 from app.trident.capital_allocator import CapitalAllocator
 from app.trident.kill_switch import KillSwitch
+from app.trident.market_clusters import all_cluster_leaders, enrich_snapshots
 from app.trident.pod_a import AnchorTrendPlanner, AnchorTrendService, MarketContextService
 from app.trident.pod_b import PassivbotManager
 from app.trident.pod_c import EventContextService, EventRaiderPlanner, EventRaiderService
@@ -14,6 +15,7 @@ from app.trident.symbol_router import SymbolRouter
 from app.trident.symbol_registry import SymbolRegistry
 from app.trident.types import (
     CapitalPlan,
+    ObservedSymbolStatus,
     OwnershipConflict,
     PodHealth,
     PodName,
@@ -41,10 +43,10 @@ class TridentSupervisor:
         self.regime_allocator = RegimeAllocator(config)
         self.capital_allocator = CapitalAllocator(config)
         self.symbol_router = SymbolRouter(config)
-        self.pod_a_context_service = MarketContextService()
+        self.pod_a_context_service = MarketContextService(config)
         self.pod_a_service = AnchorTrendService()
         self.pod_a_planner = AnchorTrendPlanner(config)
-        self.pod_c_context_service = EventContextService(config.pod_c)
+        self.pod_c_context_service = EventContextService(config)
         self.pod_c_service = EventRaiderService(config.pod_c)
         self.pod_c_planner = EventRaiderPlanner(config.pod_c)
         self.pod_b_manager = PassivbotManager(config)
@@ -58,6 +60,22 @@ class TridentSupervisor:
         self.sync_symbol_ownership()
         self.capital_plan = self._build_capital_plan()
         self.sync_pod_b()
+
+    def _observed_symbols(self) -> list[str]:
+        source = (
+            self.config.hyperliquid.observation_universe
+            or self.config.hyperliquid.default_coins
+            or self.config.pod_a.symbols
+        )
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for symbol in source:
+            name = str(symbol).strip().upper()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            normalized.append(name)
+        return normalized
 
     def _enabled_pods(self) -> list[PodName]:
         enabled: list[PodName] = []
@@ -74,19 +92,14 @@ class TridentSupervisor:
             PodName.POD_A: ConfiguredPod(
                 name=PodName.POD_A,
                 enabled=self.config.pod_a.enabled,
-                desired_symbols=[symbol.upper() for symbol in self.config.pod_a.symbols],
             ),
             PodName.POD_B: ConfiguredPod(
                 name=PodName.POD_B,
                 enabled=self.config.pod_b.enabled,
-                desired_symbols=[symbol.upper() for symbol in self.config.pod_b.symbols],
             ),
             PodName.POD_C: ConfiguredPod(
                 name=PodName.POD_C,
                 enabled=self.config.pod_c.enabled,
-                desired_symbols=[
-                    symbol.upper() for symbol in self.config.pod_c.follower_symbols
-                ],
             ),
         }
 
@@ -100,20 +113,103 @@ class TridentSupervisor:
         self,
         snapshots: list[SymbolMarketSnapshot],
     ) -> None:
+        snapshots = self._prepare_snapshots(snapshots)
+        candidate_symbols_by_pod = self._candidate_symbols_by_pod(snapshots)
+        for pod_name, pod in self.pods.items():
+            pod.desired_symbols = list(candidate_symbols_by_pod.get(pod_name, []))
         previous_owners = {
             item.symbol: item.owner for item in self.registry.snapshot()
         }
         decisions = self.symbol_router.route(
             regime=self.state.regime,
-            desired_symbols_by_pod={
-                pod_name: list(pod.desired_symbols)
-                for pod_name, pod in self.pods.items()
-                if pod.enabled
-            },
+            desired_symbols_by_pod=candidate_symbols_by_pod,
             snapshots=snapshots,
             previous_owners=previous_owners,
         )
         self._apply_symbol_routing(decisions)
+
+    def _candidate_symbols_by_pod(
+        self,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> dict[PodName, list[str]]:
+        status_by_symbol = self._observed_symbol_statuses(snapshots)
+        self.state.observed_symbol_status = sorted(
+            status_by_symbol.values(),
+            key=lambda item: item.symbol,
+        )
+        leaders = all_cluster_leaders(self.config)
+        tradable_symbols = sorted(
+            symbol
+            for symbol, status in status_by_symbol.items()
+            if status.tradable
+        )
+        if not tradable_symbols:
+            return {
+                pod_name: []
+                for pod_name, pod in self.pods.items()
+                if pod.enabled
+            }
+        return {
+            PodName.POD_A: tradable_symbols if self.config.pod_a.enabled else [],
+            PodName.POD_B: tradable_symbols if self.config.pod_b.enabled else [],
+            PodName.POD_C: (
+                [symbol for symbol in tradable_symbols if symbol not in leaders]
+                if self.config.pod_c.enabled
+                else []
+            ),
+        }
+
+    def _is_tradable_snapshot(self, snapshot: SymbolMarketSnapshot) -> bool:
+        return not self._tradability_reasons(snapshot)
+
+    def _observed_symbol_statuses(
+        self,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> dict[str, ObservedSymbolStatus]:
+        observed_symbols = set(self._observed_symbols())
+        statuses: dict[str, ObservedSymbolStatus] = {}
+        for snapshot in snapshots:
+            symbol = snapshot.symbol.upper()
+            if symbol not in observed_symbols:
+                continue
+            statuses[symbol] = ObservedSymbolStatus(
+                symbol=symbol,
+                tradable=False,
+                reasons=self._tradability_reasons(snapshot),
+            )
+            statuses[symbol].tradable = not statuses[symbol].reasons
+        return statuses
+
+    def _tradability_reasons(self, snapshot: SymbolMarketSnapshot) -> list[str]:
+        reasons: list[str] = []
+        if snapshot.price <= 0:
+            reasons.append("price_non_positive")
+        max_spread_bps = max(self.config.hyperliquid.tradable_max_spread_bps, 0.0)
+        if snapshot.spread_bps <= 0:
+            reasons.append("spread_non_positive")
+        elif max_spread_bps > 0 and snapshot.spread_bps > max_spread_bps:
+            reasons.append("spread_above_max")
+
+        if self._enforce_live_microstructure_gate(snapshot):
+            min_notional_usd = max(
+                self.config.hyperliquid.tradable_min_bucket_notional_usd,
+                0.0,
+            )
+            min_trade_count = max(self.config.hyperliquid.tradable_min_bucket_trade_count, 0)
+            max_abs_funding = max(self.config.hyperliquid.tradable_max_abs_funding_rate, 0.0)
+            bucket_notional_usd = max(snapshot.bucket_volume, 0.0) * max(snapshot.price, 0.0)
+            if bucket_notional_usd < min_notional_usd:
+                reasons.append("bucket_notional_below_min")
+            if snapshot.bucket_trade_count < min_trade_count:
+                reasons.append("bucket_trade_count_below_min")
+            if max_abs_funding > 0 and abs(snapshot.funding_rate) > max_abs_funding:
+                reasons.append("funding_outlier")
+
+        return reasons
+
+    def _enforce_live_microstructure_gate(self, snapshot: SymbolMarketSnapshot) -> bool:
+        source = snapshot.source.strip().lower()
+        return "live" in source
 
     def _apply_symbol_routing(self, decisions: list[SymbolRoutingDecision]) -> None:
         self.registry.clear()
@@ -171,6 +267,7 @@ class TridentSupervisor:
         snapshots: list[SymbolMarketSnapshot],
         timestamp: str | None = None,
     ) -> list[SignalPreview]:
+        snapshots = self._prepare_snapshots(snapshots)
         self.refresh_symbol_routing(snapshots)
         contexts = self.pod_a_context_service.build_contexts(
             self.state.regime,
@@ -195,6 +292,7 @@ class TridentSupervisor:
         snapshots: list[SymbolMarketSnapshot],
         timestamp: str | None = None,
     ) -> list[TradePlan]:
+        snapshots = self._prepare_snapshots(snapshots)
         self.refresh_symbol_routing(snapshots)
         contexts = self.pod_a_context_service.build_contexts(
             self.state.regime,
@@ -258,6 +356,7 @@ class TridentSupervisor:
         self,
         snapshots: list[SymbolMarketSnapshot],
     ) -> list[SignalPreview]:
+        snapshots = self._prepare_snapshots(snapshots)
         self.refresh_symbol_routing(snapshots)
         contexts = self.pod_c_context_service.build_contexts(
             self.state.regime,
@@ -280,6 +379,7 @@ class TridentSupervisor:
         self,
         snapshots: list[SymbolMarketSnapshot],
     ) -> list[TradePlan]:
+        snapshots = self._prepare_snapshots(snapshots)
         self.refresh_symbol_routing(snapshots)
         contexts = self.pod_c_context_service.build_contexts(
             self.state.regime,
@@ -317,11 +417,19 @@ class TridentSupervisor:
         snapshots: list[SymbolMarketSnapshot],
     ) -> list[SymbolMarketSnapshot]:
         owned_followers = set(self.registry.symbols_for(PodName.POD_C))
-        leader_symbols = {symbol.upper() for symbol in self.config.pod_c.leader_symbols}
+        leader_symbols = all_cluster_leaders(self.config)
         allowed_symbols = owned_followers | leader_symbols
         if not allowed_symbols:
             return []
         return [snapshot for snapshot in snapshots if snapshot.symbol.upper() in allowed_symbols]
+
+    def _prepare_snapshots(
+        self,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> list[SymbolMarketSnapshot]:
+        if not snapshots:
+            return []
+        return enrich_snapshots(self.config, snapshots)
 
     def sync_pod_b(self) -> None:
         allocation = self.capital_plan.pod_allocations[PodName.POD_B]
@@ -357,6 +465,20 @@ class TridentSupervisor:
             "mode": self.mode,
             "regime": self.state.regime.value,
             "raw_regime": self.state.raw_regime.value,
+            "observation_universe": self._observed_symbols(),
+            "tradable_pool": [
+                item.symbol
+                for item in self.state.observed_symbol_status
+                if item.tradable
+            ],
+            "observed_symbol_status": [
+                {
+                    "symbol": item.symbol,
+                    "tradable": item.tradable,
+                    "reasons": list(item.reasons),
+                }
+                for item in self.state.observed_symbol_status
+            ],
             "kill_switch": {
                 "active": self.kill_switch.is_active,
                 "reason": self.kill_switch.active_reason,

@@ -23,8 +23,13 @@ class EventRaiderPlanner:
         )
         if symbol_allocation is None or symbol_allocation.target_usd <= 0:
             return None
-        stop_bps = initial_stop_bps(signal.confidence)
-        exit_policy = smart_exit_policy(stop_bps, signal.confidence)
+        stop_bps = initial_stop_bps(signal.confidence, signal.market_cluster)
+        exit_policy = smart_exit_policy(stop_bps, signal.confidence, signal.market_cluster)
+        time_stop_hours = self.config.time_stop_hours
+        if signal.market_cluster == "index":
+            time_stop_hours = max(1, int(round(self.config.time_stop_hours * 0.5)))
+        elif signal.market_cluster == "gold":
+            time_stop_hours = max(2, int(round(self.config.time_stop_hours * 0.75)))
 
         return TradePlan(
             symbol=signal.symbol,
@@ -33,11 +38,15 @@ class EventRaiderPlanner:
             confidence=signal.confidence,
             target_notional_usd=symbol_allocation.target_usd,
             stop_bps=stop_bps,
-            time_stop_hours=self.config.time_stop_hours,
+            time_stop_hours=time_stop_hours,
             take_profit_bps=exit_policy["take_profit_bps"],
             break_even_trigger_bps=exit_policy["break_even_trigger_bps"],
             trailing_activation_bps=exit_policy["trailing_activation_bps"],
             trailing_distance_bps=exit_policy["trailing_distance_bps"],
             reentry_cooldown_minutes=self.config.reentry_cooldown_minutes,
             confidence_components=signal.confidence_components,
+            setup_details={
+                "market_cluster": signal.market_cluster,
+                "cluster_leader": signal.leader_symbol,
+            },
         )

@@ -16,6 +16,14 @@ def time_stop_hours() -> int:
     return 24
 
 
+def time_stop_hours_for_cluster(market_cluster: str) -> int:
+    if market_cluster == "index":
+        return 12
+    if market_cluster == "gold":
+        return 18
+    return time_stop_hours()
+
+
 def stop_bps_for_signal(
     *,
     entry_price: float,
@@ -31,7 +39,12 @@ def stop_bps_for_signal(
     )
 
 
-def smart_exit_policy(setup: str, stop_bps: float, confidence: float) -> dict[str, float]:
+def smart_exit_policy(
+    setup: str,
+    stop_bps: float,
+    confidence: float,
+    market_cluster: str = "crypto",
+) -> dict[str, float]:
     if setup.startswith("liquidity_sweep_reclaim") or setup.startswith("bos_retest"):
         take_profit_multiplier = 1.9 if confidence >= 0.8 else 1.7
         break_even_multiplier = 0.95
@@ -47,6 +60,17 @@ def smart_exit_policy(setup: str, stop_bps: float, confidence: float) -> dict[st
         break_even_multiplier = 0.7
         trailing_activation_multiplier = 1.0
         trailing_distance_multiplier = 0.55
+
+    if market_cluster == "index":
+        take_profit_multiplier *= 0.9
+        break_even_multiplier *= 0.85
+        trailing_activation_multiplier *= 0.85
+        trailing_distance_multiplier *= 0.85
+    elif market_cluster == "gold":
+        take_profit_multiplier *= 1.05
+        break_even_multiplier *= 0.9
+        trailing_activation_multiplier *= 0.95
+        trailing_distance_multiplier *= 0.95
 
     return {
         "take_profit_bps": round(stop_bps * take_profit_multiplier, 4),

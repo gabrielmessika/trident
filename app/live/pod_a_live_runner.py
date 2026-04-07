@@ -17,6 +17,7 @@ from app.persistence.journal import (
 )
 from app.risk.pod_a_gate import PodARiskGate
 from app.settings import AppConfig, load_config
+from app.trident.market_clusters import cluster_for_symbol
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
 
@@ -97,6 +98,8 @@ class PodALiveRunner:
                 side=trade.side,
                 setup=getattr(trade, "setup", None),
                 confidence=getattr(trade, "confidence", None),
+                market_cluster=cluster_for_symbol(self.config, trade.symbol),
+                close_regime=self.supervisor.state.regime.value,
                 entry_price=getattr(trade, "entry_price", None),
                 exit_price=getattr(trade, "exit_price", None),
                 target_notional_usd=getattr(trade, "target_notional_usd", None),
@@ -201,6 +204,7 @@ class PodALiveRunner:
                 setup=preview.setup,
                 regime=current_regime,
                 confidence=preview.confidence,
+                market_cluster=cluster_for_symbol(self.config, preview.symbol),
             )
             if journal is not None:
                 journal.append(
@@ -328,6 +332,8 @@ class PodALiveRunner:
                 side=trade.side,
                 setup=getattr(trade, "setup", None),
                 confidence=getattr(trade, "confidence", None),
+                market_cluster=cluster_for_symbol(self.config, trade.symbol),
+                close_regime=current_regime,
                 entry_price=getattr(trade, "entry_price", None),
                 exit_price=getattr(trade, "exit_price", None),
                 target_notional_usd=getattr(trade, "target_notional_usd", None),

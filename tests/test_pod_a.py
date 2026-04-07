@@ -156,6 +156,36 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertEqual(signal.side, "short")
         self.assertEqual(signal.setup, "trend_pullback_short")
 
+    def test_generates_signal_for_index_cluster_without_btc_dependency(self) -> None:
+        contexts = self.context_service.build_contexts(
+            regime=Regime.TREND_EXPANSION,
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="SPX",
+                    price=5000.0,
+                    ema_fast=4992.0,
+                    ema_slow=4975.0,
+                    vwap_distance_bps=-6.0,
+                    structure_score=0.58,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=False,
+                )
+            ],
+        )
+
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0].market_cluster, "index")
+        self.assertEqual(contexts[0].cluster_leader, "SPX")
+        self.assertTrue(contexts[0].cluster_aligned)
+
+        signal = self.service.evaluate(contexts[0])
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.market_cluster, "index")
+        self.assertEqual(signal.cluster_leader, "SPX")
+
     def test_rejects_non_trending_context(self) -> None:
         signal = self.service.evaluate(
             AnchorTrendContext(

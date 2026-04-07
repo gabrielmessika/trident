@@ -15,6 +15,9 @@ class AnchorTrendContext:
     funding_rate: float
     spread_bps: float
     btc_aligned: bool
+    market_cluster: str = "crypto"
+    cluster_aligned: bool = True
+    cluster_leader: str = ""
     book_imbalance: float = 0.0
     trade_flow_bias: float = 0.0
     bucket_volume: float = 0.0
@@ -41,6 +44,8 @@ class AnchorTrendSignal:
     setup: str
     confidence: float
     entry_price: float
+    market_cluster: str = "crypto"
+    cluster_leader: str = ""
     invalidation_price: float | None = None
     setup_details: dict[str, float | str | bool] = field(default_factory=dict)
     confidence_components: dict[str, float] = field(default_factory=dict)

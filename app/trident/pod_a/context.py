@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.settings import AppConfig, load_config
+from app.trident.market_clusters import enrich_snapshots
 from app.trident.pod_a.candles import CandleService
 from app.trident.pod_a.signals import AnchorTrendContext
 from app.trident.types import Regime, SymbolMarketSnapshot
@@ -8,7 +10,8 @@ from app.trident.types import Regime, SymbolMarketSnapshot
 class MarketContextService:
     """Builds Pod A evaluation contexts from generic market snapshots."""
 
-    def __init__(self) -> None:
+    def __init__(self, config: AppConfig | None = None) -> None:
+        self._config = config or load_config("config/trident.toml")
         self._candles = CandleService()
 
     def build_contexts(
@@ -17,6 +20,7 @@ class MarketContextService:
         snapshots: list[SymbolMarketSnapshot],
         timestamp: str | None = None,
     ) -> list[AnchorTrendContext]:
+        snapshots = enrich_snapshots(self._config, snapshots)
         self._candles.observe(timestamp=timestamp, snapshots=snapshots)
         return [
             self._build_context(regime=regime, snapshot=snapshot)
@@ -41,6 +45,9 @@ class MarketContextService:
             funding_rate=snapshot.funding_rate,
             spread_bps=snapshot.spread_bps,
             btc_aligned=snapshot.btc_aligned,
+            market_cluster=snapshot.market_cluster,
+            cluster_aligned=snapshot.cluster_aligned,
+            cluster_leader=snapshot.cluster_leader,
             book_imbalance=snapshot.book_imbalance,
             trade_flow_bias=snapshot.trade_flow_bias,
             bucket_volume=snapshot.bucket_volume,

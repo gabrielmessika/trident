@@ -5,17 +5,63 @@ from app.reporting.export_daily import build_daily_summary, render_daily_markdow
 from app.reporting.multi_pod import build_cohabitation_summary, build_runtime_report
 from app.settings import load_config
 from app.trident.supervisor import TridentSupervisor
+from app.trident.types import RegimeSnapshot
+from app.trident.types import SymbolMarketSnapshot
 
 
 class ReportingTests(unittest.TestCase):
     def test_build_runtime_report_includes_pod_sections(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_b.enabled = True
-        config.pod_b.symbols = ["DOGE", "XRP"]
         supervisor = TridentSupervisor(
             config=config,
             profile="trident-reporting",
             mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=8.0,
+                atr_ratio=0.5,
+                range_width_bps=35.0,
+                structure_score=0.05,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="DOGE",
+                    price=0.18,
+                    ema_fast=0.1801,
+                    ema_slow=0.18,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.03,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.01,
+                    trade_flow_bias=0.01,
+                    bucket_volume=5000.0,
+                    bucket_trade_count=30,
+                    bucket_range_bps=12.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="XRP",
+                    price=0.64,
+                    ema_fast=0.6401,
+                    ema_slow=0.64,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.02,
+                    funding_rate=0.0,
+                    spread_bps=1.1,
+                    btc_aligned=True,
+                    book_imbalance=0.01,
+                    trade_flow_bias=0.01,
+                    bucket_volume=4000.0,
+                    bucket_trade_count=24,
+                    bucket_range_bps=14.0,
+                ),
+            ]
         )
 
         with patch("app.reporting.multi_pod.load_runtime_status", side_effect=[None, None]):

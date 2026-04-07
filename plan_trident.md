@@ -201,6 +201,62 @@
   - consequence attendue:
     - plus de cas durables avec `target_usd = 0` mais position encore ouverte sur plusieurs ticks
     - moins de divergences entre `/health`, `/api/state`, `/api/report` et les statuses runtime locaux
+- 2026-04-07: univers observe et routage dynamique elargis:
+  - `hyperliquid.observation_universe` devient le vrai point d'entree du superviseur pour le live
+  - le `supervisor` derive maintenant les candidats de routage a partir des snapshots frais de cet univers, puis attribue les coins par affinite de pod
+  - les listes statiques `pod_a.symbols`, `pod_b.symbols` et `pod_c.follower_symbols` ne servent plus de source de routage live
+  - `pod_c.leader_symbols` reste une contrainte structurelle pour exclure les leaders du pool follower de Pod C
+  - le replay de cohabitation a ete corrige pour conserver une vue complete du tick avant de recalculer l'ownership
+  - les tests backtest petit wallet sont maintenant alignes sur le vrai modèle de sizing dynamique:
+    - cap par symbol = `reference_equity_usd * max_allocation_per_symbol_pct`
+    - budget de risque = `reference_equity_usd * pod_a.risk_per_trade_pct`
+- 2026-04-07: univers dynamique rendu plus "production-grade":
+  - le `supervisor` derive maintenant un vrai `tradable_pool` depuis l'univers observe
+  - les snapshots live subissent un filtre de qualite avant attribution:
+    - spread max
+    - bucket notional minimal
+    - nombre minimal de trades
+    - funding aberrant
+  - le snapshot superviseur expose maintenant:
+    - `tradable_pool`
+    - `observed_symbol_status`
+    - les raisons de rejet par symbol quand un coin observe n'entre pas dans le pool tradable
+  - le filtrage microstructure strict est applique aux snapshots live tagges `*live*`, sans penaliser les replays/tests offline plus pauvres
+- 2026-04-07: clusters de marche et adaptation `XYZ` branches:
+  - une couche `market_clusters` dediee enrichit maintenant les snapshots avec:
+    - `market_cluster`
+    - `cluster_leader`
+    - `cluster_aligned`
+  - la logique implicite `btc_aligned` n'est plus la source principale pour Pod A / Pod C / le routeur
+  - les leaders de cluster sont maintenant configurables dans `hyperliquid.cluster_leaders`
+  - les overrides de cluster par symbol sont configurables dans `hyperliquid.market_cluster_overrides`
+  - `SPX` est traite comme leader du cluster `index`
+  - `PAXG` est traite comme leader du cluster `gold`
+  - Pod A applique maintenant des filtres et horizons distincts selon le cluster:
+    - spread/funding
+    - `time_stop`
+    - trailing / break-even plus rapides sur `index`
+  - Pod C choisit maintenant ses leaders par cluster et peut produire des signaux pour des followers dynamiques hors `follower_symbols`
+  - consequence attendue:
+    - les marches `XYZ` ne dependent plus d'un alignement artificiel a BTC pour etre evalués
+    - le routeur et les pods directionnels restent compatibles avec un univers mixte `crypto + index + gold`
+- 2026-04-07: outillage comparatif du step 4 ajoute:
+  - le reporting de backtest expose maintenant aussi:
+    - `signals_by_cluster`
+    - `trades_by_cluster`
+    - `trades_by_regime`
+    - `pnl_by_cluster`
+    - `pnl_by_regime`
+    - `market_cluster` et `close_regime` dans `closed_trade_log`
+  - un module `comparative_analysis` calcule maintenant:
+    - expectancy
+    - win rate
+    - moyenne gains / pertes
+    - stats par cluster / symbol / regime
+  - un runner `snapshot_universe_compare.py` permet maintenant de comparer plusieurs univers de symbols sur le meme flux de snapshots
+  - cas d'usage cible:
+    - comparer `crypto_only` vs `mixed`
+    - mesurer si un cluster `index` ou `gold` apporte vraiment du PnL net ou seulement du churn
 - 2026-04-05: Pod B paper runner ajoute:
   - `app/trident/pod_b/paper_engine.py` cree
   - `app/trident/pod_b/paper_runner.py` cree
@@ -308,7 +364,7 @@
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider en dry-run live le socle `500 USD` et confirmer le comportement d'upgrade / allocation active sur une plage plus longue |
 | 5. Pod B range engine natif | 92% | Lancer le premier dry-run 24h 3 pods avec `Pod B` en mode conservateur, puis recalibrer les seuils d'activation range/toxicite sur les observations runtime |
-| 5bis. Routing dynamique symbols / ownership | 75% | Brancher le routage dynamique dans le dry-run 3 pods partagé et affiner l'explication des choix de routage dans l'UI |
+| 5bis. Routing dynamique symbols / ownership | 97% | Enrichir l'UI avec l'explication `market_cluster / cluster_leader / cluster_aligned` et afficher le `tradable_pool` plus clairement |
 | 6. Reporting par pod | 100% | Rien, étape fermée |
 | 7. Research Pod pour Pod C | 100% | Rien, étape fermée |
 | 8. Pod C minimal | 100% | Rien, étape fermée |
@@ -319,6 +375,46 @@
 Regle de maintenance:
 
 - ce tableau doit etre mis a jour apres chaque modification significative du repo ou du plan.
+
+### Next steps prioritaires
+
+1. Univers dynamique production-grade
+   - statut: implemente
+   - resultat:
+     - `tradable_pool` derive du live
+     - filtre qualite spread / activite / funding
+     - raisons de rejet visibles dans le snapshot superviseur
+
+2. Clusters de marche
+   - statut: implemente
+   - resultat:
+     - clusters `crypto`, `index`, `gold`
+     - leaders de cluster configurables
+     - snapshots enrichis avec `cluster_aligned`
+
+3. Adapter Pod A et Pod C aux marches `XYZ`
+   - statut: implemente
+   - resultat:
+     - Pod A applique des filtres et exits distincts par cluster
+     - Pod C choisit ses leaders/followers par cluster
+     - `SPX` / `PAXG` ne sont plus traites comme de simples alts crypto
+
+4. Mesure comparative avant nouvel elargissement
+   - statut: outillage implemente
+   - resultat:
+     - runner de comparaison multi-univers sur snapshots
+     - reporting comparatif par cluster / symbol / regime
+     - expectancy, churn et drawdown disponibles dans les sorties
+   - prochaine etape:
+     - lancer ce runner sur des snapshots reels et produire un premier memo de decision `crypto_only` vs `mixed`
+
+5. Diagnostic Pod B avec plus de donnees
+   - conserver Pod B actif en observation
+   - analyser expectancy par symbol, par regime et par toxicite avant toute grosse retouche strategy
+
+6. Elargissement progressif de l'univers
+   - seulement apres validation des clusters et des replays
+   - ajouter de nouveaux marches observes puis tradables sans degrader la qualite du pool
 
 ---
 

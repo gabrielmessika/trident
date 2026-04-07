@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from app.backtest.pod_report import PodABacktestReport
@@ -14,6 +14,7 @@ from app.persistence.journal import (
 )
 from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import AppConfig, load_config
+from app.trident.market_clusters import cluster_for_symbol
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
 
@@ -38,8 +39,14 @@ class PodCBacktestRunner:
         input_path: str | Path,
         output_path: str | Path | None = None,
     ) -> PodCBacktestResult:
+        supervisor_config = replace(
+            self.config,
+            pod_a=replace(self.config.pod_a, enabled=False),
+            pod_b=replace(self.config.pod_b, enabled=False),
+            pod_c=replace(self.config.pod_c, enabled=True),
+        )
         supervisor = TridentSupervisor(
-            config=self.config,
+            config=supervisor_config,
             profile="trident-pod-c-backtest",
             mode="observation",
         )
@@ -140,6 +147,7 @@ class PodCBacktestRunner:
                     setup=preview.setup,
                     regime=current_regime,
                     confidence=preview.confidence,
+                    market_cluster=cluster_for_symbol(self.config, preview.symbol),
                 )
             for decision in risk_decisions:
                 report.add_decision(
@@ -180,6 +188,8 @@ class PodCBacktestRunner:
                     side=trade.side,
                     setup=getattr(trade, "setup", None),
                     confidence=getattr(trade, "confidence", None),
+                    market_cluster=cluster_for_symbol(self.config, trade.symbol),
+                    close_regime=current_regime,
                     entry_price=getattr(trade, "entry_price", None),
                     exit_price=getattr(trade, "exit_price", None),
                     target_notional_usd=getattr(trade, "target_notional_usd", None),
@@ -220,6 +230,8 @@ class PodCBacktestRunner:
                 side=trade.side,
                 setup=getattr(trade, "setup", None),
                 confidence=getattr(trade, "confidence", None),
+                market_cluster=cluster_for_symbol(self.config, trade.symbol),
+                close_regime=supervisor.state.regime.value,
                 entry_price=getattr(trade, "entry_price", None),
                 exit_price=getattr(trade, "exit_price", None),
                 target_notional_usd=getattr(trade, "target_notional_usd", None),

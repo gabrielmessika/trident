@@ -7,6 +7,7 @@ from pathlib import Path
 from app.backtest.pod_a_executor import PodAExecutor
 from app.backtest.pod_report import PodABacktestReport
 from app.backtest.snapshot_loader import SnapshotLoader
+from app.trident.market_clusters import cluster_for_symbol
 from app.persistence.journal import (
     JsonlJournal,
     build_signal_journal_record,
@@ -38,6 +39,7 @@ class PodABacktestResult:
     records_by_regime: dict[str, int]
     records_by_date: dict[str, int]
     signals_by_symbol: dict[str, int]
+    signals_by_cluster: dict[str, int]
     signals_by_side: dict[str, int]
     signals_by_setup: dict[str, int]
     signals_by_regime: dict[str, int]
@@ -54,8 +56,12 @@ class PodABacktestResult:
     opened_by_setup: dict[str, int]
     skipped_open_by_setup: dict[str, int]
     trades_by_symbol: dict[str, int]
+    trades_by_cluster: dict[str, int]
+    trades_by_regime: dict[str, int]
     trades_by_setup: dict[str, int]
     pnl_by_symbol: dict[str, float]
+    pnl_by_cluster: dict[str, float]
+    pnl_by_regime: dict[str, float]
     pnl_by_setup: dict[str, float]
     pnl_by_date: dict[str, float]
     max_open_positions: int
@@ -228,6 +234,7 @@ class PodABacktestRunner:
                     setup=preview.setup,
                     regime=supervisor.state.regime.value,
                     confidence=preview.confidence,
+                    market_cluster=cluster_for_symbol(self.config, preview.symbol),
                 )
             for decision in risk_decisions:
                 report.add_decision(
@@ -269,6 +276,8 @@ class PodABacktestRunner:
                     side=trade.side,
                     setup=getattr(trade, "setup", None),
                     confidence=getattr(trade, "confidence", None),
+                    market_cluster=cluster_for_symbol(self.config, trade.symbol),
+                    close_regime=current_regime,
                     entry_price=getattr(trade, "entry_price", None),
                     exit_price=getattr(trade, "exit_price", None),
                     target_notional_usd=getattr(trade, "target_notional_usd", None),
@@ -313,6 +322,8 @@ class PodABacktestRunner:
                 side=trade.side,
                 setup=getattr(trade, "setup", None),
                 confidence=getattr(trade, "confidence", None),
+                market_cluster=cluster_for_symbol(self.config, trade.symbol),
+                close_regime=supervisor.state.regime.value,
                 entry_price=getattr(trade, "entry_price", None),
                 exit_price=getattr(trade, "exit_price", None),
                 target_notional_usd=getattr(trade, "target_notional_usd", None),
@@ -351,6 +362,7 @@ class PodABacktestRunner:
             records_by_regime=report.records_by_regime,
             records_by_date=report.records_by_date,
             signals_by_symbol=report.signals_by_symbol,
+            signals_by_cluster=report.signals_by_cluster,
             signals_by_side=report.signals_by_side,
             signals_by_setup=report.signals_by_setup,
             signals_by_regime=report.signals_by_regime,
@@ -367,8 +379,12 @@ class PodABacktestRunner:
             opened_by_setup=report.opened_by_setup,
             skipped_open_by_setup=report.skipped_open_by_setup,
             trades_by_symbol=report.trades_by_symbol,
+            trades_by_cluster=report.trades_by_cluster,
+            trades_by_regime=report.trades_by_regime,
             trades_by_setup=report.trades_by_setup,
             pnl_by_symbol=report.pnl_by_symbol,
+            pnl_by_cluster=report.pnl_by_cluster,
+            pnl_by_regime=report.pnl_by_regime,
             pnl_by_setup=report.pnl_by_setup,
             pnl_by_date=report.pnl_by_date,
             max_open_positions=report.max_open_positions,

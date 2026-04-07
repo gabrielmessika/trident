@@ -205,13 +205,13 @@ class SymbolRouter:
         trend_shape = _clamp(trend_bps / 160.0)
         structure_quality = _clamp(abs(snapshot.structure_score))
         reclaim_quality = _clamp(1.0 - abs(snapshot.vwap_distance_bps) / 30.0)
-        btc_quality = 1.0 if snapshot.btc_aligned else 0.3
+        cluster_quality = 1.0 if snapshot.cluster_aligned else 0.3
         return (
             regime_quality * 0.35
             + trend_shape * 0.25
             + structure_quality * 0.25
             + reclaim_quality * 0.10
-            + btc_quality * 0.05
+            + cluster_quality * 0.05
         )
 
     def _score_pod_b(self, *, regime: Regime, snapshot: SymbolMarketSnapshot) -> float:
@@ -254,13 +254,13 @@ class SymbolRouter:
         impulse_quality = _clamp(max(abs(snapshot.trade_flow_bias), abs(snapshot.book_imbalance)) * 1.6)
         range_quality = _clamp(snapshot.bucket_range_bps / 120.0)
         structure_quality = _clamp(abs(snapshot.structure_score))
-        btc_quality = 1.0 if snapshot.btc_aligned else 0.2
+        cluster_quality = 1.0 if snapshot.cluster_aligned else 0.2
         spread_quality = _clamp(1.0 - snapshot.spread_bps / max(self.config.pod_c.max_spread_bps * 1.5, 1.0))
         return (
             regime_quality * 0.30
             + impulse_quality * 0.25
             + range_quality * 0.15
             + structure_quality * 0.15
-            + btc_quality * 0.10
+            + cluster_quality * 0.10
             + spread_quality * 0.05
         )
