@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -13,6 +14,8 @@ from app.persistence.journal import JsonlJournal
 from app.reporting.pod_b import PodBReport
 from app.trident.pod_b.paper_runner import PodBPaperRunner
 from app.trident.types import SymbolMarketSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -40,6 +43,16 @@ class PodBPaperLiveRunner(PodBPaperRunner):
         journal = JsonlJournal(journal_output) if journal_output is not None else None
         report = PodBReport()
         status_path = self.config_path.with_suffix(".status.json")
+        logger.info(
+            "Pod B live runner starting; input=%s config=%s poll_seconds=%.2f max_runtime_seconds=%s max_idle_loops=%s managed_symbols=%s target_usd=%.2f",
+            input_path,
+            self.config_path,
+            poll_seconds,
+            max_runtime_seconds,
+            max_idle_loops,
+            self.managed_symbols,
+            self.target_usd,
+        )
         meta = self._status_meta(status_path)
         self._write_status(
             self.engine.build_status(
@@ -109,12 +122,45 @@ class PodBPaperLiveRunner(PodBPaperRunner):
 
                 if new_records_processed == 0:
                     stats.idle_loops += 1
+                    if stats.idle_loops == 1 or (
+                        stats.idle_loops % 30 == 0 and max_idle_loops != 1
+                    ):
+                        logger.info(
+                            "Pod B live runner idle; idle_loops=%s managed_symbols=%s files_seen=%s last_offsets=%s",
+                            stats.idle_loops,
+                            self.managed_symbols,
+                            len(files),
+                            {
+                                Path(path).name: offset
+                                for path, offset in sorted(processed_offsets.items())
+                            },
+                        )
                 else:
                     stats.idle_loops = 0
+                    logger.info(
+                        "Pod B review summary; records=%s cumulative_records=%s fills_emitted=%s managed_symbols=%s positions=%s open_orders=%s realized_pnl_usd=%.4f",
+                        new_records_processed,
+                        stats.records_processed,
+                        stats.fills_emitted,
+                        self.managed_symbols,
+                        status.total_position_count,
+                        status.total_open_order_count,
+                        status.realized_pnl_usd,
+                    )
 
                 if max_idle_loops is not None and stats.idle_loops >= max_idle_loops:
+                    logger.info(
+                        "Pod B live runner stopping after idle threshold; idle_loops=%s threshold=%s",
+                        stats.idle_loops,
+                        max_idle_loops,
+                    )
                     break
                 if max_runtime_seconds is not None and time.monotonic() - started >= max_runtime_seconds:
+                    logger.info(
+                        "Pod B live runner stopping after max runtime; elapsed_seconds=%.2f threshold=%s",
+                        time.monotonic() - started,
+                        max_runtime_seconds,
+                    )
                     break
                 time.sleep(poll_seconds)
         finally:
@@ -132,6 +178,16 @@ class PodBPaperLiveRunner(PodBPaperRunner):
                     encoding="utf-8",
                 )
                 stats.report_path = str(report_path)
+            logger.info(
+                "Pod B live runner completed; records_processed=%s fills_emitted=%s idle_loops=%s total_fill_count=%s open_orders=%s realized_pnl_usd=%.4f report_path=%s",
+                stats.records_processed,
+                stats.fills_emitted,
+                stats.idle_loops,
+                final_status.total_fill_count,
+                final_status.total_open_order_count,
+                final_status.realized_pnl_usd,
+                stats.report_path,
+            )
 
         return stats
 
@@ -149,6 +205,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     args = build_parser().parse_args()
     runner = PodBPaperLiveRunner(args.config_path)
     stats = runner.run_live(

@@ -20,6 +20,13 @@ class Regime(StrEnum):
     CASH = "Cash"
 
 
+class SymbolLocalRegime(StrEnum):
+    TREND_STRUCTURE = "TrendStructure"
+    RANGE_STRUCTURE = "RangeStructure"
+    EVENT_IMPULSE = "EventImpulse"
+    NEUTRAL = "Neutral"
+
+
 class PodName(StrEnum):
     POD_A = "pod_a"
     POD_B = "pod_b"
@@ -65,6 +72,8 @@ class SymbolRoutingDecision:
     previous_owner: PodName | None = None
     candidate_pods: list[PodName] = field(default_factory=list)
     pod_scores: dict[PodName, float] = field(default_factory=dict)
+    local_regime: SymbolLocalRegime | None = None
+    local_regime_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -90,6 +99,26 @@ class RegimeTransition:
     previous_regime: Regime
     new_regime: Regime
     snapshot: RegimeSnapshot
+
+
+@dataclass(slots=True)
+class LocalSymbolState:
+    symbol: str
+    local_regime: SymbolLocalRegime
+    reason: str
+    owner: PodName | None = None
+    previous_owner: PodName | None = None
+    global_alignment: str = "unknown"
+    pod_scores: dict[PodName, float] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class LocalSymbolTransition:
+    recorded_at: str
+    symbol: str
+    previous_local_regime: SymbolLocalRegime | None
+    new_local_regime: SymbolLocalRegime
+    reason: str
 
 
 @dataclass(slots=True)
@@ -205,6 +234,9 @@ class SupervisorState:
     regime_history: list[RegimeTransition] = field(default_factory=list)
     regime_evaluation_count: int = 0
     regime_transition_count: int = 0
+    local_regime_by_symbol: list[LocalSymbolState] = field(default_factory=list)
+    local_regime_transitions: list[LocalSymbolTransition] = field(default_factory=list)
+    symbol_reassignment_count_by_symbol: dict[str, int] = field(default_factory=dict)
     pod_a_signal_preview: list[SignalPreview] = field(default_factory=list)
     pod_c_signal_preview: list[SignalPreview] = field(default_factory=list)
     pod_b_status: dict[str, object] = field(default_factory=dict)

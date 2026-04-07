@@ -4,7 +4,13 @@ from dataclasses import dataclass
 import math
 
 from app.settings import AppConfig
-from app.trident.types import PodName, Regime, SymbolMarketSnapshot, SymbolRoutingDecision
+from app.trident.types import (
+    PodName,
+    Regime,
+    SymbolLocalRegime,
+    SymbolMarketSnapshot,
+    SymbolRoutingDecision,
+)
 
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
@@ -42,6 +48,7 @@ class SymbolRouter:
                 continue
             snapshot = snapshot_by_symbol.get(symbol)
             previous_owner = previous.get(symbol)
+            local_regime, local_regime_reason = self._classify_local_regime(snapshot)
             pod_scores = {
                 pod: (
                     self._score_pod(
@@ -49,6 +56,7 @@ class SymbolRouter:
                         symbol=symbol,
                         regime=regime,
                         snapshot=snapshot,
+                        local_regime=local_regime,
                     )
                     if snapshot is not None
                     else 0.0
@@ -62,6 +70,8 @@ class SymbolRouter:
                     pod_scores=pod_scores,
                     previous_owner=previous_owner,
                     snapshot=snapshot,
+                    local_regime=local_regime,
+                    local_regime_reason=local_regime_reason,
                 )
             )
         return self._enforce_capacity_limits(decisions, regime=regime)
@@ -146,6 +156,8 @@ class SymbolRouter:
                 previous_owner=decision.previous_owner,
                 candidate_pods=list(decision.candidate_pods),
                 pod_scores=dict(decision.pod_scores),
+                local_regime=decision.local_regime,
+                local_regime_reason=decision.local_regime_reason,
             )
 
         best_owner = sorted(
@@ -166,6 +178,8 @@ class SymbolRouter:
                 previous_owner=decision.previous_owner,
                 candidate_pods=list(decision.candidate_pods),
                 pod_scores=dict(decision.pod_scores),
+                local_regime=decision.local_regime,
+                local_regime_reason=decision.local_regime_reason,
             )
 
         return SymbolRoutingDecision(
@@ -179,6 +193,8 @@ class SymbolRouter:
             previous_owner=decision.previous_owner,
             candidate_pods=list(decision.candidate_pods),
             pod_scores=dict(decision.pod_scores),
+            local_regime=decision.local_regime,
+            local_regime_reason=decision.local_regime_reason,
         )
 
     def _pod_has_capacity(
@@ -281,6 +297,8 @@ class SymbolRouter:
         pod_scores: dict[PodName, float],
         previous_owner: PodName | None,
         snapshot: SymbolMarketSnapshot | None,
+        local_regime: SymbolLocalRegime | None,
+        local_regime_reason: str,
     ) -> SymbolRoutingDecision:
         if snapshot is None:
             owner = previous_owner if previous_owner in candidates else self._priority_pick(candidates)
@@ -297,6 +315,8 @@ class SymbolRouter:
                 previous_owner=previous_owner,
                 candidate_pods=list(candidates),
                 pod_scores=dict(pod_scores),
+                local_regime=local_regime,
+                local_regime_reason=local_regime_reason,
             )
 
         ranked = sorted(
@@ -329,6 +349,8 @@ class SymbolRouter:
                 previous_owner=previous_owner,
                 candidate_pods=list(candidates),
                 pod_scores=dict(pod_scores),
+                local_regime=local_regime,
+                local_regime_reason=local_regime_reason,
             )
 
         if best_score >= self.min_assign_score:
@@ -340,6 +362,8 @@ class SymbolRouter:
                 previous_owner=previous_owner,
                 candidate_pods=list(candidates),
                 pod_scores=dict(pod_scores),
+                local_regime=local_regime,
+                local_regime_reason=local_regime_reason,
             )
 
         owner = previous_owner if previous_owner in candidates else self._priority_pick(candidates)
@@ -355,6 +379,8 @@ class SymbolRouter:
             previous_owner=previous_owner,
             candidate_pods=list(candidates),
             pod_scores=dict(pod_scores),
+            local_regime=local_regime,
+            local_regime_reason=local_regime_reason,
         )
 
     def _priority_pick(self, candidates: list[PodName]) -> PodName | None:
@@ -377,46 +403,83 @@ class SymbolRouter:
         symbol: str,
         regime: Regime,
         snapshot: SymbolMarketSnapshot | None,
+        local_regime: SymbolLocalRegime | None,
     ) -> float:
         if snapshot is None:
             return 0.0
         if pod == PodName.POD_A:
-            return round(self._score_pod_a(regime=regime, snapshot=snapshot), 4)
+            return round(
+                self._score_pod_a(
+                    regime=regime,
+                    snapshot=snapshot,
+                    local_regime=local_regime,
+                ),
+                4,
+            )
         if pod == PodName.POD_B:
-            return round(self._score_pod_b(regime=regime, snapshot=snapshot), 4)
+            return round(
+                self._score_pod_b(
+                    regime=regime,
+                    snapshot=snapshot,
+                    local_regime=local_regime,
+                ),
+                4,
+            )
         if symbol.upper() in {item.upper() for item in self.config.pod_c.leader_symbols}:
             return 0.0
-        return round(self._score_pod_c(regime=regime, snapshot=snapshot), 4)
+        return round(
+            self._score_pod_c(
+                regime=regime,
+                snapshot=snapshot,
+                local_regime=local_regime,
+            ),
+            4,
+        )
 
-    def _score_pod_a(self, *, regime: Regime, snapshot: SymbolMarketSnapshot) -> float:
-        regime_quality = {
+    def _score_pod_a(
+        self,
+        *,
+        regime: Regime,
+        snapshot: SymbolMarketSnapshot,
+        local_regime: SymbolLocalRegime | None,
+    ) -> float:
+        global_quality = {
             Regime.TREND_EXPANSION: 1.0,
             Regime.PANIC_SQUEEZE: 0.75,
             Regime.RANGE_AUCTION: 0.45,
             Regime.DEAD_ZONE: 0.15,
             Regime.CASH: 0.0,
         }[regime]
+        local_quality = self._local_regime_affinity(PodName.POD_A, local_regime)
         trend_bps = abs(snapshot.ema_fast - snapshot.ema_slow) / max(snapshot.price, 1e-9) * 10_000.0
         trend_shape = _clamp(trend_bps / 160.0)
         structure_quality = _clamp(abs(snapshot.structure_score))
         reclaim_quality = _clamp(1.0 - abs(snapshot.vwap_distance_bps) / 30.0)
         cluster_quality = 1.0 if snapshot.cluster_aligned else 0.3
         return (
-            regime_quality * 0.35
-            + trend_shape * 0.25
-            + structure_quality * 0.25
+            local_quality * 0.30
+            + global_quality * 0.15
+            + trend_shape * 0.20
+            + structure_quality * 0.20
             + reclaim_quality * 0.10
             + cluster_quality * 0.05
         )
 
-    def _score_pod_b(self, *, regime: Regime, snapshot: SymbolMarketSnapshot) -> float:
-        regime_quality = {
+    def _score_pod_b(
+        self,
+        *,
+        regime: Regime,
+        snapshot: SymbolMarketSnapshot,
+        local_regime: SymbolLocalRegime | None,
+    ) -> float:
+        global_quality = {
             Regime.RANGE_AUCTION: 1.0,
             Regime.DEAD_ZONE: 0.7,
             Regime.TREND_EXPANSION: 0.15,
             Regime.PANIC_SQUEEZE: 0.05,
             Regime.CASH: 0.0,
         }[regime]
+        local_quality = self._local_regime_affinity(PodName.POD_B, local_regime)
         range_limit = max(self.config.pod_b.paper_guard_max_range_width_bps, 1.0)
         range_quality = _clamp(1.0 - snapshot.bucket_range_bps / (range_limit * 1.5))
         structure_quality = _clamp(
@@ -431,31 +494,135 @@ class SymbolRouter:
         )
         spread_quality = _clamp(1.0 - snapshot.spread_bps / 8.0)
         return (
-            regime_quality * 0.35
+            local_quality * 0.30
+            + global_quality * 0.15
             + range_quality * 0.25
             + structure_quality * 0.20
             + toxicity_quality * 0.15
             + spread_quality * 0.05
         )
 
-    def _score_pod_c(self, *, regime: Regime, snapshot: SymbolMarketSnapshot) -> float:
-        regime_quality = {
+    def _score_pod_c(
+        self,
+        *,
+        regime: Regime,
+        snapshot: SymbolMarketSnapshot,
+        local_regime: SymbolLocalRegime | None,
+    ) -> float:
+        global_quality = {
             Regime.PANIC_SQUEEZE: 1.0,
             Regime.TREND_EXPANSION: 0.8,
             Regime.RANGE_AUCTION: 0.35,
             Regime.DEAD_ZONE: 0.1,
             Regime.CASH: 0.0,
         }[regime]
+        local_quality = self._local_regime_affinity(PodName.POD_C, local_regime)
         impulse_quality = _clamp(max(abs(snapshot.trade_flow_bias), abs(snapshot.book_imbalance)) * 1.6)
         range_quality = _clamp(snapshot.bucket_range_bps / 120.0)
         structure_quality = _clamp(abs(snapshot.structure_score))
         cluster_quality = 1.0 if snapshot.cluster_aligned else 0.2
         spread_quality = _clamp(1.0 - snapshot.spread_bps / max(self.config.pod_c.max_spread_bps * 1.5, 1.0))
         return (
-            regime_quality * 0.30
+            local_quality * 0.30
+            + global_quality * 0.10
             + impulse_quality * 0.25
             + range_quality * 0.15
             + structure_quality * 0.15
             + cluster_quality * 0.10
             + spread_quality * 0.05
         )
+
+    def _classify_local_regime(
+        self,
+        snapshot: SymbolMarketSnapshot | None,
+    ) -> tuple[SymbolLocalRegime | None, str]:
+        if snapshot is None:
+            return None, "missing_snapshot"
+
+        trend_bps = abs(snapshot.ema_fast - snapshot.ema_slow) / max(snapshot.price, 1e-9) * 10_000.0
+        structure_abs = abs(snapshot.structure_score)
+        toxicity = max(abs(snapshot.trade_flow_bias), abs(snapshot.book_imbalance))
+        range_limit = max(self.config.pod_b.paper_guard_max_range_width_bps, 1.0)
+        event_score = (
+            _clamp(toxicity / max(self.config.pod_b.paper_flow_toxicity_threshold, 0.2))
+            * 0.45
+            + _clamp(snapshot.bucket_range_bps / max(range_limit, 40.0)) * 0.30
+            + _clamp(structure_abs / 0.35) * 0.25
+        )
+        trend_score = (
+            _clamp(trend_bps / 60.0) * 0.40
+            + _clamp(structure_abs / 0.25) * 0.30
+            + _clamp(1.0 - abs(snapshot.vwap_distance_bps) / 25.0) * 0.20
+            + (0.10 if snapshot.cluster_aligned else 0.03)
+        )
+        range_score = (
+            _clamp(1.0 - snapshot.bucket_range_bps / max(range_limit, 25.0)) * 0.35
+            + _clamp(
+                1.0
+                - structure_abs
+                / max(self.config.pod_b.paper_guard_max_abs_structure_score * 2.5, 0.5)
+            )
+            * 0.25
+            + _clamp(
+                1.0
+                - toxicity
+                / max(self.config.pod_b.paper_flow_toxicity_threshold * 3.0, 0.8)
+            )
+            * 0.25
+            + _clamp(1.0 - trend_bps / 45.0) * 0.15
+        )
+
+        ranked = sorted(
+            [
+                (SymbolLocalRegime.EVENT_IMPULSE, event_score),
+                (SymbolLocalRegime.TREND_STRUCTURE, trend_score),
+                (SymbolLocalRegime.RANGE_STRUCTURE, range_score),
+            ],
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        best_regime, best_score = ranked[0]
+        if best_score < 0.50:
+            return (
+                SymbolLocalRegime.NEUTRAL,
+                (
+                    "neutral_local_state"
+                    f" (trend={trend_score:.2f}, range={range_score:.2f}, event={event_score:.2f})"
+                ),
+            )
+        return (
+            best_regime,
+            (
+                f"{best_regime.value}"
+                f" (trend={trend_score:.2f}, range={range_score:.2f}, event={event_score:.2f})"
+            ),
+        )
+
+    def _local_regime_affinity(
+        self,
+        pod: PodName,
+        local_regime: SymbolLocalRegime | None,
+    ) -> float:
+        if local_regime is None:
+            return 0.0
+        affinities = {
+            PodName.POD_A: {
+                SymbolLocalRegime.TREND_STRUCTURE: 1.0,
+                SymbolLocalRegime.EVENT_IMPULSE: 0.65,
+                SymbolLocalRegime.RANGE_STRUCTURE: 0.30,
+                SymbolLocalRegime.NEUTRAL: 0.45,
+            },
+            PodName.POD_B: {
+                SymbolLocalRegime.TREND_STRUCTURE: 0.20,
+                SymbolLocalRegime.EVENT_IMPULSE: 0.10,
+                SymbolLocalRegime.RANGE_STRUCTURE: 1.0,
+                SymbolLocalRegime.NEUTRAL: 0.55,
+            },
+            PodName.POD_C: {
+                SymbolLocalRegime.TREND_STRUCTURE: 0.75,
+                SymbolLocalRegime.EVENT_IMPULSE: 1.0,
+                SymbolLocalRegime.RANGE_STRUCTURE: 0.25,
+                SymbolLocalRegime.NEUTRAL: 0.35,
+            },
+        }
+        return affinities[pod][local_regime]

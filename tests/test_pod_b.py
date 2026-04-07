@@ -506,6 +506,88 @@ class PodBTests(unittest.TestCase):
             self.assertEqual(inventory["DOGE"].open_order_count, 1)
             self.assertEqual(inventory["XRP"].open_order_count, 1)
 
+    def test_manager_trims_stale_runtime_symbols_outside_assignment(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_b.enabled = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
+            config.pod_b.passivbot_config_path = str(config_path)
+            manager = PassivbotManager(config)
+            status_path = manager.status_path(config_path)
+            status_path.parent.mkdir(parents=True, exist_ok=True)
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "process_state": "running",
+                        "managed_symbols": ["DOGE", "XRP", "LTC"],
+                        "target_usd": 300.0,
+                        "last_sync_reason": "external_wrapper_running",
+                        "positions": [
+                            {
+                                "symbol": "DOGE",
+                                "side": "long",
+                                "size": 1000.0,
+                                "entry_price": 0.2,
+                                "mark_price": 0.21,
+                                "notional_usd": 210.0,
+                                "unrealized_pnl_usd": 10.0,
+                            }
+                        ],
+                        "open_orders": [
+                            {"symbol": "DOGE", "side": "buy", "price": 0.209, "size": 100.0},
+                            {"symbol": "LTC", "side": "sell", "price": 53.0, "size": 1.0},
+                        ],
+                        "inventory": [
+                            {
+                                "symbol": "DOGE",
+                                "target_notional_usd": 100.0,
+                                "current_notional_usd": 210.0,
+                                "inventory_skew_pct": 2.1,
+                                "has_position": True,
+                                "open_order_count": 1,
+                            },
+                            {
+                                "symbol": "XRP",
+                                "target_notional_usd": 100.0,
+                                "current_notional_usd": 0.0,
+                                "inventory_skew_pct": 0.0,
+                                "has_position": False,
+                                "open_order_count": 0,
+                            },
+                            {
+                                "symbol": "LTC",
+                                "target_notional_usd": 100.0,
+                                "current_notional_usd": 0.0,
+                                "inventory_skew_pct": 0.0,
+                                "has_position": False,
+                                "open_order_count": 1,
+                            },
+                        ],
+                        "total_open_order_count": 2,
+                        "total_position_count": 1,
+                        "realized_pnl_usd": 1.5,
+                        "total_notional_usd": 210.0,
+                        "total_unrealized_pnl_usd": 10.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            status = manager.sync(
+                allocation=PodAllocation(
+                    pod=PodName.POD_B,
+                    target_pct=0.3,
+                    target_usd=300.0,
+                ),
+                owned_symbols=["DOGE", "XRP"],
+            )
+
+            self.assertEqual(status.managed_symbols, ["DOGE", "XRP"])
+            self.assertEqual([order.symbol for order in status.open_orders], ["DOGE"])
+            self.assertEqual([item.symbol for item in status.inventory], ["DOGE", "XRP"])
+            self.assertEqual(status.total_open_order_count, 1)
+            self.assertEqual(status.total_position_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

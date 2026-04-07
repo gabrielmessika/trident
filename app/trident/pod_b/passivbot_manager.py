@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -20,6 +21,8 @@ from app.trident.pod_b.models import (
 )
 from app.trident.pod_b.status_parser import PassivbotStatusParser
 from app.trident.types import PodAllocation
+
+logger = logging.getLogger(__name__)
 
 
 class PassivbotManager:
@@ -287,6 +290,10 @@ class PassivbotManager:
         managed_symbols: list[str],
         target_usd: float,
     ) -> PassivbotStatus:
+        status = self._trim_status_to_assignment(
+            status=status,
+            managed_symbols=managed_symbols,
+        )
         if status.pid is None:
             return status
         if self._pid_is_active(status.pid):
@@ -294,6 +301,12 @@ class PassivbotManager:
         process = self._managed_processes.pop(status.pid, None)
         if process is not None:
             process.wait(timeout=0.1)
+        inventory = self.status_parser._build_inventory_defaults(
+            managed_symbols=managed_symbols,
+            target_usd=target_usd,
+            positions=status.positions,
+            open_orders=status.open_orders,
+        )
         return self._write_status(
             enabled=status.enabled,
             process_state="stopped",
@@ -309,11 +322,138 @@ class PassivbotManager:
             started_at=status.started_at,
             positions=status.positions,
             open_orders=status.open_orders,
-            inventory=status.inventory,
+            inventory=inventory,
             total_position_count=status.total_position_count,
             total_open_order_count=status.total_open_order_count,
             total_notional_usd=status.total_notional_usd,
             total_unrealized_pnl_usd=status.total_unrealized_pnl_usd,
+        )
+
+    def _trim_status_to_assignment(
+        self,
+        *,
+        status: PassivbotStatus,
+        managed_symbols: list[str],
+    ) -> PassivbotStatus:
+        desired_symbols = [symbol.upper() for symbol in managed_symbols]
+        runtime_symbols = {
+            str(symbol).upper()
+            for symbol in status.managed_symbols
+            if str(symbol).strip()
+        }
+        stale_symbols = sorted(runtime_symbols - set(desired_symbols))
+        missing_symbols = sorted(set(desired_symbols) - runtime_symbols)
+        effective_symbols = [
+            symbol for symbol in desired_symbols if symbol in runtime_symbols
+        ]
+        if not status.managed_symbols:
+            effective_symbols = desired_symbols
+        allowed_symbols = set(effective_symbols)
+
+        filtered_positions = [
+            position
+            for position in status.positions
+            if position.symbol.upper() in allowed_symbols
+        ]
+        filtered_open_orders = [
+            order
+            for order in status.open_orders
+            if order.symbol.upper() in allowed_symbols
+        ]
+        filtered_recent_fills = [
+            fill
+            for fill in status.recent_fills
+            if fill.symbol.upper() in allowed_symbols
+        ]
+        dropped_order_symbols = sorted(
+            {
+                order.symbol.upper()
+                for order in status.open_orders
+                if order.symbol.upper() not in allowed_symbols
+            }
+        )
+        dropped_position_symbols = sorted(
+            {
+                position.symbol.upper()
+                for position in status.positions
+                if position.symbol.upper() not in allowed_symbols
+            }
+        )
+        inventory = self.status_parser._build_inventory_defaults(
+            managed_symbols=effective_symbols,
+            target_usd=status.target_usd,
+            positions=filtered_positions,
+            open_orders=filtered_open_orders,
+        )
+
+        changed = (
+            status.managed_symbols != effective_symbols
+            or len(filtered_positions) != len(status.positions)
+            or len(filtered_open_orders) != len(status.open_orders)
+            or len(filtered_recent_fills) != len(status.recent_fills)
+            or len(inventory) != len(status.inventory)
+            or any(
+                existing.symbol != rebuilt.symbol
+                or existing.target_notional_usd != rebuilt.target_notional_usd
+                or existing.current_notional_usd != rebuilt.current_notional_usd
+                or existing.inventory_skew_pct != rebuilt.inventory_skew_pct
+                or existing.has_position != rebuilt.has_position
+                or existing.open_order_count != rebuilt.open_order_count
+                for existing, rebuilt in zip(status.inventory, inventory)
+            )
+        )
+        if stale_symbols or missing_symbols:
+            logger.warning(
+                "Pod B runtime symbol drift detected; desired=%s runtime=%s effective=%s stale=%s missing=%s process_state=%s reason=%s pid=%s",
+                desired_symbols,
+                status.managed_symbols,
+                effective_symbols,
+                stale_symbols,
+                missing_symbols,
+                status.process_state,
+                status.last_sync_reason,
+                status.pid,
+            )
+        if dropped_order_symbols or dropped_position_symbols:
+            logger.warning(
+                "Pod B trimmed stale runtime artifacts; dropped_order_symbols=%s dropped_position_symbols=%s total_open_orders=%s total_positions=%s",
+                dropped_order_symbols,
+                dropped_position_symbols,
+                len(status.open_orders) - len(filtered_open_orders),
+                len(status.positions) - len(filtered_positions),
+            )
+        if not changed:
+            return status
+
+        return self._write_status(
+            enabled=status.enabled,
+            process_state=status.process_state,
+            managed_symbols=effective_symbols,
+            config_path=status.config_path,
+            target_usd=status.target_usd,
+            last_sync_reason=status.last_sync_reason,
+            leverage=status.leverage,
+            pid=status.pid,
+            launch_command=status.launch_command,
+            stdout_path=status.stdout_path,
+            stderr_path=status.stderr_path,
+            started_at=status.started_at,
+            positions=filtered_positions,
+            open_orders=filtered_open_orders,
+            inventory=inventory,
+            recent_fills=filtered_recent_fills,
+            total_fill_count=status.total_fill_count,
+            total_position_count=len(filtered_positions),
+            total_open_order_count=len(filtered_open_orders),
+            realized_pnl_usd=status.realized_pnl_usd,
+            total_notional_usd=round(
+                sum(position.notional_usd for position in filtered_positions),
+                4,
+            ),
+            total_unrealized_pnl_usd=round(
+                sum(position.unrealized_pnl_usd for position in filtered_positions),
+                4,
+            ),
         )
 
     def _write_status(

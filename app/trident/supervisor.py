@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from app.settings import AppConfig
@@ -15,6 +16,8 @@ from app.trident.symbol_router import SymbolRouter
 from app.trident.symbol_registry import SymbolRegistry
 from app.trident.types import (
     CapitalPlan,
+    LocalSymbolState,
+    LocalSymbolTransition,
     ObservedSymbolStatus,
     OwnershipConflict,
     PodHealth,
@@ -24,11 +27,14 @@ from app.trident.types import (
     RegimeTransition,
     SignalPreview,
     SymbolAllocation,
+    SymbolLocalRegime,
     SymbolMarketSnapshot,
     SymbolRoutingDecision,
     SupervisorState,
     TradePlan,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TridentSupervisor:
@@ -114,7 +120,20 @@ class TridentSupervisor:
         snapshots: list[SymbolMarketSnapshot],
     ) -> None:
         snapshots = self._prepare_snapshots(snapshots)
+        previous_status_by_symbol = {
+            item.symbol: item for item in self.state.observed_symbol_status
+        }
+        previous_local_regimes = {
+            item.symbol: item.local_regime for item in self.state.local_regime_by_symbol
+        }
         candidate_symbols_by_pod = self._candidate_symbols_by_pod(snapshots)
+        current_status_by_symbol = {
+            item.symbol: item for item in self.state.observed_symbol_status
+        }
+        self._log_tradable_pool_changes(
+            previous_status_by_symbol=previous_status_by_symbol,
+            current_status_by_symbol=current_status_by_symbol,
+        )
         for pod_name, pod in self.pods.items():
             pod.desired_symbols = list(candidate_symbols_by_pod.get(pod_name, []))
         previous_owners = {
@@ -126,7 +145,11 @@ class TridentSupervisor:
             snapshots=snapshots,
             previous_owners=previous_owners,
         )
-        self._apply_symbol_routing(decisions)
+        self._apply_symbol_routing(
+            decisions,
+            previous_owners=previous_owners,
+            previous_local_regimes=previous_local_regimes,
+        )
 
     def _candidate_symbols_by_pod(
         self,
@@ -211,8 +234,15 @@ class TridentSupervisor:
         source = snapshot.source.strip().lower()
         return "live" in source
 
-    def _apply_symbol_routing(self, decisions: list[SymbolRoutingDecision]) -> None:
+    def _apply_symbol_routing(
+        self,
+        decisions: list[SymbolRoutingDecision],
+        *,
+        previous_owners: dict[str, PodName],
+        previous_local_regimes: dict[str, SymbolLocalRegime],
+    ) -> None:
         self.registry.clear()
+        previous_conflict_count = len(self.state.ownership_conflicts)
         self.state.ownership_conflicts = []
         self.state.symbol_routing = decisions
         for decision in decisions:
@@ -230,6 +260,16 @@ class TridentSupervisor:
                     )
                 continue
             self.registry.claim(decision.symbol, decision.owner)
+        self._update_local_regime_state(
+            decisions=decisions,
+            previous_owners=previous_owners,
+            previous_local_regimes=previous_local_regimes,
+        )
+        self._log_symbol_routing_changes(
+            previous_owners=previous_owners,
+            decisions=decisions,
+            previous_conflict_count=previous_conflict_count,
+        )
         self.capital_plan = self._build_capital_plan()
         self.sync_pod_b()
 
@@ -436,11 +476,17 @@ class TridentSupervisor:
 
     def sync_pod_b(self) -> None:
         allocation = self.capital_plan.pod_allocations[PodName.POD_B]
+        previous_status = (
+            dict(self.state.pod_b_status)
+            if isinstance(self.state.pod_b_status, dict)
+            else {}
+        )
         status = self.pod_b_manager.sync(
             allocation=allocation,
             owned_symbols=self.registry.symbols_for(PodName.POD_B),
         )
         self.state.pod_b_status = status.as_dict()
+        self._log_pod_b_sync_changes(previous_status=previous_status, current_status=self.state.pod_b_status)
 
     def refresh_pod_b_status(self) -> None:
         allocation = self.capital_plan.pod_allocations[PodName.POD_B]
@@ -594,6 +640,43 @@ class TridentSupervisor:
                 }
                 for transition in self.state.regime_history
             ],
+            "local_regime_by_symbol": [
+                {
+                    "symbol": item.symbol,
+                    "local_regime": item.local_regime.value,
+                    "reason": item.reason,
+                    "owner": item.owner.value if item.owner is not None else None,
+                    "previous_owner": (
+                        item.previous_owner.value if item.previous_owner is not None else None
+                    ),
+                    "global_alignment": item.global_alignment,
+                    "pod_scores": {
+                        pod.value: score for pod, score in item.pod_scores.items()
+                    },
+                    "reassignment_count": self.state.symbol_reassignment_count_by_symbol.get(
+                        item.symbol,
+                        0,
+                    ),
+                }
+                for item in self.state.local_regime_by_symbol
+            ],
+            "local_regime_transitions": [
+                {
+                    "recorded_at": transition.recorded_at,
+                    "symbol": transition.symbol,
+                    "previous_local_regime": (
+                        transition.previous_local_regime.value
+                        if transition.previous_local_regime is not None
+                        else None
+                    ),
+                    "new_local_regime": transition.new_local_regime.value,
+                    "reason": transition.reason,
+                }
+                for transition in self.state.local_regime_transitions
+            ],
+            "symbol_reassignment_count_by_symbol": dict(
+                self.state.symbol_reassignment_count_by_symbol
+            ),
             "pod_a_signal_preview": [
                 {
                     "symbol": signal.symbol,
@@ -627,8 +710,195 @@ class TridentSupervisor:
                     "pod_scores": {
                         pod.value: score for pod, score in decision.pod_scores.items()
                     },
+                    "local_regime": (
+                        decision.local_regime.value
+                        if decision.local_regime is not None
+                        else None
+                    ),
+                    "local_regime_reason": decision.local_regime_reason,
                 }
                 for decision in self.state.symbol_routing
             ],
             "pod_b_status": self.state.pod_b_status,
         }
+
+    def _update_local_regime_state(
+        self,
+        *,
+        decisions: list[SymbolRoutingDecision],
+        previous_owners: dict[str, PodName],
+        previous_local_regimes: dict[str, SymbolLocalRegime],
+    ) -> None:
+        local_states: list[LocalSymbolState] = []
+        transitions: list[LocalSymbolTransition] = []
+        for decision in sorted(decisions, key=lambda item: item.symbol):
+            if decision.local_regime is None:
+                continue
+            previous_local_regime = previous_local_regimes.get(decision.symbol)
+            if previous_local_regime != decision.local_regime:
+                transitions.append(
+                    LocalSymbolTransition(
+                        recorded_at=datetime.now(timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                        symbol=decision.symbol,
+                        previous_local_regime=previous_local_regime,
+                        new_local_regime=decision.local_regime,
+                        reason=decision.local_regime_reason,
+                    )
+                )
+            previous_owner = previous_owners.get(decision.symbol)
+            if previous_owner != decision.owner:
+                self.state.symbol_reassignment_count_by_symbol[decision.symbol] = (
+                    self.state.symbol_reassignment_count_by_symbol.get(decision.symbol, 0)
+                    + 1
+                )
+            local_states.append(
+                LocalSymbolState(
+                    symbol=decision.symbol,
+                    local_regime=decision.local_regime,
+                    reason=decision.local_regime_reason,
+                    owner=decision.owner,
+                    previous_owner=decision.previous_owner,
+                    global_alignment=self._local_global_alignment(
+                        self.state.regime,
+                        decision.local_regime,
+                    ),
+                    pod_scores=dict(decision.pod_scores),
+                )
+            )
+        self.state.local_regime_by_symbol = local_states
+        self.state.local_regime_transitions.extend(transitions)
+        self.state.local_regime_transitions = self.state.local_regime_transitions[-100:]
+
+    def _local_global_alignment(
+        self,
+        global_regime: Regime,
+        local_regime: SymbolLocalRegime,
+    ) -> str:
+        aligned = {
+            Regime.TREND_EXPANSION: {
+                SymbolLocalRegime.TREND_STRUCTURE,
+                SymbolLocalRegime.EVENT_IMPULSE,
+            },
+            Regime.RANGE_AUCTION: {SymbolLocalRegime.RANGE_STRUCTURE},
+            Regime.PANIC_SQUEEZE: {
+                SymbolLocalRegime.EVENT_IMPULSE,
+                SymbolLocalRegime.TREND_STRUCTURE,
+            },
+            Regime.DEAD_ZONE: {
+                SymbolLocalRegime.RANGE_STRUCTURE,
+                SymbolLocalRegime.NEUTRAL,
+            },
+            Regime.CASH: {SymbolLocalRegime.NEUTRAL},
+        }
+        return "aligned" if local_regime in aligned[global_regime] else "divergent"
+
+    def _log_tradable_pool_changes(
+        self,
+        *,
+        previous_status_by_symbol: dict[str, ObservedSymbolStatus],
+        current_status_by_symbol: dict[str, ObservedSymbolStatus],
+    ) -> None:
+        previous_tradable = {
+            symbol
+            for symbol, status in previous_status_by_symbol.items()
+            if status.tradable
+        }
+        current_tradable = {
+            symbol
+            for symbol, status in current_status_by_symbol.items()
+            if status.tradable
+        }
+        added = sorted(current_tradable - previous_tradable)
+        removed = sorted(previous_tradable - current_tradable)
+        reason_changes: list[str] = []
+        for symbol in sorted(set(previous_status_by_symbol) & set(current_status_by_symbol)):
+            previous = previous_status_by_symbol[symbol]
+            current = current_status_by_symbol[symbol]
+            if previous.tradable == current.tradable and previous.reasons == current.reasons:
+                continue
+            if symbol in added or symbol in removed:
+                continue
+            if current.reasons != previous.reasons:
+                reason_changes.append(
+                    f"{symbol}:{previous.reasons}->{current.reasons}"
+                )
+        if not added and not removed and not reason_changes:
+            return
+        logger.info(
+            "Supervisor tradable pool changed; regime=%s added=%s removed=%s reason_changes=%s current_tradable=%s",
+            self.state.regime.value,
+            added,
+            removed,
+            reason_changes,
+            sorted(current_tradable),
+        )
+
+    def _log_symbol_routing_changes(
+        self,
+        *,
+        previous_owners: dict[str, PodName],
+        decisions: list[SymbolRoutingDecision],
+        previous_conflict_count: int,
+    ) -> None:
+        changes: list[str] = []
+        current_owners = {
+            decision.symbol: decision.owner
+            for decision in decisions
+        }
+        symbols = sorted(set(previous_owners) | set(current_owners))
+        for symbol in symbols:
+            previous_owner = previous_owners.get(symbol)
+            current_owner = current_owners.get(symbol)
+            if previous_owner == current_owner:
+                continue
+            decision = next((item for item in decisions if item.symbol == symbol), None)
+            changes.append(
+                f"{symbol}:{previous_owner.value if previous_owner else 'none'}->{current_owner.value if current_owner else 'none'}"
+                f" mode={decision.mode if decision else 'unknown'}"
+                f" reason={decision.reason if decision else 'unknown'}"
+            )
+        conflict_count = len(self.state.ownership_conflicts)
+        if not changes and conflict_count == previous_conflict_count:
+            return
+        logger.info(
+            "Supervisor symbol routing changed; regime=%s changes=%s conflicts=%s",
+            self.state.regime.value,
+            changes,
+            conflict_count,
+        )
+
+    def _log_pod_b_sync_changes(
+        self,
+        *,
+        previous_status: dict[str, object],
+        current_status: dict[str, object],
+    ) -> None:
+        previous_symbols = [str(symbol) for symbol in previous_status.get("managed_symbols", [])]
+        current_symbols = [str(symbol) for symbol in current_status.get("managed_symbols", [])]
+        previous_target = float(previous_status.get("target_usd", 0.0) or 0.0)
+        current_target = float(current_status.get("target_usd", 0.0) or 0.0)
+        previous_state = str(previous_status.get("process_state", ""))
+        current_state = str(current_status.get("process_state", ""))
+        previous_reason = str(previous_status.get("last_sync_reason", ""))
+        current_reason = str(current_status.get("last_sync_reason", ""))
+        if (
+            previous_symbols == current_symbols
+            and previous_target == current_target
+            and previous_state == current_state
+            and previous_reason == current_reason
+        ):
+            return
+        logger.info(
+            "Supervisor Pod B sync changed; regime=%s managed_symbols=%s target_usd=%.2f process_state=%s reason=%s previous_symbols=%s previous_target_usd=%.2f previous_process_state=%s previous_reason=%s",
+            self.state.regime.value,
+            current_symbols,
+            current_target,
+            current_state,
+            current_reason,
+            previous_symbols,
+            previous_target,
+            previous_state,
+            previous_reason,
+        )

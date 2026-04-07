@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from dataclasses import asdict, dataclass
@@ -14,6 +15,8 @@ from app.reporting.pod_b import PodBReport
 from app.trident.pod_b.models import PassivbotStatus
 from app.trident.pod_b.paper_engine import PodBPaperEngine
 from app.trident.types import SymbolMarketSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -64,6 +67,15 @@ class PodBPaperRunner:
         journal = JsonlJournal(journal_output) if journal_output is not None else None
         report = PodBReport()
         status_path = self.config_path.with_suffix(".status.json")
+        logger.info(
+            "Pod B paper run starting; input=%s config=%s managed_symbols=%s target_usd=%.2f report_output=%s journal_output=%s",
+            input_path,
+            self.config_path,
+            self.managed_symbols,
+            self.target_usd,
+            report_output,
+            journal_output,
+        )
         meta = self._status_meta(status_path)
         self._write_status(
             self.engine.build_status(
@@ -122,6 +134,14 @@ class PodBPaperRunner:
             status_meta=meta,
         )
         self._write_status(final_status)
+        logger.info(
+            "Pod B paper run completed; records_processed=%s fills_emitted=%s total_fill_count=%s open_orders=%s realized_pnl_usd=%.4f",
+            records_processed,
+            fills_emitted,
+            final_status.total_fill_count,
+            final_status.total_open_order_count,
+            final_status.realized_pnl_usd,
+        )
         result = PodBPaperRunnerResult(
             input_path=str(input_path),
             config_path=str(self.config_path),
@@ -192,6 +212,8 @@ class PodBPaperRunner:
         )
 
     def reload_runtime_config(self) -> None:
+        previous_symbols = list(self.managed_symbols)
+        previous_target_usd = self.target_usd
         self.runtime_config = json.loads(self.config_path.read_text(encoding="utf-8"))
         trident = self.runtime_config.get("trident", {})
         if not isinstance(trident, dict):
@@ -206,6 +228,27 @@ class PodBPaperRunner:
             managed_symbols=self.managed_symbols,
             target_usd=self.target_usd,
         )
+        added_symbols = sorted(set(self.managed_symbols) - set(previous_symbols))
+        removed_symbols = sorted(set(previous_symbols) - set(self.managed_symbols))
+        if (
+            self.managed_symbols != previous_symbols
+            or self.target_usd != previous_target_usd
+        ):
+            logger.info(
+                "Pod B runtime config reloaded; managed_symbols=%s target_usd=%.2f added=%s removed=%s previous_symbols=%s previous_target_usd=%.2f",
+                self.managed_symbols,
+                self.target_usd,
+                added_symbols,
+                removed_symbols,
+                previous_symbols,
+                previous_target_usd,
+            )
+        else:
+            logger.debug(
+                "Pod B runtime config checked with no allocation change; managed_symbols=%s target_usd=%.2f",
+                self.managed_symbols,
+                self.target_usd,
+            )
 
     def _status_meta(self, status_path: Path) -> dict[str, object]:
         payload: dict[str, object] = {}
@@ -249,6 +292,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     args = build_parser().parse_args()
     runner = PodBPaperRunner(args.config_path)
     result = runner.run(

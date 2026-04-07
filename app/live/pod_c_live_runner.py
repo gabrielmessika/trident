@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,8 @@ from app.settings import AppConfig, load_config
 from app.trident.market_clusters import cluster_for_symbol
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 class PodCLiveRunner:
@@ -246,6 +249,14 @@ class PodCLiveRunner:
                 opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
                 closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
             )
+        self._emit_review_summary(
+            timestamp=timestamp,
+            regime=current_regime,
+            previews=previews,
+            trade_plans=trade_plans,
+            risk_decisions=risk_decisions,
+            execution=execution,
+        )
 
     def _hold_hours(self, trade: object) -> float | None:
         opened_at = getattr(trade, "opened_at", None)
@@ -253,6 +264,48 @@ class PodCLiveRunner:
         if opened_at is None or closed_at is None:
             return None
         return (closed_at - opened_at).total_seconds() / 3600.0
+
+    def _emit_review_summary(
+        self,
+        *,
+        timestamp: str,
+        regime: str,
+        previews: list[object],
+        trade_plans: list[object],
+        risk_decisions: list[RiskDecision],
+        execution: object,
+    ) -> None:
+        record_index = self.report.records_processed
+        should_log = (
+            record_index == 1
+            or record_index % 30 == 0
+            or bool(previews)
+            or bool(execution.opened_symbols)
+            or bool(execution.closed_trades)
+            or bool(execution.skipped_open_symbols)
+        )
+        if not should_log:
+            return
+        tradable_count = sum(
+            1 for item in self.supervisor.state.observed_symbol_status if item.tradable
+        )
+        owned_symbols = self.supervisor.registry.symbols_for(PodName.POD_C)
+        accepted_count = sum(1 for decision in risk_decisions if decision.accepted)
+        logger.info(
+            "Pod C review summary; ts=%s regime=%s tradable_count=%s owned_symbols=%s previews=%s trade_plans=%s accepted=%s opened=%s skipped=%s closed=%s open_positions=%s realized_pnl_usd=%.2f",
+            timestamp,
+            regime,
+            tradable_count,
+            owned_symbols,
+            len(previews),
+            len(trade_plans),
+            accepted_count,
+            len(execution.opened_symbols),
+            len(execution.skipped_open_symbols),
+            len(execution.closed_trades),
+            len(self.executor.portfolio.open_positions),
+            self.report.realized_pnl_usd,
+        )
 
     def _trade_to_record(self, trade: object) -> dict[str, object]:
         return {
@@ -375,6 +428,10 @@ async def _run_from_args() -> None:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     asyncio.run(_run_from_args())
 
 

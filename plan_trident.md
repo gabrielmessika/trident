@@ -277,6 +277,16 @@
   - limite actuelle:
     - aucun snapshot live reel `SPX` / `PAXG` n'est encore present dans le repo
     - la comparaison `crypto_only` vs `mixed` reste donc a confirmer des que le collecteur observe effectivement ces marches
+- 2026-04-07: decision d'architecture sur le regime apres revue du routage multi-coins:
+  - le regime global reste la source de verite pour:
+    - budget de risque
+    - allocations par pod
+    - posture cash / risk-off
+  - le routage coin par coin ne doit plus dependre d'un regime unique partage par tout l'univers
+  - un `local_regime` ou `symbol_state` par coin devient une cible officielle du plan
+  - `Regime history` global est conserve pour la lecture macro du marche
+  - une telemetrie locale par coin doit s'y ajouter pour expliquer les reattributions et divergences
+  - l'etape `5bis` est etendue en consequence
 - 2026-04-05: Pod B paper runner ajoute:
   - `app/trident/pod_b/paper_engine.py` cree
   - `app/trident/pod_b/paper_runner.py` cree
@@ -384,7 +394,7 @@
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider en dry-run live le socle `500 USD` et confirmer le comportement d'upgrade / allocation active sur une plage plus longue |
 | 5. Pod B range engine natif | 92% | Lancer le premier dry-run 24h 3 pods avec `Pod B` en mode conservateur, puis recalibrer les seuils d'activation range/toxicite sur les observations runtime |
-| 5bis. Routing dynamique symbols / ownership | 98% | Enrichir l'UI avec l'explication `market_cluster / cluster_leader / cluster_aligned`, afficher le `tradable_pool` plus clairement, puis capturer des snapshots live incluant `SPX` / `PAXG` |
+| 5bis. Routing dynamique symbols / ownership | 80% | Etendre le routeur avec un `local_regime` / `symbol_state` par coin, afficher `global vs local` dans l'UI, puis recalibrer sur quelques sessions live multi-coins |
 | 6. Reporting par pod | 100% | Rien, étape fermée |
 | 7. Research Pod pour Pod C | 100% | Rien, étape fermée |
 | 8. Pod C minimal | 100% | Rien, étape fermée |
@@ -428,16 +438,24 @@ Regle de maintenance:
      - premier verdict reel sur `majors` vs `expanded_crypto`:
        - `expanded_crypto` meilleur en PnL net et drawdown
        - `LINK`, `AVAX` et `ARB` ressortent comme contributeurs utiles
+     - lecture:
        - `DeadZone` reste perdant mais moins destructeur avec l'univers elargi
    - prochaine etape:
      - collecter des snapshots live incluant `SPX` / `PAXG`
      - relancer le memo de decision cible `crypto_only` vs `mixed`
 
-5. Diagnostic Pod B avec plus de donnees
+5. Regime multi-niveaux pour le superviseur
+   - statut: decision d'architecture prise, implementation a lancer
+   - resultat cible:
+     - `global_regime` pour l'enveloppe de risque et les caps par pod
+     - `local_regime` ou `symbol_state` par coin pour le routing et l'eligibilite reelle des pods
+     - telemetrie separant clairement macro du marche et comportement local des symbols
+
+6. Diagnostic Pod B avec plus de donnees
    - conserver Pod B actif en observation
    - analyser expectancy par symbol, par regime et par toxicite avant toute grosse retouche strategy
 
-6. Elargissement progressif de l'univers
+7. Elargissement progressif de l'univers
    - seulement apres validation des clusters et des replays
    - ajouter de nouveaux marches observes puis tradables sans degrader la qualite du pool
 
@@ -522,6 +540,18 @@ Le systeme ne doit pas:
                              +-----------------+
 ```
 
+Architecture cible retenue a partir du `2026-04-07`:
+
+- le `Regime Allocator` ci-dessus devient explicitement la couche macro, donc un allocateur de regime global
+- une couche locale par symbol doit vivre dans le routeur:
+  - `local_regime` ou `symbol_state`
+  - calcule a partir des features propres au coin
+  - autorise des divergences locales sous enveloppe de risque globale
+- le systeme doit pouvoir exprimer un cas du type:
+  - marche global plutot `RangeAuction`
+  - mais `SOL` localement trend / event-driven
+  - donc `SOL` route vers `Pod A` ou `Pod C` sans attendre un switch global complet
+
 ### 3.2. Choix de stack
 
 - `Moteur principal`: Python 3.12+.
@@ -592,6 +622,27 @@ La premiere version doit utiliser uniquement des features presentes dans le repo
 - vol realisee,
 - event flags BTC / ETH.
 
+### 4.4. Regime a deux niveaux retenu
+
+Le plan retient desormais deux couches distinctes:
+
+- `global_regime`:
+  - unique pour tout le marche observe
+  - pilote les allocations par pod, le cash, les caps et les gardes macro
+- `local_regime` ou `symbol_state`:
+  - calcule par coin
+  - pilote le routing, l'eligibilite effective des pods et les gardes locaux
+  - doit pouvoir diverger du contexte global tant que le budget de risque global l'autorise
+
+Principes de design:
+
+- ne plus supposer qu'un seul regime represente correctement tous les coins
+- conserver le regime global comme parapluie de risque, pas comme verite unique d'execution
+- preferer un routage "global contraint, local decideur" plutot qu'un routage "global impose a tous"
+- garder une lecture simple dans l'UI:
+  - historique global pour la macro
+  - transitions locales seulement pour les coins routables / reels
+
 ---
 
 ## 5. Ownership des coins
@@ -602,7 +653,9 @@ Un coin ne peut etre possede que par un seul pod a la fois.
 
 ### 5.2. Mode de fonctionnement
 
-- Le `Regime Allocator` assigne a chaque pod un univers de symbols.
+- Le `global_regime` fixe le budget de risque, les caps par pod et les pods plutot favorises a l'echelle du marche.
+- Le routeur evalue ensuite chaque coin avec un `local_regime` ou `symbol_state` propre au symbol.
+- L'owner final d'un coin est choisi coin par coin, sous contrainte du cadre global, et non plus par simple projection d'un regime unique sur tout l'univers.
 - Si un pod a deja une position ou des ordres resting sur un coin, aucun autre pod ne peut toucher ce coin.
 - Si Passivbot tourne sur sous-compte separe, l'ownership est separe par compte.
 - Si Passivbot tourne sur le meme compte, il doit recevoir une liste de coins disjoints de A et C.
@@ -1636,6 +1689,10 @@ Travail realise:
 Travail restant:
 
 - ajouter les composantes EMA / contexte HTF
+- prolonger la V1 globale en architecture a deux niveaux:
+  - `global_regime` conserve pour l'allocation et les gardes macro
+  - `local_regime` / `symbol_state` par coin pour le routage et l'activation fine
+  - ce prolongement est porte par l'etape `5bis`
 
 ### Validation
 
@@ -1684,7 +1741,7 @@ Validation restante:
 
 Decision actuelle:
 
-- Etape 2 fermee
+- Etape 2 fermee pour la couche `global_regime`
 
 ---
 
@@ -2533,7 +2590,7 @@ Decision actuelle:
 
 ### Statut
 
-`EN COURS — routeur dynamique, scores d'affinité, fallback par priorité et hystérèse sont en place dans le superviseur`
+`EN COURS — routeur dynamique V1 en place, mais encore trop biaise par le regime global; extension vers un modele global + local par coin validee`
 
 ### Pourquoi cette etape existe
 
@@ -2542,22 +2599,28 @@ Le superviseur actuel:
 - detecte le regime,
 - alloue le capital par pod,
 - impose un ownership exclusif,
-- mais ne choisit pas encore automatiquement quel pod doit recevoir chaque coin.
+- et choisit deja automatiquement quel pod doit recevoir chaque coin.
 
-Aujourd'hui, chaque pod garde encore une enveloppe de symbols admissibles en config, puis le superviseur arbitre l'ownership effectif coin par coin:
+La limite identifiee apres revue du comportement multi-coins est la suivante:
 
-- `pod_c` > `pod_a` > `pod_b`
+- le routage par coin existe,
+- mais il reste encore trop pilote par un regime global unique,
+- ce qui peut sur-favoriser un pod sur tout l'univers alors que les coins divergent localement.
 
-Cette logique sécurise bien la cohabitation V1, mais elle ne correspond pas encore complètement à l'objectif cible:
+Cette logique securise bien la cohabitation V1, mais elle ne correspond pas encore completement a l'objectif cible:
 
 - observer le marche coin par coin,
 - mesurer quel pod est le plus adapte a ce coin a cet instant,
 - attribuer ce coin automatiquement au meilleur pod,
-- eviter les conflits sans se reposer sur la config runtime ecrite par chaque pod.
+- eviter les conflits sans se reposer sur la config runtime ecrite par chaque pod,
+- sans forcer tous les coins a "vivre" le meme regime operationnel.
 
 ### Objectif
 
-Faire évoluer l'ownership depuis un arbitrage statique vers un vrai routage dynamique des symbols par pod.
+Faire evoluer l'ownership depuis un routage dynamique V1 encore global-bias vers un vrai routage multi-niveaux:
+
+- `global_regime` pour l'enveloppe de risque et l'allocation
+- `local_regime` / `symbol_state` pour la decision coin par coin
 
 ### Principe cible
 
@@ -2574,22 +2637,36 @@ Le routage doit rester:
 - stable dans le temps
 - borné par hystérèse pour éviter le flip-flop permanent
 
+Le principe retenu desormais est:
+
+- le `global_regime` borne les pods autorises / deconseilles et les caps de capital
+- le `local_regime` ou `symbol_state` decide quel pod a le meilleur edge sur un coin donne
+- un coin peut diverger localement du biais global si cette divergence reste compatible avec le risk budget global
+
 ### Travail
 
 - définir un `symbol routing snapshot` par coin avec les features déjà disponibles:
-  - régime local
+  - `local_regime` ou `symbol_state`
   - adx / atr ratio
   - range width
   - structure score
   - spread
   - flow toxicity
+  - cluster / leader / alignement cluster
+  - alignement ou divergence vs `global_regime`
   - signaux qualifiés de `Pod A`
   - eligibility maker de `Pod B`
   - eligibility event de `Pod C`
+- separer explicitement dans les types et l'API:
+  - `global_regime`
+  - `global_regime_history`
+  - `local_regime_by_symbol`
+  - `local_regime_transitions` ou historique local borne
 - calculer un score simple par pod:
   - `pod_a_affinity`
   - `pod_b_affinity`
   - `pod_c_affinity`
+- faire dependre les scores principalement du contexte local, puis seulement secondairement du biais global
 - choisir un owner unique avec:
   - seuil minimal
   - priorité de secours seulement en fallback
@@ -2599,11 +2676,14 @@ Le routage doit rester:
   - `candidate_symbols`
   - `owned_symbols`
 - exposer dans l'API/dashboard:
+  - `global_regime`
+  - `local_regime` par coin
   - score par pod
   - raison du choix
   - raison du non-choix
   - délai depuis la dernière réattribution
 - garder une possibilité de `pin manuel` par coin pour le live si besoin
+- verifier que les allocations finales par pod restent coherentes avec les cas de divergence locale massive
 
 Travail réalisé:
 
@@ -2626,6 +2706,11 @@ Travail réalisé:
   - hystérèse de conservation
   - fermeture `routing_revoked` quand un symbol perd son allocation ou son ownership
 
+Limite explicitement retenue:
+
+- la V1 route bien coin par coin, mais elle repose encore sur un `regime` global unique pour une partie trop structurante du scoring
+- cette limite n'est plus consideree comme "bonne assez"; elle doit etre levee dans cette etape et non repoussee a un vague futur
+
 ### Livrables cibles
 
 - `app/trident/symbol_router.py`
@@ -2644,6 +2729,9 @@ Travail réalisé:
 - les symbols sont attribués automatiquement sans avoir à bricoler la config à la main
 - le dashboard explique clairement pourquoi un coin appartient a `Pod A`, `Pod B` ou `Pod C`
 - les réallocations restent rares, lisibles et non chaotiques
+- une divergence locale lisible est possible:
+  - exemple: `global_regime = RangeAuction`
+  - mais un coin peut etre route `Pod A` ou `Pod C` avec justification explicite
 
 ### Remarque produit
 
@@ -2658,6 +2746,11 @@ Validation restante:
 - brancher le même routage dynamique dans une boucle live 3 pods réellement partagée, plutôt que dans des runners encore séparés
 - enrichir les raisons de routage quand un coin n'est pas retenu par un pod
 - ajouter si besoin un `pin manuel` et un cooldown explicite configurable par symbole
+- ajouter une telemetrie locale borne:
+  - `local_regime_by_symbol`
+  - transitions locales recentes
+  - compteur de reattributions par symbol
+- recalibrer les seuils sur sessions live multi-coins pour verifier qu'on n'obtient plus de "tout en Pod B" ou "tout en Pod A" seulement par biais de regime global
 
 ---
 
