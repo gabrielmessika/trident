@@ -390,7 +390,7 @@
 | 8. Pod C minimal | 100% | Rien, étape fermée |
 | 9. Hardening deployment | 100% | Rien, étape fermée |
 | 10. Passage live progressif | 30% | Utiliser le lanceur dry-run 3 pods pour lancer un premier dry-run 24h sur serveur, puis auditer avec `trident_dry_run_review.sh` |
-| 11. Pistes futures Hydra revisitees | 10% | Prioriser la collecte funding native et la note de faisabilite OI / liquidation |
+| 11. Pistes futures Hydra revisitees | 35% | Lancer les premiers runs offline funding/liq, accumuler l'historique funding/OI hors run principal, puis decider quelles hypotheses merite un vrai replay/shadow |
 
 Regle de maintenance:
 

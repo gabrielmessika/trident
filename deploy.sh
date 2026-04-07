@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--with-pod-b] [--with-pod-c]
+Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--with-pod-b] [--with-pod-c] [--with-funding]
 
 Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
@@ -26,6 +26,7 @@ Par défaut :
 - démarrage avec `--start` : API + Pod A
 - `--with-pod-b` ajoute Pod B
 - `--with-pod-c` ajoute Pod C
+- `--with-funding` ajoute le collecteur funding/OI autonome
 EOF
 }
 
@@ -37,12 +38,14 @@ DEPLOY_DIR="/opt/trident"
 START=""
 WITH_POD_B=""
 WITH_POD_C=""
+WITH_FUNDING=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 selected_pods_label() {
     local pods=("API" "Pod A")
     [ -n "$WITH_POD_B" ] && pods+=("Pod B")
     [ -n "$WITH_POD_C" ] && pods+=("Pod C")
+    [ -n "$WITH_FUNDING" ] && pods+=("Funding Collector")
     local joined=""
     local pod
     for pod in "${pods[@]}"; do
@@ -79,6 +82,10 @@ while [ $# -gt 0 ]; do
             ;;
         --with-pod-c)
             WITH_POD_C="true"
+            shift
+            ;;
+        --with-funding)
+            WITH_FUNDING="true"
             shift
             ;;
         -h|--help)
@@ -160,6 +167,7 @@ start_remote() {
     local extra_args=""
     [ -n "$WITH_POD_B" ] && extra_args="${extra_args} --with-pod-b"
     [ -n "$WITH_POD_C" ] && extra_args="${extra_args} --with-pod-c"
+    [ -n "$WITH_FUNDING" ] && extra_args="${extra_args} --with-funding"
     info "Services demandés: $(selected_pods_label)"
     ssh_remote "cd ${DEPLOY_DIR} && ./scripts/trident_server.sh update${extra_args}"
     ok "Services démarrés"
@@ -192,10 +200,11 @@ if [ -n "$START" ]; then
     echo "  API health : http://<server-ip-or-dns>:3000/health"
     echo "  État runtime : http://<server-ip-or-dns>:3000/api/state"
     echo "  Note : si ${HOST} est un alias SSH local (ex: trident-hetzner), utilise l'IP publique ou le DNS du serveur dans le navigateur."
-    echo "  Contrôle serveur : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST} 'cd ${DEPLOY_DIR} && ./scripts/trident_server.sh status${WITH_POD_B:+ --with-pod-b}${WITH_POD_C:+ --with-pod-c}'"
+    echo "  Contrôle serveur : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST} 'cd ${DEPLOY_DIR} && ./scripts/trident_server.sh status${WITH_POD_B:+ --with-pod-b}${WITH_POD_C:+ --with-pod-c}${WITH_FUNDING:+ --with-funding}'"
 else
     echo "Pour démarrer après déploiement :"
     echo "  ./deploy.sh --start"
     echo "  ./deploy.sh --start --with-pod-b"
+    echo "  ./deploy.sh --start --with-funding"
 fi
 echo ""

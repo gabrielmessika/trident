@@ -157,6 +157,12 @@ Etat actuel:
 - paper runner Pod B present dans `app/trident/pod_b/paper_runner.py`,
 - wrapper live Pod B present dans `app/trident/pod_b/paper_live_runner.py`,
 - research Pod C present dans `app/research/pod_c_leadlag.py` et `app/research/pod_c_research_suite.py`,
+- outillage Hydra research/shadow ajoute:
+  - collecteur funding autonome dans `app/live/funding_collector.py`,
+  - client funding/OI natif dans `app/hyperliquid/funding_client.py`,
+  - dataset/research funding dans `app/research/pod_funding_dataset.py` et `app/research/pod_funding_research.py`,
+  - features/research liq observables-first dans `app/research/pod_liq_features.py` et `app/research/pod_liq_research.py`,
+  - note de faisabilite data dans `docs/pod_liq_data_feasibility.md`,
 - protocole research Pod C documente dans `docs/pod_c_research_protocol.md`,
 - artefacts de deploiement presents:
   - `Dockerfile.trident`

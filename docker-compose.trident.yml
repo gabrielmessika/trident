@@ -141,3 +141,31 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+
+  funding-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.trident
+    container_name: trident-funding-collector
+    command:
+      - python
+      - -m
+      - app.live.funding_collector
+      - --config
+      - config/trident.toml
+      - --output
+      - data/funding_history/current.jsonl
+      - --poll-seconds
+      - "300"
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./runtime:/app/runtime
+      - ./logs:/app/logs
+    restart: unless-stopped
+    profiles: ["funding"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

@@ -91,12 +91,14 @@ done
 OUTPUT_DIR="${OUTPUT_DIR:-${LOCAL_DIR}/reviews/${TIMESTAMP_UTC}}"
 RAW_DIR="${LOCAL_DIR}/raw/${TIMESTAMP_UTC}"
 SNAPSHOT_DIR="${LOCAL_DIR}/live_snapshots"
+FUNDING_DIR="${LOCAL_DIR}/funding_history"
 LOG_DIR="${LOCAL_DIR}/logs"
 API_DIR="${LOCAL_DIR}/api"
 RUNTIME_DIR="${LOCAL_DIR}/runtime"
 DOCKER_DIR="${LOCAL_DIR}/docker"
+HYDRA_DOCS_DIR="${LOCAL_DIR}/hydra_docs"
 
-mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${OUTPUT_DIR}"
+mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${FUNDING_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${HYDRA_DOCS_DIR}" "${OUTPUT_DIR}"
 
 SSH_CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/trident-fetch-XXXXXX")"
 SSH_CONTROL_PATH="${SSH_CONTROL_DIR}/cm-%C"
@@ -327,6 +329,26 @@ fetch_snapshots() {
     ok "Snapshots live rapatries (${snapshot_count} fichier(s) locaux)"
 }
 
+fetch_funding_history() {
+    info "Rapatriement de l'historique funding/OI..."
+    local remote_funding_dir="${REMOTE_DIR}/data/funding_history/"
+
+    if ! ssh_remote "test -d '${REMOTE_DIR}/data/funding_history'" 2>/dev/null; then
+        warn "Dossier data/funding_history absent sur le serveur"
+        return
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        printf '  [dry-run] %s -> %s\n' "${remote_funding_dir}" "${FUNDING_DIR}/"
+        return
+    fi
+
+    retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${remote_funding_dir}" "${FUNDING_DIR}/"
+    local funding_count
+    funding_count="$(find "${FUNDING_DIR}" -maxdepth 1 -type f -name '*.jsonl' | wc -l | tr -d ' ')"
+    ok "Funding/OI rapatrie (${funding_count} fichier(s) locaux)"
+}
+
 fetch_logs_and_runtime() {
     info "Rapatriement des logs runtime et statuses..."
     fetch_remote_file "logs/pod_a_live.jsonl" "${LOG_DIR}/pod_a_live.jsonl" "Journal Pod A"
@@ -337,12 +359,16 @@ fetch_logs_and_runtime() {
     fetch_remote_file "logs/pod_c_live_status.json" "${RUNTIME_DIR}/pod_c_live_status.json" "Runtime status Pod C"
     fetch_remote_file "runtime/passivbot/live.status.json" "${RUNTIME_DIR}/pod_b_live_status.json" "Runtime status Pod B"
     fetch_remote_file "runtime/passivbot/live.json" "${RUNTIME_DIR}/pod_b_live_config.json" "Config runtime Pod B"
+    fetch_remote_file "docs/pod_funding_research_latest.json" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.json" "Research funding JSON"
+    fetch_remote_file "docs/pod_funding_research_latest.md" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.md" "Research funding Markdown"
+    fetch_remote_file "docs/pod_liq_research_latest.json" "${HYDRA_DOCS_DIR}/pod_liq_research_latest.json" "Research liq JSON"
+    fetch_remote_file "docs/pod_liq_research_latest.md" "${HYDRA_DOCS_DIR}/pod_liq_research_latest.md" "Research liq Markdown"
 }
 
 fetch_docker_logs() {
     info "Rapatriement des tails de logs Docker..."
-    local services=("trident-api" "pod-a-live" "pod-b-live" "pod-c-live")
-    local files=("trident-api.log" "pod-a-live.log" "pod-b-live.log" "pod-c-live.log")
+    local services=("trident-api" "pod-a-live" "pod-b-live" "pod-c-live" "funding-collector")
+    local files=("trident-api.log" "pod-a-live.log" "pod-b-live.log" "pod-c-live.log" "funding-collector.log")
     local i
 
     for i in "${!services[@]}"; do
@@ -413,6 +439,7 @@ fetch_api_snapshot
 
 if [[ "${LOGS_ONLY}" != "true" ]]; then
     fetch_snapshots
+    fetch_funding_history
 fi
 
 if [[ "${SNAPSHOTS_ONLY}" != "true" ]]; then
@@ -437,8 +464,10 @@ if [[ "${DRY_RUN}" != "true" ]]; then
     echo
     echo "  Artefacts principaux :"
     echo "    - snapshots live : ${SNAPSHOT_DIR}"
+    echo "    - funding history : ${FUNDING_DIR}"
     echo "    - logs applicatifs : ${LOG_DIR}"
     echo "    - runtime statuses : ${RUNTIME_DIR}"
+    echo "    - hydra docs : ${HYDRA_DOCS_DIR}"
     echo "    - API snapshots : ${API_DIR}"
     echo "    - docker logs : ${DOCKER_DIR}"
     if [[ "${SKIP_REVIEW}" != "true" ]]; then

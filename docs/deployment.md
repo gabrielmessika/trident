@@ -148,16 +148,23 @@ Pour démarrer aussi Pod C :
 ./deploy.sh --start --with-pod-c
 ```
 
+Pour démarrer aussi le collecteur funding/OI autonome :
+
+```bash
+./deploy.sh --start --with-funding
+```
+
 Pour démarrer tous les pods :
 
 ```bash
-./deploy.sh --start --with-pod-b --with-pod-c
+./deploy.sh --start --with-pod-b --with-pod-c --with-funding
 ```
 
 Important :
 
 - Pod B nécessite `runtime/passivbot/live.json` sur le serveur
 - Pod C n'a de sens que si sa recherche a conclu à un `go`
+- `--with-funding` lance un collecteur séparé qui écrit `data/funding_history/current.jsonl`
 - `--with-pod-b` et `--with-pod-c` activent maintenant aussi logiquement les pods côté superviseur/UI, pas seulement leurs containers Docker
 - les noms `pod-a-live`, `pod-b-live`, `pod-c-live` sont des noms de services Docker historiques
 - aujourd'hui, `Pod A`, `Pod B` et `Pod C` tournent encore en dry-run / paper trading, pas en exécution réelle exchange
@@ -205,6 +212,12 @@ Démarrer API + Pod A + Pod C :
 ./scripts/trident_server.sh start --with-pod-c
 ```
 
+Démarrer API + Pod A + collecteur funding/OI :
+
+```bash
+./scripts/trident_server.sh start --with-funding
+```
+
 Rebuild + redémarrage :
 
 ```bash
@@ -215,6 +228,12 @@ Rebuild + redémarrage avec Pod B :
 
 ```bash
 ./scripts/trident_server.sh update --with-pod-b
+```
+
+Rebuild + redémarrage avec funding/OI :
+
+```bash
+./scripts/trident_server.sh update --with-funding
 ```
 
 Arrêter :

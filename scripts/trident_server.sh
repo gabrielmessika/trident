@@ -14,10 +14,10 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--with-pod-b] [--with-pod-c] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--with-pod-b] [--with-pod-c] [--with-funding] [service]
 
 Actions:
-  start     démarre l'API + Pod A, et optionnellement Pod B / Pod C
+  start     démarre l'API + Pod A, et optionnellement Pod B / Pod C / funding
   stop      arrête les services sélectionnés
   restart   redémarre les services sélectionnés
   update    rebuild + redémarre les services sélectionnés
@@ -43,6 +43,7 @@ shift
 
 WITH_POD_B=""
 WITH_POD_C=""
+WITH_FUNDING=""
 SERVICE_ARG=""
 
 while [ $# -gt 0 ]; do
@@ -53,6 +54,10 @@ while [ $# -gt 0 ]; do
             ;;
         --with-pod-c)
             WITH_POD_C="true"
+            shift
+            ;;
+        --with-funding)
+            WITH_FUNDING="true"
             shift
             ;;
         -h|--help)
@@ -72,6 +77,7 @@ cd "$ROOT_DIR"
 PROFILE_ARGS=()
 [ -n "$WITH_POD_B" ] && PROFILE_ARGS+=(--profile pod_b)
 [ -n "$WITH_POD_C" ] && PROFILE_ARGS+=(--profile pod_c)
+[ -n "$WITH_FUNDING" ] && PROFILE_ARGS+=(--profile funding)
 
 compose() {
     TRIDENT_ENABLE_POD_A="true" \
@@ -87,6 +93,9 @@ default_services() {
     fi
     if [ -n "$WITH_POD_C" ]; then
         services+=(pod-c-live)
+    fi
+    if [ -n "$WITH_FUNDING" ]; then
+        services+=(funding-collector)
     fi
     printf '%s\n' "${services[@]}"
 }
