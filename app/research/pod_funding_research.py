@@ -54,6 +54,8 @@ class FundingResearchRunner:
         input_path: str | Path,
         config_path: str | Path = "config/trident.toml",
         symbols: list[str] | None = None,
+        funding_history_path: str | Path | None = None,
+        funding_max_age_seconds: float = 900.0,
         funding_threshold_bps: float = 4.0,
         horizon_bars: int = 1,
         output_json: str | Path | None = None,
@@ -70,6 +72,8 @@ class FundingResearchRunner:
             config_path=config_path,
             symbols=symbols,
             horizons_bars=[horizon_bars],
+            funding_history_path=funding_history_path,
+            funding_max_age_seconds=funding_max_age_seconds,
         )
         variants = [
             self._evaluate_variant(
@@ -245,6 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True)
     parser.add_argument("--config", default="config/trident.toml")
     parser.add_argument("--symbols", help="Optional comma-separated list")
+    parser.add_argument("--funding-history")
+    parser.add_argument("--funding-max-age-seconds", type=float, default=900.0)
     parser.add_argument("--funding-threshold-bps", type=float, default=4.0)
     parser.add_argument("--horizon-bars", type=int, default=1)
     parser.add_argument("--output-json")
@@ -259,6 +265,8 @@ def main() -> None:
         input_path=args.input,
         config_path=args.config,
         symbols=symbols or None,
+        funding_history_path=args.funding_history,
+        funding_max_age_seconds=args.funding_max_age_seconds,
         funding_threshold_bps=args.funding_threshold_bps,
         horizon_bars=args.horizon_bars,
         output_json=args.output_json,

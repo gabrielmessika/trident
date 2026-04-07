@@ -16,6 +16,7 @@ python -m app.live.funding_collector \
 ```bash
 python -m app.research.pod_funding_dataset \
   --input data/live_snapshots/2026-04-05.jsonl \
+  --funding-history data/funding_history/current.jsonl \
   --output data/research/pod_funding_dataset.jsonl
 ```
 
@@ -24,6 +25,7 @@ python -m app.research.pod_funding_dataset \
 ```bash
 python -m app.research.pod_funding_research \
   --input data/live_snapshots/2026-04-05.jsonl \
+  --funding-history data/funding_history/current.jsonl \
   --output-json docs/pod_funding_research_latest.json \
   --output-md docs/pod_funding_research_latest.md
 ```
@@ -52,3 +54,8 @@ python -m app.research.pod_liq_research \
   - replay/backtest
   - shadow dry-run
   - decision `go / park / kill`
+
+## Note funding
+
+- si les snapshots live ne portent pas un `funding_rate` exploitable, passez `--funding-history`
+- le builder aligne alors chaque snapshot avec la derniere observation funding/OI fraiche du meme symbole
