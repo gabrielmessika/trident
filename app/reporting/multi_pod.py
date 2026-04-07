@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
 from app.observability.metrics import MetricsRegistry
@@ -64,7 +65,7 @@ def build_runtime_report(
     pod_health_by_name = {
         health.pod.value: health for health in supervisor.pod_health()
     }
-    pod_b_status = supervisor.state.pod_b_status
+    pod_b_status = _pod_b_runtime_status(supervisor)
     if isinstance(runtime_snapshot, dict) and isinstance(runtime_snapshot.get("pod_b_status"), dict):
         pod_b_status = runtime_snapshot["pod_b_status"]
     runtime_pods = runtime_supervisor.get("pods", {}) if isinstance(runtime_supervisor, dict) else {}
@@ -209,6 +210,16 @@ def build_runtime_report(
         total_unrealized_pnl_usd=round(total_unrealized_pnl_usd, 4),
         pods=pod_reports,
     )
+
+
+def _pod_b_runtime_status(supervisor: TridentSupervisor) -> dict[str, object]:
+    status_path = Path(supervisor.config.pod_b.passivbot_config_path).with_suffix(".status.json")
+    if not status_path.exists():
+        return supervisor.state.pod_b_status
+    payload = load_runtime_status(status_path)
+    if runtime_status_is_fresh(payload):
+        return payload
+    return supervisor.state.pod_b_status
 
 
 def build_cohabitation_summary(result: object) -> dict[str, object]:

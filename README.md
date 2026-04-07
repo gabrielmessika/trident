@@ -177,7 +177,8 @@ Decision d'architecture actuelle:
 - Passivbot reste une reference de benchmark et d'inspiration, pas une dependance runtime obligatoire.
 - univers observe et univers trade sont separes:
   - `hyperliquid.observation_universe` = coins observes par le collector
-  - `pod_a.symbols`, `pod_b.symbols`, `pod_c.*` = coins reellement tradables par pod
+  - `pod_a.symbols`, `pod_b.symbols`, `pod_c.*` = enveloppe de symbols qu'un pod peut legalement recevoir
+  - l'ownership effectif, l'allocation et le `managed_symbols` runtime sont decides par le `supervisor`, pas par la config runtime des pods
   - le collector est automatiquement sharde si l'univers observe depasse la limite empirique stable de ~10 coins par connexion WS
 
 Comment ca marche, en version simple:
@@ -210,6 +211,7 @@ Le point cle:
 - les pods peuvent tourner en meme temps
 - ils ne doivent pas gerer le meme coin en meme temps
 - c'est le `supervisor` qui arbitre et evite les conflits
+- la config Pod B ecrite sur disque est un artefact derive du `supervisor`, pas une source d'autorite
 
 Exemple d'ownership valide:
 
@@ -249,7 +251,7 @@ Donc:
 En pratique, on a choisi ce mode pour garder un lancement safe:
 
 - `Pod A` est le pod le plus mature
-- `Pod B` a sa propre config runtime
+- `Pod B` a sa propre config runtime, mais elle est republiee par le `supervisor`
 - `Pod C` est plus experimental
 - il vaut mieux allumer peu de choses au debut, puis elargir
 
@@ -257,8 +259,11 @@ Reporting actuel:
 
 - `state_payload` inclut maintenant `runtime_report`,
 - `/api/report` expose un resume multi-pods runtime,
+- `/health`, `/api/state`, `/api/metrics` et `/api/report` se recalent d'abord sur le dernier snapshot live frais pour eviter un regime stale,
+- quand `runtime/passivbot/live.status.json` est present et frais, il devient la source de verite de `pod_b_status`,
 - le dashboard affiche un tableau `Runtime pod report`,
 - les replays de cohabitation ecrivent aussi un `summary` multi-pods dans leur JSON de sortie.
+- `Pod A` et `Pod C` ferment maintenant une position si le `supervisor` retire le symbol ou remet son allocation a zero (`routing_revoked`),
 - les runners Pod B ecrivent maintenant un report detaille:
   - `fills_by_symbol`
   - `fills_by_date`

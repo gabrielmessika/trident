@@ -34,6 +34,7 @@ class DirectionalExecutor:
         risk_decisions: list[RiskDecision],
         signal_sides_by_symbol: dict[str, str],
         timestamp: str | None,
+        allowed_symbols: set[str] | None = None,
     ) -> ExecutionBatch:
         snapshot_by_symbol = {snapshot.symbol: snapshot for snapshot in snapshots}
         closed_trades: list[ClosedTrade] = []
@@ -54,15 +55,18 @@ class DirectionalExecutor:
             if existing is None:
                 continue
             close_reason: str | None = None
-            if self.portfolio._stop_hit(existing, snapshot.price):
-                close_reason = "stop_hit"
-            elif (
-                signal_sides_by_symbol.get(snapshot.symbol) is not None
-                and signal_sides_by_symbol.get(snapshot.symbol) != existing.side
-            ):
-                close_reason = "opposite_signal"
-            elif self.portfolio._time_stop_hit(existing, timestamp):
-                close_reason = "time_stop"
+            if allowed_symbols is not None and snapshot.symbol not in allowed_symbols:
+                close_reason = "routing_revoked"
+            else:
+                close_reason = self.portfolio.protective_exit_reason(existing, snapshot.price)
+                if (
+                    close_reason is None
+                    and signal_sides_by_symbol.get(snapshot.symbol) is not None
+                    and signal_sides_by_symbol.get(snapshot.symbol) != existing.side
+                ):
+                    close_reason = "opposite_signal"
+                elif close_reason is None and self.portfolio._time_stop_hit(existing, timestamp):
+                    close_reason = "time_stop"
 
             if close_reason is None:
                 continue
@@ -91,6 +95,14 @@ class DirectionalExecutor:
                 continue
             snapshot = snapshot_by_symbol.get(decision.trade_plan.symbol)
             if snapshot is None:
+                continue
+            if self.portfolio.in_reentry_cooldown(
+                decision.trade_plan.symbol,
+                timestamp=timestamp,
+                cooldown_minutes=max(decision.trade_plan.reentry_cooldown_minutes, 0),
+                bypass_reasons={"upgrade_setup"},
+            ):
+                skipped_open_symbols.append(decision.trade_plan.symbol)
                 continue
             existing = self.portfolio.open_positions.get(decision.trade_plan.symbol)
             if existing is not None and self._should_upgrade(existing, decision.trade_plan):

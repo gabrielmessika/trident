@@ -18,7 +18,7 @@ from app.persistence.journal import (
 from app.risk.pod_a_gate import PodARiskGate
 from app.settings import AppConfig, load_config
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
+from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
 
 
 class PodALiveRunner:
@@ -180,6 +180,7 @@ class PodALiveRunner:
             risk_decisions=risk_decisions,
             signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
             timestamp=timestamp,
+            allowed_symbols=self.supervisor.allowed_symbols_for(PodName.POD_A),
         )
 
         snapshot_by_symbol = {

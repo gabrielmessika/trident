@@ -13,12 +13,14 @@ from typing import Callable
 
 from app.observability.metrics import MetricsRegistry
 from app.reporting.multi_pod import build_runtime_report
+from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
 from app.live.runtime_status import (
     load_runtime_status,
     runtime_status_age_seconds,
     runtime_status_is_fresh,
 )
 from app.trident.supervisor import TridentSupervisor
+from app.trident.types import RegimeSnapshot, SymbolMarketSnapshot
 
 
 def _latest_snapshot_status(snapshot_dir: Path = Path("data/live_snapshots")) -> dict[str, object]:
@@ -378,11 +380,20 @@ def _dashboard_commentary(
 
 
 def health_payload(supervisor: TridentSupervisor) -> dict[str, object]:
+    refreshed_from_snapshots = _refresh_supervisor_from_latest_snapshot(supervisor)
+    regime = supervisor.state.regime.value
+    if not refreshed_from_snapshots:
+        runtime_supervisor = _fresh_runtime_supervisor(
+            _normalized_runtime_payload(load_runtime_status("logs/pod_a_live_status.json")),
+            _normalized_runtime_payload(load_runtime_status("logs/pod_c_live_status.json")),
+        )
+        if isinstance(runtime_supervisor, dict) and runtime_supervisor.get("regime") is not None:
+            regime = str(runtime_supervisor["regime"])
     return {
         "status": "ok",
         "profile": supervisor.profile,
         "mode": supervisor.mode,
-        "regime": supervisor.state.regime.value,
+        "regime": regime,
         "kill_switch_active": supervisor.kill_switch.is_active,
     }
 
@@ -391,10 +402,14 @@ def state_payload(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry,
 ) -> dict[str, object]:
+    refreshed_from_snapshots = _refresh_supervisor_from_latest_snapshot(supervisor)
     supervisor.sync_pod_b()
     metrics.refresh_from_supervisor(supervisor)
     snapshot = supervisor.snapshot()
-    snapshot = _merge_runtime_snapshot(snapshot)
+    snapshot = _merge_runtime_snapshot(
+        snapshot,
+        allow_runtime_authority_override=not refreshed_from_snapshots,
+    )
     snapshot["metrics"] = metrics.snapshot()
     snapshot["runtime_report"] = build_runtime_report(
         supervisor,
@@ -408,6 +423,7 @@ def metrics_payload(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry,
 ) -> dict[str, int | float]:
+    _refresh_supervisor_from_latest_snapshot(supervisor)
     supervisor.sync_pod_b()
     metrics.refresh_from_supervisor(supervisor)
     return metrics.snapshot()
@@ -417,16 +433,30 @@ def report_payload(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry,
 ) -> dict[str, object]:
+    refreshed_from_snapshots = _refresh_supervisor_from_latest_snapshot(supervisor)
     supervisor.sync_pod_b()
-    snapshot = _merge_runtime_snapshot(supervisor.snapshot())
+    snapshot = _merge_runtime_snapshot(
+        supervisor.snapshot(),
+        allow_runtime_authority_override=not refreshed_from_snapshots,
+    )
     return build_runtime_report(supervisor, metrics, runtime_snapshot=snapshot).to_dict()
 
 
-def _merge_runtime_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
+def _merge_runtime_snapshot(
+    snapshot: dict[str, object],
+    *,
+    allow_runtime_authority_override: bool = True,
+) -> dict[str, object]:
     pod_a_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_a_live_status.json"))
     pod_c_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_c_live_status.json"))
+    pod_b_runtime = None
+    pod_b_status_path = Path(_pod_b_status_path_from_snapshot(snapshot))
+    if pod_b_status_path.exists():
+        pod_b_runtime = _normalized_runtime_payload(load_runtime_status(pod_b_status_path))
     snapshot["pod_a_runtime"] = pod_a_runtime
     snapshot["pod_c_runtime"] = pod_c_runtime
+    if isinstance(pod_b_runtime, dict):
+        snapshot["pod_b_status"] = pod_b_runtime
     if isinstance(snapshot.get("pod_health"), list):
         merged_health: list[dict[str, object]] = []
         for health in snapshot["pod_health"]:
@@ -463,7 +493,7 @@ def _merge_runtime_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
         snapshot["pod_health"] = merged_health
 
     runtime_supervisor = _fresh_runtime_supervisor(pod_a_runtime, pod_c_runtime)
-    if not isinstance(runtime_supervisor, dict):
+    if not allow_runtime_authority_override or not isinstance(runtime_supervisor, dict):
         return snapshot
 
     for key in (
@@ -494,6 +524,15 @@ def _merge_runtime_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
     if isinstance(pod_c_runtime, dict):
         pod_c_runtime["supervisor"] = copy.deepcopy(embedded_supervisor)
     return snapshot
+
+
+def _pod_b_status_path_from_snapshot(snapshot: dict[str, object]) -> str:
+    pod_b_status = snapshot.get("pod_b_status", {})
+    if isinstance(pod_b_status, dict):
+        status_path = pod_b_status.get("status_path")
+        if isinstance(status_path, str) and status_path:
+            return status_path
+    return "runtime/passivbot/live.status.json"
 
 
 def _normalized_runtime_payload(payload: dict[str, object] | None) -> dict[str, object] | None:
@@ -551,6 +590,50 @@ def _embedded_supervisor_snapshot(snapshot: dict[str, object]) -> dict[str, obje
             payload[key] = copy.deepcopy(snapshot[key])
     payload["source"] = "api_merged_runtime_view"
     return payload
+
+
+def _refresh_supervisor_from_latest_snapshot(
+    supervisor: TridentSupervisor,
+    *,
+    max_snapshot_age_seconds: float = 180.0,
+) -> bool:
+    record = _latest_snapshot_record(
+        snapshot_dir=Path(supervisor.config.hyperliquid.snapshot_output_dir),
+        max_snapshot_age_seconds=max_snapshot_age_seconds,
+    )
+    if record is None:
+        return False
+    supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
+    supervisor.refresh_symbol_routing(
+        [
+            SymbolMarketSnapshot(**item)
+            for item in record.symbols
+            if isinstance(item, dict)
+        ]
+    )
+    return True
+
+
+def _latest_snapshot_record(
+    *,
+    snapshot_dir: Path,
+    max_snapshot_age_seconds: float,
+) -> SnapshotRecord | None:
+    files = sorted(snapshot_dir.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not files:
+        return None
+    latest_file = files[0]
+    age_seconds = max(
+        datetime.now(timezone.utc).timestamp() - latest_file.stat().st_mtime,
+        0.0,
+    )
+    if age_seconds > max_snapshot_age_seconds:
+        return None
+    loader = SnapshotLoader()
+    latest_record: SnapshotRecord | None = None
+    for record in loader.iter_jsonl(latest_file):
+        latest_record = record
+    return latest_record
 
 
 def _pod_label(pod_name: str) -> str:
@@ -875,7 +958,7 @@ def _control_center_html(
                 f"<td>{escape(str(item.get('side', '-')))}</td>"
                 f"<td>{escape(str(item.get('open_reason', '-')))}</td>"
                 f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
-                f"<td>{'-' if item.get('notional_usd') is None else f'{float(item['notional_usd']):.2f}'}</td>"
+                f"<td>{'-' if item.get('notional_usd') is None else format(float(item.get('notional_usd', 0.0)), '.2f')}</td>"
                 f"<td>{_format_leverage(item.get('leverage'))}</td>"
                 f"<td>{fmt_number(item.get('confidence'), 2)}</td>"
                 f"<td>{fmt_number(item.get('stop_bps'), 1)}</td>"
@@ -905,7 +988,7 @@ def _control_center_html(
                 f"<td>{escape(str(item.get('close_reason', '-')))}</td>"
                 f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
                 f"<td>{fmt_number(item.get('exit_price'), 6)}</td>"
-                f"<td>{'-' if item.get('notional_usd') is None else f'{float(item['notional_usd']):.2f}'}</td>"
+                f"<td>{'-' if item.get('notional_usd') is None else format(float(item.get('notional_usd', 0.0)), '.2f')}</td>"
                 f"<td>{_format_leverage(item.get('leverage'))}</td>"
                 f"<td>{fmt_signed_usd(item.get('pnl_usd'))}</td>"
                 "</tr>"
@@ -925,7 +1008,7 @@ def _control_center_html(
                 f"<td>{escape(str(item['side']))}</td>"
                 f"<td>{escape(str(item['open_reason']))}</td>"
                 f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
-                f"<td>{'-' if item.get('notional_usd') is None else f'{float(item['notional_usd']):.2f}'}</td>"
+                f"<td>{'-' if item.get('notional_usd') is None else format(float(item.get('notional_usd', 0.0)), '.2f')}</td>"
                 f"<td>{_format_leverage(item.get('leverage'))}</td>"
                 f"<td>{fmt_number(item.get('confidence'), 2)}</td>"
                 f"<td>{fmt_number(item.get('stop_bps'), 1)}</td>"
@@ -953,7 +1036,7 @@ def _control_center_html(
                 f"<td>{escape(str(item.get('close_reason') or '-'))}</td>"
                 f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
                 f"<td>{fmt_number(item.get('exit_price'), 6)}</td>"
-                f"<td>{'-' if item.get('notional_usd') is None else f'{float(item['notional_usd']):.2f}'}</td>"
+                f"<td>{'-' if item.get('notional_usd') is None else format(float(item.get('notional_usd', 0.0)), '.2f')}</td>"
                 f"<td>{_format_leverage(item.get('leverage'))}</td>"
                 f"<td>{fmt_signed_usd(item.get('pnl_usd'))}</td>"
                 "</tr>"
@@ -970,7 +1053,7 @@ def _control_center_html(
             f"<td>{escape(str(item['side']))}</td>"
             f"<td>{escape(str(item['event']))}</td>"
             f"<td>{fmt_number(item.get('price'), 4)}</td>"
-            f"<td>{'-' if item['notional_usd'] is None else f'{float(item['notional_usd']):.2f}'}</td>"
+            f"<td>{'-' if item['notional_usd'] is None else format(float(item.get('notional_usd', 0.0)), '.2f')}</td>"
             f"<td>{_format_leverage(item.get('leverage'))}</td>"
             f"<td>{fmt_signed_usd(item.get('pnl_usd'))}</td>"
             f"<td>{escape(str(item['comment']))}</td>"
@@ -2083,8 +2166,42 @@ def _control_center_html(
       const filterButtons = Array.from(document.querySelectorAll("[data-filter-group]"));
       const filterRows = Array.from(document.querySelectorAll("tr[data-filter-status][data-filter-pod]"));
 
+      function normalizedTab(tabName) {{
+        return validTabs.has(tabName) ? tabName : body.dataset.defaultTab || "status";
+      }}
+
+      function activeTabName() {{
+        return normalizedTab((window.location.hash || "").replace("#", ""));
+      }}
+
+      function scrollStorageKey(tabName) {{
+        return `trident:scroll:${{window.location.pathname}}:${{normalizedTab(tabName)}}`;
+      }}
+
+      function saveScrollPosition(tabName = activeTabName()) {{
+        try {{
+          window.sessionStorage.setItem(scrollStorageKey(tabName), String(window.scrollY || 0));
+        }} catch (_error) {{
+          // Ignore storage failures and keep refresh behavior intact.
+        }}
+      }}
+
+      function restoreScrollPosition(tabName = activeTabName()) {{
+        try {{
+          const raw = window.sessionStorage.getItem(scrollStorageKey(tabName));
+          if (raw === null) return;
+          const next = Number(raw);
+          if (!Number.isFinite(next) || next < 0) return;
+          window.requestAnimationFrame(() => {{
+            window.scrollTo(0, next);
+          }});
+        }} catch (_error) {{
+          // Ignore storage failures and keep refresh behavior intact.
+        }}
+      }}
+
       function setTab(tabName, updateHash = true) {{
-        const next = validTabs.has(tabName) ? tabName : body.dataset.defaultTab || "status";
+        const next = normalizedTab(tabName);
         buttons.forEach((button) => {{
           const active = button.dataset.tabButton === next;
           button.classList.toggle("is-active", active);
@@ -2146,6 +2263,10 @@ def _control_center_html(
       const hashTab = (window.location.hash || "").replace("#", "");
       setTab(hashTab || body.dataset.defaultTab || "status", false);
       refreshFilterRows();
+      restoreScrollPosition(hashTab || body.dataset.defaultTab || "status");
+      window.addEventListener("beforeunload", () => {{
+        saveScrollPosition();
+      }});
       window.addEventListener("hashchange", () => {{
         const next = (window.location.hash || "").replace("#", "");
         if (validTabs.has(next)) {{
@@ -2155,6 +2276,7 @@ def _control_center_html(
 
       if (Number.isFinite(refreshSeconds) && refreshSeconds > 0) {{
         window.setTimeout(() => {{
+          saveScrollPosition();
           const target = `${{window.location.pathname}}${{window.location.search}}${{window.location.hash}}`;
           window.location.replace(target);
         }}, refreshSeconds * 1000);

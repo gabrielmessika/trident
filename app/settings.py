@@ -151,6 +151,8 @@ class PodCConfig:
     impulse_threshold_bps: float
     min_lag_bps: float
     max_spread_bps: float
+    min_confidence: float
+    reentry_cooldown_minutes: int
     time_stop_hours: int
 
 
@@ -415,6 +417,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             impulse_threshold_bps=float(pod_c_data.get("impulse_threshold_bps", 10.0)),
             min_lag_bps=float(pod_c_data.get("min_lag_bps", 4.0)),
             max_spread_bps=float(pod_c_data.get("max_spread_bps", 6.0)),
+            min_confidence=float(pod_c_data.get("min_confidence", 0.62)),
+            reentry_cooldown_minutes=int(pod_c_data.get("reentry_cooldown_minutes", 90)),
             time_stop_hours=int(pod_c_data.get("time_stop_hours", 4)),
         ),
     )

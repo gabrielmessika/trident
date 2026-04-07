@@ -286,7 +286,11 @@ class HealthApiTests(unittest.TestCase):
             profile="trident",
             mode="observation",
         )
-        payload = state_payload(supervisor, MetricsRegistry())
+        with patch(
+            "app.observability.api.load_runtime_status",
+            side_effect=[None, None],
+        ):
+            payload = state_payload(supervisor, MetricsRegistry())
         self.assertIn("pod_b", payload["enabled_pods"])
         self.assertTrue(payload["pods"]["pod_b"]["enabled"])
 

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from app.settings import AppConfig, load_config
-from app.trident.pod_a.exits import initial_stop_bps, stop_bps_for_signal, time_stop_hours
+from app.trident.pod_a.exits import (
+    initial_stop_bps,
+    smart_exit_policy,
+    stop_bps_for_signal,
+    time_stop_hours,
+)
 from app.trident.pod_a.sizing import PositionSizer
 from app.trident.pod_a.signals import AnchorTrendSignal
 from app.trident.types import PodAllocation, TradePlan
@@ -39,6 +44,7 @@ class AnchorTrendPlanner:
         )
         if sized_trade is None:
             return None
+        exit_policy = smart_exit_policy(signal.setup, stop_bps, signal.confidence)
         return TradePlan(
             symbol=signal.symbol,
             side=signal.side,
@@ -47,6 +53,10 @@ class AnchorTrendPlanner:
             target_notional_usd=sized_trade.target_notional_usd,
             stop_bps=stop_bps,
             time_stop_hours=time_stop_hours(),
+            take_profit_bps=exit_policy["take_profit_bps"],
+            break_even_trigger_bps=exit_policy["break_even_trigger_bps"],
+            trailing_activation_bps=exit_policy["trailing_activation_bps"],
+            trailing_distance_bps=exit_policy["trailing_distance_bps"],
             confidence_components=signal.confidence_components,
             margin_usd=sized_trade.margin_usd,
             requested_leverage=sized_trade.requested_leverage,

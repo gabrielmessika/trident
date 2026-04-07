@@ -42,13 +42,24 @@ class EventRaiderService:
             return False
         if context.spread_bps > self.config.max_spread_bps:
             return False
-        if context.lag_bps < self.config.min_lag_bps:
+        min_required_lag = max(
+            self.config.min_lag_bps,
+            self.config.impulse_threshold_bps * 0.6,
+        )
+        if context.lag_bps < min_required_lag:
+            return False
+        if abs(context.leader_impulse_bps) < self.config.impulse_threshold_bps * 1.1:
+            return False
+        if abs(context.follower_move_bps) > abs(context.leader_impulse_bps) * 0.75:
+            return False
+        flow_alignment = self._flow_alignment_score(context)
+        if flow_alignment < 0.45:
             return False
         if context.side == "long":
-            if context.structure_score < -0.2:
+            if context.structure_score < -0.1:
                 return False
         else:
-            if context.structure_score > 0.2:
+            if context.structure_score > 0.1:
                 return False
         return True
 
@@ -60,13 +71,7 @@ class EventRaiderService:
         lag_quality = _clamp(context.lag_bps / max(self.config.impulse_threshold_bps, 1.0))
         spread_quality = _clamp(1.0 - context.spread_bps / max(self.config.max_spread_bps, 1.0))
         structure_quality = _clamp(0.5 + abs(context.structure_score) * 0.5)
-        flow_alignment = _clamp(
-            0.5 + ((context.trade_flow_bias + context.book_imbalance) / 2.0) * 0.5
-        )
-        if context.side == "short":
-            flow_alignment = _clamp(
-                0.5 + ((-context.trade_flow_bias - context.book_imbalance) / 2.0) * 0.5
-            )
+        flow_alignment = self._flow_alignment_score(context)
         return {
             "impulse_quality": round(impulse_quality, 4),
             "lag_quality": round(lag_quality, 4),
@@ -74,6 +79,12 @@ class EventRaiderService:
             "structure_quality": round(structure_quality, 4),
             "flow_alignment": round(flow_alignment, 4),
         }
+
+    def _flow_alignment_score(self, context: EventRaiderContext) -> float:
+        signed_flow = (context.trade_flow_bias + context.book_imbalance) / 2.0
+        if context.side == "short":
+            signed_flow *= -1.0
+        return _clamp(0.5 + signed_flow * 0.5)
 
     def _aggregate_confidence(self, components: dict[str, float]) -> float:
         return (

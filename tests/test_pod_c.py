@@ -4,10 +4,20 @@ import unittest
 from pathlib import Path
 
 from app.backtest.pod_c_runner import PodCBacktestRunner
+from app.execution.directional_executor import DirectionalExecutor
 from app.live.pod_c_live_runner import PodCLiveRunner
+from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import load_config
 from app.trident.pod_c import EventContextService, EventRaiderPlanner, EventRaiderService
-from app.trident.types import PodAllocation, PodName, Regime, SymbolAllocation, SymbolMarketSnapshot
+from app.trident.types import (
+    PodAllocation,
+    PodName,
+    Regime,
+    RiskDecision,
+    SymbolAllocation,
+    SymbolMarketSnapshot,
+    TradePlan,
+)
 
 
 class _FakeCollector:
@@ -134,6 +144,93 @@ class PodCTests(unittest.TestCase):
         self.assertEqual(plan.symbol, "SOL")
         self.assertGreater(plan.confidence, 0.5)
 
+    def test_pod_c_risk_gate_uses_stricter_min_confidence(self) -> None:
+        config = load_config("config/trident.toml")
+        gate = PodCRiskGate(config)
+        decision = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="SOL",
+                    side="long",
+                    setup="lead_lag_long",
+                    confidence=config.pod_c.min_confidence - 0.01,
+                    target_notional_usd=100.0,
+                    stop_bps=45.0,
+                    time_stop_hours=config.pod_c.time_stop_hours,
+                )
+            ]
+        )[0]
+
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, "confidence_below_min")
+
+    def test_pod_c_reentry_cooldown_blocks_immediate_flip(self) -> None:
+        config = load_config("config/trident.toml")
+        executor = DirectionalExecutor(config)
+        short_plan = TradePlan(
+            symbol="SOL",
+            side="short",
+            setup="lead_lag_short",
+            confidence=0.8,
+            target_notional_usd=100.0,
+            stop_bps=45.0,
+            time_stop_hours=config.pod_c.time_stop_hours,
+            reentry_cooldown_minutes=config.pod_c.reentry_cooldown_minutes,
+        )
+        long_plan = TradePlan(
+            symbol="SOL",
+            side="long",
+            setup="lead_lag_long",
+            confidence=0.82,
+            target_notional_usd=100.0,
+            stop_bps=45.0,
+            time_stop_hours=config.pod_c.time_stop_hours,
+            reentry_cooldown_minutes=config.pod_c.reentry_cooldown_minutes,
+        )
+
+        executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=50.0,
+                    ema_fast=49.9,
+                    ema_slow=49.7,
+                    vwap_distance_bps=1.0,
+                    structure_score=-0.2,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[RiskDecision(accepted=True, reason="accepted", trade_plan=short_plan)],
+            signal_sides_by_symbol={"SOL": "short"},
+            timestamp="2026-04-05T10:00:00Z",
+        )
+
+        batch = executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="SOL",
+                    price=50.05,
+                    ema_fast=50.0,
+                    ema_slow=49.8,
+                    vwap_distance_bps=2.0,
+                    structure_score=0.15,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[RiskDecision(accepted=True, reason="accepted", trade_plan=long_plan)],
+            signal_sides_by_symbol={"SOL": "long"},
+            timestamp="2026-04-05T10:10:00Z",
+        )
+
+        self.assertEqual(len(batch.closed_trades), 1)
+        self.assertEqual(batch.closed_trades[0].close_reason, "opposite_signal")
+        self.assertEqual(batch.skipped_open_symbols, ["SOL"])
+        self.assertFalse(batch.has_open_position_after["SOL"])
+
     def test_pod_c_backtest_runner_replays_snapshots(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.enabled = True
@@ -158,12 +255,20 @@ class PodCTests(unittest.TestCase):
         config.pod_c.enabled = True
         runner = PodCLiveRunner(config, coins=["BTC", "SOL"])
         runner.collector = _FakeCollector()  # type: ignore[assignment]
+        status_path = Path("logs/pod_c_live_status.json")
+        original_status = status_path.read_text(encoding="utf-8") if status_path.exists() else None
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = Path(tmpdir) / "pod_c_live.jsonl"
-            result = asyncio.run(runner.run(max_runtime_seconds=0.1, journal_path=journal_path))
-            self.assertEqual(result["records_processed"], 1)
-            self.assertGreaterEqual(result["signal_count"], 1)
-            self.assertTrue(journal_path.exists())
+            try:
+                result = asyncio.run(runner.run(max_runtime_seconds=0.1, journal_path=journal_path))
+                self.assertEqual(result["records_processed"], 1)
+                self.assertGreaterEqual(result["signal_count"], 1)
+                self.assertTrue(journal_path.exists())
+            finally:
+                if original_status is None:
+                    status_path.unlink(missing_ok=True)
+                else:
+                    status_path.write_text(original_status, encoding="utf-8")
 
 
 if __name__ == "__main__":

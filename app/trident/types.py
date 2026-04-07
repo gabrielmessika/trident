@@ -137,6 +137,11 @@ class TradePlan:
     target_notional_usd: float
     stop_bps: float
     time_stop_hours: int
+    take_profit_bps: float = 0.0
+    break_even_trigger_bps: float = 0.0
+    trailing_activation_bps: float = 0.0
+    trailing_distance_bps: float = 0.0
+    reentry_cooldown_minutes: int = 0
     confidence_components: dict[str, float] = field(default_factory=dict)
     margin_usd: float = 0.0
     requested_leverage: float = 1.0

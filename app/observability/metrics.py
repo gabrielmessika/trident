@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
 from app.trident.supervisor import TridentSupervisor
 
@@ -12,7 +14,7 @@ class MetricsRegistry:
 
     def refresh_from_supervisor(self, supervisor: TridentSupervisor) -> None:
         pod_health = supervisor.pod_health()
-        pod_b_status = supervisor.state.pod_b_status
+        pod_b_status = self._pod_b_runtime_status(supervisor)
         symbol_ownership = supervisor.registry.snapshot()
         pod_a_runtime = load_runtime_status("logs/pod_a_live_status.json")
         pod_c_runtime = load_runtime_status("logs/pod_c_live_status.json")
@@ -83,3 +85,15 @@ class MetricsRegistry:
 
     def snapshot(self) -> dict[str, int | float]:
         return dict(self._metrics)
+
+    def _pod_b_runtime_status(
+        self,
+        supervisor: TridentSupervisor,
+    ) -> dict[str, object]:
+        status_path = Path(supervisor.config.pod_b.passivbot_config_path).with_suffix(".status.json")
+        if not status_path.exists():
+            return supervisor.state.pod_b_status
+        payload = load_runtime_status(status_path)
+        if runtime_status_is_fresh(payload):
+            return payload
+        return supervisor.state.pod_b_status

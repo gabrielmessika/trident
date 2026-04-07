@@ -143,4 +143,6 @@ max_allocation_pct = 0.90
 impulse_threshold_bps = 10.0
 min_lag_bps = 4.0
 max_spread_bps = 6.0
+min_confidence = 0.62
+reentry_cooldown_minutes = 90
 time_stop_hours = 4

@@ -76,6 +76,27 @@ class PassivbotManager:
             target_usd=allocation.target_usd,
         )
 
+    def read_status(
+        self,
+        *,
+        allocation: PodAllocation,
+        owned_symbols: list[str],
+    ) -> PassivbotStatus:
+        config_path = Path(self.config.pod_b.passivbot_config_path)
+        status = self.status_parser.parse(
+            enabled=self.config.pod_b.enabled,
+            config_path=str(config_path),
+            status_path=str(self.status_path(config_path)),
+            target_usd=allocation.target_usd,
+            managed_symbols=owned_symbols,
+            default_reason=self._default_reason(allocation, owned_symbols),
+        )
+        return self._normalize_status(
+            status=status,
+            managed_symbols=owned_symbols,
+            target_usd=allocation.target_usd,
+        )
+
     def status_path(self, config_path: str | Path | None = None) -> Path:
         path = Path(config_path or self.config.pod_b.passivbot_config_path)
         return path.with_suffix(".status.json")
@@ -163,12 +184,13 @@ class PassivbotManager:
 
     def stop(self) -> PassivbotStatus:
         config_path = Path(self.config.pod_b.passivbot_config_path)
+        managed_symbols = self._managed_symbols_from_runtime(config_path)
         status = self.status_parser.parse(
             enabled=self.config.pod_b.enabled,
             config_path=str(config_path),
             status_path=str(self.status_path(config_path)),
             target_usd=0.0,
-            managed_symbols=[symbol.upper() for symbol in self.config.pod_b.symbols],
+            managed_symbols=managed_symbols,
             default_reason="status_probe",
         )
         if status.pid is not None and self._pid_is_active(status.pid):
@@ -242,6 +264,21 @@ class PassivbotManager:
         if allocation.target_usd <= 0:
             return "zero_target_allocation"
         return "config_rendered"
+
+    def _managed_symbols_from_runtime(self, config_path: Path) -> list[str]:
+        if not config_path.exists():
+            return []
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return []
+        trident = payload.get("trident", {})
+        if not isinstance(trident, dict):
+            return []
+        managed_symbols = trident.get("managed_symbols", [])
+        if not isinstance(managed_symbols, list):
+            return []
+        return [str(symbol).upper() for symbol in managed_symbols]
 
     def _normalize_status(
         self,

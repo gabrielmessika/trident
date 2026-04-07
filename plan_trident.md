@@ -188,6 +188,19 @@
     - `accepted_count = 0`
     - `messages_processed = 38`
     - `reconnect_count = 0`
+- 2026-04-07: coherence superviseur/runtime/API renforcee:
+  - le `supervisor` reste la seule source d'autorite pour:
+    - l'ownership effectif des symbols
+    - l'allocation par pod
+    - les `managed_symbols` publies vers Pod B
+  - la config runtime Pod B reste un artefact derive et ne doit pas etre interpretee comme une source de routage independante
+  - `/health`, `/api/state`, `/api/metrics` et `/api/report` se recalculent maintenant a partir du dernier snapshot live frais avant de repondre
+  - `pod_b_status` lit desormais le vrai `runtime/passivbot/live.status.json` quand il est present et frais, au lieu de propager un faux etat `config_rendered`
+  - `Pod A` et `Pod C` ferment maintenant les positions orphelines quand le `supervisor` retire un symbol ou remet son allocation a zero
+    - raison de fermeture: `routing_revoked`
+  - consequence attendue:
+    - plus de cas durables avec `target_usd = 0` mais position encore ouverte sur plusieurs ticks
+    - moins de divergences entre `/health`, `/api/state`, `/api/report` et les statuses runtime locaux
 - 2026-04-05: Pod B paper runner ajoute:
   - `app/trident/pod_b/paper_engine.py` cree
   - `app/trident/pod_b/paper_runner.py` cree
@@ -2410,7 +2423,7 @@ Le superviseur actuel:
 - impose un ownership exclusif,
 - mais ne choisit pas encore automatiquement quel pod doit recevoir chaque coin.
 
-Aujourd'hui, chaque pod déclare encore principalement son univers en config, puis le superviseur tranche les collisions avec une priorité fixe:
+Aujourd'hui, chaque pod garde encore une enveloppe de symbols admissibles en config, puis le superviseur arbitre l'ownership effectif coin par coin:
 
 - `pod_c` > `pod_a` > `pod_b`
 
@@ -2419,7 +2432,7 @@ Cette logique sécurise bien la cohabitation V1, mais elle ne correspond pas enc
 - observer le marche coin par coin,
 - mesurer quel pod est le plus adapte a ce coin a cet instant,
 - attribuer ce coin automatiquement au meilleur pod,
-- eviter les conflits sans se reposer sur une liste statique de symbols.
+- eviter les conflits sans se reposer sur la config runtime ecrite par chaque pod.
 
 ### Objectif
 
@@ -2478,15 +2491,19 @@ Travail réalisé:
 - fallback par priorité conservé quand il manque des snapshots ou quand les scores restent trop faibles
 - hystérèse de conservation d'owner ajoutée pour éviter les bascules trop fréquentes
 - `app/trident/supervisor.py` branche maintenant le routeur dans le cycle de preview / planification
+- `app/trident/supervisor.py` republie aussi l'allocation effective vers Pod B, puis relit le vrai status runtime du wrapper quand il existe
+- les exécuteurs directionnels ferment maintenant les positions qui sortent de l'univers autorisé par le superviseur
 - `snapshot()` expose désormais:
   - `symbol_routing`
   - `routing_mode`
   - `routing_reason`
 - l'onglet `System` du dashboard affiche maintenant le mode et la raison de routage par symbole
+- l'API HTTP se recale sur le dernier snapshot live frais avant de servir les endpoints de supervision, ce qui aligne mieux `/health` avec `/api/state` et `/api/report`
 - tests dédiés ajoutés sur:
   - résolution des overlaps sans conflit
   - attribution dynamique par contexte marché
   - hystérèse de conservation
+  - fermeture `routing_revoked` quand un symbol perd son allocation ou son ownership
 
 ### Livrables cibles
 

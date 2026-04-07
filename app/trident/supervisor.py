@@ -331,10 +331,27 @@ class TridentSupervisor:
         )
         self.state.pod_b_status = status.as_dict()
 
+    def refresh_pod_b_status(self) -> None:
+        allocation = self.capital_plan.pod_allocations[PodName.POD_B]
+        status = self.pod_b_manager.read_status(
+            allocation=allocation,
+            owned_symbols=self.registry.symbols_for(PodName.POD_B),
+        )
+        self.state.pod_b_status = status.as_dict()
+
+    def allowed_symbols_for(self, pod_name: PodName) -> set[str]:
+        allocation = self.capital_plan.pod_allocations[pod_name]
+        return {
+            symbol.symbol.upper()
+            for symbol in allocation.symbols
+            if symbol.target_usd > 0
+        }
+
     def pod_health(self) -> list[PodHealth]:
         return [pod.health() for pod in self.pods.values() if pod.enabled]
 
     def snapshot(self) -> dict[str, object]:
+        self.refresh_pod_b_status()
         return {
             "profile": self.profile,
             "mode": self.mode,
