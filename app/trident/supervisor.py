@@ -217,7 +217,10 @@ class TridentSupervisor:
         self.state.symbol_routing = decisions
         for decision in decisions:
             if decision.owner is None:
-                if len(decision.candidate_pods) > 1:
+                if (
+                    decision.mode != "allocation_capacity"
+                    and len(decision.candidate_pods) > 1
+                ):
                     self.state.ownership_conflicts.append(
                         OwnershipConflict(
                             symbol=decision.symbol,

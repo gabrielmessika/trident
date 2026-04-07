@@ -139,6 +139,12 @@ deploy_code() {
         --exclude='data/server_archive' \
         --exclude='data/replay_reports' \
         --exclude='data/live_snapshots' \
+        --exclude='data/funding_history' \
+        --exclude='data/research' \
+        --exclude='docs/pod_funding_research_latest.json' \
+        --exclude='docs/pod_funding_research_latest.md' \
+        --exclude='docs/pod_liq_research_latest.json' \
+        --exclude='docs/pod_liq_research_latest.md' \
         --exclude='logs' \
         --exclude='runtime' \
         --exclude='.env.trident' \
@@ -169,7 +175,7 @@ start_remote() {
     [ -n "$WITH_POD_C" ] && extra_args="${extra_args} --with-pod-c"
     [ -n "$WITH_FUNDING" ] && extra_args="${extra_args} --with-funding"
     info "Services demandés: $(selected_pods_label)"
-    ssh_remote "cd ${DEPLOY_DIR} && ./scripts/trident_server.sh update${extra_args}"
+    ssh_remote "cd ${DEPLOY_DIR} && ./scripts/trident_server.sh start${extra_args}"
     ok "Services démarrés"
 }
 

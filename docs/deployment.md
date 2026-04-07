@@ -122,6 +122,12 @@ Exclusions principales :
 - `data/server_archive`
 - `data/replay_reports`
 - `data/live_snapshots`
+- `data/funding_history`
+- `data/research`
+- `docs/pod_funding_research_latest.json`
+- `docs/pod_funding_research_latest.md`
+- `docs/pod_liq_research_latest.json`
+- `docs/pod_liq_research_latest.md`
 - `logs`
 - `runtime`
 - `.env.trident`

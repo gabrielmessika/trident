@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 from app.settings import AppConfig
 from app.trident.types import PodName, Regime, SymbolMarketSnapshot, SymbolRoutingDecision
@@ -63,7 +64,201 @@ class SymbolRouter:
                     snapshot=snapshot,
                 )
             )
-        return decisions
+        return self._enforce_capacity_limits(decisions, regime=regime)
+
+    def _enforce_capacity_limits(
+        self,
+        decisions: list[SymbolRoutingDecision],
+        *,
+        regime: Regime,
+    ) -> list[SymbolRoutingDecision]:
+        decisions_by_symbol = {decision.symbol: decision for decision in decisions}
+        capacity_by_pod = self._capacity_limit_by_pod(regime)
+
+        while True:
+            overflowing_pod = next(
+                (
+                    pod
+                    for pod in (PodName.POD_A, PodName.POD_B, PodName.POD_C)
+                    if len(
+                        [
+                            item
+                            for item in decisions_by_symbol.values()
+                            if item.owner == pod
+                        ]
+                    )
+                    > capacity_by_pod.get(pod, math.inf)
+                ),
+                None,
+            )
+            if overflowing_pod is None:
+                break
+
+            owned = [
+                item
+                for item in decisions_by_symbol.values()
+                if item.owner == overflowing_pod
+            ]
+            capacity = int(capacity_by_pod.get(overflowing_pod, math.inf))
+            ranked = sorted(
+                owned,
+                key=lambda item: (
+                    -item.pod_scores.get(overflowing_pod, 0.0),
+                    -(1 if item.previous_owner == overflowing_pod else 0),
+                    item.symbol,
+                ),
+            )
+            keep_symbols = {item.symbol for item in ranked[:capacity]}
+            overflow = [item for item in ranked if item.symbol not in keep_symbols]
+            for decision in overflow:
+                decisions_by_symbol[decision.symbol] = self._reassign_after_capacity_trim(
+                    decision,
+                    trimmed_pod=overflowing_pod,
+                    capacity_by_pod=capacity_by_pod,
+                    decisions_by_symbol=decisions_by_symbol,
+                )
+
+        return sorted(decisions_by_symbol.values(), key=lambda item: item.symbol)
+
+    def _reassign_after_capacity_trim(
+        self,
+        decision: SymbolRoutingDecision,
+        *,
+        trimmed_pod: PodName,
+        capacity_by_pod: dict[PodName, int | float],
+        decisions_by_symbol: dict[str, SymbolRoutingDecision],
+    ) -> SymbolRoutingDecision:
+        alternative_candidates = [
+            pod
+            for pod in decision.candidate_pods
+            if pod != trimmed_pod and self._pod_has_capacity(
+                pod,
+                capacity_by_pod=capacity_by_pod,
+                decisions_by_symbol=decisions_by_symbol,
+            )
+        ]
+        if not alternative_candidates:
+            return SymbolRoutingDecision(
+                symbol=decision.symbol,
+                owner=None,
+                mode="allocation_capacity",
+                reason=f"capacity_trim:{trimmed_pod.value}",
+                previous_owner=decision.previous_owner,
+                candidate_pods=list(decision.candidate_pods),
+                pod_scores=dict(decision.pod_scores),
+            )
+
+        best_owner = sorted(
+            alternative_candidates,
+            key=lambda pod: (
+                decision.pod_scores.get(pod, 0.0),
+                -self._priority_rank(pod),
+            ),
+            reverse=True,
+        )[0]
+        best_score = decision.pod_scores.get(best_owner, 0.0)
+        if best_score < self.min_assign_score:
+            return SymbolRoutingDecision(
+                symbol=decision.symbol,
+                owner=None,
+                mode="allocation_capacity",
+                reason=f"capacity_trim:{trimmed_pod.value}",
+                previous_owner=decision.previous_owner,
+                candidate_pods=list(decision.candidate_pods),
+                pod_scores=dict(decision.pod_scores),
+            )
+
+        return SymbolRoutingDecision(
+            symbol=decision.symbol,
+            owner=best_owner,
+            mode="allocation_capacity",
+            reason=(
+                f"capacity_rebalance:{trimmed_pod.value}->{best_owner.value}"
+                f" ({best_score:.2f})"
+            ),
+            previous_owner=decision.previous_owner,
+            candidate_pods=list(decision.candidate_pods),
+            pod_scores=dict(decision.pod_scores),
+        )
+
+    def _pod_has_capacity(
+        self,
+        pod: PodName,
+        *,
+        capacity_by_pod: dict[PodName, int | float],
+        decisions_by_symbol: dict[str, SymbolRoutingDecision],
+    ) -> bool:
+        capacity = capacity_by_pod.get(pod, math.inf)
+        if math.isinf(capacity):
+            return True
+        current = len([item for item in decisions_by_symbol.values() if item.owner == pod])
+        return current < capacity
+
+    def _capacity_limit_by_pod(self, regime: Regime) -> dict[PodName, int | float]:
+        base = self._base_allocations(regime)
+        total_equity = max(self.config.trident.capital.reference_equity_usd, 0.0)
+        min_symbol_usd = self.config.trident.capital.min_symbol_allocation_usd
+        if min_symbol_usd <= 0:
+            return {
+                PodName.POD_A: math.inf,
+                PodName.POD_B: math.inf,
+                PodName.POD_C: math.inf,
+            }
+
+        return {
+            PodName.POD_A: self._pod_symbol_capacity(
+                target_pct=base.get("pod_a", 0.0),
+                pod_cap=self.config.pod_a.max_allocation_pct,
+                enabled=self.config.pod_a.enabled,
+                total_equity=total_equity,
+                min_symbol_usd=min_symbol_usd,
+            ),
+            PodName.POD_B: self._pod_symbol_capacity(
+                target_pct=base.get("pod_b", 0.0),
+                pod_cap=self.config.pod_b.max_allocation_pct,
+                enabled=self.config.pod_b.enabled,
+                total_equity=total_equity,
+                min_symbol_usd=min_symbol_usd,
+            ),
+            PodName.POD_C: self._pod_symbol_capacity(
+                target_pct=base.get("pod_c", 0.0),
+                pod_cap=self.config.pod_c.max_allocation_pct,
+                enabled=self.config.pod_c.enabled,
+                total_equity=total_equity,
+                min_symbol_usd=min_symbol_usd,
+            ),
+        }
+
+    def _pod_symbol_capacity(
+        self,
+        *,
+        target_pct: float,
+        pod_cap: float,
+        enabled: bool,
+        total_equity: float,
+        min_symbol_usd: float,
+    ) -> int:
+        if not enabled:
+            return 0
+        effective_target_pct = min(max(target_pct, 0.0), max(pod_cap, 0.0))
+        target_usd = effective_target_pct * total_equity
+        return int(target_usd // min_symbol_usd) if target_usd >= min_symbol_usd else 0
+
+    def _base_allocations(self, regime: Regime) -> dict[str, float]:
+        if regime == Regime.TREND_EXPANSION:
+            section = self.config.trident.allocations.trend_expansion
+        elif regime == Regime.RANGE_AUCTION:
+            section = self.config.trident.allocations.range_auction
+        elif regime == Regime.PANIC_SQUEEZE:
+            section = self.config.trident.allocations.panic_squeeze
+        else:
+            section = self.config.trident.allocations.dead_zone
+        return {
+            "pod_a": section.pod_a,
+            "pod_b": section.pod_b,
+            "pod_c": section.pod_c,
+            "cash": section.cash,
+        }
 
     def _candidate_pods(
         self,

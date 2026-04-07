@@ -775,6 +775,68 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("bucket_trade_count_below_min", quality_by_symbol["ADA"]["reasons"])
         self.assertIn("funding_outlier", quality_by_symbol["PAXG"]["reasons"])
 
+    def test_supervisor_limits_pod_b_ownership_to_feasible_dead_zone_capacity(self) -> None:
+        self.config.pod_b.enabled = True
+        symbols = [f"COIN{i}" for i in range(10)]
+        self.config.hyperliquid.observation_universe = list(symbols)
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=8.0,
+                atr_ratio=0.4,
+                range_width_bps=30.0,
+                structure_score=0.03,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol=symbol,
+                    price=1.0 + index,
+                    ema_fast=1.0 + index + 0.001,
+                    ema_slow=1.0 + index,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.02,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.01,
+                    trade_flow_bias=0.01,
+                    bucket_volume=1000.0,
+                    bucket_trade_count=20,
+                    bucket_range_bps=12.0,
+                )
+                for index, symbol in enumerate(symbols)
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+
+        self.assertEqual(snapshot["capital_plan"]["regime"], "DeadZone")
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_pct"], 0.2)
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_usd"], 200.0)
+        self.assertEqual(len(snapshot["pods"]["pod_b"]["owned_symbols"]), 8)
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], symbols[:8])
+        self.assertEqual(
+            [item["symbol"] for item in snapshot["capital_plan"]["pods"]["pod_b"]["symbols"]],
+            symbols[:8],
+        )
+        overflow = {
+            item["symbol"]: item
+            for item in snapshot["symbol_routing"]
+            if item["symbol"] in symbols[8:]
+        }
+        self.assertIsNone(overflow["COIN8"]["owner"])
+        self.assertEqual(overflow["COIN8"]["mode"], "allocation_capacity")
+        self.assertIn("capacity_trim:pod_b", overflow["COIN8"]["reason"])
+        self.assertIsNone(overflow["COIN9"]["owner"])
+        self.assertEqual(snapshot["ownership_conflicts"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
