@@ -155,6 +155,32 @@ def _format_leverage(value: object) -> str:
         return escape(str(value))
 
 
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip().replace("Z", "+00:00")
+    with contextlib.suppress(ValueError):
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _format_duration_compact(total_seconds: float) -> str:
+    seconds = max(int(total_seconds), 0)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days > 0:
+        return f"{days}j {hours}h {minutes}m"
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m"
+    if minutes > 0:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
 def _panel_tone(tone: object) -> str:
     value = str(tone or "neutral")
     if value in {"good", "warn", "bad", "neutral"}:
@@ -655,6 +681,12 @@ def _control_center_html(
     snapshot = state_payload(supervisor, metrics)
     runtime_report = report_payload(supervisor, metrics)
     refreshed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    started_at = _parse_timestamp(snapshot.get("started_at"))
+    uptime_label = (
+        _format_duration_compact((datetime.now(timezone.utc) - started_at).total_seconds())
+        if started_at is not None
+        else "-"
+    )
     refresh_seconds = 10
     status_items = _dashboard_status_items(snapshot, runtime_report)
     commentary = _dashboard_commentary(snapshot, runtime_report)
@@ -1738,6 +1770,7 @@ def _control_center_html(
         <span class="chip">Profile {escape(str(snapshot['profile']))}</span>
         <span class="chip">Mode {escape(str(snapshot['mode']))}</span>
         <span class="chip">Régime {escape(str(snapshot['regime']))}</span>
+        <span class="chip">Actif depuis {escape(uptime_label)}</span>
         <span class="chip">Auto-refresh {refresh_seconds}s</span>
       </div>
       <div class="eyebrow">TRIDENT Supervisor Dashboard</div>

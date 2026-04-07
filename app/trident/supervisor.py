@@ -466,6 +466,7 @@ class TridentSupervisor:
         return {
             "profile": self.profile,
             "mode": self.mode,
+            "started_at": self.state.started_at.isoformat().replace("+00:00", "Z"),
             "regime": self.state.regime.value,
             "raw_regime": self.state.raw_regime.value,
             "observation_universe": self._observed_symbols(),
