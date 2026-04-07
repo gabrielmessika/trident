@@ -98,23 +98,101 @@ DOCKER_DIR="${LOCAL_DIR}/docker"
 
 mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${OUTPUT_DIR}"
 
+SSH_CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/trident-fetch-XXXXXX")"
+SSH_CONTROL_PATH="${SSH_CONTROL_DIR}/cm-%C"
+
 SSH_ARGS=()
 if [[ -f "${IDENTITY_FILE}" ]]; then
     SSH_ARGS+=(-i "${IDENTITY_FILE}")
 else
     warn "Cle SSH absente: ${IDENTITY_FILE}. Utilisation de la config SSH systeme uniquement."
 fi
+SSH_ARGS+=(
+    -o BatchMode=yes
+    -o ConnectTimeout=10
+    -o ConnectionAttempts=3
+    -o ServerAliveInterval=15
+    -o ServerAliveCountMax=3
+    -o TCPKeepAlive=yes
+    -o ControlMaster=auto
+    -o ControlPersist=120
+    -o ControlPath="${SSH_CONTROL_PATH}"
+)
 SSH_TARGET="${SSH_USER}@${HOST}"
+
+build_ssh_transport() {
+    local parts=()
+    local arg quoted
+    for arg in ssh "${SSH_ARGS[@]}"; do
+        printf -v quoted '%q' "${arg}"
+        parts+=("${quoted}")
+    done
+    printf '%s ' "${parts[@]}"
+}
+
+RSYNC_SSH_CMD="$(build_ssh_transport)"
+RSYNC_SSH_CMD="${RSYNC_SSH_CMD% }"
 
 ssh_remote() {
     ssh "${SSH_ARGS[@]}" "${SSH_TARGET}" "$@"
 }
 
 rsync_remote() {
-    rsync "$@" -e "ssh ${SSH_ARGS[*]}"
+    rsync "$@" -e "${RSYNC_SSH_CMD}"
 }
 
+retry_command() {
+    local attempts="$1"
+    local sleep_seconds="$2"
+    shift 2
+    local attempt rc=0
+
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if "$@"; then
+            return 0
+        else
+            rc=$?
+        fi
+        if (( attempt < attempts )); then
+            warn "Tentative ${attempt}/${attempts} echouee (code ${rc}), nouvelle tentative dans ${sleep_seconds}s..."
+            sleep "${sleep_seconds}"
+        fi
+    done
+
+    return "${rc}"
+}
+
+copy_remote_file_via_ssh() {
+    local remote_path="$1"
+    local local_path="$2"
+
+    local tmp_file
+    tmp_file="$(mktemp)"
+    if ssh_remote "cat '${REMOTE_DIR}/${remote_path}'" > "${tmp_file}" 2>/dev/null; then
+        mv "${tmp_file}" "${local_path}"
+        return 0
+    fi
+
+    rm -f "${tmp_file}"
+    return 1
+}
+
+close_ssh_master() {
+    ssh "${SSH_ARGS[@]}" -O exit "${SSH_TARGET}" >/dev/null 2>&1 || true
+    rm -rf "${SSH_CONTROL_DIR}"
+}
+
+start_ssh_master() {
+    ssh "${SSH_ARGS[@]}" -o ControlMaster=yes -Nf "${SSH_TARGET}" >/dev/null 2>&1
+}
+
+trap close_ssh_master EXIT
+
 if [[ "${REVIEW_ONLY}" != "true" ]]; then
+    if ! retry_command 2 1 start_ssh_master; then
+        error "Impossible d'ouvrir une connexion SSH persistante vers ${SSH_TARGET}."
+        exit 1
+    fi
     if ! ssh_remote true 2>/dev/null; then
         error "Impossible de se connecter a ${SSH_TARGET}."
         exit 1
@@ -203,8 +281,13 @@ fetch_remote_file() {
 
     mkdir -p "$(dirname "${local_path}")"
     if ssh_remote "test -f '${REMOTE_DIR}/${remote_path}'" 2>/dev/null; then
-        rsync -azP -e "ssh ${SSH_ARGS[*]}" "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}" "${local_path}"
-        ok "${label} rapatrie"
+        if retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}" "${local_path}"; then
+            ok "${label} rapatrie"
+        elif retry_command 2 1 copy_remote_file_via_ssh "${remote_path}" "${local_path}"; then
+            warn "${label} rapatrie via fallback SSH simple"
+        else
+            warn "Impossible de rapatrier ${label} (${remote_path})"
+        fi
     else
         warn "${label} absent sur le serveur (${remote_path})"
     fi
@@ -225,18 +308,18 @@ fetch_snapshots() {
             printf '  [dry-run] %s -> %s\n' "${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
         else
             filter_file="$(build_snapshot_filter)"
-            rsync -azP -n --filter="merge ${filter_file}" -e "ssh ${SSH_ARGS[*]}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
+            rsync_remote -azP -n --filter="merge ${filter_file}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
             rm -f "${filter_file}"
         fi
         return
     fi
 
     if [[ "${MODE}" == "all" ]]; then
-        rsync -azP -e "ssh ${SSH_ARGS[*]}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
+        retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
     else
         local filter_file
         filter_file="$(build_snapshot_filter)"
-        rsync -azP --filter="merge ${filter_file}" -e "ssh ${SSH_ARGS[*]}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
+        retry_command 3 2 rsync_remote -azP --filter="merge ${filter_file}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
         rm -f "${filter_file}"
     fi
     local snapshot_count
@@ -290,6 +373,7 @@ run_review() {
         --user "${SSH_USER}"
         --identity "${IDENTITY_FILE}"
         --remote-dir "${REMOTE_DIR}"
+        --local-dir "${LOCAL_DIR}"
         --output-dir "${OUTPUT_DIR}"
         --snapshot-max-age-minutes "${SNAPSHOT_MAX_AGE_MINUTES}"
         --log-lines "${LOG_LINES}"

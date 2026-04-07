@@ -78,7 +78,6 @@ class CapitalAllocator:
                     symbol_pct = min(per_symbol_pct, max_symbol_pct)
                     symbol_usd = round(symbol_pct * total_equity, 2)
                     if symbol_usd < min_symbol_usd:
-                        cash_pct += symbol_pct
                         continue
                     symbol_allocations.append(
                         SymbolAllocation(

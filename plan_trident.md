@@ -257,6 +257,26 @@
   - cas d'usage cible:
     - comparer `crypto_only` vs `mixed`
     - mesurer si un cluster `index` ou `gold` apporte vraiment du PnL net ou seulement du churn
+- 2026-04-07: premier replay reel du step 4 execute sur snapshots live disponibles:
+  - dataset utilise:
+    - `server-data/live_snapshots/2026-04-05.jsonl`
+    - `server-data/live_snapshots/2026-04-06.jsonl`
+    - `server-data/live_snapshots/2026-04-07.jsonl`
+  - comparaison executee:
+    - `majors = BTC, ETH, SOL, HYPE`
+    - `expanded_crypto = BTC, ETH, SOL, HYPE, DOGE, XRP, SUI, AVAX, LINK, ARB`
+  - resultat:
+    - `expanded_crypto` recommande sur ce replay
+    - `realized_pnl_usd = 28.63` vs `24.48`
+    - `max_drawdown_usd = 7.61` vs `11.79`
+    - `closed_trade_count = 53` vs `25`
+  - lecture:
+    - l'univers crypto elargi ajoute du PnL net et amortit nettement les pertes en `DeadZone`
+    - les meilleurs contributeurs incrementaux sont `LINK`, `AVAX` et `ARB`
+    - le churn augmente fortement, donc il faut garder un filtre de qualite strict sur le `tradable_pool`
+  - limite actuelle:
+    - aucun snapshot live reel `SPX` / `PAXG` n'est encore present dans le repo
+    - la comparaison `crypto_only` vs `mixed` reste donc a confirmer des que le collecteur observe effectivement ces marches
 - 2026-04-05: Pod B paper runner ajoute:
   - `app/trident/pod_b/paper_engine.py` cree
   - `app/trident/pod_b/paper_runner.py` cree
@@ -364,7 +384,7 @@
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider en dry-run live le socle `500 USD` et confirmer le comportement d'upgrade / allocation active sur une plage plus longue |
 | 5. Pod B range engine natif | 92% | Lancer le premier dry-run 24h 3 pods avec `Pod B` en mode conservateur, puis recalibrer les seuils d'activation range/toxicite sur les observations runtime |
-| 5bis. Routing dynamique symbols / ownership | 97% | Enrichir l'UI avec l'explication `market_cluster / cluster_leader / cluster_aligned` et afficher le `tradable_pool` plus clairement |
+| 5bis. Routing dynamique symbols / ownership | 98% | Enrichir l'UI avec l'explication `market_cluster / cluster_leader / cluster_aligned`, afficher le `tradable_pool` plus clairement, puis capturer des snapshots live incluant `SPX` / `PAXG` |
 | 6. Reporting par pod | 100% | Rien, étape fermée |
 | 7. Research Pod pour Pod C | 100% | Rien, étape fermée |
 | 8. Pod C minimal | 100% | Rien, étape fermée |
@@ -400,13 +420,18 @@ Regle de maintenance:
      - `SPX` / `PAXG` ne sont plus traites comme de simples alts crypto
 
 4. Mesure comparative avant nouvel elargissement
-   - statut: outillage implemente
+   - statut: premier replay reel execute
    - resultat:
      - runner de comparaison multi-univers sur snapshots
      - reporting comparatif par cluster / symbol / regime
      - expectancy, churn et drawdown disponibles dans les sorties
+     - premier verdict reel sur `majors` vs `expanded_crypto`:
+       - `expanded_crypto` meilleur en PnL net et drawdown
+       - `LINK`, `AVAX` et `ARB` ressortent comme contributeurs utiles
+       - `DeadZone` reste perdant mais moins destructeur avec l'univers elargi
    - prochaine etape:
-     - lancer ce runner sur des snapshots reels et produire un premier memo de decision `crypto_only` vs `mixed`
+     - collecter des snapshots live incluant `SPX` / `PAXG`
+     - relancer le memo de decision cible `crypto_only` vs `mixed`
 
 5. Diagnostic Pod B avec plus de donnees
    - conserver Pod B actif en observation

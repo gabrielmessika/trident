@@ -25,6 +25,7 @@ Options:
   --user <user>                 User SSH. Defaut: trident-deploy
   --identity <path>             Cle SSH. Defaut: ~/.ssh/trident_hetzner_ed25519
   --remote-dir <path>           Repertoire TRIDENT sur le serveur. Defaut: /opt/trident
+  --local-dir <path>            Reutilise les artefacts deja rapatries localement
   --output-dir <path>           Repertoire local de sortie. Defaut: runtime/reviews/<timestamp>
   --snapshot-max-age-minutes N  Age max du dernier snapshot pour etre considere frais. Defaut: 15
   --log-lines N                 Nombre de lignes de logs a recuperer par service. Defaut: 120
@@ -40,6 +41,7 @@ SNAPSHOT_MAX_AGE_MINUTES=15
 LOG_LINES=120
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
 OUTPUT_DIR=""
+LOCAL_DIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -57,6 +59,10 @@ while [ $# -gt 0 ]; do
             ;;
         --remote-dir)
             REMOTE_DIR="$2"
+            shift 2
+            ;;
+        --local-dir)
+            LOCAL_DIR="$2"
             shift 2
             ;;
         --output-dir)
@@ -102,6 +108,148 @@ ssh_remote() {
     ssh "${SSH_ARGS[@]}" "${SSH_TARGET}" "$@"
 }
 
+latest_local_file() {
+    local pattern="$1"
+    python3 - "$pattern" <<'PY'
+from pathlib import Path
+import glob
+import sys
+
+pattern = sys.argv[1]
+matches = sorted(Path(path) for path in glob.glob(pattern))
+print(matches[-1] if matches else "")
+PY
+}
+
+copy_if_exists() {
+    local src="$1"
+    local dst="$2"
+    if [ -n "${src}" ] && [ -f "${src}" ]; then
+        cp "${src}" "${dst}"
+        return 0
+    fi
+    return 1
+}
+
+capture_local_review_inputs() {
+    local base="$1"
+    local latest_health latest_state latest_metrics latest_report
+    local api_dir="${base}/api"
+    local snapshot_dir="${base}/live_snapshots"
+    local log_dir="${base}/logs"
+    local runtime_dir="${base}/runtime"
+    local docker_dir="${base}/docker"
+
+    latest_health="$(latest_local_file "${api_dir}/health-*.json")"
+    latest_state="$(latest_local_file "${api_dir}/state-*.json")"
+    latest_metrics="$(latest_local_file "${api_dir}/metrics-*.json")"
+    latest_report="$(latest_local_file "${api_dir}/report-*.json")"
+
+    copy_if_exists "${latest_health}" "${RAW_DIR}/health.json" || : > "${RAW_DIR}/health.json"
+    copy_if_exists "${latest_state}" "${RAW_DIR}/state.json" || : > "${RAW_DIR}/state.json"
+    copy_if_exists "${latest_metrics}" "${RAW_DIR}/metrics.json" || : > "${RAW_DIR}/metrics.json"
+    copy_if_exists "${latest_report}" "${RAW_DIR}/report.json" || : > "${RAW_DIR}/report.json"
+
+    python3 - "${snapshot_dir}" "${RAW_DIR}/snapshot_files.txt" <<'PY'
+from pathlib import Path
+from datetime import datetime, timezone
+import sys
+
+snapshot_dir = Path(sys.argv[1])
+outfile = Path(sys.argv[2])
+lines = []
+for path in sorted(snapshot_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
+    stat = path.stat()
+    ts = datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines.append(f"{stat.st_mtime}|{ts}|{stat.st_size}|{path}")
+outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+PY
+
+    python3 - "${log_dir}" "${RAW_DIR}/journal_files.txt" <<'PY'
+from pathlib import Path
+import sys
+
+log_dir = Path(sys.argv[1])
+outfile = Path(sys.argv[2])
+targets = [
+    "pod_a_live.jsonl",
+    "pod_b_live.jsonl",
+    "pod_c_live.jsonl",
+    "pod_b_live_report.json",
+]
+lines = []
+for name in targets:
+    path = log_dir / name
+    if not path.exists():
+        continue
+    line_count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
+    lines.append(f"logs/{name}|{line_count}|{int(path.stat().st_mtime)}")
+outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+PY
+
+    if [ -f "${runtime_dir}/pod_b_live_config.json" ]; then
+        printf 'present\n' > "${RAW_DIR}/pod_b_runtime_present.txt"
+    else
+        printf 'missing\n' > "${RAW_DIR}/pod_b_runtime_present.txt"
+    fi
+
+    copy_if_exists "${docker_dir}/trident-api.log" "${RAW_DIR}/api_log_tail.txt" || : > "${RAW_DIR}/api_log_tail.txt"
+    copy_if_exists "${docker_dir}/pod-a-live.log" "${RAW_DIR}/pod_a_log_tail.txt" || : > "${RAW_DIR}/pod_a_log_tail.txt"
+    copy_if_exists "${docker_dir}/pod-b-live.log" "${RAW_DIR}/pod_b_log_tail.txt" || : > "${RAW_DIR}/pod_b_log_tail.txt"
+    copy_if_exists "${docker_dir}/pod-c-live.log" "${RAW_DIR}/pod_c_log_tail.txt" || : > "${RAW_DIR}/pod_c_log_tail.txt"
+
+    python3 - "${RAW_DIR}/health.json" "${RAW_DIR}/report.json" "${runtime_dir}" "${RAW_DIR}/docker_ps.txt" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+health_path = Path(sys.argv[1])
+report_path = Path(sys.argv[2])
+runtime_dir = Path(sys.argv[3])
+outfile = Path(sys.argv[4])
+
+def load_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+health = load_json(health_path)
+report = load_json(report_path)
+pods = {}
+for item in report.get("pods", []):
+    if isinstance(item, dict) and item.get("pod"):
+        pods[item["pod"]] = item
+
+lines = []
+if health.get("status") == "ok":
+    lines.append("trident-api\tUp (derived from local /health snapshot)")
+
+pod_a = load_json(runtime_dir / "pod_a_live_status.json")
+if pod_a.get("process_state") == "running" or pods.get("pod_a", {}).get("process_state") == "running":
+    lines.append("trident-pod-a-live\tUp (derived from local runtime status)")
+
+pod_b = load_json(runtime_dir / "pod_b_live_status.json")
+if pod_b.get("process_state") == "running" or pods.get("pod_b", {}).get("process_state") == "running":
+    lines.append("trident-pod-b-live\tUp (derived from local runtime status)")
+
+pod_c = load_json(runtime_dir / "pod_c_live_status.json")
+if pod_c.get("process_state") == "running" or pods.get("pod_c", {}).get("process_state") == "running":
+    lines.append("trident-pod-c-live\tUp (derived from local runtime status)")
+
+outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+PY
+
+    cat <<EOF > "${RAW_DIR}/server_meta.txt"
+source=local_cache
+host=${HOST}
+local_dir=${base}
+utc_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+
+    : > "${RAW_DIR}/compose_ps.txt"
+}
+
 capture_remote() {
     local name="$1"
     local command="$2"
@@ -120,22 +268,26 @@ capture_remote() {
     fi
 }
 
-info "Collecte des artefacts du dry-run depuis ${SSH_TARGET}..."
-
-capture_remote "server_meta.txt" "cd '${REMOTE_DIR}' && echo host=\$(hostname) && echo utc_now=\$(date -u +%Y-%m-%dT%H:%M:%SZ) && echo pwd=\$(pwd)"
-capture_remote "docker_ps.txt" "docker ps -a --format '{{.Names}}\t{{.Status}}'"
-capture_remote "compose_ps.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml ps"
-capture_remote "health.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/health"
-capture_remote "state.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state"
-capture_remote "metrics.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/metrics"
-capture_remote "report.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/report"
-capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && find data/live_snapshots -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
-capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl logs/pod_b_live_report.json; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
-capture_remote "pod_b_runtime_present.txt" "cd '${REMOTE_DIR}' && if [ -f runtime/passivbot/live.json ]; then echo present; else echo missing; fi"
-capture_remote "api_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} trident-api 2>&1"
-capture_remote "pod_a_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-a-live 2>&1"
-capture_remote "pod_b_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-b-live 2>&1"
-capture_remote "pod_c_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-c-live 2>&1"
+if [ -n "${LOCAL_DIR}" ] && [ -d "${LOCAL_DIR}" ]; then
+    info "Collecte des artefacts du dry-run depuis le cache local ${LOCAL_DIR}..."
+    capture_local_review_inputs "${LOCAL_DIR}"
+else
+    info "Collecte des artefacts du dry-run depuis ${SSH_TARGET}..."
+    capture_remote "server_meta.txt" "cd '${REMOTE_DIR}' && echo host=\$(hostname) && echo utc_now=\$(date -u +%Y-%m-%dT%H:%M:%SZ) && echo pwd=\$(pwd)"
+    capture_remote "docker_ps.txt" "docker ps -a --format '{{.Names}}\t{{.Status}}'"
+    capture_remote "compose_ps.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml ps"
+    capture_remote "health.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/health"
+    capture_remote "state.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state"
+    capture_remote "metrics.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/metrics"
+    capture_remote "report.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/report"
+    capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && find data/live_snapshots -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
+    capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl logs/pod_b_live_report.json; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
+    capture_remote "pod_b_runtime_present.txt" "cd '${REMOTE_DIR}' && if [ -f runtime/passivbot/live.json ]; then echo present; else echo missing; fi"
+    capture_remote "api_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} trident-api 2>&1"
+    capture_remote "pod_a_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-a-live 2>&1"
+    capture_remote "pod_b_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-b-live 2>&1"
+    capture_remote "pod_c_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-c-live 2>&1"
+fi
 
 info "Analyse locale des artefacts..."
 

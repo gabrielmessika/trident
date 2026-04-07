@@ -42,6 +42,23 @@ class CapitalAllocatorTests(unittest.TestCase):
         self.assertEqual(pod_c.symbols[0].target_pct, 0.25)
         self.assertEqual(plan.cash_pct, 0.5)
 
+    def test_symbols_below_min_allocation_flow_back_once_to_cash(self) -> None:
+        plan = self.allocator.build_plan(
+            regime=Regime.DEAD_ZONE,
+            owned_symbols_by_pod={
+                PodName.POD_A: [],
+                PodName.POD_B: [f"COIN{i}" for i in range(10)],
+                PodName.POD_C: [],
+            },
+        )
+
+        pod_b = plan.pod_allocations[PodName.POD_B]
+        self.assertEqual(pod_b.target_pct, 0.0)
+        self.assertEqual(pod_b.target_usd, 0.0)
+        self.assertEqual(pod_b.symbols, [])
+        self.assertEqual(plan.cash_pct, 1.0)
+        self.assertEqual(plan.cash_usd, 1000.0)
+
 
 if __name__ == "__main__":
     unittest.main()
