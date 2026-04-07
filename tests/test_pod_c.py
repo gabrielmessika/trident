@@ -222,6 +222,26 @@ class PodCTests(unittest.TestCase):
         self.assertFalse(decision.accepted)
         self.assertEqual(decision.reason, "confidence_below_min")
 
+    def test_pod_c_risk_gate_blocks_configured_symbols(self) -> None:
+        config = load_config("config/trident.toml")
+        gate = PodCRiskGate(config)
+        decision = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="HYPE",
+                    side="long",
+                    setup="lead_lag_long",
+                    confidence=config.pod_c.min_confidence + 0.05,
+                    target_notional_usd=100.0,
+                    stop_bps=45.0,
+                    time_stop_hours=config.pod_c.time_stop_hours,
+                )
+            ]
+        )[0]
+
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, "symbol_blocked")
+
     def test_pod_c_reentry_cooldown_blocks_immediate_flip(self) -> None:
         config = load_config("config/trident.toml")
         executor = DirectionalExecutor(config)

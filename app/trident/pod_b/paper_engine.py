@@ -222,7 +222,7 @@ class PodBPaperEngine:
 
         signed_notional = self._signed_notional(snapshot.symbol, snapshot.price)
         abs_inventory_limit = target_per_symbol * max(
-            self.config.paper_max_inventory_skew_pct,
+            self._inventory_skew_limit_pct(snapshot.symbol),
             0.1,
         )
         toxicity = self._toxicity_score(snapshot)
@@ -232,7 +232,10 @@ class PodBPaperEngine:
             1.0,
         )
         order_notional = max(
-            target_per_symbol * self.config.paper_order_size_pct * toxicity_size_discount,
+            target_per_symbol
+            * self.config.paper_order_size_pct
+            * self._order_size_multiplier(snapshot.symbol)
+            * toxicity_size_discount,
             25.0,
         )
         base_width_bps = max(
@@ -240,6 +243,7 @@ class PodBPaperEngine:
             snapshot.spread_bps * 8.0,
             snapshot.bucket_range_bps * self.config.paper_quote_width_bucket_multiplier,
         )
+        base_width_bps *= self._quote_width_multiplier(snapshot.symbol)
         base_width_bps *= 1.0 + toxicity * max(
             self.config.paper_quote_width_toxicity_multiplier,
             0.0,
@@ -369,6 +373,29 @@ class PodBPaperEngine:
             ),
             0.0,
             1.0,
+        )
+
+    def _quote_width_multiplier(self, symbol: str) -> float:
+        return max(
+            float(self.config.paper_quote_width_multiplier_by_symbol.get(symbol.upper(), 1.0)),
+            0.25,
+        )
+
+    def _order_size_multiplier(self, symbol: str) -> float:
+        return max(
+            float(self.config.paper_order_size_multiplier_by_symbol.get(symbol.upper(), 1.0)),
+            0.1,
+        )
+
+    def _inventory_skew_limit_pct(self, symbol: str) -> float:
+        return max(
+            float(
+                self.config.paper_max_inventory_skew_pct_by_symbol.get(
+                    symbol.upper(),
+                    self.config.paper_max_inventory_skew_pct,
+                )
+            ),
+            0.1,
         )
 
     def _is_toxic_flow(self, snapshot: SymbolMarketSnapshot) -> bool:

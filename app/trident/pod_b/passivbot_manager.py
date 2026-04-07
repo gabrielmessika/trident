@@ -60,6 +60,9 @@ class PassivbotManager:
                 "paper_quote_width_bucket_multiplier": self.config.pod_b.paper_quote_width_bucket_multiplier,
                 "paper_quote_width_toxicity_multiplier": self.config.pod_b.paper_quote_width_toxicity_multiplier,
                 "paper_order_size_toxicity_discount": self.config.pod_b.paper_order_size_toxicity_discount,
+                "paper_quote_width_multiplier_by_symbol": self.config.pod_b.paper_quote_width_multiplier_by_symbol,
+                "paper_order_size_multiplier_by_symbol": self.config.pod_b.paper_order_size_multiplier_by_symbol,
+                "paper_max_inventory_skew_pct_by_symbol": self.config.pod_b.paper_max_inventory_skew_pct_by_symbol,
             },
         )
         rendered = self.renderer.render(runtime_config)

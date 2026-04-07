@@ -82,6 +82,9 @@ class PodBPaperRunnerTests(unittest.TestCase):
                             "paper_max_inventory_skew_pct": 0.5,
                             "paper_maker_fee_bps": 0.0,
                             "paper_recent_fills_limit": 5,
+                            "paper_quote_width_multiplier_by_symbol": {"XRP": 1.3},
+                            "paper_order_size_multiplier_by_symbol": {"XRP": 0.6},
+                            "paper_max_inventory_skew_pct_by_symbol": {"XRP": 0.5},
                         },
                     }
                 )
@@ -95,6 +98,8 @@ class PodBPaperRunnerTests(unittest.TestCase):
             self.assertEqual(runner.engine.managed_symbols, ["DOGE", "XRP"])
             self.assertEqual(runner.engine.target_usd, 120.0)
             self.assertEqual(runner.engine.config.paper_quote_width_bps, 9.0)
+            self.assertEqual(runner.engine.config.paper_quote_width_multiplier_by_symbol["XRP"], 1.3)
+            self.assertEqual(runner.engine.config.paper_order_size_multiplier_by_symbol["XRP"], 0.6)
 
     def test_paper_runner_writes_status_with_positions_orders_and_fills(self) -> None:
         config = load_config("config/trident.toml")

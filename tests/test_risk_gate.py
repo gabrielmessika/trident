@@ -109,3 +109,72 @@ class PodARiskGateTests(unittest.TestCase):
 
         self.assertFalse(decisions[0].accepted)
         self.assertEqual(decisions[0].reason, "leverage_above_asset_limit")
+
+    def test_rejects_disabled_setup(self) -> None:
+        decisions = self.gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="short",
+                    setup="bos_retest_short",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={"regime": "TrendExpansion"},
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "setup_disabled")
+
+    def test_rejects_non_whitelisted_setup_in_blocked_regime(self) -> None:
+        decisions = self.gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={"regime": "DeadZone"},
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "regime_filtered")
+
+    def test_accepts_whitelisted_setup_in_blocked_regime(self) -> None:
+        decisions = self.gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="liquidity_sweep_reclaim_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={"regime": "DeadZone"},
+                )
+            ]
+        )
+
+        self.assertTrue(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "accepted")

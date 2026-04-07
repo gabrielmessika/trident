@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from dataclasses import dataclass
+from datetime import datetime
 
 from app.execution.dry_run import DryRunExecutionVenue
 from app.portfolio.directional_state import ClosedTrade, DirectionalPortfolioState
@@ -26,6 +27,14 @@ class DirectionalExecutor:
     def __init__(self, config: AppConfig) -> None:
         self.portfolio = DirectionalPortfolioState()
         self.venue = DryRunExecutionVenue(config.trident.execution)
+        self._routing_revoke_grace_minutes = max(
+            int(config.trident.execution.routing_revoke_grace_minutes),
+            0,
+        )
+        self._routing_revoke_grace_minutes_by_symbol = {
+            str(symbol).upper(): max(int(minutes), 0)
+            for symbol, minutes in config.trident.execution.routing_revoke_grace_minutes_by_symbol.items()
+        }
 
     def process_record(
         self,
@@ -55,18 +64,22 @@ class DirectionalExecutor:
             if existing is None:
                 continue
             close_reason: str | None = None
-            if allowed_symbols is not None and snapshot.symbol not in allowed_symbols:
+            close_reason = self.portfolio.protective_exit_reason(existing, snapshot.price)
+            if close_reason is None and self.portfolio._time_stop_hit(existing, timestamp):
+                close_reason = "time_stop"
+            if (
+                close_reason is None
+                and allowed_symbols is not None
+                and snapshot.symbol not in allowed_symbols
+                and not self._routing_revoke_grace_active(existing, timestamp)
+            ):
                 close_reason = "routing_revoked"
-            else:
-                close_reason = self.portfolio.protective_exit_reason(existing, snapshot.price)
-                if (
-                    close_reason is None
-                    and signal_sides_by_symbol.get(snapshot.symbol) is not None
-                    and signal_sides_by_symbol.get(snapshot.symbol) != existing.side
-                ):
-                    close_reason = "opposite_signal"
-                elif close_reason is None and self.portfolio._time_stop_hit(existing, timestamp):
-                    close_reason = "time_stop"
+            elif (
+                close_reason is None
+                and signal_sides_by_symbol.get(snapshot.symbol) is not None
+                and signal_sides_by_symbol.get(snapshot.symbol) != existing.side
+            ):
+                close_reason = "opposite_signal"
 
             if close_reason is None:
                 continue
@@ -155,6 +168,29 @@ class DirectionalExecutor:
             },
             close_reasons_by_symbol=close_reasons_by_symbol,
         )
+
+    def _routing_revoke_grace_active(self, existing: object, timestamp: str | None) -> bool:
+        symbol = str(getattr(existing, "symbol", "")).upper()
+        grace_minutes = self._routing_revoke_grace_minutes_by_symbol.get(
+            symbol,
+            self._routing_revoke_grace_minutes,
+        )
+        if grace_minutes <= 0 or timestamp is None:
+            return False
+        opened_at = getattr(existing, "opened_at", None)
+        if opened_at is None:
+            return False
+        current = self._parse_timestamp(timestamp)
+        if current is None:
+            return False
+        age_seconds = (current - opened_at).total_seconds()
+        return age_seconds < grace_minutes * 60
+
+    def _parse_timestamp(self, value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        normalized = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
 
     def _should_upgrade(self, existing: object, plan: object) -> bool:
         existing_side = getattr(existing, "side", "")

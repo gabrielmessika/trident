@@ -11,6 +11,15 @@ class PodARiskGate(TradePlanRiskGate):
     def __init__(self, config) -> None:
         super().__init__(config)
         self._leverage_policy = LeveragePolicy(config.pod_a)
+        self._disabled_setups = {item.strip() for item in config.pod_a.disabled_setups if item.strip()}
+        self._blocked_regimes = {
+            item.strip().lower() for item in config.pod_a.blocked_regimes if item.strip()
+        }
+        self._allowed_setups_in_blocked_regimes = {
+            item.strip()
+            for item in config.pod_a.allowed_setups_in_blocked_regimes
+            if item.strip()
+        }
 
     def evaluate_many(self, plans: list[TradePlan]) -> list[RiskDecision]:
         decisions: list[RiskDecision] = []
@@ -48,6 +57,15 @@ class PodARiskGate(TradePlanRiskGate):
         )
         if reason != "accepted":
             return reason
+        if plan.setup in self._disabled_setups:
+            return "setup_disabled"
+
+        current_regime = str(plan.setup_details.get("regime", "")).strip().lower()
+        if (
+            current_regime in self._blocked_regimes
+            and plan.setup not in self._allowed_setups_in_blocked_regimes
+        ):
+            return "regime_filtered"
 
         limits = self._config.trident.risk
         min_notional = max(

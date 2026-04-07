@@ -26,6 +26,13 @@ def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
 
 
+def _with_regime(context: AnchorTrendContext, details: dict[str, float | str | bool]) -> dict[str, float | str | bool]:
+    return {
+        **details,
+        "regime": context.regime,
+    }
+
+
 class AnchorTrendService:
     """Minimal Pod A signal generator for trend-following setups."""
 
@@ -50,11 +57,16 @@ class AnchorTrendService:
                     bucket_range_bps=context.bucket_range_bps,
                 ),
                 setup_details={
-                    "family": "bos_retest",
-                    "ema_separation_bps": round(ema_separation_bps(context), 4),
-                    "mtf_bias_score": round(context.mtf_bias_score, 4),
-                    "bos_long_confirmed": context.bos_long_confirmed,
-                    "swing_high_1h": round(context.swing_high_1h, 8),
+                    **_with_regime(
+                        context,
+                        {
+                            "family": "bos_retest",
+                            "ema_separation_bps": round(ema_separation_bps(context), 4),
+                            "mtf_bias_score": round(context.mtf_bias_score, 4),
+                            "bos_long_confirmed": context.bos_long_confirmed,
+                            "swing_high_1h": round(context.swing_high_1h, 8),
+                        },
+                    )
                 },
                 confidence_components=components,
             )
@@ -76,11 +88,16 @@ class AnchorTrendService:
                     bucket_range_bps=context.bucket_range_bps,
                 ),
                 setup_details={
-                    "family": "bos_retest",
-                    "ema_separation_bps": round(ema_separation_bps(context), 4),
-                    "mtf_bias_score": round(context.mtf_bias_score, 4),
-                    "bos_short_confirmed": context.bos_short_confirmed,
-                    "swing_low_1h": round(context.swing_low_1h, 8),
+                    **_with_regime(
+                        context,
+                        {
+                            "family": "bos_retest",
+                            "ema_separation_bps": round(ema_separation_bps(context), 4),
+                            "mtf_bias_score": round(context.mtf_bias_score, 4),
+                            "bos_short_confirmed": context.bos_short_confirmed,
+                            "swing_low_1h": round(context.swing_low_1h, 8),
+                        },
+                    )
                 },
                 confidence_components=components,
             )
@@ -102,13 +119,18 @@ class AnchorTrendService:
                     bucket_range_bps=max(context.bucket_range_bps, 30.0),
                 ),
                 setup_details={
-                    "family": "liquidity_sweep_reclaim",
-                    "bucket_range_bps": round(context.bucket_range_bps, 4),
-                    "flow_alignment": round(
-                        (context.trade_flow_bias + context.book_imbalance) / 2.0,
-                        4,
-                    ),
-                    "mtf_bias_score": round(context.mtf_bias_score, 4),
+                    **_with_regime(
+                        context,
+                        {
+                            "family": "liquidity_sweep_reclaim",
+                            "bucket_range_bps": round(context.bucket_range_bps, 4),
+                            "flow_alignment": round(
+                                (context.trade_flow_bias + context.book_imbalance) / 2.0,
+                                4,
+                            ),
+                            "mtf_bias_score": round(context.mtf_bias_score, 4),
+                        },
+                    )
                 },
                 confidence_components=components,
             )
@@ -130,13 +152,18 @@ class AnchorTrendService:
                     bucket_range_bps=max(context.bucket_range_bps, 30.0),
                 ),
                 setup_details={
-                    "family": "liquidity_sweep_reclaim",
-                    "bucket_range_bps": round(context.bucket_range_bps, 4),
-                    "flow_alignment": round(
-                        (-context.trade_flow_bias - context.book_imbalance) / 2.0,
-                        4,
-                    ),
-                    "mtf_bias_score": round(context.mtf_bias_score, 4),
+                    **_with_regime(
+                        context,
+                        {
+                            "family": "liquidity_sweep_reclaim",
+                            "bucket_range_bps": round(context.bucket_range_bps, 4),
+                            "flow_alignment": round(
+                                (-context.trade_flow_bias - context.book_imbalance) / 2.0,
+                                4,
+                            ),
+                            "mtf_bias_score": round(context.mtf_bias_score, 4),
+                        },
+                    )
                 },
                 confidence_components=components,
             )
@@ -158,12 +185,17 @@ class AnchorTrendService:
                     bucket_range_bps=max(context.bucket_range_bps, 20.0),
                 ),
                 setup_details={
-                    "family": "vwap_reclaim",
-                    "flow_alignment": round(
-                        (context.trade_flow_bias + context.book_imbalance) / 2.0,
-                        4,
-                    ),
-                    "mtf_bias_score": round(context.mtf_bias_score, 4),
+                    **_with_regime(
+                        context,
+                        {
+                            "family": "vwap_reclaim",
+                            "flow_alignment": round(
+                                (context.trade_flow_bias + context.book_imbalance) / 2.0,
+                                4,
+                            ),
+                            "mtf_bias_score": round(context.mtf_bias_score, 4),
+                        },
+                    )
                 },
                 confidence_components=components,
             )
@@ -185,12 +217,17 @@ class AnchorTrendService:
                     bucket_range_bps=max(context.bucket_range_bps, 20.0),
                 ),
                 setup_details={
-                    "family": "vwap_reclaim",
-                    "flow_alignment": round(
-                        (-context.trade_flow_bias - context.book_imbalance) / 2.0,
-                        4,
-                    ),
-                    "mtf_bias_score": round(context.mtf_bias_score, 4),
+                    **_with_regime(
+                        context,
+                        {
+                            "family": "vwap_reclaim",
+                            "flow_alignment": round(
+                                (-context.trade_flow_bias - context.book_imbalance) / 2.0,
+                                4,
+                            ),
+                            "mtf_bias_score": round(context.mtf_bias_score, 4),
+                        },
+                    )
                 },
                 confidence_components=components,
             )
@@ -212,11 +249,16 @@ class AnchorTrendService:
                     bucket_range_bps=context.bucket_range_bps,
                 ),
                 setup_details={
-                    "family": "bos_retest",
-                    "ema_separation_bps": round(ema_separation_bps(context), 4),
-                    "mtf_bias_score": round(context.mtf_bias_score, 4),
-                    "bos_long_confirmed": context.bos_long_confirmed,
-                    "swing_high_1h": round(context.swing_high_1h, 8),
+                    **_with_regime(
+                        context,
+                        {
+                            "family": "bos_retest",
+                            "ema_separation_bps": round(ema_separation_bps(context), 4),
+                            "mtf_bias_score": round(context.mtf_bias_score, 4),
+                            "bos_long_confirmed": context.bos_long_confirmed,
+                            "swing_high_1h": round(context.swing_high_1h, 8),
+                        },
+                    )
                 },
                 confidence_components=components,
             )
@@ -238,11 +280,16 @@ class AnchorTrendService:
                     bucket_range_bps=context.bucket_range_bps,
                 ),
                 setup_details={
-                    "family": "bos_retest",
-                    "ema_separation_bps": round(ema_separation_bps(context), 4),
-                    "mtf_bias_score": round(context.mtf_bias_score, 4),
-                    "bos_short_confirmed": context.bos_short_confirmed,
-                    "swing_low_1h": round(context.swing_low_1h, 8),
+                    **_with_regime(
+                        context,
+                        {
+                            "family": "bos_retest",
+                            "ema_separation_bps": round(ema_separation_bps(context), 4),
+                            "mtf_bias_score": round(context.mtf_bias_score, 4),
+                            "bos_short_confirmed": context.bos_short_confirmed,
+                            "swing_low_1h": round(context.swing_low_1h, 8),
+                        },
+                    )
                 },
                 confidence_components=components,
             )
@@ -262,7 +309,7 @@ class AnchorTrendService:
                     ema_slow=context.ema_slow,
                     bucket_range_bps=max(context.bucket_range_bps, 18.0),
                 ),
-                setup_details={"family": "trend_pullback"},
+                setup_details=_with_regime(context, {"family": "trend_pullback"}),
                 confidence_components=components,
             )
 
@@ -281,7 +328,7 @@ class AnchorTrendService:
                     ema_slow=context.ema_slow,
                     bucket_range_bps=max(context.bucket_range_bps, 18.0),
                 ),
-                setup_details={"family": "trend_pullback"},
+                setup_details=_with_regime(context, {"family": "trend_pullback"}),
                 confidence_components=components,
             )
 

@@ -10,6 +10,9 @@ class PodCRiskGate(TradePlanRiskGate):
     def __init__(self, config: AppConfig) -> None:
         super().__init__(config)
         self._pod_c_min_confidence = config.pod_c.min_confidence
+        self._blocked_symbols = {
+            symbol.strip().upper() for symbol in config.pod_c.blocked_symbols if symbol.strip()
+        }
 
     def _decision_reason(
         self,
@@ -18,6 +21,8 @@ class PodCRiskGate(TradePlanRiskGate):
         accepted_count: int,
         seen_symbols: set[str],
     ) -> str:
+        if str(plan.symbol).upper() in self._blocked_symbols:
+            return "symbol_blocked"
         if plan.confidence < self._pod_c_min_confidence:
             return "confidence_below_min"
         return super()._decision_reason(

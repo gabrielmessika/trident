@@ -169,6 +169,14 @@ class PodBPaperRunner:
     def _build_paper_config(self, trident: dict[str, object]):
         from app.settings import PodBConfig
 
+        def _float_map(raw: object) -> dict[str, float]:
+            if not isinstance(raw, dict):
+                return {}
+            return {
+                str(key).upper(): float(value)
+                for key, value in raw.items()
+            }
+
         return PodBConfig(
             enabled=True,
             symbols=self.managed_symbols,
@@ -208,6 +216,15 @@ class PodBPaperRunner:
             ),
             paper_order_size_toxicity_discount=float(
                 trident.get("paper_order_size_toxicity_discount", 0.5)
+            ),
+            paper_quote_width_multiplier_by_symbol=_float_map(
+                trident.get("paper_quote_width_multiplier_by_symbol", {})
+            ),
+            paper_order_size_multiplier_by_symbol=_float_map(
+                trident.get("paper_order_size_multiplier_by_symbol", {})
+            ),
+            paper_max_inventory_skew_pct_by_symbol=_float_map(
+                trident.get("paper_max_inventory_skew_pct_by_symbol", {})
             ),
         )
 

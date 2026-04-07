@@ -47,6 +47,8 @@ class ExecutionConfig:
     dry_run_taker_fee_bps: float = 3.5
     dry_run_slippage_bps: float = 0.5
     dry_run_spread_multiplier: float = 0.5
+    routing_revoke_grace_minutes: int = 0
+    routing_revoke_grace_minutes_by_symbol: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -132,6 +134,9 @@ class PodAConfig:
     min_notional_usd: float
     allow_partial_take_profit: bool
     allow_break_even: bool
+    disabled_setups: list[str]
+    blocked_regimes: list[str]
+    allowed_setups_in_blocked_regimes: list[str]
 
 
 @dataclass(slots=True)
@@ -157,6 +162,9 @@ class PodBConfig:
     paper_quote_width_bucket_multiplier: float
     paper_quote_width_toxicity_multiplier: float
     paper_order_size_toxicity_discount: float
+    paper_quote_width_multiplier_by_symbol: dict[str, float]
+    paper_order_size_multiplier_by_symbol: dict[str, float]
+    paper_max_inventory_skew_pct_by_symbol: dict[str, float]
 
 
 @dataclass(slots=True)
@@ -169,8 +177,10 @@ class PodCConfig:
     min_lag_bps: float
     max_spread_bps: float
     min_confidence: float
+    size_multiplier: float
     reentry_cooldown_minutes: int
     time_stop_hours: int
+    blocked_symbols: list[str]
 
 
 @dataclass(slots=True)
@@ -237,6 +247,18 @@ def _str_list_map(raw: object, *, lower_keys: bool = True, upper_values: bool = 
                 continue
             normalized_values.append(name.upper() if upper_values else name)
         parsed[normalized_key] = normalized_values
+    return parsed
+
+
+def _str_list(raw: object, *, upper_values: bool = False) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    parsed: list[str] = []
+    for item in raw:
+        name = str(item).strip()
+        if not name:
+            continue
+        parsed.append(name.upper() if upper_values else name)
     return parsed
 
 
@@ -410,6 +432,15 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 dry_run_spread_multiplier=float(
                     execution_data.get("dry_run_spread_multiplier", 0.5)
                 ),
+                routing_revoke_grace_minutes=int(
+                    execution_data.get("routing_revoke_grace_minutes", 0)
+                ),
+                routing_revoke_grace_minutes_by_symbol={
+                    symbol: int(value)
+                    for symbol, value in _float_map(
+                        execution_data.get("routing_revoke_grace_minutes_by_symbol", {})
+                    ).items()
+                },
             ),
             routing=RoutingConfig(
                 min_assign_score=float(routing_data.get("min_assign_score", 0.45)),
@@ -453,6 +484,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 pod_a_data.get("allow_partial_take_profit", False)
             ),
             allow_break_even=bool(pod_a_data.get("allow_break_even", False)),
+            disabled_setups=_str_list(pod_a_data.get("disabled_setups", [])),
+            blocked_regimes=_str_list(pod_a_data.get("blocked_regimes", [])),
+            allowed_setups_in_blocked_regimes=_str_list(
+                pod_a_data.get("allowed_setups_in_blocked_regimes", [])
+            ),
         ),
         pod_b=PodBConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_B", bool(pod_b_data.get("enabled", False))),
@@ -498,6 +534,15 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             paper_order_size_toxicity_discount=float(
                 pod_b_data.get("paper_order_size_toxicity_discount", 0.5)
             ),
+            paper_quote_width_multiplier_by_symbol=_float_map(
+                pod_b_data.get("paper_quote_width_multiplier_by_symbol", {})
+            ),
+            paper_order_size_multiplier_by_symbol=_float_map(
+                pod_b_data.get("paper_order_size_multiplier_by_symbol", {})
+            ),
+            paper_max_inventory_skew_pct_by_symbol=_float_map(
+                pod_b_data.get("paper_max_inventory_skew_pct_by_symbol", {})
+            ),
         ),
         pod_c=PodCConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_C", bool(pod_c_data.get("enabled", False))),
@@ -508,8 +553,13 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             min_lag_bps=float(pod_c_data.get("min_lag_bps", 4.0)),
             max_spread_bps=float(pod_c_data.get("max_spread_bps", 6.0)),
             min_confidence=float(pod_c_data.get("min_confidence", 0.62)),
+            size_multiplier=float(pod_c_data.get("size_multiplier", 1.0)),
             reentry_cooldown_minutes=int(pod_c_data.get("reentry_cooldown_minutes", 90)),
             time_stop_hours=int(pod_c_data.get("time_stop_hours", 4)),
+            blocked_symbols=_str_list(
+                pod_c_data.get("blocked_symbols", []),
+                upper_values=True,
+            ),
         ),
     )
 

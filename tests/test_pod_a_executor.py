@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from app.backtest.pod_a_executor import PodAExecutor
 from app.settings import load_config
@@ -224,7 +225,19 @@ class PodAExecutorTests(unittest.TestCase):
         self.assertEqual(executor.portfolio.open_positions["ETH"].setup, "liquidity_sweep_reclaim_long")
 
     def test_closes_position_when_symbol_is_no_longer_allowed(self) -> None:
-        executor = PodAExecutor(load_config("config/trident.toml"))
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            trident=replace(
+                config.trident,
+                execution=replace(
+                    config.trident.execution,
+                    routing_revoke_grace_minutes=0,
+                    routing_revoke_grace_minutes_by_symbol={},
+                ),
+            ),
+        )
+        executor = PodAExecutor(config)
         decision = RiskDecision(
             accepted=True,
             reason="accepted",
@@ -287,6 +300,145 @@ class PodAExecutorTests(unittest.TestCase):
         self.assertEqual(batch.closed_trades[0].close_reason, "routing_revoked")
         self.assertEqual(batch.close_reasons_by_symbol["ETH"], "routing_revoked")
         self.assertFalse(batch.has_open_position_after["ETH"])
+
+    def test_keeps_position_during_routing_revoke_grace_window(self) -> None:
+        executor = PodAExecutor(load_config("config/trident.toml"))
+        decision = RiskDecision(
+            accepted=True,
+            reason="accepted",
+            trade_plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.62,
+                target_notional_usd=450.0,
+                stop_bps=80.0,
+                time_stop_hours=24,
+                margin_usd=150.0,
+                effective_leverage=3.0,
+                risk_budget_usd=7.5,
+                expected_loss_usd=3.6,
+            ),
+        )
+
+        executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3000.0,
+                    ema_fast=2990.0,
+                    ema_slow=2950.0,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.6,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[decision],
+            signal_sides_by_symbol={"ETH": "long"},
+            timestamp="2026-04-04T00:00:00Z",
+            allowed_symbols={"ETH"},
+        )
+
+        batch = executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3005.0,
+                    ema_fast=2998.0,
+                    ema_slow=2958.0,
+                    vwap_distance_bps=-2.0,
+                    structure_score=0.4,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[],
+            signal_sides_by_symbol={},
+            timestamp="2026-04-04T00:15:00Z",
+            allowed_symbols=set(),
+        )
+
+        self.assertEqual(len(batch.closed_trades), 0)
+        self.assertTrue(batch.had_open_position_before["ETH"])
+        self.assertTrue(batch.has_open_position_after["ETH"])
+
+    def test_keeps_position_with_symbol_specific_routing_revoke_grace(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            trident=replace(
+                config.trident,
+                execution=replace(
+                    config.trident.execution,
+                    routing_revoke_grace_minutes=0,
+                    routing_revoke_grace_minutes_by_symbol={"ETH": 60},
+                ),
+            ),
+        )
+        executor = PodAExecutor(config)
+        decision = RiskDecision(
+            accepted=True,
+            reason="accepted",
+            trade_plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.62,
+                target_notional_usd=450.0,
+                stop_bps=80.0,
+                time_stop_hours=24,
+                margin_usd=150.0,
+                effective_leverage=3.0,
+                risk_budget_usd=7.5,
+                expected_loss_usd=3.6,
+            ),
+        )
+
+        executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3000.0,
+                    ema_fast=2990.0,
+                    ema_slow=2950.0,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.6,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[decision],
+            signal_sides_by_symbol={"ETH": "long"},
+            timestamp="2026-04-04T00:00:00Z",
+            allowed_symbols={"ETH"},
+        )
+
+        batch = executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3005.0,
+                    ema_fast=2998.0,
+                    ema_slow=2958.0,
+                    vwap_distance_bps=-2.0,
+                    structure_score=0.4,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[],
+            signal_sides_by_symbol={},
+            timestamp="2026-04-04T00:45:00Z",
+            allowed_symbols=set(),
+        )
+
+        self.assertEqual(len(batch.closed_trades), 0)
+        self.assertTrue(batch.has_open_position_after["ETH"])
 
     def test_closes_on_take_profit_hit(self) -> None:
         executor = PodAExecutor(load_config("config/trident.toml"))

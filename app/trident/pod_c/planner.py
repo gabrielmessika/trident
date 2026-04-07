@@ -23,6 +23,9 @@ class EventRaiderPlanner:
         )
         if symbol_allocation is None or symbol_allocation.target_usd <= 0:
             return None
+        size_multiplier = max(self.config.size_multiplier, 0.0)
+        if size_multiplier <= 0:
+            return None
         stop_bps = initial_stop_bps(signal.confidence, signal.market_cluster)
         exit_policy = smart_exit_policy(stop_bps, signal.confidence, signal.market_cluster)
         time_stop_hours = self.config.time_stop_hours
@@ -36,7 +39,7 @@ class EventRaiderPlanner:
             side=signal.side,
             setup=signal.setup,
             confidence=signal.confidence,
-            target_notional_usd=symbol_allocation.target_usd,
+            target_notional_usd=round(symbol_allocation.target_usd * size_multiplier, 4),
             stop_bps=stop_bps,
             time_stop_hours=time_stop_hours,
             take_profit_bps=exit_policy["take_profit_bps"],

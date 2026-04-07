@@ -178,6 +178,83 @@ class PodBTests(unittest.TestCase):
         self.assertGreater(toxic_ask.price, calm_ask.price)
         self.assertLess(toxic_buy.size, calm_buy.size)
 
+    def test_pod_b_engine_applies_symbol_specific_quote_and_size_multipliers(self) -> None:
+        config = load_config("config/trident.toml")
+        doge_engine = PodBPaperEngine(
+            managed_symbols=["DOGE"],
+            target_usd=200.0,
+            config=config.pod_b,
+        )
+        hype_engine = PodBPaperEngine(
+            managed_symbols=["HYPE"],
+            target_usd=200.0,
+            config=config.pod_b,
+        )
+        regime_snapshot = {
+            "ready": True,
+            "adx": 10.0,
+            "atr_ratio": 0.4,
+            "range_width_bps": 40.0,
+            "structure_score": 0.0,
+            "btc_impulse": False,
+        }
+
+        doge_status, _ = doge_engine.process_record(
+            timestamp="2026-04-05T10:00:00Z",
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="DOGE",
+                    price=100.0,
+                    ema_fast=100.0,
+                    ema_slow=100.0,
+                    vwap_distance_bps=0.0,
+                    structure_score=0.0,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.0,
+                    trade_flow_bias=0.0,
+                    bucket_volume=10.0,
+                    bucket_trade_count=5,
+                    bucket_range_bps=12.0,
+                )
+            ],
+            status_meta={"config_path": "", "status_path": ""},
+            regime_snapshot=regime_snapshot,
+        )
+        hype_status, _ = hype_engine.process_record(
+            timestamp="2026-04-05T10:00:00Z",
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="HYPE",
+                    price=100.0,
+                    ema_fast=100.0,
+                    ema_slow=100.0,
+                    vwap_distance_bps=0.0,
+                    structure_score=0.0,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.0,
+                    trade_flow_bias=0.0,
+                    bucket_volume=10.0,
+                    bucket_trade_count=5,
+                    bucket_range_bps=12.0,
+                )
+            ],
+            status_meta={"config_path": "", "status_path": ""},
+            regime_snapshot=regime_snapshot,
+        )
+
+        doge_buy = next(order for order in doge_status.open_orders if order.side == "buy")
+        hype_buy = next(order for order in hype_status.open_orders if order.side == "buy")
+        doge_sell = next(order for order in doge_status.open_orders if order.side == "sell")
+        hype_sell = next(order for order in hype_status.open_orders if order.side == "sell")
+
+        self.assertLess(hype_buy.price, doge_buy.price)
+        self.assertGreater(hype_sell.price, doge_sell.price)
+        self.assertLess(hype_buy.size, doge_buy.size)
+
     def test_renderer_builds_minimal_passivbot_live_config(self) -> None:
         renderer = PassivbotConfigRenderer()
         payload = renderer.render(
@@ -213,6 +290,9 @@ class PodBTests(unittest.TestCase):
             self.assertTrue(config_path.exists())
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["live"]["approved_coins"], ["DOGE", "XRP"])
+            self.assertIn("paper_quote_width_multiplier_by_symbol", payload["trident"])
+            self.assertIn("paper_order_size_multiplier_by_symbol", payload["trident"])
+            self.assertIn("paper_max_inventory_skew_pct_by_symbol", payload["trident"])
             self.assertEqual(status.managed_symbols, ["DOGE", "XRP"])
             self.assertEqual(status.last_sync_reason, "config_rendered")
             self.assertEqual(status.total_position_count, 0)
