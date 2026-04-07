@@ -101,32 +101,46 @@ min_assign_score = 0.40
 min_hold_score = 0.30
 hysteresis_margin = 0.10
 reassignment_cooldown_seconds = 600
+reassignment_debounce_min_score = 0.12
 runtime_override_path = "./runtime/trident/symbol_routing_overrides.json"
+
+[trident.routing.reassignment_debounce_seconds_by_symbol]
+DOGE = 10800
+LINK = 10800
+ARB = 10800
+AVAX = 9000
+SUI = 10800
+XRP = 9000
+SOL = 7200
+HYPE = 7200
 
 [trident.routing.symbol_pod_overrides]
 # BTC = "pod_a"
 # ETH = "pod_b"
 
 [trident.allocations.trend_expansion]
-pod_a = 0.60
-pod_b = 0.10
-pod_c = 0.30
+pod_a = 0.85
+pod_b = 0.15
+pod_c = 0.00
+cash = 0.00
 
 [trident.allocations.range_auction]
-pod_a = 0.20
-pod_b = 0.70
-pod_c = 0.10
+pod_a = 0.10
+pod_b = 0.90
+pod_c = 0.00
+cash = 0.00
 
 [trident.allocations.panic_squeeze]
-pod_a = 0.10
+pod_a = 0.15
 pod_b = 0.00
-pod_c = 0.90
+pod_c = 0.00
+cash = 0.85
 
 [trident.allocations.dead_zone]
 pod_a = 0.00
-pod_b = 0.20
+pod_b = 0.25
 pod_c = 0.00
-cash = 0.80
+cash = 0.75
 
 [pod_a]
 enabled = true
@@ -158,7 +172,7 @@ LINK = 10
 ARB = 10
 
 [pod_b]
-enabled = false
+enabled = true
 symbols = ["DOGE", "XRP", "SUI"]
 passivbot_config_path = "./runtime/passivbot/live.json"
 launch_command = []

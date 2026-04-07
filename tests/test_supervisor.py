@@ -955,6 +955,67 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("pod_a", sol_routing["pod_reasoning"])
         self.assertIn("best_candidate", sol_routing["pod_reasoning"]["pod_a"])
 
+    def test_supervisor_applies_symbol_reassignment_debounce_when_global_cooldown_is_disabled(self) -> None:
+        self.config.pod_c.enabled = True
+        self.config.trident.routing.reassignment_cooldown_seconds = 0
+        self.config.trident.routing.reassignment_debounce_min_score = 0.0
+        self.config.trident.routing.reassignment_debounce_seconds_by_symbol = {"SOL": 3600}
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=30.0,
+                atr_ratio=1.15,
+                range_width_bps=150.0,
+                structure_score=0.55,
+            )
+        )
+        trend_snapshot = SymbolMarketSnapshot(
+            symbol="SOL",
+            price=180.0,
+            ema_fast=181.5,
+            ema_slow=179.3,
+            vwap_distance_bps=-5.0,
+            structure_score=0.72,
+            funding_rate=0.0002,
+            spread_bps=1.4,
+            btc_aligned=True,
+            book_imbalance=0.05,
+            trade_flow_bias=0.04,
+            bucket_range_bps=44.0,
+        )
+        event_snapshot = SymbolMarketSnapshot(
+            symbol="SOL",
+            price=180.0,
+            ema_fast=180.2,
+            ema_slow=180.1,
+            vwap_distance_bps=-15.0,
+            structure_score=0.9,
+            funding_rate=0.0002,
+            spread_bps=1.4,
+            btc_aligned=True,
+            book_imbalance=0.55,
+            trade_flow_bias=0.52,
+            bucket_range_bps=180.0,
+        )
+
+        supervisor.refresh_symbol_routing([trend_snapshot])
+        supervisor.refresh_symbol_routing([event_snapshot])
+        supervisor.refresh_symbol_routing([trend_snapshot])
+
+        snapshot = supervisor.snapshot()
+        sol_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SOL")
+
+        self.assertEqual(sol_routing["owner"], "pod_c")
+        self.assertEqual(sol_routing["mode"], "dynamic_debounce")
+        self.assertTrue(sol_routing["reassignment_cooldown_active"])
+        self.assertGreater(sol_routing["reassignment_cooldown_remaining_seconds"], 0)
+        self.assertEqual(snapshot["symbol_reassignment_count_by_symbol"].get("SOL"), 1)
+
     def test_supervisor_applies_symbol_routing_override_to_pod_c(self) -> None:
         self.config.pod_c.enabled = True
         self.config.trident.routing.symbol_pod_overrides["BTC"] = "pod_c"

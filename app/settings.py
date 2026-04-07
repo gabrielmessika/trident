@@ -57,6 +57,8 @@ class RoutingConfig:
     min_hold_score: float = 0.35
     hysteresis_margin: float = 0.15
     reassignment_cooldown_seconds: int = 900
+    reassignment_debounce_min_score: float = 0.15
+    reassignment_debounce_seconds_by_symbol: dict[str, int] = field(default_factory=dict)
     runtime_override_path: str = "./runtime/trident/symbol_routing_overrides.json"
     symbol_pod_overrides: dict[str, str] = field(default_factory=dict)
 
@@ -449,6 +451,15 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 reassignment_cooldown_seconds=int(
                     routing_data.get("reassignment_cooldown_seconds", 900)
                 ),
+                reassignment_debounce_min_score=float(
+                    routing_data.get("reassignment_debounce_min_score", 0.15)
+                ),
+                reassignment_debounce_seconds_by_symbol={
+                    symbol: int(value)
+                    for symbol, value in _float_map(
+                        routing_data.get("reassignment_debounce_seconds_by_symbol", {})
+                    ).items()
+                },
                 runtime_override_path=str(
                     routing_data.get(
                         "runtime_override_path",

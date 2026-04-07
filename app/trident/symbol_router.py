@@ -27,6 +27,8 @@ class SymbolRouter:
     min_hold_score: float = 0.35
     hysteresis_margin: float = 0.15
     reassignment_cooldown_seconds: int = 900
+    reassignment_debounce_min_score: float = 0.15
+    reassignment_debounce_seconds_by_symbol: dict[str, int] | None = None
     symbol_pod_overrides: dict[str, PodName] | None = None
 
     def __post_init__(self) -> None:
@@ -35,6 +37,11 @@ class SymbolRouter:
         self.min_hold_score = float(routing.min_hold_score)
         self.hysteresis_margin = float(routing.hysteresis_margin)
         self.reassignment_cooldown_seconds = int(routing.reassignment_cooldown_seconds)
+        self.reassignment_debounce_min_score = float(routing.reassignment_debounce_min_score)
+        self.reassignment_debounce_seconds_by_symbol = {
+            str(symbol).upper(): int(seconds)
+            for symbol, seconds in routing.reassignment_debounce_seconds_by_symbol.items()
+        }
         self.set_symbol_pod_overrides(routing.symbol_pod_overrides)
 
     def set_symbol_pod_overrides(self, raw_overrides: dict[str, str]) -> None:
@@ -432,6 +439,41 @@ class SymbolRouter:
                 override_owner=override_owner,
             )
 
+        debounce_seconds = self._symbol_debounce_seconds(symbol)
+        debounce_active = (
+            previous_owner is not None
+            and previous_owner in candidates
+            and best_owner != previous_owner
+            and reassignment_age_seconds is not None
+            and debounce_seconds > 0
+            and reassignment_age_seconds < debounce_seconds
+            and previous_score >= self.reassignment_debounce_min_score
+        )
+
+        if debounce_active:
+            remaining = max(
+                float(debounce_seconds) - float(reassignment_age_seconds),
+                0.0,
+            )
+            return SymbolRoutingDecision(
+                symbol=symbol,
+                owner=previous_owner,
+                mode="dynamic_debounce",
+                reason=(
+                    f"reassignment_debounce_hold:{previous_owner.value}"
+                    f" ({remaining:.0f}s remaining, {previous_score:.2f} vs {best_owner.value} {best_score:.2f})"
+                ),
+                previous_owner=previous_owner,
+                candidate_pods=list(candidates),
+                pod_scores=dict(pod_scores),
+                local_regime=local_regime,
+                local_regime_reason=local_regime_reason,
+                pod_reasoning=pod_reasoning,
+                reassignment_cooldown_active=True,
+                reassignment_cooldown_remaining_seconds=remaining,
+                override_owner=override_owner,
+            )
+
         if (
             previous_owner is not None
             and previous_owner in candidates
@@ -487,6 +529,14 @@ class SymbolRouter:
             local_regime_reason=local_regime_reason,
             pod_reasoning=pod_reasoning,
             override_owner=override_owner,
+        )
+
+    def _symbol_debounce_seconds(self, symbol: str) -> int:
+        if not self.reassignment_debounce_seconds_by_symbol:
+            return 0
+        return max(
+            int(self.reassignment_debounce_seconds_by_symbol.get(symbol.upper(), 0)),
+            0,
         )
 
     def _build_pod_reasoning(
