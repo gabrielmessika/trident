@@ -32,7 +32,17 @@
       "Bash(python -m unittest tests.test_historical_fetcher tests.test_candle_converter tests.test_historical_replay -v)",
       "Bash(timeout 300 python3 -c ':*)",
       "Bash(timeout 120 python3 -c ':*)",
-      "Bash(python3 -c ':*)"
+      "Bash(python3 -c ':*)",
+      "Bash(timeout 30 python -m unittest tests.test_historical_replay -v)",
+      "Bash(timeout 180 python3 -c ':*)",
+      "Bash(timeout 60 python3 -c ':*)",
+      "Bash(git checkout:*)",
+      "Bash(rm app/hyperliquid/historical_fetcher.py app/backtest/candle_converter.py tests/test_historical_fetcher.py tests/test_candle_converter.py)",
+      "Bash(rm -rf data/historical_candles data/historical_funding data/historical_baselines)",
+      "Bash(grep -E \"\\\\.py$\")"
+    ],
+    "additionalDirectories": [
+      "/workspaces/trident/app/backtest"
     ]
   }
 }
