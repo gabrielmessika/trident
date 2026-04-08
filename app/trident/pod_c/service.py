@@ -1,121 +1,121 @@
 from __future__ import annotations
 
+from collections import deque
+
 from app.settings import PodCConfig
-from app.trident.pod_c.signals import EventRaiderContext, EventRaiderSignal
+from app.trident.pod_c.signals import SqueezeContext, SqueezeSignal
 
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
 
 
-class EventRaiderService:
-    """Event-driven follower service for Pod C."""
+class SqueezeBreakoutService:
+    """Detects volatility squeeze then trades the breakout direction."""
 
     def __init__(self, config: PodCConfig) -> None:
         self.config = config
+        self._vol_history: dict[str, deque[float]] = {}
+        self._trade_count_history: dict[str, deque[int]] = {}
 
-    def evaluate(self, context: EventRaiderContext) -> EventRaiderSignal | None:
+    def update_history(self, symbol: str, bucket_range_bps: float, bucket_trade_count: int) -> None:
+        lookback = max(self.config.squeeze_lookback, 3)
+        if symbol not in self._vol_history:
+            self._vol_history[symbol] = deque(maxlen=lookback)
+            self._trade_count_history[symbol] = deque(maxlen=lookback)
+        self._vol_history[symbol].append(bucket_range_bps)
+        self._trade_count_history[symbol].append(bucket_trade_count)
+
+    def squeeze_ratio(self, symbol: str, current_range_bps: float) -> float:
+        history = self._vol_history.get(symbol)
+        if not history or len(history) < 3:
+            return 1.0
+        avg = sum(history) / len(history)
+        if avg <= 0:
+            return 1.0
+        return current_range_bps / avg
+
+    def volume_ratio(self, symbol: str, current_trade_count: int) -> float:
+        history = self._trade_count_history.get(symbol)
+        if not history or len(history) < 3:
+            return 1.0
+        avg = sum(history) / len(history)
+        if avg <= 0:
+            return 1.0
+        return current_trade_count / avg
+
+    def evaluate(self, context: SqueezeContext) -> SqueezeSignal | None:
         if not self._passes_filters(context):
             return None
-
         components = self._confidence_components(context)
-        return EventRaiderSignal(
+        confidence = round(self._aggregate_confidence(components), 3)
+        if confidence < self.config.min_confidence:
+            return None
+        side = self._determine_side(context)
+        return SqueezeSignal(
             symbol=context.symbol,
-            side=context.side,
-            setup=f"lead_lag_{context.side}",
-            confidence=round(self._aggregate_confidence(components), 3),
+            side=side,
+            setup=f"squeeze_breakout_{side}",
+            confidence=confidence,
             entry_price=context.price,
-            leader_symbol=context.leader_symbol,
             market_cluster=context.market_cluster,
             confidence_components=components,
         )
 
-    def evaluate_many(self, contexts: list[EventRaiderContext]) -> list[EventRaiderSignal]:
-        signals: list[EventRaiderSignal] = []
+    def evaluate_many(self, contexts: list[SqueezeContext]) -> list[SqueezeSignal]:
+        signals: list[SqueezeSignal] = []
         for context in contexts:
             signal = self.evaluate(context)
             if signal is not None:
                 signals.append(signal)
         return sorted(signals, key=lambda item: item.confidence, reverse=True)
 
-    def _passes_filters(self, context: EventRaiderContext) -> bool:
-        if not context.cluster_aligned:
+    def _passes_filters(self, context: SqueezeContext) -> bool:
+        if context.spread_bps > self.config.max_spread_bps:
             return False
-        max_spread_bps = self._max_spread_bps(context.market_cluster)
-        if context.spread_bps > max_spread_bps:
+        if context.squeeze_ratio < self.config.breakout_multiplier:
             return False
-        min_required_lag = max(
-            self._min_lag_bps(context.market_cluster),
-            self._impulse_threshold_bps(context.market_cluster) * 0.6,
-        )
-        if context.lag_bps < min_required_lag:
+        flow_score = self._flow_alignment_unsigned(context)
+        if flow_score < self.config.min_flow_alignment:
             return False
-        if abs(context.leader_impulse_bps) < self._impulse_threshold_bps(context.market_cluster) * 1.1:
+        if context.volume_ratio < self.config.min_volume_spike * 0.8:
             return False
-        if abs(context.follower_move_bps) > abs(context.leader_impulse_bps) * 0.75:
-            return False
-        flow_alignment = self._flow_alignment_score(context)
-        if flow_alignment < 0.45:
-            return False
-        if context.side == "long":
-            if context.structure_score < -0.1:
-                return False
-        else:
-            if context.structure_score > 0.1:
-                return False
         return True
 
-    def _confidence_components(self, context: EventRaiderContext) -> dict[str, float]:
-        impulse_threshold = self._impulse_threshold_bps(context.market_cluster)
-        max_spread_bps = self._max_spread_bps(context.market_cluster)
-        impulse_quality = _clamp(
-            (abs(context.leader_impulse_bps) - impulse_threshold)
-            / max(impulse_threshold, 1.0),
+    def _determine_side(self, context: SqueezeContext) -> str:
+        net_flow = (context.trade_flow_bias + context.book_imbalance) / 2.0
+        return "long" if net_flow > 0 else "short"
+
+    def _confidence_components(self, context: SqueezeContext) -> dict[str, float]:
+        breakout_strength = _clamp(
+            (context.squeeze_ratio - 1.0) / max(self.config.breakout_multiplier - 1.0, 0.5)
         )
-        lag_quality = _clamp(context.lag_bps / max(impulse_threshold, 1.0))
-        spread_quality = _clamp(1.0 - context.spread_bps / max(max_spread_bps, 1.0))
-        structure_quality = _clamp(0.5 + abs(context.structure_score) * 0.5)
-        flow_alignment = self._flow_alignment_score(context)
+        flow_quality = self._flow_alignment_unsigned(context)
+        volume_quality = _clamp(
+            (context.volume_ratio - 1.0) / max(self.config.min_volume_spike - 1.0, 0.5)
+        )
+        spread_quality = _clamp(1.0 - context.spread_bps / max(self.config.max_spread_bps, 1.0))
+        structure_quality = _clamp(abs(context.structure_score))
         return {
-            "impulse_quality": round(impulse_quality, 4),
-            "lag_quality": round(lag_quality, 4),
+            "breakout_strength": round(breakout_strength, 4),
+            "flow_quality": round(flow_quality, 4),
+            "volume_quality": round(volume_quality, 4),
             "spread_quality": round(spread_quality, 4),
             "structure_quality": round(structure_quality, 4),
-            "flow_alignment": round(flow_alignment, 4),
         }
 
-    def _flow_alignment_score(self, context: EventRaiderContext) -> float:
-        signed_flow = (context.trade_flow_bias + context.book_imbalance) / 2.0
-        if context.side == "short":
-            signed_flow *= -1.0
-        return _clamp(0.5 + signed_flow * 0.5)
+    def _flow_alignment_unsigned(self, context: SqueezeContext) -> float:
+        return _clamp(abs(context.trade_flow_bias + context.book_imbalance) / 2.0 * 2.0)
 
     def _aggregate_confidence(self, components: dict[str, float]) -> float:
         return (
-            components["impulse_quality"] * 0.35
-            + components["lag_quality"] * 0.30
+            components["breakout_strength"] * 0.30
+            + components["flow_quality"] * 0.30
+            + components["volume_quality"] * 0.20
             + components["spread_quality"] * 0.10
             + components["structure_quality"] * 0.10
-            + components["flow_alignment"] * 0.15
         )
 
-    def _impulse_threshold_bps(self, market_cluster: str) -> float:
-        if market_cluster == "index":
-            return max(self.config.impulse_threshold_bps * 0.8, 8.0)
-        if market_cluster == "gold":
-            return max(self.config.impulse_threshold_bps * 0.9, 8.0)
-        return self.config.impulse_threshold_bps
-
-    def _min_lag_bps(self, market_cluster: str) -> float:
-        if market_cluster == "index":
-            return max(self.config.min_lag_bps * 0.8, 3.0)
-        if market_cluster == "gold":
-            return max(self.config.min_lag_bps * 0.9, 3.5)
-        return self.config.min_lag_bps
-
-    def _max_spread_bps(self, market_cluster: str) -> float:
-        if market_cluster == "index":
-            return max(self.config.max_spread_bps * 0.8, 3.0)
-        if market_cluster == "gold":
-            return max(self.config.max_spread_bps * 0.9, 4.0)
-        return self.config.max_spread_bps
+    def reset(self) -> None:
+        self._vol_history.clear()
+        self._trade_count_history.clear()

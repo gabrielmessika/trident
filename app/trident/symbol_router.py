@@ -82,7 +82,6 @@ class SymbolRouter:
                 pod: (
                     self._score_pod(
                         pod=pod,
-                        symbol=symbol,
                         regime=regime,
                         snapshot=snapshot,
                         local_regime=local_regime,
@@ -624,7 +623,6 @@ class SymbolRouter:
         self,
         *,
         pod: PodName,
-        symbol: str,
         regime: Regime,
         snapshot: SymbolMarketSnapshot | None,
         local_regime: SymbolLocalRegime | None,
@@ -649,8 +647,6 @@ class SymbolRouter:
                 ),
                 4,
             )
-        if symbol.upper() in {item.upper() for item in self.config.pod_c.leader_symbols}:
-            return 0.0
         return round(
             self._score_pod_c(
                 regime=regime,
@@ -734,26 +730,25 @@ class SymbolRouter:
         local_regime: SymbolLocalRegime | None,
     ) -> float:
         global_quality = {
-            Regime.PANIC_SQUEEZE: 1.0,
-            Regime.TREND_EXPANSION: 0.8,
-            Regime.RANGE_AUCTION: 0.35,
-            Regime.DEAD_ZONE: 0.1,
+            Regime.RANGE_AUCTION: 1.0,
+            Regime.DEAD_ZONE: 0.8,
+            Regime.TREND_EXPANSION: 0.4,
+            Regime.PANIC_SQUEEZE: 0.2,
             Regime.CASH: 0.0,
         }[regime]
         local_quality = self._local_regime_affinity(PodName.POD_C, local_regime)
-        impulse_quality = _clamp(max(abs(snapshot.trade_flow_bias), abs(snapshot.book_imbalance)) * 1.6)
-        range_quality = _clamp(snapshot.bucket_range_bps / 120.0)
-        structure_quality = _clamp(abs(snapshot.structure_score))
-        cluster_quality = 1.0 if snapshot.cluster_aligned else 0.2
+        range_limit = max(self.config.pod_b.paper_guard_max_range_width_bps, 1.0)
+        squeeze_quality = _clamp(1.0 - snapshot.bucket_range_bps / (range_limit * 0.8))
         spread_quality = _clamp(1.0 - snapshot.spread_bps / max(self.config.pod_c.max_spread_bps * 1.5, 1.0))
+        volume_quality = _clamp(snapshot.bucket_trade_count / 10.0)
+        structure_quality = _clamp(1.0 - abs(snapshot.structure_score) * 0.8)
         return (
-            local_quality * 0.15
+            local_quality * 0.10
             + global_quality * 0.20
-            + impulse_quality * 0.25
-            + range_quality * 0.15
-            + structure_quality * 0.15
-            + cluster_quality * 0.05
-            + spread_quality * 0.05
+            + squeeze_quality * 0.30
+            + spread_quality * 0.15
+            + volume_quality * 0.15
+            + structure_quality * 0.10
         )
 
     def _classify_local_regime(

@@ -172,17 +172,18 @@ class PodBConfig:
 @dataclass(slots=True)
 class PodCConfig:
     enabled: bool
-    leader_symbols: list[str]
-    follower_symbols: list[str]
     max_allocation_pct: float
-    impulse_threshold_bps: float
-    min_lag_bps: float
     max_spread_bps: float
     min_confidence: float
     size_multiplier: float
     reentry_cooldown_minutes: int
     time_stop_hours: int
     blocked_symbols: list[str]
+    squeeze_lookback: int
+    squeeze_threshold: float
+    breakout_multiplier: float
+    min_flow_alignment: float
+    min_volume_spike: float
 
 
 @dataclass(slots=True)
@@ -557,20 +558,21 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         ),
         pod_c=PodCConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_C", bool(pod_c_data.get("enabled", False))),
-            leader_symbols=list(pod_c_data.get("leader_symbols", [])),
-            follower_symbols=list(pod_c_data.get("follower_symbols", [])),
-            max_allocation_pct=float(pod_c_data.get("max_allocation_pct", 1.0)),
-            impulse_threshold_bps=float(pod_c_data.get("impulse_threshold_bps", 10.0)),
-            min_lag_bps=float(pod_c_data.get("min_lag_bps", 4.0)),
+            max_allocation_pct=float(pod_c_data.get("max_allocation_pct", 0.90)),
             max_spread_bps=float(pod_c_data.get("max_spread_bps", 6.0)),
             min_confidence=float(pod_c_data.get("min_confidence", 0.62)),
-            size_multiplier=float(pod_c_data.get("size_multiplier", 1.0)),
+            size_multiplier=float(pod_c_data.get("size_multiplier", 0.55)),
             reentry_cooldown_minutes=int(pod_c_data.get("reentry_cooldown_minutes", 90)),
-            time_stop_hours=int(pod_c_data.get("time_stop_hours", 4)),
+            time_stop_hours=int(pod_c_data.get("time_stop_hours", 3)),
             blocked_symbols=_str_list(
                 pod_c_data.get("blocked_symbols", []),
                 upper_values=True,
             ),
+            squeeze_lookback=int(pod_c_data.get("squeeze_lookback", 20)),
+            squeeze_threshold=float(pod_c_data.get("squeeze_threshold", 0.50)),
+            breakout_multiplier=float(pod_c_data.get("breakout_multiplier", 1.8)),
+            min_flow_alignment=float(pod_c_data.get("min_flow_alignment", 0.55)),
+            min_volume_spike=float(pod_c_data.get("min_volume_spike", 1.5)),
         ),
     )
 

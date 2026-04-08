@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from app.settings import PodCConfig
 from app.trident.pod_c.exits import initial_stop_bps, smart_exit_policy
-from app.trident.pod_c.signals import EventRaiderSignal
+from app.trident.pod_c.signals import SqueezeSignal
 from app.trident.types import PodAllocation, TradePlan
 
 
-class EventRaiderPlanner:
-    """Builds executable Pod C trade plans from lead-lag signals."""
+class SqueezeBreakoutPlanner:
+    """Builds executable Pod C trade plans from squeeze breakout signals."""
 
     def __init__(self, config: PodCConfig) -> None:
         self.config = config
 
     def build_trade_plan(
         self,
-        signal: EventRaiderSignal,
+        signal: SqueezeSignal,
         pod_allocation: PodAllocation,
     ) -> TradePlan | None:
         symbol_allocation = next(
@@ -50,6 +50,5 @@ class EventRaiderPlanner:
             confidence_components=signal.confidence_components,
             setup_details={
                 "market_cluster": signal.market_cluster,
-                "cluster_leader": signal.leader_symbol,
             },
         )

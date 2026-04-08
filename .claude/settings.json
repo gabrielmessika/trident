@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"Pod A\\\\|Pod B\\\\|Pod C\" /workspaces/trident/docs/*.md)",
+      "Bash(grep -l \"POD_A\\\\|POD_B\\\\|POD_C\" /workspaces/trident/tests/*.py)",
+      "Bash(=== symbol_router.py HARDCODED LOCATIONS ===)",
+      "Bash(':*)",
+      "Read(//tmp/**)",
+      "Bash(python -m pytest tests/ -x --tb=short)",
+      "Bash(python -m unittest discover -s tests -p \"test_*.py\")",
+      "Bash(python -m unittest tests.test_capital_allocator)",
+      "Bash(git stash:*)",
+      "Bash(python -m unittest tests.test_pod_c)",
+      "Bash(python -m unittest tests.test_pod_c.PodCTests.test_squeeze_service_detects_breakout tests.test_pod_c.PodCTests.test_squeeze_planner_builds_trade_plan tests.test_pod_c.PodCTests.test_squeeze_service_builds_history)",
+      "Bash(python -m unittest tests.test_pod_c.PodCTests.test_pod_c_live_runner_processes_records)",
+      "Bash(find /workspaces/trident/server-data/live_snapshots -type f -exec ls -lh {} \\\\;)",
+      "Bash(python -m app.backtest.full_bot_replay --help)",
+      "Bash(python -m app.backtest.full_bot_experiment_sweep --help)",
+      "Bash(wc -l /workspaces/trident/server-data/live_snapshots/*.jsonl /workspaces/trident/data/live_snapshots/*.jsonl)",
+      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_squeeze_v2.json --summary-output data/replay_reports/full_bot/full_bot_backtest_squeeze_v2.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
+      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo1.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo1.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
+      "Bash(python -c ':*)",
+      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo2.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo2.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
+      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo3.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo3.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
+      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo3b.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo3b.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
+      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo4.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo4.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
+      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo5.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo5.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
+      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo_final.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo_final.md --comparison-output data/replay_reports/full_bot/history.jsonl)"
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 # TRIDENT — Plan vivant
 
-> Derniere refonte: 2026-04-07
+> Derniere refonte: 2026-04-08
 > Objectif: garder un point d'entree court, fiable et maintenable pour piloter les evolutions du projet.
 
 ## Lecture rapide
@@ -20,8 +20,10 @@ Ce fichier reste volontairement court. Le detail historique supprime ici reste r
 - `Etape 5`: 92%
 - `Etape 5bis`: 100%, fermee
 - `Etape 6` a `Etape 9`: completees
-- `Etape 10`: 30%
+- `Etape 10`: 40%
 - `Etape 11`: 35%
+- `Etape 12`: 80% (Pod C v2 Squeeze Breakout implemente, en attente de donnees pour validation)
+- `Etape 13`: en cours (Pod A optimisation aggressive)
 
 ## Ce qui est vrai aujourd'hui
 
@@ -40,6 +42,23 @@ Ce fichier reste volontairement court. Le detail historique supprime ici reste r
   - endpoint `POST /api/routing/override`
   - panneau direct dans l'UI
 - `5bis` a ete valide sur snapshots reels `2026-04-05 -> 2026-04-07`
+- un replay "bot complet" dans des conditions proches du dry-run existe:
+  - `app.backtest.full_bot_replay`
+  - rapports historises sous `data/replay_reports/full_bot/`
+- un sweep d'experiences radicales existe:
+  - `app.backtest.full_bot_experiment_sweep`
+  - comparaison historisee sous `data/replay_reports/full_bot_sweeps/`
+- le profil recommande et configure par defaut est maintenant:
+  - `Pod A` moteur principal
+  - `Pod B` complement defensif/range
+  - `Pod C` desactive dans le run principal
+- la meilleure validation replay retenue a ce stade sur `2026-04-05 -> 2026-04-07` est:
+  - profil `Pod A + Pod B, Pod C off`
+  - `+27.0668 USD` realise
+  - `467` reattributions
+- Hydra reste une piste de recherche offline:
+  - funding / liq / OI hors coeur live
+  - pas d'activation sans preuve offline nette
 
 Reglage routing retenu:
 
@@ -50,10 +69,12 @@ Reglage routing retenu:
 
 ## Priorites suivantes
 
-1. `Etape 5`: pousser Pod B vers un dry-run 24h 3 pods exploitable, puis recalibrer la couche range/toxicite.
-2. `Etape 10`: utiliser le lanceur dry-run 3 pods sur serveur et auditer les runs avec `trident_dry_run_review.sh`.
+1. `Etape 13`: optimisation aggressive de Pod A (5 evos incrementales avec backtests).
+2. `Etape 12`: valider Pod C v2 Squeeze Breakout sur des donnees avec episodes de vol contrastes.
+3. `Etape 10`: lancer un dry-run serveur long avec le profil actif `Pod A + Pod B, Pod C off`, puis auditer avec `trident_dry_run_review.sh`.
 3. `Etape 4bis`: confirmer sur une plage plus longue le comportement `Pod A` en dry-run live petit wallet.
-4. `Etape 11`: continuer les runs offline funding/liq et garder ces hypotheses hors du run principal.
+4. `Etape 5`: recalibrer Pod B comme complement du run principal, pas comme coeur de perf, via expectancy/toxicite sur runs longs.
+5. `Etape 11`: lancer un sweep Hydra offline et sortir un verdict `go / park / kill` par hypothese.
 
 ## Regles de maintenance
 

@@ -47,7 +47,7 @@ def all_cluster_leaders(config: AppConfig) -> set[str]:
         for group in {**DEFAULT_CLUSTER_LEADERS, **config.hyperliquid.cluster_leaders}.values()
         for symbol in group
     }
-    return leaders | {symbol.upper() for symbol in config.pod_c.leader_symbols}
+    return leaders
 
 
 def enrich_snapshots(

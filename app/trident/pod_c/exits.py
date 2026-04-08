@@ -3,11 +3,11 @@ from __future__ import annotations
 
 def initial_stop_bps(confidence: float, market_cluster: str = "crypto") -> float:
     if confidence >= 0.8:
-        base = 35.0
+        base = 40.0
     elif confidence >= 0.65:
-        base = 45.0
-    else:
         base = 55.0
+    else:
+        base = 70.0
     if market_cluster == "index":
         return round(base * 0.85, 4)
     if market_cluster == "gold":
@@ -20,10 +20,10 @@ def smart_exit_policy(
     confidence: float,
     market_cluster: str = "crypto",
 ) -> dict[str, float]:
-    take_profit_multiplier = 1.1 if confidence >= 0.75 else 0.95
-    break_even_multiplier = 0.5
-    trailing_activation_multiplier = 0.75
-    trailing_distance_multiplier = 0.35
+    take_profit_multiplier = 1.5 if confidence >= 0.75 else 1.2
+    break_even_multiplier = 0.45
+    trailing_activation_multiplier = 0.65
+    trailing_distance_multiplier = 0.30
     if market_cluster == "index":
         take_profit_multiplier *= 0.9
         break_even_multiplier *= 0.8

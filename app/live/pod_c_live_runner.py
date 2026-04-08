@@ -30,7 +30,6 @@ class PodCLiveRunner:
             coins
             or config.hyperliquid.observation_universe
             or config.hyperliquid.default_coins
-            or config.pod_c.follower_symbols
         )
         self.collector = HyperliquidLiveCollector(config, coins=self.coins)
         supervisor_config = replace(

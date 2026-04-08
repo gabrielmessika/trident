@@ -7,10 +7,10 @@ from pathlib import Path
 from app.settings import AppConfig
 from app.trident.capital_allocator import CapitalAllocator
 from app.trident.kill_switch import KillSwitch
-from app.trident.market_clusters import all_cluster_leaders, enrich_snapshots
+from app.trident.market_clusters import enrich_snapshots
 from app.trident.pod_a import AnchorTrendPlanner, AnchorTrendService, MarketContextService
 from app.trident.pod_b import PassivbotManager
-from app.trident.pod_c import EventContextService, EventRaiderPlanner, EventRaiderService
+from app.trident.pod_c import SqueezeBreakoutPlanner, SqueezeBreakoutService, SqueezeContextService
 from app.trident.routing_overrides import (
     load_runtime_symbol_pod_override_payload,
     write_runtime_symbol_pod_override_payload,
@@ -58,9 +58,9 @@ class TridentSupervisor:
         self.pod_a_context_service = MarketContextService(config)
         self.pod_a_service = AnchorTrendService()
         self.pod_a_planner = AnchorTrendPlanner(config)
-        self.pod_c_context_service = EventContextService(config)
-        self.pod_c_service = EventRaiderService(config.pod_c)
-        self.pod_c_planner = EventRaiderPlanner(config.pod_c)
+        self.pod_c_service = SqueezeBreakoutService(config.pod_c)
+        self.pod_c_context_service = SqueezeContextService(config, self.pod_c_service)
+        self.pod_c_planner = SqueezeBreakoutPlanner(config.pod_c)
         self.pod_b_manager = PassivbotManager(config)
         self._latest_snapshots: list[SymbolMarketSnapshot] = []
         self.state = SupervisorState(
@@ -238,7 +238,6 @@ class TridentSupervisor:
             status_by_symbol.values(),
             key=lambda item: item.symbol,
         )
-        leaders = all_cluster_leaders(self.config)
         tradable_symbols = sorted(
             symbol
             for symbol, status in status_by_symbol.items()
@@ -253,11 +252,7 @@ class TridentSupervisor:
         candidates = {
             PodName.POD_A: tradable_symbols if self.config.pod_a.enabled else [],
             PodName.POD_B: tradable_symbols if self.config.pod_b.enabled else [],
-            PodName.POD_C: (
-                [symbol for symbol in tradable_symbols if symbol not in leaders]
-                if self.config.pod_c.enabled
-                else []
-            ),
+            PodName.POD_C: tradable_symbols if self.config.pod_c.enabled else [],
         }
         override_symbols = self._routing_override_symbols_by_pod(tradable_symbols)
         for pod_name, symbols in override_symbols.items():
@@ -491,9 +486,11 @@ class TridentSupervisor:
     ) -> list[SignalPreview]:
         snapshots = self._prepare_snapshots(snapshots)
         self.refresh_symbol_routing(snapshots)
+        owned_symbols = set(self.registry.symbols_for(PodName.POD_C))
         contexts = self.pod_c_context_service.build_contexts(
             self.state.regime,
-            self._pod_c_relevant_snapshots(snapshots),
+            snapshots,
+            owned_symbols=owned_symbols,
         )
         signals = self.pod_c_service.evaluate_many(contexts)
         previews = [
@@ -514,9 +511,11 @@ class TridentSupervisor:
     ) -> list[TradePlan]:
         snapshots = self._prepare_snapshots(snapshots)
         self.refresh_symbol_routing(snapshots)
+        owned_symbols = set(self.registry.symbols_for(PodName.POD_C))
         contexts = self.pod_c_context_service.build_contexts(
             self.state.regime,
-            self._pod_c_relevant_snapshots(snapshots),
+            snapshots,
+            owned_symbols=owned_symbols,
         )
         signals = self.pod_c_service.evaluate_many(contexts)
         pod_allocation = self.capital_plan.pod_allocations[PodName.POD_C]
@@ -544,17 +543,6 @@ class TridentSupervisor:
         if not owned_symbols:
             return []
         return [snapshot for snapshot in snapshots if snapshot.symbol.upper() in owned_symbols]
-
-    def _pod_c_relevant_snapshots(
-        self,
-        snapshots: list[SymbolMarketSnapshot],
-    ) -> list[SymbolMarketSnapshot]:
-        owned_followers = set(self.registry.symbols_for(PodName.POD_C))
-        leader_symbols = all_cluster_leaders(self.config)
-        allowed_symbols = owned_followers | leader_symbols
-        if not allowed_symbols:
-            return []
-        return [snapshot for snapshot in snapshots if snapshot.symbol.upper() in allowed_symbols]
 
     def _prepare_snapshots(
         self,

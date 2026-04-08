@@ -75,24 +75,24 @@ min_symbol_allocation_usd = 25
 min_confidence = 0.50
 max_trade_plans_per_batch = 2
 min_trade_notional_usd = 10
-max_risk_per_trade_pct = 0.01
+max_risk_per_trade_pct = 0.015
 max_total_open_risk_pct = 0.03
 
 [trident.execution]
 dry_run_taker_fee_bps = 3.5
 dry_run_slippage_bps = 0.5
 dry_run_spread_multiplier = 0.5
-routing_revoke_grace_minutes = 30
+routing_revoke_grace_minutes = 60
 
 [trident.execution.routing_revoke_grace_minutes_by_symbol]
-DOGE = 120
-LINK = 120
-ARB = 120
-AVAX = 120
-SUI = 120
-XRP = 120
-SOL = 90
-HYPE = 90
+DOGE = 180
+LINK = 180
+ARB = 180
+AVAX = 180
+SUI = 180
+XRP = 180
+SOL = 150
+HYPE = 150
 BTC = 60
 ETH = 60
 
@@ -145,17 +145,17 @@ cash = 0.75
 [pod_a]
 enabled = true
 symbols = ["BTC", "ETH", "SOL", "HYPE"]
-max_allocation_pct = 0.60
+max_allocation_pct = 0.85
 default_leverage = 2.0
-max_leverage = 3.0
+max_leverage = 5.0
 prefer_isolated = true
 sizing_mode = "risk_based"
-risk_per_trade_pct = 0.0075
+risk_per_trade_pct = 0.0125
 min_margin_usd = 20
 min_notional_usd = 10
 allow_partial_take_profit = false
 allow_break_even = true
-disabled_setups = ["bos_retest_short"]
+disabled_setups = ["bos_retest_short", "bos_retest_long", "trend_pullback_short"]
 blocked_regimes = ["DeadZone", "RangeAuction"]
 allowed_setups_in_blocked_regimes = ["liquidity_sweep_reclaim_long"]
 
@@ -211,14 +211,16 @@ XRP = 0.65
 
 [pod_c]
 enabled = false
-leader_symbols = ["BTC", "ETH"]
-follower_symbols = ["SOL", "HYPE", "SUI"]
 max_allocation_pct = 0.90
-impulse_threshold_bps = 10.0
-min_lag_bps = 4.0
 max_spread_bps = 6.0
-min_confidence = 0.68
+min_confidence = 0.62
 size_multiplier = 0.55
 reentry_cooldown_minutes = 90
-time_stop_hours = 4
-blocked_symbols = ["LINK", "HYPE", "XRP", "SUI", "LTC"]
+time_stop_hours = 3
+blocked_symbols = []
+# Squeeze Breakout v2 parameters
+squeeze_lookback = 20           # rolling window size (snapshots, ~1 per minute)
+squeeze_threshold = 0.50        # current_vol / avg_vol below this = squeeze detected
+breakout_multiplier = 1.8       # current_vol / avg_vol above this = breakout trigger
+min_flow_alignment = 0.55       # min directional flow score to confirm breakout direction
+min_volume_spike = 1.5          # min trade_count / avg_trade_count for volume confirmation

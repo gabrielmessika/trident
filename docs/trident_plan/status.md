@@ -10,16 +10,40 @@
 | 3. Capital allocator + cash mode | 100% | Rien, etape fermee |
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider sur une plage dry-run live plus longue |
-| 5. Pod B range engine natif | 92% | Premier dry-run 24h 3 pods avec Pod B conservateur |
+| 5. Pod B range engine natif | 92% | Recaler Pod B comme complement du profil actif sur run long |
 | 5bis. Routing dynamique symbols / ownership | 100% | Rien, etape fermee |
 | 6. Reporting par pod | 100% | Rien, etape fermee |
 | 7. Research Pod pour Pod C | 100% | Rien, etape fermee |
 | 8. Pod C minimal | 100% | Rien, etape fermee |
 | 9. Hardening deployment | 100% | Rien, etape fermee |
-| 10. Passage live progressif | 30% | Premier dry-run 24h serveur + audit |
+| 10. Passage live progressif | 40% | Dry-run serveur long avec profil actif `Pod A + Pod B` |
 | 11. Pistes futures Hydra revisitees | 35% | Continuer les runs offline funding/liq |
+| 12. Pod C v2 Squeeze Breakout | 80% | Valider offline puis activer |
 
 ## Journal condense
+
+### 2026-04-08
+
+- replay "bot complet" ajoute pour rejouer le systeme A/B/C dans des conditions proches du dry-run:
+  - [full_bot_replay.py](/workspaces/trident/app/backtest/full_bot_replay.py)
+- historique comparatif ajoute:
+  - [history.jsonl](/workspaces/trident/data/replay_reports/full_bot/history.jsonl)
+- sweep d'experiences radicales ajoute:
+  - [full_bot_experiment_sweep.py](/workspaces/trident/app/backtest/full_bot_experiment_sweep.py)
+  - [full_bot_experiment_sweep_20260407T214546Z.json](/workspaces/trident/data/replay_reports/full_bot_sweeps/full_bot_experiment_sweep_20260407T214546Z.json)
+- constat structurel retenu:
+  - `Pod A` porte l'essentiel du PnL
+  - `Pod B` ajoute peu mais reste utile en complement
+  - `Pod C` detruit de la valeur sur la fenetre validee
+- profil principal bascule sur:
+  - `Pod A + Pod B`
+  - `Pod C off`
+- validation replay de la config active:
+  - [full_bot_backtest_20260407T214946Z.json](/workspaces/trident/data/replay_reports/full_bot/full_bot_backtest_20260407T214946Z.json)
+  - total realise `+27.0668 USD`
+  - `467` reattributions
+- Hydra explicitement maintenu hors run principal:
+  - funding / liq / OI restent en piste research offline
 
 ### 2026-04-07
 
@@ -86,12 +110,32 @@
 - statut: encore a durcir strategiquement
 - lecture actuelle:
   - l'infra est saine
-  - la couche range reste trop dominante dans certains replays
-  - la prochaine validation utile est un dry-run 24h 3 pods
+  - la couche range contribue peu au PnL mais peut completer `Pod A`
+  - la prochaine validation utile est un run long avec le profil actif `Pod A + Pod B`
+
+### Profil actif 2026-04-08
+
+- decision retenue:
+  - `Pod A` principal
+  - `Pod B` complement
+  - `Pod C` desactive par defaut
+- preuve actuelle:
+  - meilleur replay valide sur `2026-04-05 -> 2026-04-07`
+  - [full_bot_backtest_20260407T214946Z.json](/workspaces/trident/data/replay_reports/full_bot/full_bot_backtest_20260407T214946Z.json)
+  - `+27.0668 USD` realise
+- consequence:
+  - les prochains dry-runs longs doivent partir de ce profil
+  - `Pod C` reste disponible pour la recherche, pas pour le run principal
+
+### Hydra
+
+- statut: research offline uniquement
+- regle retenue:
+  - funding / liq / OI ne rentrent pas dans le coeur live tant qu'un sweep offline n'a pas produit un verdict `go`
 
 ## Prochaines actions
 
-1. lancer un dry-run 24h 3 pods sur serveur
-2. auditer Pod B avec les outils de review existants
-3. continuer la validation de Pod A complet sur une plage plus longue
-4. accumuler les datasets `funding/liq` hors run principal
+1. lancer un dry-run serveur long avec la config active `Pod A + Pod B, Pod C off`
+2. auditer `Pod B` comme couche complementaire avec les outils de review existants
+3. continuer la validation de `Pod A` complet sur une plage plus longue
+4. lancer un sweep Hydra offline et sortir un memo `go / park / kill`
