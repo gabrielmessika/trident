@@ -39,7 +39,10 @@
       "Bash(git checkout:*)",
       "Bash(rm app/hyperliquid/historical_fetcher.py app/backtest/candle_converter.py tests/test_historical_fetcher.py tests/test_candle_converter.py)",
       "Bash(rm -rf data/historical_candles data/historical_funding data/historical_baselines)",
-      "Bash(grep -E \"\\\\.py$\")"
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(ls -lah /workspaces/trident/server-data/api/report-2026-04-08*.json)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_b -v)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_b tests.test_full_bot_replay -v)"
     ],
     "additionalDirectories": [
       "/workspaces/trident/app/backtest"

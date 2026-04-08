@@ -287,6 +287,15 @@ class PodBPaperEngine:
             )
 
         orders: list[PassivbotOrder] = []
+
+        # --- Take-profit close: aggressively close profitable positions ---
+        tp_order = self._take_profit_close(
+            snapshot=snapshot,
+            base_width_bps=base_width_bps,
+        )
+        if tp_order is not None:
+            orders.append(tp_order)
+
         if allow_buy:
             bid_price = round(snapshot.price * (1.0 - bid_width_bps / 10_000.0), 8)
             if bid_price > 0:
@@ -310,6 +319,51 @@ class PodBPaperEngine:
                     )
                 )
         return orders
+
+    def _take_profit_close(
+        self,
+        *,
+        snapshot: SymbolMarketSnapshot,
+        base_width_bps: float,
+    ) -> PassivbotOrder | None:
+        """Place a tight take-profit order to close profitable inventory.
+
+        When holding a position, if the current price is favorable enough
+        (profit >= half the base width), place a close order at a tighter
+        spread than the regular grid to lock in the gain quickly.
+        """
+        position = self.positions_by_symbol.get(snapshot.symbol)
+        if position is None or abs(position.signed_size) < 1e-12:
+            return None
+
+        entry = position.avg_entry_price
+        if entry <= 0:
+            return None
+
+        price_delta_bps = (snapshot.price - entry) / entry * 10_000.0
+        tp_threshold_bps = base_width_bps * 0.4
+
+        if position.signed_size > 0 and price_delta_bps >= tp_threshold_bps:
+            # Long position in profit — sell to close at a tight ask
+            tp_price = round(snapshot.price * (1.0 - base_width_bps * 0.15 / 10_000.0), 8)
+            if tp_price > entry:
+                return PassivbotOrder(
+                    symbol=snapshot.symbol,
+                    side="sell",
+                    price=tp_price,
+                    size=round(abs(position.signed_size), 8),
+                )
+        elif position.signed_size < 0 and price_delta_bps <= -tp_threshold_bps:
+            # Short position in profit — buy to close at a tight bid
+            tp_price = round(snapshot.price * (1.0 + base_width_bps * 0.15 / 10_000.0), 8)
+            if tp_price < entry:
+                return PassivbotOrder(
+                    symbol=snapshot.symbol,
+                    side="buy",
+                    price=tp_price,
+                    size=round(abs(position.signed_size), 8),
+                )
+        return None
 
     def _unwind_only_quotes(
         self,
