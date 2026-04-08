@@ -294,6 +294,10 @@ python3.12 -m unittest discover -s tests -v
 python3.12 -m app.backtest.runner --input /path/to/input.jsonl --output /path/to/output.jsonl
 python3.12 -m app.backtest.gbot_converter --data-dir /workspaces/trident/data/gbot_archive --date 2026-04-01 --coins BTC,ETH,SOL --output /tmp/trident_snapshots.jsonl
 python3.12 -m app.backtest.archive_replay --data-dir /workspaces/trident/data/server_archive --date-from 2026-04-01 --date-to 2026-04-03 --coins BTC,ETH,SOL --report-output /tmp/trident_report.json --journal-output /tmp/trident_journal.jsonl
+# Historical backtest (candles API HL, ~7 mois de profondeur):
+python3.12 -m app.backtest.historical_replay --date-from 2026-01-01 --date-to 2026-03-31 --coins BTC,ETH,SOL --interval 1h --report-output /tmp/historical_report.json
+# Avec donnees deja telechargees (skip fetch):
+python3.12 -m app.backtest.historical_replay --date-from 2026-01-01 --date-to 2026-03-31 --coins BTC,ETH,SOL --skip-fetch --report-output /tmp/historical_report.json
 uv run python -m app.live.collector --coins BTC,ETH --max-runtime-seconds 8
 uv run python -m app.live.pod_a_live_runner --coins BTC,ETH --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_a_live_journal.jsonl
 uv run python -m app.live.pod_c_live_runner --coins BTC,ETH,SOL --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_c_live_journal.jsonl

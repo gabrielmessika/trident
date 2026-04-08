@@ -22,6 +22,20 @@
 
 ## Journal condense
 
+### 2026-04-08 (suite)
+
+- backtest historique long ajoute:
+  - fetcher candles/funding depuis API HL publique: `app/hyperliquid/historical_fetcher.py`
+  - convertisseur candles → snapshots TRIDENT: `app/backtest/candle_converter.py`
+  - pipeline complet fetch → convert → backtest: `app/backtest/historical_replay.py`
+  - profondeur disponible: ~7 mois (depuis mi-sept 2025)
+  - protection anti-boucle infinie dans le fetcher (cursor stall detection)
+  - 16 tests unitaires couvrent les 3 modules
+- baselines par regime de marche:
+  - 7 periodes identifiees (bull, crash, range, recovery...)
+  - resultats stockes dans `data/historical_baselines/`
+  - servent de reference pour valider les evolutions de strategie
+
 ### 2026-04-08
 
 - replay "bot complet" ajoute pour rejouer le systeme A/B/C dans des conditions proches du dry-run:

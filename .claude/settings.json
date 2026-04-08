@@ -25,7 +25,14 @@
       "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo3b.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo3b.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
       "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo4.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo4.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
       "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo5.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo5.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
-      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo_final.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo_final.md --comparison-output data/replay_reports/full_bot/history.jsonl)"
+      "Bash(python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/live_snapshots --report-output data/replay_reports/full_bot/full_bot_backtest_evo_final.json --summary-output data/replay_reports/full_bot/full_bot_backtest_evo_final.md --comparison-output data/replay_reports/full_bot/history.jsonl)",
+      "Read(//workspaces/**)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python -m pytest tests/test_historical_fetcher.py tests/test_candle_converter.py tests/test_historical_replay.py -v)",
+      "Bash(python -m unittest tests.test_historical_fetcher tests.test_candle_converter tests.test_historical_replay -v)",
+      "Bash(timeout 300 python3 -c ':*)",
+      "Bash(timeout 120 python3 -c ':*)",
+      "Bash(python3 -c ':*)"
     ]
   }
 }
