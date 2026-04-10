@@ -33,7 +33,7 @@ observation_universe = [
   "AVAX", "LINK", "ARB",
   "ADA", "BNB", "LTC",
   "AAVE", "NEAR", "ZRO",
-  "SPX", "PAXG",
+  "SPX", "PAXG", "XYZ100", "WTIOIL", "GOLD", "SILVER",
 ]
 max_coins_per_connection = 10
 subscription_pacing_ms = 250

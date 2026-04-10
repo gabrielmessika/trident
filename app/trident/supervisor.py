@@ -250,9 +250,17 @@ class TridentSupervisor:
                 for pod_name, pod in self.pods.items()
                 if pod.enabled
             }
+        crypto_only = [
+            symbol
+            for symbol in tradable_symbols
+            if (
+                snapshot_by_symbol.get(symbol) is not None
+                and snapshot_by_symbol[symbol].market_cluster == "crypto"
+            )
+        ]
         candidates = {
-            PodName.POD_A: tradable_symbols if self.config.pod_a.enabled else [],
-            PodName.POD_B: tradable_symbols if self.config.pod_b.enabled else [],
+            PodName.POD_A: crypto_only if self.config.pod_a.enabled else [],
+            PodName.POD_B: crypto_only if self.config.pod_b.enabled else [],
             PodName.POD_C: (
                 [
                     symbol

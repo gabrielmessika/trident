@@ -47,7 +47,10 @@ Le superviseur central:
 
 Pour chaque symbol observe:
 
-- le superviseur calcule un score d'affinite par pod
+- le superviseur filtre les candidats par `market_cluster`:
+  - Pod A et Pod B: cluster `crypto` uniquement
+  - Pod C: clusters configures dans `pod_c.allowed_market_clusters` (ou symbols explicites dans `pod_c.symbols`)
+- le superviseur calcule un score d'affinite par pod eligible
 - choisit un owner unique
 - applique un fallback seulement si le signal est trop faible
 - applique:
