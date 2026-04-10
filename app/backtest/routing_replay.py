@@ -111,7 +111,14 @@ class RoutingReplayRunner:
                 first_timestamp = timestamp
             last_timestamp = timestamp
 
-            supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
+            supervisor.apply_regime_snapshot(
+                RegimeSnapshot(**record.regime_snapshot),
+                cluster_regime_snapshots={
+                    cluster: RegimeSnapshot(**snap)
+                    for cluster, snap in (record.cluster_regime_snapshots or {}).items()
+                    if isinstance(snap, dict)
+                },
+            )
             supervisor.refresh_symbol_routing(
                 [SymbolMarketSnapshot(**item) for item in record.symbols]
             )

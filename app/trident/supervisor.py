@@ -7,7 +7,7 @@ from pathlib import Path
 from app.settings import AppConfig
 from app.trident.capital_allocator import CapitalAllocator
 from app.trident.kill_switch import KillSwitch
-from app.trident.market_clusters import enrich_snapshots
+from app.trident.market_clusters import cluster_for_symbol, enrich_snapshots
 from app.trident.pod_a import AnchorTrendPlanner, AnchorTrendService, MarketContextService
 from app.trident.pod_b import PassivbotManager
 from app.trident.pod_c import TradfiTrendContextService, TradfiTrendPlanner, TradfiTrendService
@@ -156,6 +156,7 @@ class TridentSupervisor:
             snapshots=snapshots,
             previous_owners=previous_owners,
             reassignment_age_seconds_by_symbol=reassignment_age_seconds_by_symbol,
+            cluster_regimes=self.state.cluster_regimes or None,
         )
         self._apply_symbol_routing(
             decisions,
@@ -271,6 +272,7 @@ class TridentSupervisor:
                             symbol,
                             snapshot_by_symbol[symbol].market_cluster,
                         )
+                        and self._pod_c_cluster_budget_pct(snapshot_by_symbol[symbol]) > 0
                     )
                 ]
                 if self.config.pod_c.enabled
@@ -381,7 +383,11 @@ class TridentSupervisor:
         self.capital_plan = self._build_capital_plan()
         self.sync_pod_b()
 
-    def apply_regime_snapshot(self, snapshot: RegimeSnapshot) -> RegimeSnapshot:
+    def apply_regime_snapshot(
+        self,
+        snapshot: RegimeSnapshot,
+        cluster_regime_snapshots: dict[str, RegimeSnapshot] | None = None,
+    ) -> RegimeSnapshot:
         previous_regime = self.state.regime
         self.state.regime_snapshot = snapshot
         self.state.regime_evaluation_count += 1
@@ -409,9 +415,56 @@ class TridentSupervisor:
             )
             self.state.regime_history = self.state.regime_history[-25:]
         self.state.regime = new_regime
+        self._apply_cluster_regime_snapshots(cluster_regime_snapshots or {})
         self.capital_plan = self._build_capital_plan()
         self.sync_pod_b()
         return snapshot
+
+    def _apply_cluster_regime_snapshots(
+        self,
+        cluster_snapshots: dict[str, RegimeSnapshot],
+    ) -> None:
+        for cluster, snap in cluster_snapshots.items():
+            self.state.cluster_regime_snapshots[cluster] = snap
+            current = self.state.cluster_regimes.get(cluster, Regime.CASH)
+            decision = self.regime_allocator.resolve_cluster(
+                snapshot=snap,
+                current_regime=current,
+                pending_regime=self.state.cluster_pending_regimes.get(cluster),
+                pending_count=self.state.cluster_pending_counts.get(cluster, 0),
+            )
+            self.state.cluster_pending_regimes[cluster] = decision.pending_regime
+            self.state.cluster_pending_counts[cluster] = decision.pending_count
+            self.state.cluster_regimes[cluster] = decision.effective_regime
+
+    @property
+    def tradfi_summary_regime(self) -> Regime:
+        non_crypto = {
+            cluster: regime
+            for cluster, regime in self.state.cluster_regimes.items()
+            if cluster != "crypto"
+        }
+        if not non_crypto:
+            return Regime.CASH
+        regime_counts: dict[Regime, int] = {}
+        for regime in non_crypto.values():
+            regime_counts[regime] = regime_counts.get(regime, 0) + 1
+        # Conservative tie-break: most cautious regime wins
+        _conservatism = {
+            Regime.DEAD_ZONE: 0,
+            Regime.PANIC_SQUEEZE: 1,
+            Regime.RANGE_AUCTION: 2,
+            Regime.CASH: 3,
+            Regime.TREND_EXPANSION: 4,
+        }
+        return max(
+            regime_counts,
+            key=lambda r: (regime_counts[r], -_conservatism.get(r, 99)),
+        )
+
+    @property
+    def tradfi_regime(self) -> Regime:
+        return self.tradfi_summary_regime
 
     def preview_pod_a_signals(
         self,
@@ -514,6 +567,7 @@ class TridentSupervisor:
             self.state.regime,
             snapshots,
             owned_symbols=owned_symbols,
+            cluster_regimes=self.state.cluster_regimes or None,
         )
         signals = self.pod_c_service.evaluate_many(contexts)
         previews = [
@@ -539,6 +593,7 @@ class TridentSupervisor:
             self.state.regime,
             snapshots,
             owned_symbols=owned_symbols,
+            cluster_regimes=self.state.cluster_regimes or None,
         )
         signals = self.pod_c_service.evaluate_many(contexts)
         pod_allocation = self.capital_plan.pod_allocations[PodName.POD_C]
@@ -550,12 +605,43 @@ class TridentSupervisor:
         return plans
 
     def _build_capital_plan(self) -> CapitalPlan:
+        symbol_clusters_by_pod = {
+            pod_name: {
+                symbol: self._cluster_for_owned_symbol(symbol)
+                for symbol in self.registry.symbols_for(pod_name)
+            }
+            for pod_name in self.pods
+        }
         return self.capital_allocator.build_plan(
             regime=self.state.regime,
             owned_symbols_by_pod={
                 pod_name: self.registry.symbols_for(pod_name) for pod_name in self.pods
             },
+            cluster_regimes=self.state.cluster_regimes or None,
+            symbol_clusters_by_pod=symbol_clusters_by_pod,
         )
+
+    def cluster_target_allocations(self) -> dict[str, float]:
+        return self.capital_allocator.cluster_target_pcts(
+            self.state.regime,
+            self.state.cluster_regimes or None,
+        )
+
+    def _cluster_for_owned_symbol(self, symbol: str) -> str:
+        normalized = str(symbol).strip().upper()
+        snapshot = next(
+            (item for item in self._latest_snapshots if item.symbol.upper() == normalized),
+            None,
+        )
+        if snapshot is not None and snapshot.market_cluster:
+            return str(snapshot.market_cluster).strip().lower()
+        return cluster_for_symbol(self.config, normalized)
+
+    def _pod_c_cluster_budget_pct(self, snapshot: SymbolMarketSnapshot) -> float:
+        cluster = str(snapshot.market_cluster).strip().lower()
+        if not cluster or cluster == "crypto":
+            return 0.0
+        return self.cluster_target_allocations().get(cluster, 0.0)
 
     def _owned_snapshots(
         self,
@@ -616,6 +702,24 @@ class TridentSupervisor:
             "started_at": self.state.started_at.isoformat().replace("+00:00", "Z"),
             "regime": self.state.regime.value,
             "raw_regime": self.state.raw_regime.value,
+            "tradfi_summary_regime": self.tradfi_summary_regime.value,
+            "tradfi_regime": self.tradfi_summary_regime.value,
+            "cluster_regimes": {
+                cluster: regime.value
+                for cluster, regime in self.state.cluster_regimes.items()
+            },
+            "cluster_regime_snapshots": {
+                cluster: {
+                    "ready": snap.ready,
+                    "adx": snap.adx,
+                    "atr_ratio": snap.atr_ratio,
+                    "range_width_bps": snap.range_width_bps,
+                    "structure_score": snap.structure_score,
+                    "btc_impulse": snap.btc_impulse,
+                }
+                for cluster, snap in self.state.cluster_regime_snapshots.items()
+            },
+            "cluster_target_allocations": self.cluster_target_allocations(),
             "observation_universe": self._observed_symbols(),
             "tradable_pool": [
                 item.symbol
@@ -704,7 +808,10 @@ class TridentSupervisor:
                 }
                 for pod_name, pod in self.pods.items()
             },
-            "allocations": self.capital_allocator.allocations_for(self.state.regime),
+            "allocations": self.capital_allocator.allocations_for(
+                self.state.regime,
+                cluster_regimes=self.state.cluster_regimes or None,
+            ),
             "capital_plan": {
                 "regime": self.capital_plan.regime.value,
                 "total_equity_usd": self.capital_plan.total_equity_usd,

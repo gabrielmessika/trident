@@ -140,7 +140,14 @@ class FundingDatasetBuilder:
         regimes_by_index: list[str] = []
         record_timestamps: list[datetime | None] = []
         for record in records:
-            supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
+            supervisor.apply_regime_snapshot(
+                RegimeSnapshot(**record.regime_snapshot),
+                cluster_regime_snapshots={
+                    cluster: RegimeSnapshot(**snap)
+                    for cluster, snap in (record.cluster_regime_snapshots or {}).items()
+                    if isinstance(snap, dict)
+                },
+            )
             regimes_by_index.append(supervisor.state.regime.value)
             record_timestamps.append(parse_utc_timestamp(record.timestamp))
             snapshots_by_index.append(

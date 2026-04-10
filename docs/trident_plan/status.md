@@ -18,11 +18,20 @@
 | 9. Hardening deployment | 100% | Rien, etape fermee |
 | 10. Passage live progressif | 45% | Dry-run serveur long avec profil 10x + AS engine |
 | 11. Pistes futures Hydra revisitees | 35% | Continuer les runs offline funding/liq |
-| 12. Pod C v2 Tradfi Trend | 20% | Cadrer le pod puis constituer un dataset Tradfi exploitable |
+| 12. Pod C v2 Tradfi Trend | 45% | Refondre l'allocation Tradfi par cluster, puis valider en replay |
 
 ## Journal condense
 
 ### 2026-04-10
+
+- **Correction de cap Pod C / Tradfi**:
+  - le premier passage "regime par cluster" a bien ouvert le transport et l'observabilite, mais ne repond pas encore correctement au probleme metier
+  - l'agregat unique `tradfi_regime` est juge trop grossier: il ne sait pas representer `gold fort / index faible`
+  - la cible retenue devient une allocation Tradfi par cluster, pas un simple override global de `pod_c`
+  - `pod_c.target_pct` devra devenir la somme des budgets Tradfi des clusters actifs
+  - `cash` devra etre recalcule comme residuel global apres toutes les allocations reelles
+  - les prochains changements doivent aussi unifier le fallback des clusters absents entre allocator, router et supervisor
+  - l'Etape 12 est revue a `45%`: le plumbing cluster-aware est utile, mais le modele d'allocation doit etre refait
 
 - **Decision produit Pod C**: la trajectoire `Squeeze Breakout` est abandonnee au profit d'un pod directionnel Tradfi HL dans le slot `Pod C`.
   - le systeme reste a 3 pods: pas de `Pod D`
@@ -30,6 +39,18 @@
   - phase 1 cible `indices` / `commodities`; les single stocks restent hors scope initial
   - prerequis de validation: snapshots minute TRIDENT `l2Book + trades`, eventuellement enrichis `assetCtx`
   - les candles HL seules restent exclues de la validation, comme pour les autres pods directionnels
+- **Regime par cluster implemente** (25 fichiers, +508/-200 lignes):
+  - chaque cluster leader (BTC→crypto, SPY→index, GLD→gold, SLV→silver) produit un `RegimeSnapshot` independant
+  - `crypto_regime` (issu de BTC) continue de piloter Pod A et Pod B
+  - `tradfi_regime` (agregation conservative des regimes non-crypto) pilote Pod C
+  - agregation conservative: en cas de divergence entre clusters tradfi, le regime le plus defensif est retenu (dead_zone > panic_squeeze > range_auction > cash > trend_expansion)
+  - allocations tradfi dediees dans `config/trident.toml` (section `[trident.allocations_tradfi.*]`)
+  - le routeur utilise le regime du cluster du symbol pour le scoring Pod C (`_resolve_tradfi_regime`)
+  - le `capital_allocator` derive l'allocation Pod C depuis `allocations_tradfi` au lieu de `allocations`
+  - `SupervisorState` expose `cluster_regimes`, `cluster_regime_snapshots`, `cluster_pending_regimes`, `cluster_pending_counts`
+  - `SnapshotRecord` transporte les `cluster_regime_snapshots` pour les backtests
+  - tous les runners (backtest, live, research, observability) sont branches
+  - 142/142 tests passent (4 pre-existants corriges au passage)
 - **Pod B paper_live_runner reecrit**: le runner live Pod B utilise desormais le
   superviseur partage (identique au full-bot backtest) au lieu d'une config fixe
   `runtime/passivbot/live.json`.
@@ -211,9 +232,10 @@
 
 ## Prochaines actions
 
-1. lancer un dry-run serveur long avec la config active `Pod A + Pod B, Pod C off`
-2. cadrer puis implementer `Pod C -> Tradfi Trend` sur un sous-univers `indices / commodities`
-3. constituer un dataset Tradfi exploitable pour replay via snapshots minute `l2Book + trades`
-4. auditer `Pod B` comme couche complementaire avec les outils de review existants
-5. continuer la validation de `Pod A` complet sur une plage plus longue
-6. lancer un sweep Hydra offline et sortir un memo `go / park / kill`
+1. constituer un dataset Tradfi exploitable pour replay via snapshots minute `l2Book + trades`
+2. valider le regime par cluster en replay sur donnees Tradfi reelles
+3. implementer la logique directionnelle Pod C (setups, filtres, exits adaptes Tradfi)
+4. lancer un dry-run serveur long avec la config active `Pod A + Pod B, Pod C off`
+5. auditer `Pod B` comme couche complementaire avec les outils de review existants
+6. continuer la validation de `Pod A` complet sur une plage plus longue
+7. lancer un sweep Hydra offline et sortir un memo `go / park / kill`

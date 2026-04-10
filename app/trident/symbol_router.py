@@ -5,6 +5,7 @@ import logging
 import math
 
 from app.settings import AppConfig
+from app.trident.capital_allocator import CapitalAllocator
 from app.trident.types import (
     PodName,
     Regime,
@@ -55,6 +56,7 @@ class SymbolRouter:
         snapshots: list[SymbolMarketSnapshot],
         previous_owners: dict[str, PodName | None] | None = None,
         reassignment_age_seconds_by_symbol: dict[str, float] | None = None,
+        cluster_regimes: dict[str, Regime] | None = None,
     ) -> list[SymbolRoutingDecision]:
         snapshot_by_symbol = {snapshot.symbol.upper(): snapshot for snapshot in snapshots}
         previous = {symbol.upper(): owner for symbol, owner in (previous_owners or {}).items()}
@@ -70,6 +72,7 @@ class SymbolRouter:
             }
         )
         decisions: list[SymbolRoutingDecision] = []
+        cluster_targets = CapitalAllocator(self.config).cluster_target_pcts(regime, cluster_regimes)
         for symbol in candidate_symbols:
             candidates = self._candidate_pods(symbol, desired_symbols_by_pod)
             if not candidates:
@@ -85,6 +88,8 @@ class SymbolRouter:
                         regime=regime,
                         snapshot=snapshot,
                         local_regime=local_regime,
+                        cluster_regimes=cluster_regimes,
+                        cluster_targets=cluster_targets,
                     )
                     if snapshot is not None
                     else 0.0
@@ -103,18 +108,22 @@ class SymbolRouter:
                     local_regime_reason=local_regime_reason,
                     reassignment_age_seconds=reassignment_ages.get(symbol),
                     override_owner=override_owner,
+                    cluster_regimes=cluster_regimes,
                 )
             )
-        return self._enforce_capacity_limits(decisions, regime=regime)
+        return self._enforce_capacity_limits(
+            decisions, regime=regime, cluster_regimes=cluster_regimes,
+        )
 
     def _enforce_capacity_limits(
         self,
         decisions: list[SymbolRoutingDecision],
         *,
         regime: Regime,
+        cluster_regimes: dict[str, Regime] | None = None,
     ) -> list[SymbolRoutingDecision]:
         decisions_by_symbol = {decision.symbol: decision for decision in decisions}
-        capacity_by_pod = self._capacity_limit_by_pod(regime)
+        capacity_by_pod = self._capacity_limit_by_pod(regime, cluster_regimes=cluster_regimes)
 
         while True:
             overflowing_pod = next(
@@ -128,7 +137,11 @@ class SymbolRouter:
                             if item.owner == pod
                         ]
                     )
-                    > capacity_by_pod.get(pod, math.inf)
+                    > self._effective_capacity_for_pod(
+                        pod=pod,
+                        capacity_by_pod=capacity_by_pod,
+                        decisions_by_symbol=decisions_by_symbol,
+                    )
                 ),
                 None,
             )
@@ -140,10 +153,15 @@ class SymbolRouter:
                 for item in decisions_by_symbol.values()
                 if item.owner == overflowing_pod
             ]
-            capacity = int(capacity_by_pod.get(overflowing_pod, math.inf))
+            capacity = self._effective_capacity_for_pod(
+                pod=overflowing_pod,
+                capacity_by_pod=capacity_by_pod,
+                decisions_by_symbol=decisions_by_symbol,
+            )
             ranked = sorted(
                 owned,
                 key=lambda item: (
+                    -(1 if item.override_active and item.override_owner == overflowing_pod else 0),
                     -item.pod_scores.get(overflowing_pod, 0.0),
                     -(1 if item.previous_owner == overflowing_pod else 0),
                     item.symbol,
@@ -256,8 +274,34 @@ class SymbolRouter:
         current = len([item for item in decisions_by_symbol.values() if item.owner == pod])
         return current < capacity
 
-    def _capacity_limit_by_pod(self, regime: Regime) -> dict[PodName, int | float]:
-        base = self._base_allocations(regime)
+    def _effective_capacity_for_pod(
+        self,
+        *,
+        pod: PodName,
+        capacity_by_pod: dict[PodName, int | float],
+        decisions_by_symbol: dict[str, SymbolRoutingDecision],
+    ) -> int | float:
+        base_capacity = capacity_by_pod.get(pod, math.inf)
+        if math.isinf(base_capacity):
+            return base_capacity
+        override_count = len(
+            [
+                item
+                for item in decisions_by_symbol.values()
+                if item.owner == pod and item.override_active and item.override_owner == pod
+            ]
+        )
+        return max(int(base_capacity), override_count)
+
+    def _capacity_limit_by_pod(
+        self,
+        regime: Regime,
+        cluster_regimes: dict[str, Regime] | None = None,
+    ) -> dict[PodName, int | float]:
+        base = CapitalAllocator(self.config).allocations_for(
+            regime,
+            cluster_regimes=cluster_regimes,
+        )
         total_equity = max(self.config.trident.capital.reference_equity_usd, 0.0)
         min_symbol_usd = self.config.trident.capital.min_symbol_allocation_usd
         if min_symbol_usd <= 0:
@@ -348,6 +392,7 @@ class SymbolRouter:
         local_regime_reason: str,
         reassignment_age_seconds: float | None,
         override_owner: PodName | None,
+        cluster_regimes: dict[str, Regime] | None = None,
     ) -> SymbolRoutingDecision:
         pod_reasoning = self._build_pod_reasoning(
             candidates=candidates,
@@ -355,6 +400,8 @@ class SymbolRouter:
             local_regime=local_regime,
             regime=regime,
             override_owner=override_owner,
+            snapshot=snapshot,
+            cluster_regimes=cluster_regimes,
         )
         if override_owner is not None and override_owner in candidates:
             override_score = pod_scores.get(override_owner, 0.0)
@@ -546,6 +593,8 @@ class SymbolRouter:
         local_regime: SymbolLocalRegime | None,
         regime: Regime,
         override_owner: PodName | None,
+        snapshot: SymbolMarketSnapshot | None,
+        cluster_regimes: dict[str, Regime] | None = None,
     ) -> dict[PodName, str]:
         reasoning: dict[PodName, str] = {}
         best_score = max((pod_scores.get(pod, 0.0) for pod in candidates), default=0.0)
@@ -555,6 +604,12 @@ class SymbolRouter:
         for pod in candidates:
             score = pod_scores.get(pod, 0.0)
             affinity = self._local_regime_affinity(pod, local_regime)
+            effective_regime = self._effective_regime_for_pod(
+                pod=pod,
+                regime=regime,
+                snapshot=snapshot,
+                cluster_regimes=cluster_regimes,
+            )
             override_note = (
                 f" override={override_owner.value}"
                 if override_owner is not None
@@ -563,23 +618,23 @@ class SymbolRouter:
             if override_owner == pod:
                 reasoning[pod] = (
                     f"manual_override score={score:.2f} local_affinity={affinity:.2f}"
-                    f" global_regime={regime.value}{override_note}"
+                    f" effective_regime={effective_regime.value}{override_note}"
                 )
                 continue
             if score < self.min_assign_score:
                 reasoning[pod] = (
                     f"below_assign_threshold score={score:.2f} local_affinity={affinity:.2f}"
-                    f" global_regime={regime.value}{override_note}"
+                    f" effective_regime={effective_regime.value}{override_note}"
                 )
             elif pod in best_pods:
                 reasoning[pod] = (
                     f"best_candidate score={score:.2f} local_affinity={affinity:.2f}"
-                    f" global_regime={regime.value}{override_note}"
+                    f" effective_regime={effective_regime.value}{override_note}"
                 )
             else:
                 reasoning[pod] = (
                     f"outscored score={score:.2f} best_score={best_score:.2f}"
-                    f" local_affinity={affinity:.2f} global_regime={regime.value}{override_note}"
+                    f" local_affinity={affinity:.2f} effective_regime={effective_regime.value}{override_note}"
                 )
         return reasoning
 
@@ -626,6 +681,8 @@ class SymbolRouter:
         regime: Regime,
         snapshot: SymbolMarketSnapshot | None,
         local_regime: SymbolLocalRegime | None,
+        cluster_regimes: dict[str, Regime] | None = None,
+        cluster_targets: dict[str, float] | None = None,
     ) -> float:
         if snapshot is None:
             return 0.0
@@ -637,7 +694,7 @@ class SymbolRouter:
                     local_regime=local_regime,
                 ),
                 4,
-            )
+        )
         if pod == PodName.POD_B:
             return round(
                 self._score_pod_b(
@@ -647,14 +704,38 @@ class SymbolRouter:
                 ),
                 4,
             )
+        pod_c_regime = self._effective_regime_for_pod(
+            pod=pod,
+            regime=regime,
+            snapshot=snapshot,
+            cluster_regimes=cluster_regimes,
+        )
+        cluster = str(snapshot.market_cluster).strip().lower()
+        if cluster != "crypto" and cluster_targets is not None and cluster_targets.get(cluster, 0.0) <= 0:
+            return 0.0
         return round(
             self._score_pod_c(
-                regime=regime,
+                regime=pod_c_regime,
                 snapshot=snapshot,
                 local_regime=local_regime,
             ),
             4,
         )
+
+    def _effective_regime_for_pod(
+        self,
+        *,
+        pod: PodName,
+        regime: Regime,
+        snapshot: SymbolMarketSnapshot | None,
+        cluster_regimes: dict[str, Regime] | None = None,
+    ) -> Regime:
+        if pod != PodName.POD_C or snapshot is None:
+            return regime
+        cluster = str(snapshot.market_cluster).strip().lower()
+        if cluster != "crypto":
+            return (cluster_regimes or {}).get(cluster, Regime.CASH)
+        return regime
 
     def _score_pod_a(
         self,

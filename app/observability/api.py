@@ -778,7 +778,14 @@ def _refresh_supervisor_from_latest_snapshot(
     )
     if record is None:
         return False
-    supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
+    supervisor.apply_regime_snapshot(
+        RegimeSnapshot(**record.regime_snapshot),
+        cluster_regime_snapshots={
+            cluster: RegimeSnapshot(**snap)
+            for cluster, snap in (record.cluster_regime_snapshots or {}).items()
+            if isinstance(snap, dict)
+        },
+    )
     supervisor.refresh_symbol_routing(
         [
             SymbolMarketSnapshot(**item)

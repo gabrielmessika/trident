@@ -115,7 +115,15 @@ class FullBotBacktestRunner:
             snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
             latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
             previous_regime = supervisor.state.regime.value
-            supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
+            cluster_regime_snapshots = {
+                cluster: RegimeSnapshot(**snap)
+                for cluster, snap in (record.cluster_regime_snapshots or {}).items()
+                if isinstance(snap, dict)
+            }
+            supervisor.apply_regime_snapshot(
+                RegimeSnapshot(**record.regime_snapshot),
+                cluster_regime_snapshots=cluster_regime_snapshots,
+            )
             current_regime = supervisor.state.regime.value
 
             self._process_pod_a(

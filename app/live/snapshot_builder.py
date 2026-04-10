@@ -47,10 +47,14 @@ class LiveSnapshotBuilder:
         coins: list[str],
         bucket_ms: int = 60_000,
         ws_to_name: dict[str, str] | None = None,
+        cluster_by_symbol: dict[str, str] | None = None,
+        cluster_leaders: dict[str, list[str]] | None = None,
     ) -> None:
         self.coins = [coin.upper() for coin in coins]
         self.bucket_ms = bucket_ms
         self._ws_to_name = ws_to_name or {}
+        self._cluster_by_symbol = cluster_by_symbol or {}
+        self._cluster_leaders = cluster_leaders or {}
         self.current_bucket: int | None = None
         self.latest_book_by_symbol: dict[str, BookState] = {}
         self.trade_buckets: dict[int, dict[str, TradeBucket]] = {}
@@ -222,29 +226,62 @@ class LiveSnapshotBuilder:
                 symbol["btc_aligned"] = sym_mom == 0 or btc_mom == 0 or (sym_mom > 0) == (btc_mom > 0)
 
         leader = next((s for s in symbols if s["symbol"] == "BTC"), symbols[0])
+        regime_snapshot = self._regime_snapshot_from_leader(leader, momentum_by_symbol)
+        cluster_regime_snapshots = self._build_cluster_regime_snapshots(
+            symbols, momentum_by_symbol,
+        )
+        return [
+            {
+                "timestamp": self._timestamp_to_iso(bucket * self.bucket_ms),
+                "regime_snapshot": regime_snapshot,
+                "cluster_regime_snapshots": cluster_regime_snapshots,
+                "symbols": symbols,
+            }
+        ]
+
+    def _regime_snapshot_from_leader(
+        self,
+        leader: dict[str, object],
+        momentum_by_symbol: dict[str, float],
+    ) -> dict[str, object]:
         leader_range = float(leader.get("bucket_range_bps", 10.0))
-        regime_snapshot = {
+        leader_symbol = str(leader.get("symbol", ""))
+        leader_impulse = abs(momentum_by_symbol.get(leader_symbol, 0.0)) >= 10.0
+        return {
             "ready": True,
             "adx": round(
                 min(
                     55.0,
                     abs(float(leader["structure_score"])) * 70
-                    + abs(momentum_by_symbol.get(leader["symbol"], 0.0)) / 3.0,
+                    + abs(momentum_by_symbol.get(leader_symbol, 0.0)) / 3.0,
                 ),
                 2,
             ),
             "atr_ratio": round(max(leader_range / 30.0, 0.1), 4),
             "range_width_bps": round(max(leader_range, 10.0), 4),
             "structure_score": leader["structure_score"],
-            "btc_impulse": abs(momentum_by_symbol.get("BTC", 0.0)) >= 10.0,
+            "btc_impulse": leader_impulse,
         }
-        return [
-            {
-                "timestamp": self._timestamp_to_iso(bucket * self.bucket_ms),
-                "regime_snapshot": regime_snapshot,
-                "symbols": symbols,
-            }
-        ]
+
+    def _build_cluster_regime_snapshots(
+        self,
+        symbols: list[dict[str, object]],
+        momentum_by_symbol: dict[str, float],
+    ) -> dict[str, dict[str, object]]:
+        if not self._cluster_leaders:
+            return {}
+        symbol_by_name = {str(s["symbol"]): s for s in symbols}
+        result: dict[str, dict[str, object]] = {}
+        for cluster, leaders in self._cluster_leaders.items():
+            leader = None
+            for candidate in leaders:
+                if candidate in symbol_by_name:
+                    leader = symbol_by_name[candidate]
+                    break
+            if leader is None:
+                continue
+            result[cluster] = self._regime_snapshot_from_leader(leader, momentum_by_symbol)
+        return result
 
     def _depth_within_bps(
         self,

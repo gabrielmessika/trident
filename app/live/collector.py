@@ -63,10 +63,24 @@ class HyperliquidLiveCollector:
             ws_coins[index : index + max_per_connection]
             for index in range(0, len(ws_coins), max_per_connection)
         ]
+        from app.trident.market_clusters import cluster_for_symbol, DEFAULT_CLUSTER
+        cluster_by_symbol = {
+            coin: cluster_for_symbol(config, coin) for coin in self.coins
+        }
+        merged_leaders: dict[str, list[str]] = {}
+        for cluster_name, leaders in {
+            **{"crypto": ["BTC", "ETH"]},
+            **config.hyperliquid.cluster_leaders,
+        }.items():
+            merged_leaders[cluster_name] = [
+                leader.upper() for leader in leaders if leader.upper() in set(self.coins)
+            ]
         self.builder = LiveSnapshotBuilder(
             coins=self.coins,
             bucket_ms=config.hyperliquid.bucket_ms,
             ws_to_name=self._ws_to_name,
+            cluster_by_symbol=cluster_by_symbol,
+            cluster_leaders=merged_leaders,
         )
         self.writer = LiveSnapshotWriter(config.hyperliquid.snapshot_output_dir)
         self.stats = LiveCollectorStats()

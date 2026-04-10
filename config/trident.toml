@@ -162,6 +162,56 @@ pod_b = 0.20
 pod_c = 0.05
 cash = 0.75
 
+# Pod C tradfi — piloté par le régime de ses propres clusters (index, gold, etc.)
+# au lieu du régime crypto global
+[trident.allocations_tradfi.trend_expansion]
+pod_c = 0.20
+
+[trident.allocations_tradfi.range_auction]
+pod_c = 0.15
+
+[trident.allocations_tradfi.panic_squeeze]
+pod_c = 0.05
+
+[trident.allocations_tradfi.dead_zone]
+pod_c = 0.05
+
+[trident.allocations_cluster.index.trend_expansion]
+target_pct = 0.10
+
+[trident.allocations_cluster.index.range_auction]
+target_pct = 0.05
+
+[trident.allocations_cluster.index.panic_squeeze]
+target_pct = 0.00
+
+[trident.allocations_cluster.index.dead_zone]
+target_pct = 0.00
+
+[trident.allocations_cluster.gold.trend_expansion]
+target_pct = 0.15
+
+[trident.allocations_cluster.gold.range_auction]
+target_pct = 0.10
+
+[trident.allocations_cluster.gold.panic_squeeze]
+target_pct = 0.10
+
+[trident.allocations_cluster.gold.dead_zone]
+target_pct = 0.05
+
+[trident.allocations_cluster.silver.trend_expansion]
+target_pct = 0.05
+
+[trident.allocations_cluster.silver.range_auction]
+target_pct = 0.03
+
+[trident.allocations_cluster.silver.panic_squeeze]
+target_pct = 0.02
+
+[trident.allocations_cluster.silver.dead_zone]
+target_pct = 0.00
+
 [pod_a]
 enabled = true
 symbols = ["BTC", "ETH", "SOL", "HYPE"]

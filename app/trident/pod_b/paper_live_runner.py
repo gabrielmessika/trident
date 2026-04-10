@@ -141,9 +141,18 @@ class PodBPaperLiveRunner:
                             if isinstance(item, dict)
                         ]
                         regime_snapshot = payload.get("regime_snapshot", {})
+                        cluster_regime_snapshots_raw = payload.get("cluster_regime_snapshots", {})
+                        cluster_regime_snapshots = {
+                            cluster: RegimeSnapshot(**snap)
+                            for cluster, snap in (cluster_regime_snapshots_raw or {}).items()
+                            if isinstance(snap, dict)
+                        }
 
                         # Apply regime + routing via supervisor (like full_bot_replay)
-                        self.supervisor.apply_regime_snapshot(RegimeSnapshot(**regime_snapshot))
+                        self.supervisor.apply_regime_snapshot(
+                            RegimeSnapshot(**regime_snapshot),
+                            cluster_regime_snapshots=cluster_regime_snapshots,
+                        )
                         self.supervisor.refresh_symbol_routing(all_snapshots)
 
                         # Get Pod B allocation from supervisor (like full_bot_replay)

@@ -80,7 +80,14 @@ class CohabitationReplayRunner:
 
         for record in self.loader.iter_jsonl(input_path):
             pod_a_report.records_processed += 1
-            supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
+            supervisor.apply_regime_snapshot(
+                RegimeSnapshot(**record.regime_snapshot),
+                cluster_regime_snapshots={
+                    cluster: RegimeSnapshot(**snap)
+                    for cluster, snap in (record.cluster_regime_snapshots or {}).items()
+                    if isinstance(snap, dict)
+                },
+            )
             snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
             supervisor.refresh_symbol_routing(snapshots)
             snapshot_by_symbol = {snapshot.symbol: snapshot for snapshot in snapshots}

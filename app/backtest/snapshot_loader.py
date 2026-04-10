@@ -17,6 +17,7 @@ class SnapshotRecord:
     timestamp: str | None
     regime_snapshot: dict[str, object]
     symbols: list[dict[str, object]]
+    cluster_regime_snapshots: dict[str, dict[str, object]] | None = None
 
 
 class SnapshotLoader:
@@ -56,12 +57,16 @@ class SnapshotLoader:
                     payload = json.loads(line)
                     self._validate_payload(payload, file_path=file_path)
                     record_index += 1
+                    cluster_raw = payload.get("cluster_regime_snapshots")
                     yield SnapshotRecord(
                         record_index=record_index,
                         source_file=file_path.name,
                         timestamp=payload.get("timestamp"),
                         regime_snapshot=payload["regime_snapshot"],
                         symbols=payload.get("symbols", []),
+                        cluster_regime_snapshots=(
+                            cluster_raw if isinstance(cluster_raw, dict) else None
+                        ),
                     )
 
     def _validate_payload(self, payload: dict[str, object], file_path: Path) -> None:

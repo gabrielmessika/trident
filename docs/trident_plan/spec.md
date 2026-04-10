@@ -25,7 +25,7 @@ Le systeme ne s'appuie pas sur un LLM dans la boucle de decision live.
 
 Le superviseur central:
 
-- calcule le `global_regime`
+- calcule le `crypto_regime`
 - derive le `tradable_pool`
 - route chaque coin vers un pod unique
 - maintient l'ownership
@@ -34,14 +34,48 @@ Le superviseur central:
 
 ### Regime multi-niveaux
 
-- `global_regime`:
+- `crypto_regime` (derive de BTC):
   - borne le risque
-  - borne les caps par pod
-  - decrit la posture macro
+  - borne les caps par pod (Pod A, Pod B)
+  - decrit la posture macro crypto
+- `cluster_regimes` (derive des leaders par cluster):
+  - chaque cluster a un leader: BTC→crypto, SPY→index, GLD→gold, SLV→silver
+  - chaque leader produit un `RegimeSnapshot` independant
+  - `crypto_regime` = regime du cluster crypto (BTC)
+  - les clusters non-crypto ne doivent pas etre applatis en un seul driver d'allocation
+  - chaque cluster Tradfi pilote son propre budget de capital
+  - `pod_c.target_pct` = somme des budgets actifs des clusters Tradfi
+  - `cash` = residuel global apres recomposition de tous les sleeves
 - `local_regime`:
   - decrit le contexte coin par coin
   - alimente le scoring de routing
   - autorise des divergences locales lisibles
+
+### Allocation cible
+
+La reponse cible au probleme SPY/GLD n'est pas un simple `tradfi_regime` unique.
+
+Le systeme doit separer:
+
+- un sleeve `crypto`:
+  - pilote par `crypto_regime`
+  - alloue vers `Pod A` et `Pod B`
+- des sleeves Tradfi par cluster:
+  - `index`
+  - `gold`
+  - `silver`
+  - `equity`
+  - autres clusters actives si ajoutees
+
+Principes:
+
+- un cluster Tradfi faible ne doit pas capter du capital parce qu'un autre cluster Tradfi ou BTC est fort
+- un cluster Tradfi fort doit pouvoir recevoir du capital meme si BTC est en `panic_squeeze`
+- aucune table de config ne doit conserver un `cash` crypto inchange si un budget de cluster Tradfi est substitue
+- les invariants comptables sont non negociables:
+  - somme finale des allocations `<= 1.0`
+  - aucune allocation negative
+  - fallback unique et coherent quand un cluster n'a pas de snapshot
 
 ### Routing des symbols
 
@@ -99,10 +133,12 @@ Le routing peut etre pilote manuellement:
 ### Pod C — Tradfi Trend
 
 - role: directionnel Tradfi / macro trend sur HL
-- statut: slot reserve, actuellement desactive tant qu'un dataset dedie n'est pas valide
+- statut: slot reserve, transport cluster-aware en place, budget par cluster et logique directionnelle a finaliser
 - points cle:
   - execution et risk gate partages avec `Pod A`
   - univers restreint aux symbols Tradfi valides
+  - allocations derivees de budgets par cluster Tradfi (pas du regime crypto global)
+  - le routeur utilise le regime du cluster du symbol pour scorer Pod C
   - validation offline sur snapshots minute microstructure, pas sur candles HL seules
 
 ## Donnees et observabilite
@@ -146,6 +182,8 @@ Sections structurantes:
 - `trident.regime`
 - `trident.capital`
 - `trident.routing`
+- `trident.allocations.*` (crypto: Pod A, B)
+- `trident.allocations_cluster.*` (budgets Tradfi par cluster et par regime)
 - `pod_a`
 - `pod_b`
 - `pod_c`

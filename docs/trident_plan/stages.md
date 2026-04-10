@@ -132,11 +132,21 @@
 
 ### Etape 12 — Pod C v2 Tradfi Trend
 
-- statut: 20%
+- statut: 45%
 - objectif:
   - reutiliser le slot `Pod C` pour un moteur directionnel dedie aux instruments Tradfi de HL
   - s'inspirer de `Pod A` pour l'execution et le risk management, avec des filtres / exits adaptes a cette microstructure
   - rester dans l'architecture 3-pods existante (pas de `Pod D`)
+- fait:
+  - transport des `cluster_regime_snapshots` implemente dans la collecte, le live, le backtest, le replay et l'observabilite
+  - `symbol_router` peut utiliser le regime du cluster du symbol pour scorer Pod C
+  - `SupervisorState` expose `cluster_regimes`, `cluster_regime_snapshots`, `cluster_pending_regimes`, `cluster_pending_counts`
+  - `SnapshotRecord` transporte les `cluster_regime_snapshots` pour les backtests
+  - tous les runners (backtest, live, research, observability) sont branches sur ce transport
+- constat d'implementation:
+  - l'approche `tradfi_regime` agrege reste trop grossiere pour repondre au probleme SPY/GLD
+  - le remplacement partiel de `pod_c` sans recomposition globale du `cash` est un design a corriger
+  - les tests actuels ne verrouillent pas encore les invariants d'allocation cluster-aware
 - univers cible:
   - phase 1: indices et commodities / macro proxies
   - ordre de validation: `SPX`, `PAXG`, puis symbols HIP-3 broad macro (`XYZ100`, `WTIOIL`, `GOLD`, `SILVER`) une fois le format symbole et la collecte valides
@@ -146,6 +156,11 @@
     - continuation
     - reclaim
     - sweep / rejection
+  - piloter le capital Tradfi par clusters independants:
+    - `index`
+    - `gold`
+    - `silver`
+    - `equity`
   - durcir les filtres de qualite:
     - spread
     - bucket notional
@@ -156,22 +171,38 @@
     - `time_stop` plus court
     - trailing / break-even plus defensifs
   - router `Pod C` seulement vers les symbols Tradfi eligibles; `Pod A` reste le coeur crypto
-- changements requis:
-  - `app/settings.py` et `config/trident.toml`: redefinir `pod_c` autour d'un univers Tradfi, de caps dedies et de filtres par sous-famille
-  - `app/trident/market_clusters.py`: etendre les familles / leaders aux instruments Tradfi utiles
+- changements requis (restants):
+  - refondre la config d'allocation: sortir d'un unique `allocations_tradfi.*` et introduire des budgets Tradfi par cluster
+  - remplacer `tradfi_regime` comme driver d'allocation par des budgets cluster-aware
+  - recalculer `cash` comme residuel global apres toutes les allocations reelles
+  - unifier le fallback des clusters manquants entre supervisor, router et allocator
   - `app/trident/pod_c/*`: remplacer la logique breakout squeeze par une logique directionnelle type `Pod A` avec filtres / exits specifiques Tradfi
-  - `app/trident/symbol_router.py`: reserver `_score_pod_c` aux symbols Tradfi valides au lieu d'un scoring squeeze generique
-  - `app/trident/supervisor.py`: rewiring des services `Pod C`
   - optionnel phase 2: enrichir les snapshots avec `mark/oracle/openInterest` si ces champs s'averent discriminants
+- changements faits:
+  - `app/trident/market_clusters.py`: familles / leaders etendus (BTC→crypto, SPY→index, GLD→gold, SLV→silver)
+  - `app/trident/symbol_router.py`: `_score_pod_c` peut utiliser le regime du cluster du symbol
+  - `app/trident/supervisor.py`: `_apply_cluster_regime_snapshots` et exposition des regimes de cluster
+  - `app/trident/regime_allocator.py`: resolution des regimes par cluster
+  - `app/live/snapshot_builder.py`: `_build_cluster_regime_snapshots` construit les snapshots par leader
+  - tous les runners (12+ fichiers) branches pour transporter les `cluster_regime_snapshots`
 - contrainte data:
   - le backtest credible du pod repose sur des snapshots minute TRIDENT avec microstructure (`l2Book + trades`) et, si utile, enrichissement `assetCtx`
   - les candles HL seules restent insuffisantes pour valider ce type de pod
   - les donnees peuvent venir soit d'une collecte live dediee, soit d'un convertisseur depuis les archives HL (`market_data` + donnees de trades/fills)
 - criteres de done:
-  - code compile et tests passent
+  - les allocations Tradfi sont pilotees par cluster, pas par un agregat unique
+  - les invariants de somme sont testes (`total <= 1.0`, `cash` residuel coherent)
+  - les snapshots legacy sans `cluster_regime_snapshots` ont un fallback explicite et coherent
   - un replay runner et un live runner fonctionnent avec la logique Tradfi
   - la validation offline utilise un dataset Tradfi dedie, pas un backtest candles
   - un verdict `go / park / kill` est sorti par sous-famille (`indices`, `commodities`, puis eventuellement `equities` / `fx`)
+- reste a faire:
+  - refondre le modele d'allocation Tradfi en budgets par cluster
+  - reparer les erreurs d'implementation et de design du premier passage cluster-aware
+  - constituer un dataset Tradfi exploitable pour replay via snapshots minute `l2Book + trades`
+  - valider le regime par cluster en replay sur donnees Tradfi reelles
+  - implementer la logique directionnelle Pod C (setups, filtres, exits adaptes Tradfi)
+  - sortir un verdict `go / park / kill` par sous-famille
 
 ### Etape 13 — Pod A optimisation aggressive
 

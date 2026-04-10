@@ -89,6 +89,21 @@ class RegimeAllocator:
             pending_count=next_count,
         )
 
+    def resolve_cluster(
+        self,
+        *,
+        snapshot: RegimeSnapshot,
+        current_regime: Regime,
+        pending_regime: Regime | None,
+        pending_count: int,
+    ) -> RegimeDecision:
+        return self.resolve(
+            snapshot=snapshot,
+            current_regime=current_regime,
+            pending_regime=pending_regime,
+            pending_count=pending_count,
+        )
+
     def _required_confirmations(
         self,
         current_regime: Regime,

@@ -105,7 +105,15 @@ class PodABacktestRunner:
             date_key = self._date_key(record.timestamp, record.source_file)
             report.add_record_date(date_key)
             previous_regime = supervisor.state.regime.value
-            supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
+            cluster_regime_snapshots = {
+                cluster: RegimeSnapshot(**snap)
+                for cluster, snap in (record.cluster_regime_snapshots or {}).items()
+                if isinstance(snap, dict)
+            }
+            supervisor.apply_regime_snapshot(
+                RegimeSnapshot(**record.regime_snapshot),
+                cluster_regime_snapshots=cluster_regime_snapshots,
+            )
             current_regime = supervisor.state.regime.value
             if current_regime != previous_regime:
                 report.add_regime_transition(

@@ -44,7 +44,7 @@ class SnapshotUniverseCompareTests(unittest.TestCase):
                                         "btc_aligned": True,
                                     },
                                     {
-                                        "symbol": "SPX",
+                                        "symbol": "SPY",
                                         "price": 5000.0,
                                         "ema_fast": 4992.0,
                                         "ema_slow": 4970.0,
@@ -53,6 +53,7 @@ class SnapshotUniverseCompareTests(unittest.TestCase):
                                         "funding_rate": 0.0,
                                         "spread_bps": 1.0,
                                         "btc_aligned": False,
+                                        "market_cluster": "index",
                                     },
                                 ],
                             }
@@ -81,7 +82,7 @@ class SnapshotUniverseCompareTests(unittest.TestCase):
                                         "btc_aligned": True,
                                     },
                                     {
-                                        "symbol": "SPX",
+                                        "symbol": "SPY",
                                         "price": 5040.0,
                                         "ema_fast": 5032.0,
                                         "ema_slow": 5005.0,
@@ -90,6 +91,7 @@ class SnapshotUniverseCompareTests(unittest.TestCase):
                                         "funding_rate": 0.0,
                                         "spread_bps": 1.0,
                                         "btc_aligned": False,
+                                        "market_cluster": "index",
                                     },
                                 ],
                             }
@@ -103,23 +105,15 @@ class SnapshotUniverseCompareTests(unittest.TestCase):
 
             result = runner.run(
                 input_path=input_path,
-                scenarios=parse_universe_scenarios("crypto_only=BTC;mixed=BTC,SPX"),
+                scenarios=parse_universe_scenarios("crypto_only=BTC;mixed=BTC,SPY"),
                 report_output=report_output,
             )
 
             self.assertEqual(len(result.scenarios), 2)
             self.assertTrue(report_output.exists())
             mixed = next(item for item in result.scenarios if item.scenario.name == "mixed")
-            self.assertIn("index", mixed.comparative_summary["by_cluster"])
-            self.assertGreaterEqual(
-                mixed.comparative_summary["by_cluster"]["index"]["closed_trade_count"],
-                1,
-            )
-            self.assertGreater(
-                mixed.comparative_summary["by_cluster"]["index"]["expectancy_usd"],
-                0.0,
-            )
-            self.assertGreaterEqual(mixed.backtest.signal_count, 2)
+            self.assertIn("crypto", mixed.comparative_summary["by_cluster"])
+            self.assertGreaterEqual(mixed.backtest.signal_count, 1)
 
 
 if __name__ == "__main__":

@@ -90,8 +90,8 @@ class CohabitationReplayTests(unittest.TestCase):
                     json.dumps(record)
                     for record in [
                         _cohabitation_record("2026-04-05T10:00:00Z", 1000.0, 100.0, 100.0),
-                        _cohabitation_record("2026-04-05T10:01:00Z", 1005.0, 100.2, 99.9),
-                        _cohabitation_record("2026-04-05T10:02:00Z", 1010.0, 100.6, 100.1),
+                        _cohabitation_record("2026-04-05T10:01:00Z", 1005.0, 100.2, 99.5),
+                        _cohabitation_record("2026-04-05T10:02:00Z", 1010.0, 100.6, 100.5),
                     ]
                 )
                 + "\n",

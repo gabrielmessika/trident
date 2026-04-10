@@ -65,7 +65,14 @@ class PodLiqFeatureBuilder:
         snapshot_matrix: list[dict[str, SymbolMarketSnapshot]] = []
         regimes_by_index: list[str] = []
         for record in records:
-            supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
+            supervisor.apply_regime_snapshot(
+                RegimeSnapshot(**record.regime_snapshot),
+                cluster_regime_snapshots={
+                    cluster: RegimeSnapshot(**snap)
+                    for cluster, snap in (record.cluster_regime_snapshots or {}).items()
+                    if isinstance(snap, dict)
+                },
+            )
             regimes_by_index.append(supervisor.state.regime.value)
             snapshot_matrix.append(
                 {

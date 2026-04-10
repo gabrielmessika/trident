@@ -158,15 +158,24 @@ class PodALiveRunner:
         timestamp = str(record.get("timestamp"))
         date_key = timestamp[:10]
         regime_snapshot = record.get("regime_snapshot", {})
+        cluster_regime_snapshots_raw = record.get("cluster_regime_snapshots", {})
         symbols = record.get("symbols", [])
         if not isinstance(regime_snapshot, dict) or not isinstance(symbols, list):
             return
 
+        cluster_regime_snapshots = {
+            cluster: RegimeSnapshot(**snap)
+            for cluster, snap in (cluster_regime_snapshots_raw or {}).items()
+            if isinstance(snap, dict)
+        }
         self.report.records_processed += 1
         self.report.add_record_date(date_key)
 
         previous_regime = self.supervisor.state.regime.value
-        self.supervisor.apply_regime_snapshot(RegimeSnapshot(**regime_snapshot))
+        self.supervisor.apply_regime_snapshot(
+            RegimeSnapshot(**regime_snapshot),
+            cluster_regime_snapshots=cluster_regime_snapshots,
+        )
         current_regime = self.supervisor.state.regime.value
         if current_regime != previous_regime:
             self.report.add_regime_transition(

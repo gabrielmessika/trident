@@ -22,6 +22,7 @@ class TradfiTrendContextService:
         snapshots: list[SymbolMarketSnapshot],
         *,
         owned_symbols: set[str] | None = None,
+        cluster_regimes: dict[str, Regime] | None = None,
     ) -> list[TradfiTrendContext]:
         for snapshot in snapshots:
             self._service.update_history(
@@ -40,10 +41,14 @@ class TradfiTrendContextService:
             if not self._service.is_eligible_symbol(symbol, snapshot.market_cluster):
                 continue
             bucket_notional_usd = snapshot.bucket_volume * snapshot.price
+            context_regime = regime
+            cluster = str(snapshot.market_cluster).strip().lower()
+            if cluster and cluster != "crypto":
+                context_regime = (cluster_regimes or {}).get(cluster, Regime.CASH)
             contexts.append(
                 TradfiTrendContext(
                     symbol=symbol,
-                    regime=regime.value,
+                    regime=context_regime.value,
                     price=snapshot.price,
                     ema_fast=snapshot.ema_fast,
                     ema_slow=snapshot.ema_slow,

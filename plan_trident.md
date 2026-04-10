@@ -22,7 +22,7 @@ Ce fichier reste volontairement court. Le detail historique supprime ici reste r
 - `Etape 6` a `Etape 9`: completees
 - `Etape 10`: 40%
 - `Etape 11`: 35%
-- `Etape 12`: 20% (Pod C redefini comme pod directionnel Tradfi HL; dataset a constituer)
+- `Etape 12`: 45% (transport des regimes par cluster en place; modele d'allocation Tradfi a refondre)
 - `Etape 13`: en cours (Pod A optimisation aggressive)
 
 ## Ce qui est vrai aujourd'hui
@@ -56,6 +56,16 @@ Ce fichier reste volontairement court. Le detail historique supprime ici reste r
   - inspire de `Pod A`
   - pas de `Pod D`
   - sous-univers initial limite aux indices / commodities
+- le transport du regime par cluster est en place:
+  - chaque cluster leader (BTC, SPY, GLD, SLV) peut produire un `RegimeSnapshot` independant
+  - `crypto_regime` (BTC) continue de piloter Pod A et Pod B
+  - le routeur peut scorer Pod C avec le regime du cluster du symbol
+  - l'API expose les `cluster_regimes` et `cluster_regime_snapshots`
+- mais la vraie resolution du probleme Tradfi n'est pas encore terminee:
+  - l'agregat unique `tradfi_regime` est juge trop grossier
+  - la cible devient une allocation Tradfi par cluster (`index`, `gold`, `silver`, `equity`, etc.)
+  - `pod_c.target_pct` doit devenir la somme des budgets de clusters actifs
+  - `cash` doit etre recalcule comme residuel global, jamais garde depuis une table crypto
 - la meilleure validation replay retenue a ce stade sur `2026-04-05 -> 2026-04-07` est:
   - profil `Pod A + Pod B, Pod C off`
   - `+27.0668 USD` realise
@@ -76,12 +86,12 @@ Reglage routing retenu:
 
 ## Priorites suivantes
 
-1. `Etape 12`: cadrer puis implementer `Pod C -> Tradfi Trend` sur un sous-univers indices / commodities HL, avec validation offline dediee.
-2. `Etape 12`: constituer un dataset Tradfi exploitable pour replay via snapshots minute `l2Book + trades`, eventuellement enrichis par `assetCtx`.
-3. `Etape 10`: lancer un dry-run serveur long avec le profil actif `Pod A + Pod B, Pod C off`, puis auditer avec `trident_dry_run_review.sh`.
-4. `Etape 4bis`: confirmer sur une plage plus longue le comportement `Pod A` en dry-run live petit wallet.
-5. `Etape 5`: recalibrer Pod B comme complement du run principal, pas comme coeur de perf, via expectancy/toxicite sur runs longs.
-6. `Etape 11`: lancer un sweep Hydra offline et sortir un verdict `go / park / kill` par hypothese.
+1. `Etape 12`: remplacer le faux pilotage Tradfi par un budget par cluster, avec invariants de somme (`total <= 1.0`) et fallback coherent.
+2. `Etape 12`: brancher Pod C sur des budgets de clusters, pas sur un agregat `tradfi_regime`.
+3. `Etape 12`: constituer un dataset Tradfi exploitable pour replay via snapshots minute `l2Book + trades`, eventuellement enrichis par `assetCtx`.
+4. `Etape 10`: lancer un dry-run serveur long avec le profil actif `Pod A + Pod B, Pod C off`, puis auditer avec `trident_dry_run_review.sh`.
+5. `Etape 4bis`: confirmer sur une plage plus longue le comportement `Pod A` en dry-run live petit wallet.
+6. `Etape 5`: recalibrer Pod B comme complement du run principal, pas comme coeur de perf, via expectancy/toxicite sur runs longs.
 
 ## Regles de maintenance
 

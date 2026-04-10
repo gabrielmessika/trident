@@ -64,6 +64,41 @@ class RoutingConfig:
 
 
 @dataclass(slots=True)
+class TradfiAllocationConfig:
+    pod_c: float = 0.0
+
+    @property
+    def total(self) -> float:
+        return self.pod_c
+
+
+@dataclass(slots=True)
+class TradfiRegimeAllocations:
+    trend_expansion: TradfiAllocationConfig = field(default_factory=TradfiAllocationConfig)
+    range_auction: TradfiAllocationConfig = field(default_factory=TradfiAllocationConfig)
+    panic_squeeze: TradfiAllocationConfig = field(default_factory=TradfiAllocationConfig)
+    dead_zone: TradfiAllocationConfig = field(default_factory=TradfiAllocationConfig)
+
+
+@dataclass(slots=True)
+class ClusterAllocationConfig:
+    target_pct: float = 0.0
+
+
+@dataclass(slots=True)
+class ClusterRegimeAllocationTable:
+    trend_expansion: ClusterAllocationConfig = field(default_factory=ClusterAllocationConfig)
+    range_auction: ClusterAllocationConfig = field(default_factory=ClusterAllocationConfig)
+    panic_squeeze: ClusterAllocationConfig = field(default_factory=ClusterAllocationConfig)
+    dead_zone: ClusterAllocationConfig = field(default_factory=ClusterAllocationConfig)
+
+
+@dataclass(slots=True)
+class ClusterAllocationsConfig:
+    clusters: dict[str, ClusterRegimeAllocationTable] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class RegimeAllocations:
     trend_expansion: AllocationConfig
     range_auction: AllocationConfig
@@ -120,6 +155,8 @@ class TridentConfigSection:
     execution: ExecutionConfig
     routing: RoutingConfig
     allocations: RegimeAllocations
+    allocations_tradfi: TradfiRegimeAllocations = field(default_factory=TradfiRegimeAllocations)
+    allocations_cluster: ClusterAllocationsConfig = field(default_factory=ClusterAllocationsConfig)
 
 
 @dataclass(slots=True)
@@ -225,6 +262,60 @@ def _allocations(data: dict[str, object], name: str) -> AllocationConfig:
         pod_b=float(section.get("pod_b", 0.0)),
         pod_c=float(section.get("pod_c", 0.0)),
         cash=float(section.get("cash", 0.0)),
+    )
+
+
+def _tradfi_allocations(trident_data: dict[str, object]) -> TradfiRegimeAllocations:
+    data = trident_data.get("allocations_tradfi", {})
+    if not isinstance(data, dict):
+        return TradfiRegimeAllocations()
+
+    def _parse(name: str) -> TradfiAllocationConfig:
+        section = data.get(name, {})
+        if not isinstance(section, dict):
+            return TradfiAllocationConfig()
+        return TradfiAllocationConfig(
+            pod_c=float(section.get("pod_c", 0.0)),
+        )
+
+    return TradfiRegimeAllocations(
+        trend_expansion=_parse("trend_expansion"),
+        range_auction=_parse("range_auction"),
+        panic_squeeze=_parse("panic_squeeze"),
+        dead_zone=_parse("dead_zone"),
+    )
+
+
+def _cluster_allocations(trident_data: dict[str, object]) -> ClusterAllocationsConfig:
+    data = trident_data.get("allocations_cluster", {})
+    if not isinstance(data, dict):
+        return ClusterAllocationsConfig()
+
+    def _parse_table(cluster_data: object) -> ClusterRegimeAllocationTable:
+        if not isinstance(cluster_data, dict):
+            return ClusterRegimeAllocationTable()
+
+        def _parse_section(name: str) -> ClusterAllocationConfig:
+            section = cluster_data.get(name, {})
+            if not isinstance(section, dict):
+                return ClusterAllocationConfig()
+            return ClusterAllocationConfig(
+                target_pct=float(section.get("target_pct", 0.0)),
+            )
+
+        return ClusterRegimeAllocationTable(
+            trend_expansion=_parse_section("trend_expansion"),
+            range_auction=_parse_section("range_auction"),
+            panic_squeeze=_parse_section("panic_squeeze"),
+            dead_zone=_parse_section("dead_zone"),
+        )
+
+    return ClusterAllocationsConfig(
+        clusters={
+            str(cluster).strip().lower(): _parse_table(cluster_data)
+            for cluster, cluster_data in data.items()
+            if str(cluster).strip()
+        }
     )
 
 
@@ -499,6 +590,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 panic_squeeze=_allocations(allocations_data, "panic_squeeze"),
                 dead_zone=_allocations(allocations_data, "dead_zone"),
             ),
+            allocations_tradfi=_tradfi_allocations(trident_data),
+            allocations_cluster=_cluster_allocations(trident_data),
         ),
         pod_a=PodAConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_A", bool(pod_a_data.get("enabled", True))),

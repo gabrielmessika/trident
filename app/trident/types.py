@@ -245,6 +245,10 @@ class SupervisorState:
     symbol_routing: list[SymbolRoutingDecision] = field(default_factory=list)
     observed_symbol_status: list[ObservedSymbolStatus] = field(default_factory=list)
     regime_snapshot: RegimeSnapshot = field(default_factory=RegimeSnapshot)
+    cluster_regimes: dict[str, Regime] = field(default_factory=dict)
+    cluster_regime_snapshots: dict[str, RegimeSnapshot] = field(default_factory=dict)
+    cluster_pending_regimes: dict[str, Regime | None] = field(default_factory=dict)
+    cluster_pending_counts: dict[str, int] = field(default_factory=dict)
     regime_history: list[RegimeTransition] = field(default_factory=list)
     regime_evaluation_count: int = 0
     regime_transition_count: int = 0
