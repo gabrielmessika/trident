@@ -9,19 +9,17 @@ from app.trident.types import SymbolMarketSnapshot
 DEFAULT_CLUSTER = "crypto"
 DEFAULT_CLUSTER_LEADERS: dict[str, list[str]] = {
     "crypto": ["BTC", "ETH"],
-    "index": ["SPX", "XYZ100"],
-    "gold": ["PAXG", "GOLD"],
-    "silver": ["SILVER"],
-    "oil": ["WTIOIL"],
+    "index": ["SPY"],
+    "gold": ["GLD", "PAXG"],
+    "silver": ["SLV"],
     "equity": ["TSLA"],
 }
 DEFAULT_CLUSTER_OVERRIDES: dict[str, str] = {
-    "SPX": "index",
     "PAXG": "gold",
-    "XYZ100": "index",
-    "WTIOIL": "oil",
-    "GOLD": "gold",
-    "SILVER": "silver",
+    "SPY": "index",
+    "GLD": "gold",
+    "SLV": "silver",
+    "QQQ": "index",
     "TSLA": "equity",
     "CRCL": "equity",
     "SNDK": "equity",

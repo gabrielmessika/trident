@@ -161,7 +161,7 @@ class AnchorTrendServiceTests(unittest.TestCase):
             regime=Regime.TREND_EXPANSION,
             snapshots=[
                 SymbolMarketSnapshot(
-                    symbol="SPX",
+                    symbol="SPY",
                     price=5000.0,
                     ema_fast=4992.0,
                     ema_slow=4975.0,
@@ -176,7 +176,7 @@ class AnchorTrendServiceTests(unittest.TestCase):
 
         self.assertEqual(len(contexts), 1)
         self.assertEqual(contexts[0].market_cluster, "index")
-        self.assertEqual(contexts[0].cluster_leader, "SPX")
+        self.assertEqual(contexts[0].cluster_leader, "SPY")
         self.assertTrue(contexts[0].cluster_aligned)
 
         signal = self.service.evaluate(contexts[0])
@@ -184,7 +184,7 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         assert signal is not None
         self.assertEqual(signal.market_cluster, "index")
-        self.assertEqual(signal.cluster_leader, "SPX")
+        self.assertEqual(signal.cluster_leader, "SPY")
 
     def test_rejects_non_trending_context(self) -> None:
         signal = self.service.evaluate(

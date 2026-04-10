@@ -39,8 +39,3 @@ class TradfiTrendSignal:
     market_cluster: str = "crypto"
     cluster_leader: str = ""
     confidence_components: dict[str, float] = field(default_factory=dict)
-
-
-# Backward-compatible aliases while Pod C transitions away from squeeze naming.
-SqueezeContext = TradfiTrendContext
-SqueezeSignal = TradfiTrendSignal

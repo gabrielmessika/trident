@@ -50,6 +50,8 @@ class PodCLiveRunner:
         self.report = PodABacktestReport()
         self._latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
 
+    STATUS_HEARTBEAT_SECONDS = 60.0
+
     async def run(
         self,
         *,
@@ -60,13 +62,24 @@ class PodCLiveRunner:
         journal = JsonlJournal(journal_path, truncate=True) if journal_path is not None else None
         status_path = Path("logs/pod_c_live_status.json")
         self._write_runtime_status(status_path)
-        async for record in self.collector.iter_records(
-            max_runtime_seconds=max_runtime_seconds,
-            max_messages=max_messages,
-        ):
-            self.collector.stats.snapshots_written += len(self.collector.writer.append_many([record]))
-            self._process_record(record, journal=journal)
-            self._write_runtime_status(status_path)
+
+        heartbeat_task = asyncio.create_task(
+            self._status_heartbeat_loop(status_path)
+        )
+        try:
+            async for record in self.collector.iter_records(
+                max_runtime_seconds=max_runtime_seconds,
+                max_messages=max_messages,
+            ):
+                self.collector.stats.snapshots_written += len(self.collector.writer.append_many([record]))
+                self._process_record(record, journal=journal)
+                self._write_runtime_status(status_path)
+        finally:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
         final_records = self.collector.builder.finalize()
         self.collector.stats.snapshots_written += len(self.collector.writer.append_many(final_records))
@@ -337,6 +350,11 @@ class PodCLiveRunner:
             "opened_at": getattr(trade, "opened_at").isoformat() if getattr(trade, "opened_at") else None,
             "closed_at": getattr(trade, "closed_at").isoformat() if getattr(trade, "closed_at") else None,
         }
+
+    async def _status_heartbeat_loop(self, path: str | Path) -> None:
+        while True:
+            await asyncio.sleep(self.STATUS_HEARTBEAT_SECONDS)
+            self._write_runtime_status(path)
 
     def _write_runtime_status(self, path: str | Path) -> None:
         write_runtime_status(

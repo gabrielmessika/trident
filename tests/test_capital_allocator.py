@@ -20,10 +20,10 @@ class CapitalAllocatorTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(plan.pod_allocations[PodName.POD_A].target_pct, 0.2)
+        self.assertEqual(plan.pod_allocations[PodName.POD_A].target_pct, 0.1)
         self.assertEqual(plan.pod_allocations[PodName.POD_B].target_pct, 0.0)
         self.assertEqual(plan.pod_allocations[PodName.POD_C].target_pct, 0.0)
-        self.assertEqual(plan.cash_pct, 0.8)
+        self.assertEqual(plan.cash_pct, 0.9)
 
     def test_symbol_cap_reduces_effective_pod_allocation(self) -> None:
         self.config.pod_c.enabled = True
@@ -37,10 +37,10 @@ class CapitalAllocatorTests(unittest.TestCase):
         )
 
         pod_c = plan.pod_allocations[PodName.POD_C]
-        self.assertEqual(pod_c.target_pct, 0.5)
+        self.assertEqual(pod_c.target_pct, 0.05)
         self.assertEqual(len(pod_c.symbols), 2)
-        self.assertEqual(pod_c.symbols[0].target_pct, 0.25)
-        self.assertEqual(plan.cash_pct, 0.5)
+        self.assertEqual(pod_c.symbols[0].target_pct, 0.025)
+        self.assertEqual(plan.cash_pct, 0.95)
 
     def test_symbols_below_min_allocation_flow_back_once_to_cash(self) -> None:
         plan = self.allocator.build_plan(

@@ -162,8 +162,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["regime"], "TrendExpansion")
         self.assertEqual(snapshot["capital_plan"]["regime"], "TrendExpansion")
         self.assertEqual(snapshot["capital_plan"]["total_equity_usd"], 1000.0)
-        self.assertEqual(snapshot["pods"]["pod_a"]["target_pct"], 0.85)
-        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_a"]["symbols"][0]["target_pct"], 0.2125)
+        self.assertEqual(snapshot["pods"]["pod_a"]["target_pct"], 0.7)
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_a"]["symbols"][0]["target_pct"], 0.175)
 
     def test_supervisor_previews_pod_a_signals(self) -> None:
         supervisor = TridentSupervisor(
@@ -515,7 +515,7 @@ class SupervisorTests(unittest.TestCase):
                     bucket_range_bps=52.0,
                 ),
                 SymbolMarketSnapshot(
-                    symbol="SPX",
+                    symbol="SPY",
                     price=5100.0,
                     ema_fast=5112.0,
                     ema_slow=5087.0,
@@ -580,13 +580,13 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["ownership_conflicts"], [])
         self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC", "ETH", "HYPE", "SOL"])
         self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["DOGE", "SUI", "XRP"])
-        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["SPX"])
+        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["SPY"])
         sui_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SUI")
-        spx_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SPX")
+        spy_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SPY")
         self.assertEqual(sui_routing["owner"], "pod_b")
         self.assertEqual(sui_routing["mode"], "dynamic_affinity")
-        self.assertEqual(spx_routing["owner"], "pod_c")
-        self.assertEqual(spx_routing["mode"], "dynamic_affinity")
+        self.assertEqual(spy_routing["owner"], "pod_c")
+        self.assertEqual(spy_routing["mode"], "dynamic_affinity")
 
     def test_supervisor_routes_new_observation_symbol_without_static_pod_lists(self) -> None:
         self.config.pod_b.enabled = True
@@ -1239,13 +1239,13 @@ class SupervisorTests(unittest.TestCase):
         snapshot = supervisor.snapshot()
 
         self.assertEqual(snapshot["capital_plan"]["regime"], "DeadZone")
-        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_pct"], 0.25)
-        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_usd"], 250.0)
-        self.assertEqual(len(snapshot["pods"]["pod_b"]["owned_symbols"]), 10)
-        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], symbols)
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_pct"], 0.2)
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_usd"], 200.0)
+        self.assertEqual(len(snapshot["pods"]["pod_b"]["owned_symbols"]), 8)
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], symbols[:8])
         self.assertEqual(
             [item["symbol"] for item in snapshot["capital_plan"]["pods"]["pod_b"]["symbols"]],
-            symbols,
+            symbols[:8],
         )
         self.assertEqual(snapshot["ownership_conflicts"], [])
 

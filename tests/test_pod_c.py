@@ -23,7 +23,7 @@ from app.trident.types import (
 
 class _FakeCollector:
     def __init__(self) -> None:
-        self.coins = ["SPX", "PAXG"]
+        self.coins = ["SPY", "PAXG"]
         self.stats = type(
             "Stats",
             (),
@@ -55,7 +55,7 @@ class _FakeCollector:
             },
             "symbols": [
                 {
-                    "symbol": "SPX",
+                    "symbol": "SPY",
                     "price": 5100.0,
                     "ema_fast": 5110.0,
                     "ema_slow": 5088.0,
@@ -71,7 +71,7 @@ class _FakeCollector:
                     "bucket_range_bps": 24.0,
                     "market_cluster": "index",
                     "cluster_aligned": True,
-                    "cluster_leader": "SPX",
+                    "cluster_leader": "SPY",
                     "source": "test",
                 },
                 {
@@ -334,7 +334,7 @@ class PodCTests(unittest.TestCase):
     def test_pod_c_live_runner_processes_records(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.enabled = True
-        runner = PodCLiveRunner(config, coins=["SPX", "PAXG"])
+        runner = PodCLiveRunner(config, coins=["SPY", "PAXG"])
         runner.collector = _FakeCollector()  # type: ignore[assignment]
         status_path = Path("logs/pod_c_live_status.json")
         original_status = status_path.read_text(encoding="utf-8") if status_path.exists() else None
@@ -347,7 +347,7 @@ class PodCTests(unittest.TestCase):
                 open_positions = runtime_status["open_positions"]
                 self.assertIsInstance(open_positions, list)
                 if open_positions:
-                    spx_position = next(item for item in open_positions if item["symbol"] == "SPX")
+                    spx_position = next(item for item in open_positions if item["symbol"] == "SPY")
                     self.assertEqual(spx_position["current_price"], 5100.0)
                     self.assertIn("margin_usd", spx_position)
                     self.assertIn("take_profit_bps", spx_position)
@@ -362,18 +362,18 @@ class PodCTests(unittest.TestCase):
     def test_pod_c_live_runner_defaults_to_pod_c_scope(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.enabled = True
-        config.pod_c.symbols = ["SPX", "PAXG", "XYZ100", "WTIOIL", "GOLD", "SILVER"]
+        config.pod_c.symbols = ["PAXG", "SPY", "GLD", "SLV", "QQQ"]
         config.hyperliquid.observation_universe = ["BTC", "ETH"]
 
         runner = PodCLiveRunner(config)
 
         self.assertEqual(
             runner.coins,
-            ["SPX", "PAXG", "XYZ100", "WTIOIL", "GOLD", "SILVER"],
+            ["PAXG", "SPY", "GLD", "SLV", "QQQ"],
         )
         self.assertEqual(
             runner.config.hyperliquid.observation_universe,
-            ["SPX", "PAXG", "XYZ100", "WTIOIL", "GOLD", "SILVER"],
+            ["PAXG", "SPY", "GLD", "SLV", "QQQ"],
         )
 
 

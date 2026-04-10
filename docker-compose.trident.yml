@@ -135,7 +135,6 @@ services:
       trident-api:
         condition: service_healthy
     restart: unless-stopped
-    profiles: ["pod_c"]
     logging:
       driver: json-file
       options:
@@ -163,7 +162,6 @@ services:
       - ./runtime:/app/runtime
       - ./logs:/app/logs
     restart: unless-stopped
-    profiles: ["pod_c"]
     logging:
       driver: json-file
       options:

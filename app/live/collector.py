@@ -46,14 +46,27 @@ class HyperliquidLiveCollector:
             or config.hyperliquid.default_coins
             or config.pod_a.symbols
         )
+        spot_ids = {
+            name.strip().upper(): ws_id.strip()
+            for name, ws_id in config.hyperliquid.spot_coin_ids.items()
+            if name.strip() and ws_id.strip()
+        }
+        self._name_to_ws: dict[str, str] = {}
+        self._ws_to_name: dict[str, str] = {}
+        for coin in self.coins:
+            ws_coin = spot_ids.get(coin, coin)
+            self._name_to_ws[coin] = ws_coin
+            self._ws_to_name[ws_coin] = coin
+        ws_coins = [self._name_to_ws[coin] for coin in self.coins]
         max_per_connection = max(1, int(config.hyperliquid.max_coins_per_connection))
         self.coin_shards = [
-            self.coins[index : index + max_per_connection]
-            for index in range(0, len(self.coins), max_per_connection)
+            ws_coins[index : index + max_per_connection]
+            for index in range(0, len(ws_coins), max_per_connection)
         ]
         self.builder = LiveSnapshotBuilder(
             coins=self.coins,
             bucket_ms=config.hyperliquid.bucket_ms,
+            ws_to_name=self._ws_to_name,
         )
         self.writer = LiveSnapshotWriter(config.hyperliquid.snapshot_output_dir)
         self.stats = LiveCollectorStats()

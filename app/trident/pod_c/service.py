@@ -30,7 +30,7 @@ class TradfiTrendService:
         bucket_notional_usd: float,
         bucket_trade_count: int,
     ) -> None:
-        lookback = max(self.config.squeeze_lookback, 3)
+        lookback = max(self.config.activity_lookback, 3)
         if symbol not in self._notional_history:
             self._notional_history[symbol] = deque(maxlen=lookback)
             self._trade_count_history[symbol] = deque(maxlen=lookback)
@@ -217,7 +217,3 @@ class TradfiTrendService:
     def reset(self) -> None:
         self._notional_history.clear()
         self._trade_count_history.clear()
-
-
-# Backward-compatible alias while the pod is rewired from squeeze to Tradfi trend.
-SqueezeBreakoutService = TradfiTrendService

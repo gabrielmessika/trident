@@ -108,6 +108,7 @@ class HyperliquidConfig:
     tradable_max_abs_funding_rate: float = 0.01
     market_cluster_overrides: dict[str, str] = field(default_factory=dict)
     cluster_leaders: dict[str, list[str]] = field(default_factory=dict)
+    spot_coin_ids: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -197,11 +198,7 @@ class PodCConfig:
     max_vwap_distance_bps: float
     min_reclaim_distance_bps: float
     min_activity_ratio: float
-    squeeze_lookback: int
-    squeeze_threshold: float
-    breakout_multiplier: float
-    min_flow_alignment: float
-    min_volume_spike: float
+    activity_lookback: int
 
 
 @dataclass(slots=True)
@@ -393,6 +390,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 hyperliquid_data.get("cluster_leaders", {}),
                 lower_keys=True,
                 upper_values=True,
+            ),
+            spot_coin_ids=_str_map(
+                hyperliquid_data.get("spot_coin_ids", {}),
+                upper_keys=True,
+                lower_values=False,
             ),
         ),
         trident=TridentConfigSection(
@@ -638,11 +640,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             min_activity_ratio=float(
                 pod_c_data.get("min_activity_ratio", 0.75)
             ),
-            squeeze_lookback=int(pod_c_data.get("squeeze_lookback", 20)),
-            squeeze_threshold=float(pod_c_data.get("squeeze_threshold", 0.50)),
-            breakout_multiplier=float(pod_c_data.get("breakout_multiplier", 1.8)),
-            min_flow_alignment=float(pod_c_data.get("min_flow_alignment", 0.55)),
-            min_volume_spike=float(pod_c_data.get("min_volume_spike", 1.5)),
+            activity_lookback=int(pod_c_data.get("activity_lookback", pod_c_data.get("squeeze_lookback", 20))),
         ),
     )
 

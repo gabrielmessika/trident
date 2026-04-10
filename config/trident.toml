@@ -33,7 +33,8 @@ observation_universe = [
   "AVAX", "LINK", "ARB",
   "ADA", "BNB", "LTC",
   "AAVE", "NEAR", "ZRO",
-  "SPX", "PAXG", "XYZ100", "WTIOIL", "GOLD", "SILVER",
+  "SPX", "PAXG",
+  "SPY", "GLD", "SLV", "QQQ",
 ]
 max_coins_per_connection = 10
 subscription_pacing_ms = 250
@@ -44,23 +45,32 @@ tradable_max_abs_funding_rate = 0.01
 # Backward compat pour les anciennes commandes/tests.
 default_coins = ["BTC", "ETH", "SOL", "HYPE"]
 
+[hyperliquid.spot_coin_ids]
+SPY = "@279"
+GLD = "@276"
+SLV = "@265"
+QQQ = "@288"
+TSLA = "@264"
+AMZN = "@280"
+GOOGL = "@266"
+META = "@287"
+MSFT = "@289"
+
 [hyperliquid.market_cluster_overrides]
-SPX = "index"
 PAXG = "gold"
-XYZ100 = "index"
-WTIOIL = "oil"
-GOLD = "gold"
-SILVER = "silver"
+SPY = "index"
+GLD = "gold"
+SLV = "silver"
+QQQ = "index"
 TSLA = "equity"
 CRCL = "equity"
 SNDK = "equity"
 
 [hyperliquid.cluster_leaders]
 crypto = ["BTC", "ETH"]
-index = ["SPX", "XYZ100"]
-gold = ["PAXG", "GOLD"]
-silver = ["SILVER"]
-oil = ["WTIOIL"]
+index = ["SPY"]
+gold = ["GLD", "PAXG"]
+silver = ["SLV"]
 equity = ["TSLA"]
 
 [trident]
@@ -129,27 +139,27 @@ HYPE = 7200
 # ETH = "pod_b"
 
 [trident.allocations.trend_expansion]
-pod_a = 0.85
-pod_b = 0.15
-pod_c = 0.00
+pod_a = 0.70
+pod_b = 0.10
+pod_c = 0.20
 cash = 0.00
 
 [trident.allocations.range_auction]
 pod_a = 0.10
-pod_b = 0.90
-pod_c = 0.00
+pod_b = 0.75
+pod_c = 0.15
 cash = 0.00
 
 [trident.allocations.panic_squeeze]
-pod_a = 0.15
+pod_a = 0.10
 pod_b = 0.00
-pod_c = 0.00
+pod_c = 0.05
 cash = 0.85
 
 [trident.allocations.dead_zone]
 pod_a = 0.00
-pod_b = 0.25
-pod_c = 0.00
+pod_b = 0.20
+pod_c = 0.05
 cash = 0.75
 
 [pod_a]
@@ -236,8 +246,8 @@ XRP = 0.65
 
 [pod_c]
 enabled = true
-symbols = ["SPX", "PAXG", "XYZ100", "WTIOIL", "GOLD", "SILVER"]
-allowed_market_clusters = ["index", "gold", "silver", "oil"]
+symbols = ["PAXG", "SPY", "GLD", "SLV", "QQQ"]
+allowed_market_clusters = ["index", "gold", "silver"]
 max_allocation_pct = 0.90
 max_spread_bps = 8.0
 max_abs_funding_rate = 0.015
@@ -253,9 +263,4 @@ min_structure_score = 0.18
 max_vwap_distance_bps = 35.0
 min_reclaim_distance_bps = 6.0
 min_activity_ratio = 0.75
-# Legacy fields kept for backward compatibility while Pod C is migrated from squeeze to Tradfi trend.
-squeeze_lookback = 20           # rolling window size (snapshots, ~1 per minute)
-squeeze_threshold = 0.50        # current_vol / avg_vol below this = squeeze detected
-breakout_multiplier = 1.8       # current_vol / avg_vol above this = breakout trigger
-min_flow_alignment = 0.55       # min directional flow score to confirm breakout direction
-min_volume_spike = 1.5          # min trade_count / avg_trade_count for volume confirmation
+activity_lookback = 20

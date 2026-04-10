@@ -60,7 +60,3 @@ class TradfiTrendPlanner:
                 "cluster_leader": signal.cluster_leader,
             },
         )
-
-
-# Backward-compatible alias while the pod is rewired from squeeze to Tradfi trend.
-SqueezeBreakoutPlanner = TradfiTrendPlanner

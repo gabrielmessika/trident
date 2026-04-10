@@ -80,7 +80,3 @@ class TradfiTrendContextService:
                 )
             )
         return contexts
-
-
-# Backward-compatible alias while the pod is rewired from squeeze to Tradfi trend.
-SqueezeContextService = TradfiTrendContextService

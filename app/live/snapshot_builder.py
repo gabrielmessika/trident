@@ -42,9 +42,15 @@ class BookState:
 class LiveSnapshotBuilder:
     """Builds TRIDENT snapshots from live Hyperliquid l2Book and trades streams."""
 
-    def __init__(self, coins: list[str], bucket_ms: int = 60_000) -> None:
+    def __init__(
+        self,
+        coins: list[str],
+        bucket_ms: int = 60_000,
+        ws_to_name: dict[str, str] | None = None,
+    ) -> None:
         self.coins = [coin.upper() for coin in coins]
         self.bucket_ms = bucket_ms
+        self._ws_to_name = ws_to_name or {}
         self.current_bucket: int | None = None
         self.latest_book_by_symbol: dict[str, BookState] = {}
         self.trade_buckets: dict[int, dict[str, TradeBucket]] = {}
@@ -67,9 +73,18 @@ class LiveSnapshotBuilder:
                 return records
         return []
 
+    def _resolve_coin(self, raw_coin: str) -> str | None:
+        coin = raw_coin.upper()
+        if coin in self.coins:
+            return coin
+        resolved = self._ws_to_name.get(raw_coin) or self._ws_to_name.get(coin)
+        if resolved and resolved in self.coins:
+            return resolved
+        return None
+
     def ingest_book(self, book: dict[str, object]) -> list[dict[str, object]]:
-        coin = str(book.get("coin", "")).upper()
-        if not coin or coin not in self.coins:
+        coin = self._resolve_coin(str(book.get("coin", "")))
+        if coin is None:
             return []
         event_time = int(book.get("time", 0))
         bucket = event_time // self.bucket_ms
@@ -91,8 +106,8 @@ class LiveSnapshotBuilder:
         return records
 
     def ingest_trade(self, trade: dict[str, object]) -> list[dict[str, object]]:
-        coin = str(trade.get("coin", "")).upper()
-        if not coin or coin not in self.coins:
+        coin = self._resolve_coin(str(trade.get("coin", "")))
+        if coin is None:
             return []
         event_time = int(trade.get("time", 0))
         bucket = event_time // self.bucket_ms
