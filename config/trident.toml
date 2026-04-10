@@ -225,7 +225,7 @@ HYPE = 0.60
 XRP = 0.65
 
 [pod_c]
-enabled = false
+enabled = true
 max_allocation_pct = 0.90
 max_spread_bps = 6.0
 min_confidence = 0.62
