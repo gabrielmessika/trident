@@ -16,7 +16,6 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.backtest.snapshot_loader import SnapshotLoader
 from app.persistence.journal import JsonlJournal
 from app.reporting.pod_b import PodBReport
 from app.settings import AppConfig, load_config
@@ -66,7 +65,9 @@ class PodBPaperLiveRunner:
         input_path = Path(input_path)
         journal = JsonlJournal(journal_output, truncate=True) if journal_output is not None else None
         report = PodBReport()
-        status_path = Path("runtime/passivbot/live.json.status.json")
+        # Derive status_path the same way as PassivbotManager: config.with_suffix(".status.json")
+        config_path = Path(self.config.pod_b.passivbot_config_path)
+        status_path = config_path.with_suffix(".status.json")
         status_path.parent.mkdir(parents=True, exist_ok=True)
         meta = self._status_meta(status_path)
 
@@ -85,17 +86,20 @@ class PodBPaperLiveRunner:
 
         stats = PodBPaperLiveStats()
         started = time.monotonic()
-        loader = SnapshotLoader()
 
-        # Skip all existing files at startup — only process new data
-        existing_offsets = self._scan_existing_offsets(input_path, loader)
-        stats.skipped_historical = sum(existing_offsets.values())
+        # Track byte offsets per file — skip to end of existing files at startup
+        file_byte_offsets: dict[str, int] = {}
+        files = [input_path] if input_path.is_file() else sorted(input_path.glob("*.jsonl"))
+        for file_path in files:
+            file_key = str(file_path.resolve())
+            size = file_path.stat().st_size
+            file_byte_offsets[file_key] = size
+            stats.skipped_historical += self._count_lines(file_path)
         if stats.skipped_historical > 0:
             logger.info(
-                "Pod B skipping %d historical records from %d files",
-                stats.skipped_historical, len(existing_offsets),
+                "Pod B skipping %d historical records from %d files (seek to EOF)",
+                stats.skipped_historical, len(file_byte_offsets),
             )
-        processed_offsets = dict(existing_offsets)
 
         try:
             while True:
@@ -103,18 +107,40 @@ class PodBPaperLiveRunner:
                 files = [input_path] if input_path.is_file() else sorted(input_path.glob("*.jsonl"))
                 for file_path in files:
                     file_key = str(file_path.resolve())
-                    offset = processed_offsets.get(file_key, 0)
-                    for index, record in enumerate(loader.iter_jsonl(file_path), start=1):
-                        if index <= offset:
+                    byte_offset = file_byte_offsets.get(file_key, 0)
+
+                    # Quick check: skip file if no new bytes
+                    try:
+                        file_size = file_path.stat().st_size
+                    except OSError:
+                        continue
+                    if file_size <= byte_offset:
+                        continue
+
+                    # Read only new bytes from the file
+                    with file_path.open("r", encoding="utf-8") as fh:
+                        fh.seek(byte_offset)
+                        new_data = fh.read()
+                        new_byte_offset = fh.tell()
+
+                    file_byte_offsets[file_key] = new_byte_offset
+
+                    for line in new_data.splitlines():
+                        line = line.strip()
+                        if not line:
                             continue
-                        processed_offsets[file_key] = index
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError:
+                            logger.warning("Pod B skipping malformed line in %s", file_path.name)
+                            continue
 
                         all_snapshots = [
                             SymbolMarketSnapshot(**item)
-                            for item in record.symbols
+                            for item in payload.get("symbols", [])
                             if isinstance(item, dict)
                         ]
-                        regime_snapshot = record.regime_snapshot
+                        regime_snapshot = payload.get("regime_snapshot", {})
 
                         # Apply regime + routing via supervisor (like full_bot_replay)
                         self.supervisor.apply_regime_snapshot(RegimeSnapshot(**regime_snapshot))
@@ -136,7 +162,7 @@ class PodBPaperLiveRunner:
                             continue
 
                         status, fills = self.engine.process_record(
-                            timestamp=record.timestamp,
+                            timestamp=payload.get("timestamp"),
                             snapshots=pod_b_snapshots,
                             status_meta=meta,
                             regime_snapshot=regime_snapshot,
@@ -147,7 +173,7 @@ class PodBPaperLiveRunner:
                         stats.fills_emitted += len(fills)
                         self._write_status(status, status_path)
                         report.add_tick(
-                            timestamp=record.timestamp,
+                            timestamp=payload.get("timestamp"),
                             status=status,
                             fills=fills,
                         )
@@ -221,20 +247,14 @@ class PodBPaperLiveRunner:
 
         return stats
 
-    def _scan_existing_offsets(
-        self,
-        input_path: Path,
-        loader: SnapshotLoader,
-    ) -> dict[str, int]:
-        """Count records in all existing files so we skip them."""
-        offsets: dict[str, int] = {}
-        files = [input_path] if input_path.is_file() else sorted(input_path.glob("*.jsonl"))
-        for file_path in files:
-            count = 0
-            for _ in loader.iter_jsonl(file_path):
-                count += 1
-            offsets[str(file_path.resolve())] = count
-        return offsets
+    def _count_lines(self, file_path: Path) -> int:
+        """Count non-empty lines in a JSONL file (for stats only, no parsing)."""
+        count = 0
+        with file_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    count += 1
+        return count
 
     def _status_meta(self, status_path: Path) -> dict[str, object]:
         import os, sys
