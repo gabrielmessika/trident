@@ -858,6 +858,46 @@ def _control_center_html(
         for item in runtime_report.get("services", [])
         if isinstance(item, dict) and item.get("service") is not None
     ]
+    pod_c_configured_symbols = [
+        str(symbol).upper()
+        for symbol in supervisor.config.pod_c.symbols
+        if str(symbol).strip()
+    ]
+    observed_status_rows = [
+        item
+        for item in snapshot.get("observed_symbol_status", [])
+        if isinstance(item, dict) and item.get("symbol") is not None
+    ]
+    observed_symbols = {
+        str(item.get("symbol")).upper()
+        for item in observed_status_rows
+    }
+    tradable_symbols = {
+        str(item.get("symbol")).upper()
+        for item in observed_status_rows
+        if bool(item.get("tradable"))
+    }
+    routing_rows = [
+        item
+        for item in snapshot.get("symbol_routing", [])
+        if isinstance(item, dict) and item.get("symbol") is not None
+    ]
+    pod_c_routing_rows = [
+        item
+        for item in routing_rows
+        if str(item.get("symbol")).upper() in set(pod_c_configured_symbols)
+    ]
+    pod_c_routed_symbols = [
+        str(item.get("symbol")).upper()
+        for item in pod_c_routing_rows
+        if item.get("owner") == "pod_c"
+    ]
+    pod_c_seen_not_observed = [
+        symbol for symbol in pod_c_configured_symbols if symbol not in observed_symbols
+    ]
+    pod_c_observed_not_tradable = [
+        symbol for symbol in pod_c_configured_symbols if symbol in observed_symbols and symbol not in tradable_symbols
+    ]
 
     def fmt_number(value: object, digits: int = 2, *, fallback: str = "-") -> str:
         if value in (None, ""):
@@ -1386,6 +1426,18 @@ def _control_center_html(
         for item in runtime_service_rows
         if bool(item.get("enabled", True))
     ) or "<tr><td colspan='8'>Aucun collector runtime actif visible.</td></tr>"
+    pod_c_scope_rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(symbol)}</td>"
+            f"<td>{'oui' if symbol in observed_symbols else 'non'}</td>"
+            f"<td>{'oui' if symbol in tradable_symbols else 'non'}</td>"
+            f"<td>{escape(str(next((item.get('owner') for item in pod_c_routing_rows if str(item.get('symbol')).upper() == symbol), '-')))}</td>"
+            f"<td>{escape(str(next((item.get('reason') for item in pod_c_routing_rows if str(item.get('symbol')).upper() == symbol), '-')))}</td>"
+            "</tr>"
+        )
+        for symbol in pod_c_configured_symbols
+    ) or "<tr><td colspan='5'>Aucun symbole configure pour Pod C.</td></tr>"
     ownership_rows = "".join(
         (
             "<tr>"
@@ -2473,6 +2525,29 @@ def _control_center_html(
                     <tr>{_table_header("Service", "Nom logique du collector.")}{_table_header("Healthy", "Fraîcheur du runtime status du collector.")}{_table_header("Process", "État du process de collecte.")}{_table_header("Symbols", "Nombre de symbols suivis.")}{_table_header("Polls", "Nombre de polls terminés.")}{_table_header("Records", "Records JSONL écrits.")}{_table_header("Last collected", "Horodatage du dernier lot collecté.")}{_table_header("Output", "Fichier de sortie courant.")}</tr>
                   </thead>
                   <tbody>{runtime_service_report_rows}</tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel" style="box-shadow:none;">
+              <div class="panel-header">
+                <h3>Pod C scope visibility</h3>
+                <p>Cette vue separe les symbols Tradfi configures pour Pod C de ce que le superviseur voit vraiment maintenant. Si un symbol n'apparait pas dans Routing decisions, c'est souvent qu'il n'est pas observe ou pas tradable, pas qu'il est absent du pod.</p>
+              </div>
+              <div class="metric-grid" style="margin-bottom:16px;">
+                {render_stat_cards([
+                    {"label": "Configured", "value": str(len(pod_c_configured_symbols)), "note": ", ".join(pod_c_configured_symbols) or "-"},
+                    {"label": "Observed", "value": str(len([symbol for symbol in pod_c_configured_symbols if symbol in observed_symbols])), "note": "Symbols Pod C presents dans les snapshots visibles"},
+                    {"label": "Tradable", "value": str(len([symbol for symbol in pod_c_configured_symbols if symbol in tradable_symbols])), "note": "Symbols Pod C qui passent les gates live"},
+                    {"label": "Routed To Pod C", "value": str(len(pod_c_routed_symbols)), "note": ", ".join(pod_c_routed_symbols) or "-"},
+                ])}
+              </div>
+              <p class="soft-note" style="margin-bottom:12px;">Non observes: {escape(", ".join(pod_c_seen_not_observed) or "-")} | Observes mais non tradables: {escape(", ".join(pod_c_observed_not_tradable) or "-")}</p>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>{_table_header("Symbol", "Symbole configure dans le scope Pod C.")}{_table_header("Observed", "Oui si le symbole apparait dans la vue snapshot/superviseur utilisee par l'UI au moment du rendu.")}{_table_header("Tradable", "Oui si le symbole est vu et passe les gates de tradabilite live: spread, activite, funding, etc.")}{_table_header("Current owner", "Pod actuellement assigne par le routeur, ou '-' si aucune decision visible.")}{_table_header("Routing note", "Raison de routing actuellement visible pour ce symbole. Si la ligne est vide, l'UI n'a pas de decision runtime pour ce symbol.")}</tr>
+                  </thead>
+                  <tbody>{pod_c_scope_rows}</tbody>
                 </table>
               </div>
             </div>

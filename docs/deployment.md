@@ -136,13 +136,7 @@ Exclusions principales :
 
 ## 3. Déployer et démarrer
 
-Pour déployer puis démarrer l'API et Pod A :
-
-```bash
-./deploy.sh --start
-```
-
-Pour démarrer tout le stack :
+Pour déployer puis démarrer tout le stack par défaut :
 
 ```bash
 ./deploy.sh --start
@@ -172,8 +166,13 @@ Important :
 - Pod C n'a de sens que si sa recherche a conclu à un `go`
 - `./deploy.sh --start` lance maintenant aussi le collecteur funding global `data/funding_history/current.jsonl`
 - `Pod C` lance en plus son collecteur Tradfi dédié `data/funding_history/pod_c_tradfi.jsonl`
+- le collecteur funding global écrit aussi `logs/funding_collector_status.json`
+- le collecteur funding Tradfi écrit `logs/tradfi_funding_collector_status.json`
 - les noms `pod-a-live`, `pod-b-live`, `pod-c-live` sont des noms de services Docker historiques
 - aujourd'hui, `Pod A`, `Pod B` et `Pod C` tournent encore en dry-run / paper trading, pas en exécution réelle exchange
+- l'UI `System` montre désormais explicitement:
+  - `Data collectors` pour la santé des services funding
+  - `Pod C scope visibility` pour voir quels symbols Tradfi sont configures, observes, tradables et routes
 
 ---
 
@@ -200,7 +199,7 @@ Le script principal est :
 
 ### Commandes utiles
 
-Démarrer API + Pod A :
+Démarrer tout :
 
 ```bash
 ./scripts/trident_server.sh start

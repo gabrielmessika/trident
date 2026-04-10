@@ -250,9 +250,9 @@ BTC -> Pod A et Pod B en meme temps
 
 Role de chaque pod:
 
-- `Pod A`: moteur directionnel principal, pour les phases de tendance
-- `Pod B`: moteur de range, pour les marches plus plats
-- `Pod C`: moteur opportuniste, a activer seulement si la recherche le justifie
+- `Pod A`: moteur directionnel principal, pour les phases de tendance crypto
+- `Pod B`: moteur de range / market making paper, pour les marches plus plats
+- `Pod C`: moteur directionnel Tradfi HL, scope actuel `SPX`, `PAXG`, `XYZ100`, `WTIOIL`, `GOLD`, `SILVER`
 
 Pourquoi `deploy.sh` a maintenant des flags `--without-...`:
 
@@ -284,8 +284,20 @@ Reporting actuel:
 - `/health`, `/api/state`, `/api/metrics` et `/api/report` se recalent d'abord sur le dernier snapshot live frais pour eviter un regime stale,
 - quand `runtime/passivbot/live.status.json` est present et frais, il devient la source de verite de `pod_b_status`,
 - le dashboard affiche un tableau `Runtime pod report`,
+- le dashboard affiche aussi l'etat des `Data collectors`,
+- l'onglet `System` expose maintenant `Pod C scope visibility` pour distinguer:
+  - les symbols Tradfi configures pour `Pod C`
+  - ceux qui sont effectivement observes par la vue live
+  - ceux qui passent les gates de tradabilite
+  - ceux qui sont vraiment routes a `Pod C`
 - les replays de cohabitation ecrivent aussi un `summary` multi-pods dans leur JSON de sortie.
 - `Pod A` et `Pod C` ferment maintenant une position si le `supervisor` retire le symbol ou remet son allocation a zero (`routing_revoked`),
+- les tables de trades `Pod A` / `Pod C` ont ete refaites pour etre operatoires:
+  - trades ouverts: `prix courant`, `valeur courante USD`, `marge utilisee`, `prix TP`, `prix SL`, `unrealized PnL`, `trailing TP`
+  - trades fermes: raisons d'ouverture et de fermeture traduites en libelles lisibles
+- les collectors funding ecrivent maintenant leurs runtime status:
+  - `logs/funding_collector_status.json`
+  - `logs/tradfi_funding_collector_status.json`
 - les runners Pod B ecrivent maintenant un report detaille:
   - `fills_by_symbol`
   - `fills_by_date`

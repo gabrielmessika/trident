@@ -382,6 +382,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("En un coup d’œil", html)
         self.assertIn("Runtime pod report", html)
         self.assertIn("Data collectors", html)
+        self.assertIn("Pod C scope visibility", html)
         self.assertIn("Symbol ownership", html)
         self.assertIn("Routing overrides", html)
         self.assertIn("Routing decisions", html)
