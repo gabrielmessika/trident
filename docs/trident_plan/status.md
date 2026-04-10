@@ -18,12 +18,18 @@
 | 9. Hardening deployment | 100% | Rien, etape fermee |
 | 10. Passage live progressif | 45% | Dry-run serveur long avec profil 10x + AS engine |
 | 11. Pistes futures Hydra revisitees | 35% | Continuer les runs offline funding/liq |
-| 12. Pod C v2 Squeeze Breakout | 80% | Valider offline puis activer |
+| 12. Pod C v2 Tradfi Trend | 20% | Cadrer le pod puis constituer un dataset Tradfi exploitable |
 
 ## Journal condense
 
 ### 2026-04-10
 
+- **Decision produit Pod C**: la trajectoire `Squeeze Breakout` est abandonnee au profit d'un pod directionnel Tradfi HL dans le slot `Pod C`.
+  - le systeme reste a 3 pods: pas de `Pod D`
+  - `Pod C` devient la place reservee a un moteur inspire de `Pod A`, mais dedie aux instruments Tradfi HL
+  - phase 1 cible `indices` / `commodities`; les single stocks restent hors scope initial
+  - prerequis de validation: snapshots minute TRIDENT `l2Book + trades`, eventuellement enrichis `assetCtx`
+  - les candles HL seules restent exclues de la validation, comme pour les autres pods directionnels
 - **Pod B paper_live_runner reecrit**: le runner live Pod B utilise desormais le
   superviseur partage (identique au full-bot backtest) au lieu d'une config fixe
   `runtime/passivbot/live.json`.
@@ -206,6 +212,8 @@
 ## Prochaines actions
 
 1. lancer un dry-run serveur long avec la config active `Pod A + Pod B, Pod C off`
-2. auditer `Pod B` comme couche complementaire avec les outils de review existants
-3. continuer la validation de `Pod A` complet sur une plage plus longue
-4. lancer un sweep Hydra offline et sortir un memo `go / park / kill`
+2. cadrer puis implementer `Pod C -> Tradfi Trend` sur un sous-univers `indices / commodities`
+3. constituer un dataset Tradfi exploitable pour replay via snapshots minute `l2Book + trades`
+4. auditer `Pod B` comme couche complementaire avec les outils de review existants
+5. continuer la validation de `Pod A` complet sur une plage plus longue
+6. lancer un sweep Hydra offline et sortir un memo `go / park / kill`

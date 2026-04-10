@@ -163,6 +163,13 @@ class SymbolMarketSnapshot:
     bucket_volume: float = 0.0
     bucket_trade_count: int = 0
     bucket_range_bps: float = 0.0
+    open_interest: float | None = None
+    mark_px: float | None = None
+    oracle_px: float | None = None
+    premium: float | None = None
+    day_ntl_vlm: float | None = None
+    day_base_vlm: float | None = None
+    asset_ctx_observation_age_seconds: float | None = None
     source: str = ""
 
 

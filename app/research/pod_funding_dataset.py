@@ -58,6 +58,11 @@ class FundingHistoryPoint:
     timestamp: datetime
     funding_rate: float
     open_interest: float | None
+    mark_px: float | None = None
+    oracle_px: float | None = None
+    premium: float | None = None
+    day_ntl_vlm: float | None = None
+    day_base_vlm: float | None = None
 
 
 @dataclass(slots=True)
@@ -81,7 +86,7 @@ class FundingHistorySeries:
         return point, age_seconds
 
 
-def _parse_utc_timestamp(value: object) -> datetime | None:
+def parse_utc_timestamp(value: object) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
     normalized = value.strip().replace("Z", "+00:00")
@@ -92,6 +97,10 @@ def _parse_utc_timestamp(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _parse_utc_timestamp(value: object) -> datetime | None:
+    return parse_utc_timestamp(value)
 
 
 class FundingDatasetBuilder:
@@ -133,7 +142,7 @@ class FundingDatasetBuilder:
         for record in records:
             supervisor.apply_regime_snapshot(RegimeSnapshot(**record.regime_snapshot))
             regimes_by_index.append(supervisor.state.regime.value)
-            record_timestamps.append(_parse_utc_timestamp(record.timestamp))
+            record_timestamps.append(parse_utc_timestamp(record.timestamp))
             snapshots_by_index.append(
                 {
                     item["symbol"].upper(): SymbolMarketSnapshot(**item)
@@ -267,20 +276,20 @@ class FundingDatasetBuilder:
                     continue
                 if symbols is not None and symbol not in symbols:
                     continue
-                timestamp = _parse_utc_timestamp(payload.get("timestamp") or payload.get("captured_at"))
+                timestamp = parse_utc_timestamp(payload.get("timestamp") or payload.get("captured_at"))
                 if timestamp is None:
                     continue
-                open_interest_value = payload.get("open_interest")
-                open_interest = (
-                    float(open_interest_value)
-                    if open_interest_value not in (None, "")
-                    else None
-                )
+                open_interest = self._float_or_none(payload.get("open_interest"))
                 rows_by_symbol.setdefault(symbol, []).append(
                     FundingHistoryPoint(
                         timestamp=timestamp,
                         funding_rate=float(payload.get("funding_rate", 0.0)),
                         open_interest=open_interest,
+                        mark_px=self._float_or_none(payload.get("mark_px")),
+                        oracle_px=self._float_or_none(payload.get("oracle_px")),
+                        premium=self._float_or_none(payload.get("premium")),
+                        day_ntl_vlm=self._float_or_none(payload.get("day_ntl_vlm")),
+                        day_base_vlm=self._float_or_none(payload.get("day_base_vlm")),
                     )
                 )
 
@@ -292,6 +301,23 @@ class FundingDatasetBuilder:
                 points=ordered,
             )
         return series_by_symbol
+
+    def load_funding_history(
+        self,
+        funding_history_path: str | Path | None,
+        *,
+        symbols: set[str] | None = None,
+    ) -> dict[str, FundingHistorySeries]:
+        return self._load_funding_history(
+            funding_history_path,
+            symbols=symbols,
+        )
+
+    @staticmethod
+    def _float_or_none(value: object) -> float | None:
+        if value in (None, ""):
+            return None
+        return float(value)
 
 
 def build_parser() -> argparse.ArgumentParser:

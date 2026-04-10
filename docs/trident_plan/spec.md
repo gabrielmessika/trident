@@ -6,7 +6,7 @@ TRIDENT est un systeme compose de 3 pods live et 1 pod research:
 
 - `Pod A — Anchor Trend`: swing / trend following
 - `Pod B — Range Harvester`: maker/range/inventory management
-- `Pod C — Event Raider`: moteur evenementiel
+- `Pod C — Tradfi Trend`: moteur directionnel dedie aux instruments Tradfi HL
 - `Research Pod`: experimentation offline uniquement
 
 Le systeme ne s'appuie pas sur un LLM dans la boucle de decision live.
@@ -93,13 +93,14 @@ Le routing peut etre pilote manuellement:
   - drift trimming et logs renforces
   - paper/live runner disponibles
 
-### Pod C — Event Raider
+### Pod C — Tradfi Trend
 
-- role: impulsion/event/lead-lag
-- statut: minimal implemente, research deja cadree
+- role: directionnel Tradfi / macro trend sur HL
+- statut: slot reserve, actuellement desactive tant qu'un dataset dedie n'est pas valide
 - points cle:
-  - followers dynamiques par cluster
-  - exclusions structurelles sur les leaders
+  - execution et risk gate partages avec `Pod A`
+  - univers restreint aux symbols Tradfi valides
+  - validation offline sur snapshots minute microstructure, pas sur candles HL seules
 
 ## Donnees et observabilite
 
@@ -107,8 +108,12 @@ Le routing peut etre pilote manuellement:
 
 - snapshots live JSONL
 - datasets archives locaux
+- enrichissements funding / OI / mark / oracle disponibles hors snapshots si besoin
 - statuts runtime par pod
 - journaux dry-run/live
+- regle de validation:
+  - un backtest credible pour les pods directionnels repose sur des snapshots minute TRIDENT (`l2Book + trades`) ou des archives equivalentes
+  - les candles HL seules ne sont pas considerees suffisantes pour valider un pod live
 
 ### Dashboard
 

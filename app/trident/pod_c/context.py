@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from app.settings import AppConfig, PodCConfig, load_config
-from app.trident.pod_c.service import SqueezeBreakoutService
-from app.trident.pod_c.signals import SqueezeContext
+from app.settings import AppConfig, PodCConfig
+from app.trident.pod_c.service import TradfiTrendService
+from app.trident.pod_c.signals import TradfiTrendContext
 from app.trident.types import Regime, SymbolMarketSnapshot
 
 
-class SqueezeContextService:
-    """Builds Pod C squeeze contexts from market snapshots and rolling history."""
+class TradfiTrendContextService:
+    """Builds Pod C Tradfi contexts from market snapshots and short activity history."""
 
-    def __init__(self, config: AppConfig | PodCConfig, service: SqueezeBreakoutService) -> None:
+    def __init__(self, config: AppConfig | PodCConfig, service: TradfiTrendService) -> None:
         if isinstance(config, AppConfig):
             self.config = config.pod_c
         else:
@@ -22,46 +22,65 @@ class SqueezeContextService:
         snapshots: list[SymbolMarketSnapshot],
         *,
         owned_symbols: set[str] | None = None,
-    ) -> list[SqueezeContext]:
+    ) -> list[TradfiTrendContext]:
         for snapshot in snapshots:
             self._service.update_history(
                 snapshot.symbol.upper(),
-                snapshot.bucket_range_bps,
+                snapshot.bucket_volume * snapshot.price,
                 snapshot.bucket_trade_count,
             )
 
-        contexts: list[SqueezeContext] = []
+        contexts: list[TradfiTrendContext] = []
         for snapshot in snapshots:
             symbol = snapshot.symbol.upper()
             if owned_symbols is not None and symbol not in owned_symbols:
                 continue
             if snapshot.price <= 0:
                 continue
-            squeeze_ratio = self._service.squeeze_ratio(symbol, snapshot.bucket_range_bps)
-            volume_ratio = self._service.volume_ratio(symbol, snapshot.bucket_trade_count)
-            is_candidate = (
-                squeeze_ratio >= self.config.breakout_multiplier * 0.8
-                and volume_ratio >= self.config.min_volume_spike * 0.5
-            )
-            if not is_candidate:
+            if not self._service.is_eligible_symbol(symbol, snapshot.market_cluster):
                 continue
+            bucket_notional_usd = snapshot.bucket_volume * snapshot.price
             contexts.append(
-                SqueezeContext(
+                TradfiTrendContext(
                     symbol=symbol,
                     regime=regime.value,
                     price=snapshot.price,
+                    ema_fast=snapshot.ema_fast,
+                    ema_slow=snapshot.ema_slow,
+                    vwap_distance_bps=snapshot.vwap_distance_bps,
                     spread_bps=snapshot.spread_bps,
+                    funding_rate=snapshot.funding_rate,
                     structure_score=snapshot.structure_score,
                     book_imbalance=snapshot.book_imbalance,
                     trade_flow_bias=snapshot.trade_flow_bias,
                     bucket_range_bps=snapshot.bucket_range_bps,
                     bucket_trade_count=snapshot.bucket_trade_count,
                     bucket_volume=snapshot.bucket_volume,
-                    squeeze_ratio=round(squeeze_ratio, 4),
-                    volume_ratio=round(volume_ratio, 4),
+                    bucket_notional_usd=round(bucket_notional_usd, 4),
+                    activity_ratio=round(
+                        self._service.activity_ratio(symbol, bucket_notional_usd),
+                        4,
+                    ),
+                    trade_count_ratio=round(
+                        self._service.trade_count_ratio(symbol, snapshot.bucket_trade_count),
+                        4,
+                    ),
+                    trend_bps=round(
+                        (
+                            (snapshot.ema_fast - snapshot.ema_slow)
+                            / max(snapshot.price, 1e-9)
+                            * 10_000.0
+                        ),
+                        4,
+                    ),
                     btc_aligned=snapshot.btc_aligned,
                     market_cluster=snapshot.market_cluster,
                     cluster_aligned=snapshot.cluster_aligned,
+                    cluster_leader=snapshot.cluster_leader,
                 )
             )
         return contexts
+
+
+# Backward-compatible alias while the pod is rewired from squeeze to Tradfi trend.
+SqueezeContextService = TradfiTrendContextService

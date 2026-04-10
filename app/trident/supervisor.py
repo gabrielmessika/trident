@@ -10,7 +10,7 @@ from app.trident.kill_switch import KillSwitch
 from app.trident.market_clusters import enrich_snapshots
 from app.trident.pod_a import AnchorTrendPlanner, AnchorTrendService, MarketContextService
 from app.trident.pod_b import PassivbotManager
-from app.trident.pod_c import SqueezeBreakoutPlanner, SqueezeBreakoutService, SqueezeContextService
+from app.trident.pod_c import TradfiTrendContextService, TradfiTrendPlanner, TradfiTrendService
 from app.trident.routing_overrides import (
     load_runtime_symbol_pod_override_payload,
     write_runtime_symbol_pod_override_payload,
@@ -58,9 +58,9 @@ class TridentSupervisor:
         self.pod_a_context_service = MarketContextService(config)
         self.pod_a_service = AnchorTrendService()
         self.pod_a_planner = AnchorTrendPlanner(config)
-        self.pod_c_service = SqueezeBreakoutService(config.pod_c)
-        self.pod_c_context_service = SqueezeContextService(config, self.pod_c_service)
-        self.pod_c_planner = SqueezeBreakoutPlanner(config.pod_c)
+        self.pod_c_service = TradfiTrendService(config.pod_c)
+        self.pod_c_context_service = TradfiTrendContextService(config, self.pod_c_service)
+        self.pod_c_planner = TradfiTrendPlanner(config.pod_c)
         self.pod_b_manager = PassivbotManager(config)
         self._latest_snapshots: list[SymbolMarketSnapshot] = []
         self.state = SupervisorState(
@@ -243,6 +243,7 @@ class TridentSupervisor:
             for symbol, status in status_by_symbol.items()
             if status.tradable
         )
+        snapshot_by_symbol = {snapshot.symbol.upper(): snapshot for snapshot in snapshots}
         if not tradable_symbols:
             return {
                 pod_name: []
@@ -252,7 +253,21 @@ class TridentSupervisor:
         candidates = {
             PodName.POD_A: tradable_symbols if self.config.pod_a.enabled else [],
             PodName.POD_B: tradable_symbols if self.config.pod_b.enabled else [],
-            PodName.POD_C: tradable_symbols if self.config.pod_c.enabled else [],
+            PodName.POD_C: (
+                [
+                    symbol
+                    for symbol in tradable_symbols
+                    if (
+                        snapshot_by_symbol.get(symbol) is not None
+                        and self.pod_c_service.is_eligible_symbol(
+                            symbol,
+                            snapshot_by_symbol[symbol].market_cluster,
+                        )
+                    )
+                ]
+                if self.config.pod_c.enabled
+                else []
+            ),
         }
         override_symbols = self._routing_override_symbols_by_pod(tradable_symbols)
         for pod_name, symbols in override_symbols.items():

@@ -142,36 +142,36 @@ Pour déployer puis démarrer l'API et Pod A :
 ./deploy.sh --start
 ```
 
-Pour démarrer aussi Pod B :
+Pour démarrer tout le stack :
 
 ```bash
-./deploy.sh --start --with-pod-b
+./deploy.sh --start
 ```
 
-Pour démarrer aussi Pod C :
+Pour démarrer tout sauf Pod C :
 
 ```bash
-./deploy.sh --start --with-pod-c
+./deploy.sh --start --without-pod-c
 ```
 
-Pour démarrer aussi le collecteur funding/OI autonome :
+Pour démarrer tout sauf le collecteur funding/OI global :
 
 ```bash
-./deploy.sh --start --with-funding
+./deploy.sh --start --without-funding
 ```
 
-Pour démarrer tous les pods :
+Pour démarrer tout sauf Pod B :
 
 ```bash
-./deploy.sh --start --with-pod-b --with-pod-c --with-funding
+./deploy.sh --start --without-pod-b
 ```
 
 Important :
 
 - Pod B utilise `config/trident.toml` (plus besoin de `runtime/passivbot/live.json`)
 - Pod C n'a de sens que si sa recherche a conclu à un `go`
-- `--with-funding` lance un collecteur séparé qui écrit `data/funding_history/current.jsonl`
-- `--with-pod-b` et `--with-pod-c` activent maintenant aussi logiquement les pods côté superviseur/UI, pas seulement leurs containers Docker
+- `./deploy.sh --start` lance maintenant aussi le collecteur funding global `data/funding_history/current.jsonl`
+- `Pod C` lance en plus son collecteur Tradfi dédié `data/funding_history/pod_c_tradfi.jsonl`
 - les noms `pod-a-live`, `pod-b-live`, `pod-c-live` sont des noms de services Docker historiques
 - aujourd'hui, `Pod A`, `Pod B` et `Pod C` tournent encore en dry-run / paper trading, pas en exécution réelle exchange
 
@@ -206,22 +206,22 @@ Démarrer API + Pod A :
 ./scripts/trident_server.sh start
 ```
 
-Démarrer API + Pod A + Pod B :
+Démarrer tout sauf Pod B :
 
 ```bash
-./scripts/trident_server.sh start --with-pod-b
+./scripts/trident_server.sh start --without-pod-b
 ```
 
-Démarrer API + Pod A + Pod C :
+Démarrer tout sauf Pod C :
 
 ```bash
-./scripts/trident_server.sh start --with-pod-c
+./scripts/trident_server.sh start --without-pod-c
 ```
 
-Démarrer API + Pod A + collecteur funding/OI :
+Démarrer tout sauf funding/OI global :
 
 ```bash
-./scripts/trident_server.sh start --with-funding
+./scripts/trident_server.sh start --without-funding
 ```
 
 Rebuild + redémarrage :
@@ -230,16 +230,16 @@ Rebuild + redémarrage :
 ./scripts/trident_server.sh update
 ```
 
-Rebuild + redémarrage avec Pod B :
+Rebuild + redémarrage sans Pod C :
 
 ```bash
-./scripts/trident_server.sh update --with-pod-b
+./scripts/trident_server.sh update --without-pod-c
 ```
 
-Rebuild + redémarrage avec funding/OI :
+Rebuild + redémarrage sans funding/OI global :
 
 ```bash
-./scripts/trident_server.sh update --with-funding
+./scripts/trident_server.sh update --without-funding
 ```
 
 Arrêter :
@@ -276,12 +276,12 @@ Health check :
 
 Point pratique :
 
-- `status`, `restart`, `stop` et `logs` doivent recevoir les mêmes flags `--with-pod-b` / `--with-pod-c` si tu veux voir ou piloter exactement le même sous-ensemble de services que celui lancé
+- `status`, `restart`, `stop` et `logs` prennent par defaut tout le stack; utilise les memes flags `--without-...` si tu veux piloter exactement le meme sous-ensemble de services que celui lance
 - exemple :
 
 ```bash
-./scripts/trident_server.sh status --with-pod-b
-./scripts/trident_server.sh logs --with-pod-b pod-b-live
+./scripts/trident_server.sh status --without-pod-c
+./scripts/trident_server.sh logs --without-pod-c pod-b-live
 ```
 
 Scripts raccourcis également disponibles :
@@ -500,10 +500,10 @@ Déployer + démarrer :
 ./deploy.sh --start
 ```
 
-Déployer + démarrer Pod A et Pod B :
+Déployer + démarrer sans Pod C :
 
 ```bash
-./deploy.sh --start --with-pod-b
+./deploy.sh --start --without-pod-c
 ```
 
 Contrôler sur le serveur :

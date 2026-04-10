@@ -180,13 +180,23 @@ class PodBConfig:
 @dataclass(slots=True)
 class PodCConfig:
     enabled: bool
+    symbols: list[str]
+    allowed_market_clusters: list[str]
     max_allocation_pct: float
     max_spread_bps: float
+    max_abs_funding_rate: float
     min_confidence: float
     size_multiplier: float
     reentry_cooldown_minutes: int
     time_stop_hours: int
     blocked_symbols: list[str]
+    min_bucket_notional_usd: float
+    min_bucket_trade_count: int
+    min_trend_bps: float
+    min_structure_score: float
+    max_vwap_distance_bps: float
+    min_reclaim_distance_bps: float
+    min_activity_ratio: float
     squeeze_lookback: int
     squeeze_threshold: float
     breakout_multiplier: float
@@ -590,8 +600,17 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         ),
         pod_c=PodCConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_C", bool(pod_c_data.get("enabled", False))),
+            symbols=_str_list(
+                pod_c_data.get("symbols", []),
+                upper_values=True,
+            ),
+            allowed_market_clusters=_str_list(
+                pod_c_data.get("allowed_market_clusters", []),
+                upper_values=False,
+            ),
             max_allocation_pct=float(pod_c_data.get("max_allocation_pct", 0.90)),
             max_spread_bps=float(pod_c_data.get("max_spread_bps", 6.0)),
+            max_abs_funding_rate=float(pod_c_data.get("max_abs_funding_rate", 0.01)),
             min_confidence=float(pod_c_data.get("min_confidence", 0.62)),
             size_multiplier=float(pod_c_data.get("size_multiplier", 0.55)),
             reentry_cooldown_minutes=int(pod_c_data.get("reentry_cooldown_minutes", 90)),
@@ -599,6 +618,25 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             blocked_symbols=_str_list(
                 pod_c_data.get("blocked_symbols", []),
                 upper_values=True,
+            ),
+            min_bucket_notional_usd=float(
+                pod_c_data.get("min_bucket_notional_usd", 100.0)
+            ),
+            min_bucket_trade_count=int(
+                pod_c_data.get("min_bucket_trade_count", 3)
+            ),
+            min_trend_bps=float(pod_c_data.get("min_trend_bps", 10.0)),
+            min_structure_score=float(
+                pod_c_data.get("min_structure_score", 0.20)
+            ),
+            max_vwap_distance_bps=float(
+                pod_c_data.get("max_vwap_distance_bps", 30.0)
+            ),
+            min_reclaim_distance_bps=float(
+                pod_c_data.get("min_reclaim_distance_bps", 6.0)
+            ),
+            min_activity_ratio=float(
+                pod_c_data.get("min_activity_ratio", 0.75)
             ),
             squeeze_lookback=int(pod_c_data.get("squeeze_lookback", 20)),
             squeeze_threshold=float(pod_c_data.get("squeeze_threshold", 0.50)),

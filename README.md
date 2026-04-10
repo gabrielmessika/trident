@@ -254,27 +254,28 @@ Role de chaque pod:
 - `Pod B`: moteur de range, pour les marches plus plats
 - `Pod C`: moteur opportuniste, a activer seulement si la recherche le justifie
 
-Pourquoi `deploy.sh --with-pod-b` ou `--with-pod-c` existe:
+Pourquoi `deploy.sh` a maintenant des flags `--without-...`:
 
 - `deploy.sh` sert a la fois a copier le code et, avec `--start`, a demarrer les services
-- par defaut, le demarrage est prudent: API + `Pod A`
-- `--with-pod-b` ajoute `Pod B`
-- `--with-pod-c` ajoute `Pod C`
+- par defaut, le demarrage lance tout le stack: API + `Pod A` + `Pod B` + `Pod C` + funding
+- `--without-pod-b` retire `Pod B`
+- `--without-pod-c` retire `Pod C` et son collecteur Tradfi dedie
+- `--without-funding` retire le collecteur funding global
 
 Donc:
 
 - `./deploy.sh` = deploie seulement
-- `./deploy.sh --start` = deploie puis demarre API + Pod A
-- `./deploy.sh --start --with-pod-b` = ajoute Pod B
-- `./deploy.sh --start --with-pod-b --with-pod-c` = demarre tout
+- `./deploy.sh --start` = deploie puis demarre tout
+- `./deploy.sh --start --without-pod-c` = demarre tout sauf `Pod C`
+- `./deploy.sh --start --without-funding` = demarre tout sauf le funding global
 
-En pratique, on a choisi ce mode pour garder un lancement safe:
+En pratique:
 
 - `Pod A` est le pod le plus mature
 - `Pod B` utilise le superviseur partage pour le routing et l'allocation (identique au backtest full-bot)
 - `Pod C` est desactive par defaut (allocations a 0% dans tous les regimes);
-  meme lance avec `--with-pod-c`, il ne prend aucun trade tant que ses allocations restent a 0%
-- il vaut mieux allumer peu de choses au debut, puis elargir
+  meme lance, il ne prend aucun trade tant que ses allocations restent a 0%
+- si on veut un lancement minimal, on coupe explicitement les briques non voulues avec `--without-...`
 
 Reporting actuel:
 
@@ -307,13 +308,12 @@ python3.12 -m unittest discover -s tests -v
 python3.12 -m app.backtest.runner --input /path/to/input.jsonl --output /path/to/output.jsonl
 python3.12 -m app.backtest.gbot_converter --data-dir /workspaces/trident/data/gbot_archive --date 2026-04-01 --coins BTC,ETH,SOL --output /tmp/trident_snapshots.jsonl
 python3.12 -m app.backtest.archive_replay --data-dir /workspaces/trident/data/server_archive --date-from 2026-04-01 --date-to 2026-04-03 --coins BTC,ETH,SOL --report-output /tmp/trident_report.json --journal-output /tmp/trident_journal.jsonl
-# Historical backtest (candles API HL, ~7 mois de profondeur):
-python3.12 -m app.backtest.historical_replay --date-from 2026-01-01 --date-to 2026-03-31 --coins BTC,ETH,SOL --interval 1h --report-output /tmp/historical_report.json
-# Avec donnees deja telechargees (skip fetch):
-python3.12 -m app.backtest.historical_replay --date-from 2026-01-01 --date-to 2026-03-31 --coins BTC,ETH,SOL --skip-fetch --report-output /tmp/historical_report.json
+# Pas de `historical_replay` supporte:
+# les candles HL seules ont ete invalidees pour TRIDENT, qui depend de snapshots minute `l2Book + trades`.
 uv run python -m app.live.collector --coins BTC,ETH --max-runtime-seconds 8
 uv run python -m app.live.pod_a_live_runner --coins BTC,ETH --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_a_live_journal.jsonl
-uv run python -m app.live.pod_c_live_runner --coins BTC,ETH,SOL --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_c_live_journal.jsonl
+uv run python -m app.live.pod_c_live_runner --coins SPX,PAXG,XYZ100,WTIOIL,GOLD,SILVER --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_c_live_journal.jsonl
+uv run python -m app.live.tradfi_funding_collector --poll-seconds 60 --output /workspaces/trident/data/funding_history/pod_c_tradfi.jsonl
 python3.12 -m app.backtest.pod_c_runner --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --output /tmp/pod_c_journal.jsonl
 python3.12 -m app.research.pod_c_research_suite --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --leader-symbols BTC,ETH --follower-symbols SOL,HYPE,SUI --output-json /tmp/pod_c_research.json --output-md /tmp/pod_c_research.md
 python3.12 -m app.trident.pod_b.paper_runner --config config/trident.toml --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --report-output /tmp/pod_b_report.json --journal-output /tmp/pod_b_fills.jsonl

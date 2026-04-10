@@ -130,37 +130,48 @@
   - lancer les runs offline utiles
   - decider quelles hypotheses meritent une integration future
 
-### Etape 12 — Pod C v2 Squeeze Breakout
+### Etape 12 — Pod C v2 Tradfi Trend
 
-- statut: en cours
+- statut: 20%
 - objectif:
-  - remplacer la logique lead-lag de Pod C par une strategie Volatility Squeeze Breakout
-  - approche fondamentalement differente de Pod A (trend continuation) et Pod B (range/MM)
-  - Pod C v2 cible la **transition** range→trend : detecte la compression de volatilite puis trade le breakout
+  - reutiliser le slot `Pod C` pour un moteur directionnel dedie aux instruments Tradfi de HL
+  - s'inspirer de `Pod A` pour l'execution et le risk management, avec des filtres / exits adaptes a cette microstructure
+  - rester dans l'architecture 3-pods existante (pas de `Pod D`)
+- univers cible:
+  - phase 1: indices et commodities / macro proxies
+  - ordre de validation: `SPX`, `PAXG`, puis symbols HIP-3 broad macro (`XYZ100`, `WTIOIL`, `GOLD`, `SILVER`) une fois le format symbole et la collecte valides
+  - hors scope initial: single stocks (`TSLA`, `CRCL`, `SNDK`) et FX tant qu'on n'a pas de donnees et d'edge dedies
 - principe:
-  - phase 1 (squeeze detection): `bucket_range_bps` actuel < `squeeze_threshold` × moyenne rolling
-  - phase 2 (breakout trigger): expansion de vol + direction confirmee par `book_imbalance` + `trade_flow_bias` + spike volume
-  - phase 3 (ride + exit): trailing stop base sur ATR, time stop court (2-4h)
+  - reprendre les familles de setups de `Pod A` qui survivent au Tradfi:
+    - continuation
+    - reclaim
+    - sweep / rejection
+  - durcir les filtres de qualite:
+    - spread
+    - bucket notional
+    - trade count
+    - stabilite du prix observable
+  - baisser le risque par trade:
+    - leverage plus bas
+    - `time_stop` plus court
+    - trailing / break-even plus defensifs
+  - router `Pod C` seulement vers les symbols Tradfi eligibles; `Pod A` reste le coeur crypto
 - changements requis:
-  - `app/settings.py`: remplacer les champs lead-lag de `PodCConfig` par les champs squeeze (lookback, thresholds)
-  - `config/trident.toml` `[pod_c]`: nouveaux parametres squeeze
-  - `app/trident/pod_c/signals.py`: nouveaux dataclasses `SqueezeContext` + `SqueezeSignal`
-  - `app/trident/pod_c/service.py`: `SqueezeBreakoutService` avec fenetre rolling de vol par symbole
-  - `app/trident/pod_c/context.py`: `SqueezeContextService` construit les contextes depuis les snapshots
-  - `app/trident/pod_c/exits.py`: politique de sortie adaptee au breakout (trailing ATR)
-  - `app/trident/pod_c/planner.py`: adaptation du planner
-  - `app/trident/pod_c/__init__.py`: exports mis a jour
-  - `app/trident/symbol_router.py` `_score_pod_c`: nouveau scoring favorisant les coins en squeeze (vol basse)
-  - `app/trident/supervisor.py`: rewiring des services Pod C
-- contrainte:
-  - un seul coin trade a la fois sur HL
-  - Pod C reste desactive par defaut, activable apres validation offline
-  - l'ancien code lead-lag est remplace (pas de Pod D, trop de refactoring sur l'archi 3-pods)
+  - `app/settings.py` et `config/trident.toml`: redefinir `pod_c` autour d'un univers Tradfi, de caps dedies et de filtres par sous-famille
+  - `app/trident/market_clusters.py`: etendre les familles / leaders aux instruments Tradfi utiles
+  - `app/trident/pod_c/*`: remplacer la logique breakout squeeze par une logique directionnelle type `Pod A` avec filtres / exits specifiques Tradfi
+  - `app/trident/symbol_router.py`: reserver `_score_pod_c` aux symbols Tradfi valides au lieu d'un scoring squeeze generique
+  - `app/trident/supervisor.py`: rewiring des services `Pod C`
+  - optionnel phase 2: enrichir les snapshots avec `mark/oracle/openInterest` si ces champs s'averent discriminants
+- contrainte data:
+  - le backtest credible du pod repose sur des snapshots minute TRIDENT avec microstructure (`l2Book + trades`) et, si utile, enrichissement `assetCtx`
+  - les candles HL seules restent insuffisantes pour valider ce type de pod
+  - les donnees peuvent venir soit d'une collecte live dediee, soit d'un convertisseur depuis les archives HL (`market_data` + donnees de trades/fills)
 - criteres de done:
   - code compile et tests passent
-  - backtest runner et live runner fonctionnent avec la nouvelle logique
-  - scoring du router aligne avec la logique squeeze
-  - la config par defaut est sensee et documentee
+  - un replay runner et un live runner fonctionnent avec la logique Tradfi
+  - la validation offline utilise un dataset Tradfi dedie, pas un backtest candles
+  - un verdict `go / park / kill` est sorti par sous-famille (`indices`, `commodities`, puis eventuellement `equities` / `fx`)
 
 ### Etape 13 — Pod A optimisation aggressive
 

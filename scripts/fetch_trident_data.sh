@@ -367,8 +367,8 @@ fetch_logs_and_runtime() {
 
 fetch_docker_logs() {
     info "Rapatriement des tails de logs Docker..."
-    local services=("trident-api" "pod-a-live" "pod-b-live" "pod-c-live" "funding-collector")
-    local files=("trident-api.log" "pod-a-live.log" "pod-b-live.log" "pod-c-live.log" "funding-collector.log")
+    local services=("trident-api" "pod-a-live" "pod-b-live" "pod-c-live" "tradfi-funding-collector" "funding-collector")
+    local files=("trident-api.log" "pod-a-live.log" "pod-b-live.log" "pod-c-live.log" "tradfi-funding-collector.log" "funding-collector.log")
     local i
 
     for i in "${!services[@]}"; do

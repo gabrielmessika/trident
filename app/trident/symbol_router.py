@@ -729,26 +729,39 @@ class SymbolRouter:
         snapshot: SymbolMarketSnapshot,
         local_regime: SymbolLocalRegime | None,
     ) -> float:
+        if not self._pod_c_symbol_eligible(snapshot):
+            return 0.0
         global_quality = {
-            Regime.RANGE_AUCTION: 1.0,
-            Regime.DEAD_ZONE: 0.8,
-            Regime.TREND_EXPANSION: 0.4,
-            Regime.PANIC_SQUEEZE: 0.2,
+            Regime.TREND_EXPANSION: 1.0,
+            Regime.PANIC_SQUEEZE: 0.85,
+            Regime.RANGE_AUCTION: 0.40,
+            Regime.DEAD_ZONE: 0.20,
             Regime.CASH: 0.0,
         }[regime]
         local_quality = self._local_regime_affinity(PodName.POD_C, local_regime)
-        range_limit = max(self.config.pod_b.paper_guard_max_range_width_bps, 1.0)
-        squeeze_quality = _clamp(1.0 - snapshot.bucket_range_bps / (range_limit * 0.8))
-        spread_quality = _clamp(1.0 - snapshot.spread_bps / max(self.config.pod_c.max_spread_bps * 1.5, 1.0))
-        volume_quality = _clamp(snapshot.bucket_trade_count / 10.0)
-        structure_quality = _clamp(1.0 - abs(snapshot.structure_score) * 0.8)
+        trend_bps = abs(snapshot.ema_fast - snapshot.ema_slow) / max(snapshot.price, 1e-9) * 10_000.0
+        trend_quality = _clamp(trend_bps / max(self.config.pod_c.min_trend_bps * 3.0, 12.0))
+        structure_quality = _clamp(
+            abs(snapshot.structure_score) / max(self.config.pod_c.min_structure_score * 2.5, 0.4)
+        )
+        flow_quality = _clamp(abs(snapshot.trade_flow_bias + snapshot.book_imbalance))
+        spread_quality = _clamp(
+            1.0 - snapshot.spread_bps / max(self.config.pod_c.max_spread_bps * 1.2, 1.0)
+        )
+        activity_quality = _clamp(
+            (snapshot.bucket_volume * snapshot.price)
+            / max(self.config.pod_c.min_bucket_notional_usd * 2.0, 1.0)
+        )
+        alignment_quality = 1.0 if snapshot.cluster_aligned else 0.2
         return (
-            local_quality * 0.10
-            + global_quality * 0.20
-            + squeeze_quality * 0.30
-            + spread_quality * 0.15
-            + volume_quality * 0.15
-            + structure_quality * 0.10
+            local_quality * 0.12
+            + global_quality * 0.22
+            + trend_quality * 0.22
+            + structure_quality * 0.18
+            + flow_quality * 0.12
+            + activity_quality * 0.08
+            + spread_quality * 0.03
+            + alignment_quality * 0.03
         )
 
     def _classify_local_regime(
@@ -838,10 +851,23 @@ class SymbolRouter:
                 SymbolLocalRegime.NEUTRAL: 0.55,
             },
             PodName.POD_C: {
-                SymbolLocalRegime.TREND_STRUCTURE: 0.75,
-                SymbolLocalRegime.EVENT_IMPULSE: 1.0,
-                SymbolLocalRegime.RANGE_STRUCTURE: 0.25,
+                SymbolLocalRegime.TREND_STRUCTURE: 1.0,
+                SymbolLocalRegime.EVENT_IMPULSE: 0.80,
+                SymbolLocalRegime.RANGE_STRUCTURE: 0.20,
                 SymbolLocalRegime.NEUTRAL: 0.35,
             },
         }
         return affinities[pod][local_regime]
+
+    def _pod_c_symbol_eligible(self, snapshot: SymbolMarketSnapshot) -> bool:
+        symbol = str(snapshot.symbol).upper()
+        cluster = str(snapshot.market_cluster).strip().lower()
+        configured_symbols = {item.upper() for item in self.config.pod_c.symbols}
+        configured_clusters = {
+            str(item).strip().lower()
+            for item in self.config.pod_c.allowed_market_clusters
+            if str(item).strip()
+        }
+        if configured_symbols and symbol in configured_symbols:
+            return True
+        return bool(cluster) and cluster in configured_clusters

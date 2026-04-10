@@ -1,6 +1,6 @@
 # TRIDENT — Plan vivant
 
-> Derniere refonte: 2026-04-08
+> Derniere refonte: 2026-04-10
 > Objectif: garder un point d'entree court, fiable et maintenable pour piloter les evolutions du projet.
 
 ## Lecture rapide
@@ -22,7 +22,7 @@ Ce fichier reste volontairement court. Le detail historique supprime ici reste r
 - `Etape 6` a `Etape 9`: completees
 - `Etape 10`: 40%
 - `Etape 11`: 35%
-- `Etape 12`: 80% (Pod C v2 Squeeze Breakout implemente, en attente de donnees pour validation)
+- `Etape 12`: 20% (Pod C redefini comme pod directionnel Tradfi HL; dataset a constituer)
 - `Etape 13`: en cours (Pod A optimisation aggressive)
 
 ## Ce qui est vrai aujourd'hui
@@ -52,6 +52,10 @@ Ce fichier reste volontairement court. Le detail historique supprime ici reste r
   - `Pod A` moteur principal
   - `Pod B` complement defensif/range
   - `Pod C` desactive dans le run principal
+- le slot `Pod C` est maintenant reserve a un futur pod directionnel Tradfi HL:
+  - inspire de `Pod A`
+  - pas de `Pod D`
+  - sous-univers initial limite aux indices / commodities
 - la meilleure validation replay retenue a ce stade sur `2026-04-05 -> 2026-04-07` est:
   - profil `Pod A + Pod B, Pod C off`
   - `+27.0668 USD` realise
@@ -59,6 +63,9 @@ Ce fichier reste volontairement court. Le detail historique supprime ici reste r
 - Hydra reste une piste de recherche offline:
   - funding / liq / OI hors coeur live
   - pas d'activation sans preuve offline nette
+- les backtests credibles restent fondes sur des snapshots minute `l2Book + trades`:
+  - les candles HL seules ont deja ete invalidees pour les pods directionnels
+  - pas de relance de cette piste sans nouvelle preuve de precision
 
 Reglage routing retenu:
 
@@ -69,12 +76,12 @@ Reglage routing retenu:
 
 ## Priorites suivantes
 
-1. `Etape 13`: optimisation aggressive de Pod A (5 evos incrementales avec backtests).
-2. `Etape 12`: valider Pod C v2 Squeeze Breakout sur des donnees avec episodes de vol contrastes.
+1. `Etape 12`: cadrer puis implementer `Pod C -> Tradfi Trend` sur un sous-univers indices / commodities HL, avec validation offline dediee.
+2. `Etape 12`: constituer un dataset Tradfi exploitable pour replay via snapshots minute `l2Book + trades`, eventuellement enrichis par `assetCtx`.
 3. `Etape 10`: lancer un dry-run serveur long avec le profil actif `Pod A + Pod B, Pod C off`, puis auditer avec `trident_dry_run_review.sh`.
-3. `Etape 4bis`: confirmer sur une plage plus longue le comportement `Pod A` en dry-run live petit wallet.
-4. `Etape 5`: recalibrer Pod B comme complement du run principal, pas comme coeur de perf, via expectancy/toxicite sur runs longs.
-5. `Etape 11`: lancer un sweep Hydra offline et sortir un verdict `go / park / kill` par hypothese.
+4. `Etape 4bis`: confirmer sur une plage plus longue le comportement `Pod A` en dry-run live petit wallet.
+5. `Etape 5`: recalibrer Pod B comme complement du run principal, pas comme coeur de perf, via expectancy/toxicite sur runs longs.
+6. `Etape 11`: lancer un sweep Hydra offline et sortir un verdict `go / park / kill` par hypothese.
 
 ## Regles de maintenance
 

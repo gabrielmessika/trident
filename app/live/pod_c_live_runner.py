@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,20 +25,28 @@ class PodCLiveRunner:
     """Runs Pod C on the native Hyperliquid collector using shared dry-run rules."""
 
     def __init__(self, config: AppConfig, coins: list[str] | None = None) -> None:
-        self.config = config
-        self.coins = (
+        selected_coins = (
             coins
+            or config.pod_c.symbols
             or config.hyperliquid.observation_universe
             or config.hyperliquid.default_coins
         )
-        self.collector = HyperliquidLiveCollector(config, coins=self.coins)
+        self.coins = [str(coin).strip().upper() for coin in selected_coins if str(coin).strip()]
+        self.config = replace(
+            config,
+            hyperliquid=replace(
+                config.hyperliquid,
+                observation_universe=list(self.coins),
+            ),
+        )
+        self.collector = HyperliquidLiveCollector(self.config, coins=self.coins)
         self.supervisor = TridentSupervisor(
-            config=config,
+            config=self.config,
             profile="trident-live-pod-c",
             mode="dry-run",
         )
-        self.risk_gate = PodCRiskGate(config)
-        self.executor = DirectionalExecutor(config)
+        self.risk_gate = PodCRiskGate(self.config)
+        self.executor = DirectionalExecutor(self.config)
         self.report = PodABacktestReport()
         self._latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
 

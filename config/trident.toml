@@ -47,11 +47,21 @@ default_coins = ["BTC", "ETH", "SOL", "HYPE"]
 [hyperliquid.market_cluster_overrides]
 SPX = "index"
 PAXG = "gold"
+XYZ100 = "index"
+WTIOIL = "oil"
+GOLD = "gold"
+SILVER = "silver"
+TSLA = "equity"
+CRCL = "equity"
+SNDK = "equity"
 
 [hyperliquid.cluster_leaders]
 crypto = ["BTC", "ETH"]
-index = ["SPX"]
-gold = ["PAXG"]
+index = ["SPX", "XYZ100"]
+gold = ["PAXG", "GOLD"]
+silver = ["SILVER"]
+oil = ["WTIOIL"]
+equity = ["TSLA"]
 
 [trident]
 enabled = true
@@ -226,14 +236,24 @@ XRP = 0.65
 
 [pod_c]
 enabled = true
+symbols = ["SPX", "PAXG", "XYZ100", "WTIOIL", "GOLD", "SILVER"]
+allowed_market_clusters = ["index", "gold", "silver", "oil"]
 max_allocation_pct = 0.90
-max_spread_bps = 6.0
+max_spread_bps = 8.0
+max_abs_funding_rate = 0.015
 min_confidence = 0.62
 size_multiplier = 0.55
 reentry_cooldown_minutes = 90
-time_stop_hours = 3
+time_stop_hours = 6
 blocked_symbols = []
-# Squeeze Breakout v2 parameters
+min_bucket_notional_usd = 100.0
+min_bucket_trade_count = 3
+min_trend_bps = 8.0
+min_structure_score = 0.18
+max_vwap_distance_bps = 35.0
+min_reclaim_distance_bps = 6.0
+min_activity_ratio = 0.75
+# Legacy fields kept for backward compatibility while Pod C is migrated from squeeze to Tradfi trend.
 squeeze_lookback = 20           # rolling window size (snapshots, ~1 per minute)
 squeeze_threshold = 0.50        # current_vol / avg_vol below this = squeeze detected
 breakout_multiplier = 1.8       # current_vol / avg_vol above this = breakout trigger

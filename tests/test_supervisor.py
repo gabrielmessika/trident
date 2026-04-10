@@ -162,8 +162,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["regime"], "TrendExpansion")
         self.assertEqual(snapshot["capital_plan"]["regime"], "TrendExpansion")
         self.assertEqual(snapshot["capital_plan"]["total_equity_usd"], 1000.0)
-        self.assertEqual(snapshot["pods"]["pod_a"]["target_pct"], 0.6)
-        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_a"]["symbols"][0]["target_pct"], 0.15)
+        self.assertEqual(snapshot["pods"]["pod_a"]["target_pct"], 0.85)
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_a"]["symbols"][0]["target_pct"], 0.2125)
 
     def test_supervisor_previews_pod_a_signals(self) -> None:
         supervisor = TridentSupervisor(
@@ -246,8 +246,8 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0].symbol, "ETH")
-        self.assertEqual(plans[0].target_notional_usd, 468.75)
-        self.assertEqual(plans[0].effective_leverage, 2.0)
+        self.assertEqual(plans[0].target_notional_usd, 781.25)
+        self.assertEqual(plans[0].effective_leverage, 3.125)
 
     def test_supervisor_rebalances_pod_a_allocation_over_active_signals_on_small_wallet(self) -> None:
         config = override_app_config(
@@ -274,10 +274,10 @@ class SupervisorTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(allocation.target_usd, 100.0)
+        self.assertEqual(allocation.target_usd, 50.0)
         self.assertEqual(len(allocation.symbols), 1)
         self.assertEqual(allocation.symbols[0].symbol, "ETH")
-        self.assertEqual(allocation.symbols[0].target_usd, 100.0)
+        self.assertEqual(allocation.symbols[0].target_usd, 50.0)
 
     def test_supervisor_filters_observation_only_symbols_out_of_pod_a(self) -> None:
         supervisor = TridentSupervisor(
@@ -438,6 +438,9 @@ class SupervisorTests(unittest.TestCase):
     def test_supervisor_routes_symbols_dynamically_by_market_context(self) -> None:
         self.config.pod_b.enabled = True
         self.config.pod_c.enabled = True
+        self.config.trident.allocations.trend_expansion.pod_a = 0.75
+        self.config.trident.allocations.trend_expansion.pod_b = 0.15
+        self.config.trident.allocations.trend_expansion.pod_c = 0.10
         supervisor = TridentSupervisor(
             config=self.config,
             profile="trident",
@@ -512,6 +515,22 @@ class SupervisorTests(unittest.TestCase):
                     bucket_range_bps=52.0,
                 ),
                 SymbolMarketSnapshot(
+                    symbol="SPX",
+                    price=5100.0,
+                    ema_fast=5112.0,
+                    ema_slow=5087.0,
+                    vwap_distance_bps=-3.0,
+                    structure_score=0.44,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.12,
+                    trade_flow_bias=0.10,
+                    bucket_volume=1.8,
+                    bucket_trade_count=7,
+                    bucket_range_bps=20.0,
+                ),
+                SymbolMarketSnapshot(
                     symbol="DOGE",
                     price=0.18,
                     ema_fast=0.1802,
@@ -561,10 +580,13 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["ownership_conflicts"], [])
         self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC", "ETH", "HYPE", "SOL"])
         self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["DOGE", "SUI", "XRP"])
-        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], [])
+        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["SPX"])
         sui_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SUI")
+        spx_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SPX")
         self.assertEqual(sui_routing["owner"], "pod_b")
         self.assertEqual(sui_routing["mode"], "dynamic_affinity")
+        self.assertEqual(spx_routing["owner"], "pod_c")
+        self.assertEqual(spx_routing["mode"], "dynamic_affinity")
 
     def test_supervisor_routes_new_observation_symbol_without_static_pod_lists(self) -> None:
         self.config.pod_b.enabled = True
@@ -896,6 +918,13 @@ class SupervisorTests(unittest.TestCase):
 
     def test_supervisor_applies_reassignment_cooldown_after_owner_switch(self) -> None:
         self.config.pod_c.enabled = True
+        self.config.pod_b.enabled = True
+        self.config.trident.allocations.trend_expansion.pod_a = 0.75
+        self.config.trident.allocations.trend_expansion.pod_b = 0.15
+        self.config.trident.allocations.trend_expansion.pod_c = 0.10
+        self.config.trident.allocations.range_auction.pod_a = 0.10
+        self.config.trident.allocations.range_auction.pod_b = 0.80
+        self.config.trident.allocations.range_auction.pod_c = 0.10
         self.config.trident.routing.reassignment_cooldown_seconds = 300
         supervisor = TridentSupervisor(
             config=self.config,
@@ -911,55 +940,66 @@ class SupervisorTests(unittest.TestCase):
                 structure_score=0.55,
             )
         )
-        trend_snapshot = SymbolMarketSnapshot(
-            symbol="SOL",
-            price=180.0,
-            ema_fast=181.5,
-            ema_slow=179.3,
-            vwap_distance_bps=-5.0,
-            structure_score=0.72,
-            funding_rate=0.0002,
-            spread_bps=1.4,
+        range_snapshot = SymbolMarketSnapshot(
+            symbol="SPX",
+            price=5100.0,
+            ema_fast=5100.5,
+            ema_slow=5100.0,
+            vwap_distance_bps=-0.6,
+            structure_score=0.02,
+            funding_rate=0.0,
+            spread_bps=1.0,
             btc_aligned=True,
-            book_imbalance=0.05,
-            trade_flow_bias=0.04,
-            bucket_range_bps=44.0,
+            book_imbalance=0.01,
+            trade_flow_bias=0.01,
+            bucket_volume=0.5,
+            bucket_trade_count=5,
+            bucket_range_bps=12.0,
         )
-        event_snapshot = SymbolMarketSnapshot(
-            symbol="SOL",
-            price=180.0,
-            ema_fast=180.2,
-            ema_slow=180.1,
-            vwap_distance_bps=-15.0,
-            structure_score=0.9,
-            funding_rate=0.0002,
-            spread_bps=1.4,
+        trend_snapshot = SymbolMarketSnapshot(
+            symbol="SPX",
+            price=5110.0,
+            ema_fast=5124.0,
+            ema_slow=5092.0,
+            vwap_distance_bps=-2.5,
+            structure_score=0.42,
+            funding_rate=0.0,
+            spread_bps=1.0,
             btc_aligned=True,
-            book_imbalance=0.55,
-            trade_flow_bias=0.52,
-            bucket_range_bps=180.0,
+            book_imbalance=0.12,
+            trade_flow_bias=0.10,
+            bucket_volume=1.8,
+            bucket_trade_count=7,
+            bucket_range_bps=20.0,
         )
 
+        supervisor.refresh_symbol_routing([range_snapshot])
         supervisor.refresh_symbol_routing([trend_snapshot])
-        supervisor.refresh_symbol_routing([event_snapshot])
-        supervisor.refresh_symbol_routing([trend_snapshot])
+        supervisor.refresh_symbol_routing([range_snapshot])
 
         snapshot = supervisor.snapshot()
-        sol_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SOL")
+        spx_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SPX")
 
-        self.assertEqual(sol_routing["owner"], "pod_c")
-        self.assertEqual(sol_routing["mode"], "dynamic_cooldown")
-        self.assertTrue(sol_routing["reassignment_cooldown_active"])
-        self.assertGreater(sol_routing["reassignment_cooldown_remaining_seconds"], 0)
-        self.assertEqual(snapshot["symbol_reassignment_count_by_symbol"].get("SOL"), 1)
-        self.assertIn("pod_a", sol_routing["pod_reasoning"])
-        self.assertIn("best_candidate", sol_routing["pod_reasoning"]["pod_a"])
+        self.assertEqual(spx_routing["owner"], "pod_c")
+        self.assertEqual(spx_routing["mode"], "dynamic_cooldown")
+        self.assertTrue(spx_routing["reassignment_cooldown_active"])
+        self.assertGreater(spx_routing["reassignment_cooldown_remaining_seconds"], 0)
+        self.assertEqual(snapshot["symbol_reassignment_count_by_symbol"].get("SPX"), 1)
+        self.assertIn("pod_b", spx_routing["pod_reasoning"])
+        self.assertIn("best_candidate", spx_routing["pod_reasoning"]["pod_b"])
 
     def test_supervisor_applies_symbol_reassignment_debounce_when_global_cooldown_is_disabled(self) -> None:
         self.config.pod_c.enabled = True
+        self.config.pod_b.enabled = True
+        self.config.trident.allocations.trend_expansion.pod_a = 0.75
+        self.config.trident.allocations.trend_expansion.pod_b = 0.15
+        self.config.trident.allocations.trend_expansion.pod_c = 0.10
+        self.config.trident.allocations.range_auction.pod_a = 0.10
+        self.config.trident.allocations.range_auction.pod_b = 0.80
+        self.config.trident.allocations.range_auction.pod_c = 0.10
         self.config.trident.routing.reassignment_cooldown_seconds = 0
         self.config.trident.routing.reassignment_debounce_min_score = 0.0
-        self.config.trident.routing.reassignment_debounce_seconds_by_symbol = {"SOL": 3600}
+        self.config.trident.routing.reassignment_debounce_seconds_by_symbol = {"SPX": 3600}
         supervisor = TridentSupervisor(
             config=self.config,
             profile="trident",
@@ -974,50 +1014,57 @@ class SupervisorTests(unittest.TestCase):
                 structure_score=0.55,
             )
         )
-        trend_snapshot = SymbolMarketSnapshot(
-            symbol="SOL",
-            price=180.0,
-            ema_fast=181.5,
-            ema_slow=179.3,
-            vwap_distance_bps=-5.0,
-            structure_score=0.72,
-            funding_rate=0.0002,
-            spread_bps=1.4,
+        range_snapshot = SymbolMarketSnapshot(
+            symbol="SPX",
+            price=5100.0,
+            ema_fast=5100.5,
+            ema_slow=5100.0,
+            vwap_distance_bps=-0.6,
+            structure_score=0.02,
+            funding_rate=0.0,
+            spread_bps=1.0,
             btc_aligned=True,
-            book_imbalance=0.05,
-            trade_flow_bias=0.04,
-            bucket_range_bps=44.0,
+            book_imbalance=0.01,
+            trade_flow_bias=0.01,
+            bucket_volume=0.5,
+            bucket_trade_count=5,
+            bucket_range_bps=12.0,
         )
-        event_snapshot = SymbolMarketSnapshot(
-            symbol="SOL",
-            price=180.0,
-            ema_fast=180.2,
-            ema_slow=180.1,
-            vwap_distance_bps=-15.0,
-            structure_score=0.9,
-            funding_rate=0.0002,
-            spread_bps=1.4,
+        trend_snapshot = SymbolMarketSnapshot(
+            symbol="SPX",
+            price=5110.0,
+            ema_fast=5124.0,
+            ema_slow=5092.0,
+            vwap_distance_bps=-2.5,
+            structure_score=0.42,
+            funding_rate=0.0,
+            spread_bps=1.0,
             btc_aligned=True,
-            book_imbalance=0.55,
-            trade_flow_bias=0.52,
-            bucket_range_bps=180.0,
+            book_imbalance=0.12,
+            trade_flow_bias=0.10,
+            bucket_volume=1.8,
+            bucket_trade_count=7,
+            bucket_range_bps=20.0,
         )
 
+        supervisor.refresh_symbol_routing([range_snapshot])
         supervisor.refresh_symbol_routing([trend_snapshot])
-        supervisor.refresh_symbol_routing([event_snapshot])
-        supervisor.refresh_symbol_routing([trend_snapshot])
+        supervisor.refresh_symbol_routing([range_snapshot])
 
         snapshot = supervisor.snapshot()
-        sol_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SOL")
+        spx_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SPX")
 
-        self.assertEqual(sol_routing["owner"], "pod_c")
-        self.assertEqual(sol_routing["mode"], "dynamic_debounce")
-        self.assertTrue(sol_routing["reassignment_cooldown_active"])
-        self.assertGreater(sol_routing["reassignment_cooldown_remaining_seconds"], 0)
-        self.assertEqual(snapshot["symbol_reassignment_count_by_symbol"].get("SOL"), 1)
+        self.assertEqual(spx_routing["owner"], "pod_c")
+        self.assertEqual(spx_routing["mode"], "dynamic_debounce")
+        self.assertTrue(spx_routing["reassignment_cooldown_active"])
+        self.assertGreater(spx_routing["reassignment_cooldown_remaining_seconds"], 0)
+        self.assertEqual(snapshot["symbol_reassignment_count_by_symbol"].get("SPX"), 1)
 
     def test_supervisor_applies_symbol_routing_override_to_pod_c(self) -> None:
         self.config.pod_c.enabled = True
+        self.config.trident.allocations.trend_expansion.pod_a = 0.75
+        self.config.trident.allocations.trend_expansion.pod_b = 0.15
+        self.config.trident.allocations.trend_expansion.pod_c = 0.10
         self.config.trident.routing.symbol_pod_overrides["BTC"] = "pod_c"
         supervisor = TridentSupervisor(
             config=self.config,
@@ -1192,23 +1239,14 @@ class SupervisorTests(unittest.TestCase):
         snapshot = supervisor.snapshot()
 
         self.assertEqual(snapshot["capital_plan"]["regime"], "DeadZone")
-        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_pct"], 0.2)
-        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_usd"], 200.0)
-        self.assertEqual(len(snapshot["pods"]["pod_b"]["owned_symbols"]), 8)
-        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], symbols[:8])
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_pct"], 0.25)
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_usd"], 250.0)
+        self.assertEqual(len(snapshot["pods"]["pod_b"]["owned_symbols"]), 10)
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], symbols)
         self.assertEqual(
             [item["symbol"] for item in snapshot["capital_plan"]["pods"]["pod_b"]["symbols"]],
-            symbols[:8],
+            symbols,
         )
-        overflow = {
-            item["symbol"]: item
-            for item in snapshot["symbol_routing"]
-            if item["symbol"] in symbols[8:]
-        }
-        self.assertIsNone(overflow["COIN8"]["owner"])
-        self.assertEqual(overflow["COIN8"]["mode"], "allocation_capacity")
-        self.assertIn("capacity_trim:pod_b", overflow["COIN8"]["reason"])
-        self.assertIsNone(overflow["COIN9"]["owner"])
         self.assertEqual(snapshot["ownership_conflicts"], [])
 
 

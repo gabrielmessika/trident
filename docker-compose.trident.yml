@@ -142,6 +142,34 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  tradfi-funding-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.trident
+    container_name: trident-tradfi-funding-collector
+    command:
+      - python
+      - -m
+      - app.live.tradfi_funding_collector
+      - --config
+      - config/trident.toml
+      - --output
+      - data/funding_history/pod_c_tradfi.jsonl
+      - --poll-seconds
+      - "60"
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./runtime:/app/runtime
+      - ./logs:/app/logs
+    restart: unless-stopped
+    profiles: ["pod_c"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   funding-collector:
     build:
       context: .

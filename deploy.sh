@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--with-pod-b] [--with-pod-c] [--with-funding]
+Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--without-pod-b] [--without-pod-c] [--without-funding]
 
 Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
@@ -23,10 +23,13 @@ Déploie TRIDENT sur le serveur :
 
 Par défaut :
 - host SSH : trident-hetzner
-- démarrage avec `--start` : API + Pod A
-- `--with-pod-b` ajoute Pod B
-- `--with-pod-c` ajoute Pod C
-- `--with-funding` ajoute le collecteur funding/OI autonome
+- démarrage avec `--start` : API + Pod A + Pod B + Pod C + funding
+- `--without-pod-b` retire Pod B
+- `--without-pod-c` retire Pod C
+- `--without-funding` retire le collecteur funding/OI global
+
+Compatibilité :
+- `--with-pod-b`, `--with-pod-c`, `--with-funding` restent acceptés mais sont désormais redondants
 EOF
 }
 
@@ -36,16 +39,16 @@ SSH_USER="${TRIDENT_DEPLOY_USER:-trident-deploy}"
 IDENTITY_FILE="${TRIDENT_DEPLOY_IDENTITY:-${HOME}/.ssh/trident_hetzner_ed25519}"
 DEPLOY_DIR="/opt/trident"
 START=""
-WITH_POD_B=""
-WITH_POD_C=""
-WITH_FUNDING=""
+ENABLE_POD_B="true"
+ENABLE_POD_C="true"
+ENABLE_FUNDING="true"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 selected_pods_label() {
     local pods=("API" "Pod A")
-    [ -n "$WITH_POD_B" ] && pods+=("Pod B")
-    [ -n "$WITH_POD_C" ] && pods+=("Pod C")
-    [ -n "$WITH_FUNDING" ] && pods+=("Funding Collector")
+    [ -n "$ENABLE_POD_B" ] && pods+=("Pod B")
+    [ -n "$ENABLE_POD_C" ] && pods+=("Pod C" "Tradfi Funding Collector")
+    [ -n "$ENABLE_FUNDING" ] && pods+=("Funding Collector")
     local joined=""
     local pod
     for pod in "${pods[@]}"; do
@@ -56,6 +59,14 @@ selected_pods_label() {
         fi
     done
     printf '%s' "$joined"
+}
+
+selected_server_flags() {
+    local flags=""
+    [ -z "$ENABLE_POD_B" ] && flags="${flags} --without-pod-b"
+    [ -z "$ENABLE_POD_C" ] && flags="${flags} --without-pod-c"
+    [ -z "$ENABLE_FUNDING" ] && flags="${flags} --without-funding"
+    printf '%s' "$flags"
 }
 
 while [ $# -gt 0 ]; do
@@ -77,15 +88,27 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --with-pod-b)
-            WITH_POD_B="true"
+            ENABLE_POD_B="true"
             shift
             ;;
         --with-pod-c)
-            WITH_POD_C="true"
+            ENABLE_POD_C="true"
             shift
             ;;
         --with-funding)
-            WITH_FUNDING="true"
+            ENABLE_FUNDING="true"
+            shift
+            ;;
+        --without-pod-b)
+            ENABLE_POD_B=""
+            shift
+            ;;
+        --without-pod-c)
+            ENABLE_POD_C=""
+            shift
+            ;;
+        --without-funding)
+            ENABLE_FUNDING=""
             shift
             ;;
         -h|--help)
@@ -165,9 +188,9 @@ deploy_code() {
 build_remote() {
     info "Build Docker sur le serveur..."
     local profile_args=""
-    [ -n "$WITH_POD_B" ] && profile_args="${profile_args} --profile pod_b"
-    [ -n "$WITH_POD_C" ] && profile_args="${profile_args} --profile pod_c"
-    [ -n "$WITH_FUNDING" ] && profile_args="${profile_args} --profile funding"
+    [ -n "$ENABLE_POD_B" ] && profile_args="${profile_args} --profile pod_b"
+    [ -n "$ENABLE_POD_C" ] && profile_args="${profile_args} --profile pod_c"
+    [ -n "$ENABLE_FUNDING" ] && profile_args="${profile_args} --profile funding"
     ssh_remote "cd ${DEPLOY_DIR} && docker compose -f docker-compose.trident.yml${profile_args} build"
     ok "Image Docker buildée"
 }
@@ -182,10 +205,8 @@ post_checks() {
 
 start_remote() {
     info "Démarrage des services sur le serveur..."
-    local extra_args=""
-    [ -n "$WITH_POD_B" ] && extra_args="${extra_args} --with-pod-b"
-    [ -n "$WITH_POD_C" ] && extra_args="${extra_args} --with-pod-c"
-    [ -n "$WITH_FUNDING" ] && extra_args="${extra_args} --with-funding"
+    local extra_args
+    extra_args="$(selected_server_flags)"
     info "Services demandés: $(selected_pods_label)"
     ssh_remote "cd ${DEPLOY_DIR} && ./scripts/trident_server.sh start${extra_args}"
     ok "Services démarrés"
@@ -218,11 +239,11 @@ if [ -n "$START" ]; then
     echo "  API health : http://<server-ip-or-dns>:3000/health"
     echo "  État runtime : http://<server-ip-or-dns>:3000/api/state"
     echo "  Note : si ${HOST} est un alias SSH local (ex: trident-hetzner), utilise l'IP publique ou le DNS du serveur dans le navigateur."
-    echo "  Contrôle serveur : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST} 'cd ${DEPLOY_DIR} && ./scripts/trident_server.sh status${WITH_POD_B:+ --with-pod-b}${WITH_POD_C:+ --with-pod-c}${WITH_FUNDING:+ --with-funding}'"
+    echo "  Contrôle serveur : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST} 'cd ${DEPLOY_DIR} && ./scripts/trident_server.sh status$(selected_server_flags)'"
 else
     echo "Pour démarrer après déploiement :"
     echo "  ./deploy.sh --start"
-    echo "  ./deploy.sh --start --with-pod-b"
-    echo "  ./deploy.sh --start --with-funding"
+    echo "  ./deploy.sh --start --without-pod-c"
+    echo "  ./deploy.sh --start --without-funding"
 fi
 echo ""

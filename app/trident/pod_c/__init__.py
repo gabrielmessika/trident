@@ -1,9 +1,14 @@
-"""Pod C — Squeeze Breakout strategy."""
+"""Pod C — Tradfi trend strategy."""
 
-from app.trident.pod_c.context import SqueezeContextService
-from app.trident.pod_c.planner import SqueezeBreakoutPlanner
-from app.trident.pod_c.service import SqueezeBreakoutService
-from app.trident.pod_c.signals import SqueezeContext, SqueezeSignal
+from app.trident.pod_c.context import SqueezeContextService, TradfiTrendContextService
+from app.trident.pod_c.planner import SqueezeBreakoutPlanner, TradfiTrendPlanner
+from app.trident.pod_c.service import SqueezeBreakoutService, TradfiTrendService
+from app.trident.pod_c.signals import (
+    SqueezeContext,
+    SqueezeSignal,
+    TradfiTrendContext,
+    TradfiTrendSignal,
+)
 
 __all__ = [
     "SqueezeBreakoutPlanner",
@@ -11,4 +16,9 @@ __all__ = [
     "SqueezeContext",
     "SqueezeContextService",
     "SqueezeSignal",
+    "TradfiTrendContext",
+    "TradfiTrendContextService",
+    "TradfiTrendPlanner",
+    "TradfiTrendService",
+    "TradfiTrendSignal",
 ]
