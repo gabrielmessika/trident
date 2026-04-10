@@ -5,7 +5,9 @@ from pathlib import Path
 
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
 from app.observability.metrics import MetricsRegistry
+from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
 from app.trident.supervisor import TridentSupervisor
+from app.trident.types import PodName
 
 
 @dataclass(slots=True)
@@ -26,6 +28,21 @@ class PodRuntimeReport:
 
 
 @dataclass(slots=True)
+class RuntimeServiceReport:
+    service: str
+    label: str
+    enabled: bool
+    healthy: bool
+    process_state: str | None = None
+    symbol_count: int = 0
+    polls_completed: int = 0
+    records_written: int = 0
+    last_collected_at: str | None = None
+    output_path: str | None = None
+    comment: str | None = None
+
+
+@dataclass(slots=True)
 class MultiPodRuntimeReport:
     profile: str
     mode: str
@@ -40,11 +57,15 @@ class MultiPodRuntimeReport:
     total_fill_count: int
     realized_pnl_usd: float
     total_unrealized_pnl_usd: float
+    enabled_service_count: int = 0
+    healthy_service_count: int = 0
     pods: list[PodRuntimeReport] = field(default_factory=list)
+    services: list[RuntimeServiceReport] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["pods"] = [asdict(pod) for pod in self.pods]
+        payload["services"] = [asdict(service) for service in self.services]
         return payload
 
 
@@ -57,11 +78,11 @@ def build_runtime_report(
         metrics.refresh_from_supervisor(supervisor)
     pod_a_runtime = load_runtime_status("logs/pod_a_live_status.json")
     pod_c_runtime = load_runtime_status("logs/pod_c_live_status.json")
-    runtime_supervisor = runtime_snapshot if isinstance(runtime_snapshot, dict) else None
-    if runtime_supervisor is None and runtime_status_is_fresh(pod_a_runtime):
-        runtime_supervisor = pod_a_runtime.get("supervisor")
-    if runtime_supervisor is None and runtime_status_is_fresh(pod_c_runtime):
-        runtime_supervisor = pod_c_runtime.get("supervisor")
+    runtime_supervisor = merge_runtime_supervisor_snapshot(
+        pod_a_runtime,
+        pod_c_runtime,
+        base_snapshot=runtime_snapshot if isinstance(runtime_snapshot, dict) else None,
+    )
     pod_health_by_name = {
         health.pod.value: health for health in supervisor.pod_health()
     }
@@ -73,6 +94,7 @@ def build_runtime_report(
         runtime_supervisor.get("capital_plan", {}) if isinstance(runtime_supervisor, dict) else {}
     )
     pod_reports: list[PodRuntimeReport] = []
+    service_reports = _runtime_service_reports(supervisor)
     active_position_count = 0
     active_open_order_count = 0
     total_fill_count = 0
@@ -208,7 +230,12 @@ def build_runtime_report(
         total_fill_count=total_fill_count,
         realized_pnl_usd=round(realized_pnl_usd, 4),
         total_unrealized_pnl_usd=round(total_unrealized_pnl_usd, 4),
+        enabled_service_count=sum(1 for service in service_reports if service.enabled),
+        healthy_service_count=sum(
+            1 for service in service_reports if service.enabled and service.healthy
+        ),
         pods=pod_reports,
+        services=service_reports,
     )
 
 
@@ -220,6 +247,78 @@ def _pod_b_runtime_status(supervisor: TridentSupervisor) -> dict[str, object]:
     if runtime_status_is_fresh(payload):
         return payload
     return supervisor.state.pod_b_status
+
+
+def _runtime_service_reports(supervisor: TridentSupervisor) -> list[RuntimeServiceReport]:
+    return [
+        _runtime_service_report(
+            "logs/funding_collector_status.json",
+            service="funding_collector",
+            label="Funding Collector",
+            enabled=True,
+        ),
+        _runtime_service_report(
+            "logs/tradfi_funding_collector_status.json",
+            service="tradfi_funding_collector",
+            label="Tradfi Funding Collector",
+            enabled=supervisor.pods[PodName.POD_C].enabled,
+        ),
+    ]
+
+
+def _runtime_service_report(
+    status_path: str | Path,
+    *,
+    service: str,
+    label: str,
+    enabled: bool,
+) -> RuntimeServiceReport:
+    if not enabled:
+        return RuntimeServiceReport(
+            service=service,
+            label=label,
+            enabled=False,
+            healthy=False,
+            process_state="disabled",
+            output_path=None,
+            comment="Collector désactivé.",
+        )
+    payload = load_runtime_status(status_path)
+    if not isinstance(payload, dict):
+        return RuntimeServiceReport(
+            service=service,
+            label=label,
+            enabled=True,
+            healthy=False,
+            process_state="missing",
+            output_path=None,
+            comment="Runtime status absent.",
+        )
+    healthy = runtime_status_is_fresh(payload)
+    polls_completed = int(payload.get("polls_completed", 0))
+    records_written = int(payload.get("records_written", 0))
+    process_state = str(payload.get("process_state") or "unknown")
+    return RuntimeServiceReport(
+        service=str(payload.get("service") or service),
+        label=str(payload.get("label") or label),
+        enabled=True,
+        healthy=healthy,
+        process_state=process_state,
+        symbol_count=int(payload.get("symbol_count", 0)),
+        polls_completed=polls_completed,
+        records_written=records_written,
+        last_collected_at=(
+            str(payload.get("last_collected_at")) if payload.get("last_collected_at") else None
+        ),
+        output_path=str(payload.get("output_path")) if payload.get("output_path") else None,
+        comment=(
+            "Collector healthy."
+            if healthy
+            else "Runtime status stale."
+            if payload.get("updated_at")
+            else "Runtime status absent."
+        ),
+    )
 
 
 def build_cohabitation_summary(result: object) -> dict[str, object]:

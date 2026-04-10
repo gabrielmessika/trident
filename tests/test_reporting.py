@@ -64,11 +64,14 @@ class ReportingTests(unittest.TestCase):
             ]
         )
 
-        with patch("app.reporting.multi_pod.load_runtime_status", side_effect=[None, None]):
+        with patch(
+            "app.reporting.multi_pod.load_runtime_status",
+            side_effect=[None, None, None, None, None, None],
+        ):
             report = build_runtime_report(supervisor).to_dict()
 
         self.assertEqual(report["profile"], "trident-reporting")
-        self.assertEqual(report["enabled_pod_count"], 2)
+        self.assertEqual(report["enabled_pod_count"], 3)
         self.assertEqual(len(report["pods"]), 3)
         pod_b = next(item for item in report["pods"] if item["pod"] == "pod_b")
         self.assertEqual(pod_b["owned_symbols"], ["DOGE", "XRP"])
@@ -97,7 +100,7 @@ class ReportingTests(unittest.TestCase):
 
         with patch(
             "app.reporting.multi_pod.load_runtime_status",
-            side_effect=[pod_a_runtime, None],
+            side_effect=[pod_a_runtime, None, None, None, None, None],
         ):
             report = build_runtime_report(supervisor).to_dict()
 
@@ -107,6 +110,95 @@ class ReportingTests(unittest.TestCase):
         self.assertAlmostEqual(pod_a["total_unrealized_pnl_usd"], 0.75)
         self.assertEqual(report["active_position_count"], 2)
         self.assertAlmostEqual(report["total_unrealized_pnl_usd"], 0.75)
+
+    def test_build_runtime_report_merges_pod_a_and_pod_c_runtime_supervisors(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c.enabled = True
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-reporting-merged-runtime",
+            mode="observation",
+        )
+        pod_a_runtime = {
+            "pod": "pod_a",
+            "process_state": "running",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "report": {
+                "closed_trade_count": 2,
+                "realized_pnl_usd": 3.5,
+            },
+            "supervisor": {
+                "regime": "TrendExpansion",
+                "enabled_pods": ["pod_a", "pod_c"],
+                "ownership_conflicts": [],
+                "capital_plan": {
+                    "regime": "TrendExpansion",
+                    "cash_usd": 100.0,
+                    "pods": {
+                        "pod_a": {
+                            "target_pct": 0.7,
+                            "target_usd": 700.0,
+                        }
+                    },
+                },
+                "pods": {
+                    "pod_a": {
+                        "owned_symbols": ["BTC", "ETH"],
+                        "target_pct": 0.7,
+                        "target_usd": 700.0,
+                    }
+                },
+                "pod_a_signal_preview": [{"symbol": "ETH"}],
+                "pod_c_signal_preview": [],
+            },
+        }
+        pod_c_runtime = {
+            "pod": "pod_c",
+            "process_state": "running",
+            "updated_at": "2999-01-01T00:00:01Z",
+            "report": {
+                "closed_trade_count": 1,
+                "realized_pnl_usd": 1.2,
+            },
+            "supervisor": {
+                "regime": "TrendExpansion",
+                "enabled_pods": ["pod_a", "pod_c"],
+                "ownership_conflicts": [],
+                "capital_plan": {
+                    "regime": "TrendExpansion",
+                    "cash_usd": 100.0,
+                    "pods": {
+                        "pod_c": {
+                            "target_pct": 0.15,
+                            "target_usd": 150.0,
+                        }
+                    },
+                },
+                "pods": {
+                    "pod_c": {
+                        "owned_symbols": ["SPX"],
+                        "target_pct": 0.15,
+                        "target_usd": 150.0,
+                    }
+                },
+                "pod_a_signal_preview": [],
+                "pod_c_signal_preview": [{"symbol": "SPX"}],
+            },
+        }
+
+        with patch(
+            "app.reporting.multi_pod.load_runtime_status",
+            side_effect=[pod_a_runtime, pod_c_runtime, None, None, None, None],
+        ):
+            report = build_runtime_report(supervisor).to_dict()
+
+        pod_a = next(item for item in report["pods"] if item["pod"] == "pod_a")
+        pod_c = next(item for item in report["pods"] if item["pod"] == "pod_c")
+        self.assertEqual(pod_a["owned_symbols"], ["BTC", "ETH"])
+        self.assertEqual(pod_a["preview_count"], 1)
+        self.assertEqual(pod_c["owned_symbols"], ["SPX"])
+        self.assertEqual(pod_c["preview_count"], 1)
+        self.assertEqual(report["regime"], "TrendExpansion")
 
     def test_build_cohabitation_summary_aggregates_pnl(self) -> None:
         class DummyResult:

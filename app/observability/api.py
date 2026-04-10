@@ -20,6 +20,7 @@ from app.live.runtime_status import (
     runtime_status_age_seconds,
     runtime_status_is_fresh,
 )
+from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot
 
@@ -154,6 +155,129 @@ def _format_leverage(value: object) -> str:
         return f"{float(value):.1f}x"
     except (TypeError, ValueError):
         return escape(str(value))
+
+
+def _directional_price_from_bps(entry_price: object, side: object, bps: object) -> float | None:
+    try:
+        entry = float(entry_price)
+        distance_bps = float(bps)
+    except (TypeError, ValueError):
+        return None
+    if entry <= 0 or distance_bps <= 0:
+        return None
+    ratio = distance_bps / 10_000.0
+    if str(side) == "short":
+        return round(entry * (1 - ratio), 8)
+    return round(entry * (1 + ratio), 8)
+
+
+def _directional_stop_price(item: dict[str, object]) -> float | None:
+    invalidation = item.get("invalidation_price")
+    if invalidation not in (None, ""):
+        try:
+            return round(float(invalidation), 8)
+        except (TypeError, ValueError):
+            pass
+    return _directional_price_from_bps(
+        item.get("entry_price"),
+        "short" if str(item.get("side")) == "long" else "long",
+        item.get("stop_bps"),
+    )
+
+
+def _directional_take_profit_price(item: dict[str, object]) -> float | None:
+    return _directional_price_from_bps(
+        item.get("entry_price"),
+        item.get("side"),
+        item.get("take_profit_bps"),
+    )
+
+
+def _directional_favorable_move_bps(entry_price: object, side: object, price: object) -> float | None:
+    try:
+        entry = float(entry_price)
+        current = float(price)
+    except (TypeError, ValueError):
+        return None
+    if entry <= 0:
+        return None
+    if str(side) == "short":
+        return ((entry - current) / entry) * 10_000.0
+    return ((current - entry) / entry) * 10_000.0
+
+
+def _directional_trailing_stop_price(item: dict[str, object]) -> float | None:
+    best_price_seen = item.get("best_price_seen")
+    trailing_distance_bps = item.get("trailing_distance_bps")
+    try:
+        reference = float(best_price_seen)
+        distance_bps = float(trailing_distance_bps)
+    except (TypeError, ValueError):
+        return None
+    if reference <= 0 or distance_bps <= 0:
+        return None
+    ratio = distance_bps / 10_000.0
+    if str(item.get("side")) == "short":
+        return round(reference * (1 + ratio), 8)
+    return round(reference * (1 - ratio), 8)
+
+
+def _directional_trailing_status(item: dict[str, object]) -> str:
+    activation_bps = item.get("trailing_activation_bps")
+    trailing_distance_bps = item.get("trailing_distance_bps")
+    if activation_bps in (None, "", 0, 0.0) or trailing_distance_bps in (None, "", 0, 0.0):
+        return "Non configure"
+    best_favorable_bps = _directional_favorable_move_bps(
+        item.get("entry_price"),
+        item.get("side"),
+        item.get("best_price_seen"),
+    )
+    try:
+        activation = float(activation_bps)
+        distance = float(trailing_distance_bps)
+    except (TypeError, ValueError):
+        return "Non configure"
+    if best_favorable_bps is None or best_favorable_bps < activation:
+        return f"En attente, activation apres +{activation:.1f} bps"
+    trailing_price = _directional_trailing_stop_price(item)
+    if trailing_price is None:
+        return f"Actif, distance {distance:.1f} bps"
+    return f"Actif, stop suiveur {trailing_price:.6f}"
+
+
+def _humanize_setup_reason(value: object) -> str:
+    reason = str(value or "").strip()
+    mapping = {
+        "bos_retest_long": "BOS retest long: reprise haussiere apres retest du breakout",
+        "bos_retest_short": "BOS retest short: reprise baissiere apres retest du breakout",
+        "liquidity_sweep_reclaim_long": "Liquidity sweep reclaim long: reprise haussiere apres chasse de liquidite",
+        "liquidity_sweep_reclaim_short": "Liquidity sweep reclaim short: reprise baissiere apres chasse de liquidite",
+        "vwap_reclaim_long": "VWAP reclaim long: reprise haussiere apres recuperation de la VWAP",
+        "vwap_reclaim_short": "VWAP reclaim short: reprise baissiere apres rejet sous la VWAP",
+        "trend_pullback_long": "Trend pullback long: achat de repli dans une tendance haussiere",
+        "trend_pullback_short": "Trend pullback short: vente de rebond dans une tendance baissiere",
+        "tradfi_continuation_long": "Tradfi continuation long: continuation haussiere sur instrument Tradfi",
+        "tradfi_continuation_short": "Tradfi continuation short: continuation baissiere sur instrument Tradfi",
+        "tradfi_reclaim_long": "Tradfi reclaim long: reprise haussiere apres recapture du niveau cle",
+        "tradfi_reclaim_short": "Tradfi reclaim short: reprise baissiere apres rejet sous le niveau cle",
+    }
+    return mapping.get(reason, reason or "-")
+
+
+def _humanize_close_reason(value: object) -> str:
+    reason = str(value or "").strip()
+    mapping = {
+        "take_profit_hit": "Take profit atteint: la cible de gain fixe a ete touchee",
+        "trailing_stop": "Trailing stop declenche: le trade avait avance puis a retrace",
+        "break_even_stop": "Sortie break-even: la protection est remontee a zero apres avance favorable",
+        "stop_hit": "Stop loss touche: l'invalidation du trade a ete atteinte",
+        "time_stop": "Time stop atteint: duree maximale de detention depassee",
+        "routing_revoked": "Routing revoke: le symbole n'etait plus autorise pour ce pod",
+        "opposite_signal": "Signal oppose: un signal inverse a force la fermeture",
+        "upgrade_setup": "Upgrade setup: fermeture pour reouvrir sur un setup juge meilleur",
+        "end_of_backtest": "Fin de replay: cloture technique de fin de session",
+    }
+    return mapping.get(reason, reason or "-")
 
 
 def _parse_timestamp(value: object) -> datetime | None:
@@ -355,6 +479,34 @@ def _dashboard_status_items(
             }
         )
 
+    healthy_collectors = int(runtime_report.get("healthy_service_count", 0))
+    enabled_collectors = int(runtime_report.get("enabled_service_count", 0))
+    if enabled_collectors > 0:
+        if healthy_collectors == enabled_collectors:
+            items.append(
+                {
+                    "status": "good",
+                    "label": "Collectors OK",
+                    "comment": f"{healthy_collectors}/{enabled_collectors} collector(s) OK.",
+                }
+            )
+        elif healthy_collectors > 0:
+            items.append(
+                {
+                    "status": "warn",
+                    "label": "Collectors à surveiller",
+                    "comment": f"{healthy_collectors}/{enabled_collectors} collector(s) OK.",
+                }
+            )
+        else:
+            items.append(
+                {
+                    "status": "bad",
+                    "label": "Collectors KO",
+                    "comment": f"0/{enabled_collectors} collector(s) OK.",
+                }
+            )
+
     conflicts = int(snapshot["metrics"]["ownership_conflict_count"])
     items.append(
         {
@@ -393,12 +545,16 @@ def _dashboard_commentary(
     conflicts = int(snapshot["metrics"]["ownership_conflict_count"])
     enabled = int(snapshot["metrics"]["enabled_pod_count"])
     healthy = int(runtime_report.get("healthy_pod_count", 0))
+    collector_enabled = int(runtime_report.get("enabled_service_count", 0))
+    collector_healthy = int(runtime_report.get("healthy_service_count", 0))
     fill_count = int(runtime_report.get("total_fill_count", 0))
     latest_snapshot = _latest_snapshot_status()
     if latest_snapshot["status"] == "bad":
         return "Collector en retard. Vérifie la collecte live et les logs API."
     if healthy < enabled:
         return "Un pod actif est à surveiller."
+    if collector_enabled > collector_healthy:
+        return "Un collector de données est à surveiller."
     if conflicts > 0:
         return "Conflit d'ownership détecté. Corriger avant d'augmenter le risque."
     if fill_count == 0:
@@ -410,7 +566,7 @@ def health_payload(supervisor: TridentSupervisor) -> dict[str, object]:
     refreshed_from_snapshots = _refresh_supervisor_from_latest_snapshot(supervisor)
     regime = supervisor.state.regime.value
     if not refreshed_from_snapshots:
-        runtime_supervisor = _fresh_runtime_supervisor(
+        runtime_supervisor = merge_runtime_supervisor_snapshot(
             _normalized_runtime_payload(load_runtime_status("logs/pod_a_live_status.json")),
             _normalized_runtime_payload(load_runtime_status("logs/pod_c_live_status.json")),
         )
@@ -520,7 +676,11 @@ def _merge_runtime_snapshot(
             merged_health.append(merged)
         snapshot["pod_health"] = merged_health
 
-    runtime_supervisor = _fresh_runtime_supervisor(pod_a_runtime, pod_c_runtime)
+    runtime_supervisor = merge_runtime_supervisor_snapshot(
+        pod_a_runtime,
+        pod_c_runtime,
+        base_snapshot=snapshot,
+    )
     if not allow_runtime_authority_override or not isinstance(runtime_supervisor, dict):
         return snapshot
 
@@ -571,27 +731,6 @@ def _normalized_runtime_payload(payload: dict[str, object] | None) -> dict[str, 
     if not isinstance(payload, dict):
         return None
     return copy.deepcopy(payload)
-
-
-def _fresh_runtime_supervisor(*payloads: dict[str, object] | None) -> dict[str, object] | None:
-    freshest_payload: dict[str, object] | None = None
-    freshest_age: float | None = None
-    for payload in payloads:
-        if not runtime_status_is_fresh(payload):
-            continue
-        age = runtime_status_age_seconds(payload)
-        if age is None:
-            continue
-        if freshest_age is None or age < freshest_age:
-            freshest_payload = payload
-            freshest_age = age
-    if not isinstance(freshest_payload, dict):
-        return None
-    supervisor = freshest_payload.get("supervisor")
-    if not isinstance(supervisor, dict):
-        return None
-    return supervisor
-
 
 def _embedded_supervisor_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
     payload: dict[str, object] = {}
@@ -714,6 +853,11 @@ def _control_center_html(
         for item in runtime_report.get("pods", [])
         if isinstance(item, dict) and item.get("pod") is not None
     }
+    runtime_service_rows = [
+        item
+        for item in runtime_report.get("services", [])
+        if isinstance(item, dict) and item.get("service") is not None
+    ]
 
     def fmt_number(value: object, digits: int = 2, *, fallback: str = "-") -> str:
         if value in (None, ""):
@@ -848,6 +992,8 @@ def _control_center_html(
     active_positions = int(runtime_report.get("active_position_count", 0))
     active_orders = int(runtime_report.get("active_open_order_count", 0))
     total_fills = int(runtime_report.get("total_fill_count", 0))
+    enabled_collectors = int(runtime_report.get("enabled_service_count", 0))
+    healthy_collectors = int(runtime_report.get("healthy_service_count", 0))
     if latest_snapshot["status"] == "bad" or conflict_count > 0:
         global_tone = "bad"
         global_label = "Agir"
@@ -875,6 +1021,16 @@ def _control_center_html(
                     "label": "Maintenant",
                     "title": "Corriger l'ownership",
                     "comment": f"{conflict_count} conflit(s) détecté(s) entre pods.",
+                }
+            )
+    for service in runtime_service_rows:
+        if bool(service.get("enabled", True)) and not bool(service.get("healthy")):
+            focus_items.append(
+                {
+                    "tone": "warn",
+                    "label": "Vérifier",
+                    "title": f"{service.get('label', service.get('service', 'collector'))} à vérifier",
+                    "comment": str(service.get("comment") or "Runtime status collector absent ou obsolète."),
                 }
             )
     for pod in pod_summaries:
@@ -949,6 +1105,11 @@ def _control_center_html(
                 "note": "Exposition visible maintenant",
             },
             {
+                "label": "Collectors",
+                "value": f"{healthy_collectors}/{enabled_collectors}",
+                "note": "Services funding visibles",
+            },
+            {
                 "label": "Exécutions",
                 "value": str(total_fills),
                 "note": "Fills / trades observés",
@@ -992,21 +1153,22 @@ def _control_center_html(
             if str(item.get("pod")) == pod_name and str(item.get("status")) == "open"
         ]
         if not rows:
-            return "<tr><td colspan='11'>Aucune position ouverte visible pour le moment.</td></tr>"
+            return "<tr><td colspan='12'>Aucune position ouverte visible pour le moment.</td></tr>"
         return "".join(
             (
                 "<tr>"
                 f"<td>{escape(str(item.get('symbol', '-')))}</td>"
                 f"<td>{escape(str(item.get('side', '-')))}</td>"
-                f"<td>{escape(str(item.get('open_reason', '-')))}</td>"
+                f"<td>{escape(_humanize_setup_reason(item.get('open_reason')))}</td>"
                 f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
-                f"<td>{'-' if item.get('notional_usd') is None else format(float(item.get('notional_usd', 0.0)), '.2f')}</td>"
-                f"<td>{_format_leverage(item.get('leverage'))}</td>"
-                f"<td>{fmt_number(item.get('confidence'), 2)}</td>"
-                f"<td>{fmt_number(item.get('stop_bps'), 1)}</td>"
-                f"<td>{escape(str(item.get('time_stop_hours') or '-'))}</td>"
+                f"<td>{fmt_number(item.get('current_price'), 6)}</td>"
+                f"<td>{'-' if item.get('current_notional_usd') is None else format(float(item.get('current_notional_usd', 0.0)), '.2f')}</td>"
+                f"<td>{'-' if item.get('margin_usd') is None else format(float(item.get('margin_usd', 0.0)), '.2f')}</td>"
+                f"<td>{fmt_number(_directional_take_profit_price(item), 6)}</td>"
+                f"<td>{fmt_number(_directional_stop_price(item), 6)}</td>"
+                f"<td>{fmt_signed_usd(item.get('unrealized_pnl_usd'))}</td>"
+                f"<td>{escape(_directional_trailing_status(item))}</td>"
                 f"<td>{escape(str(item.get('opened_at') or '-'))}</td>"
-                f"<td>{escape(str(item.get('close_reason') or '-'))}</td>"
                 "</tr>"
             )
             for item in rows
@@ -1026,8 +1188,8 @@ def _control_center_html(
                 f"<td>{escape(str(item.get('closed_at') or item.get('timestamp') or '-'))}</td>"
                 f"<td>{escape(str(item.get('symbol', '-')))}</td>"
                 f"<td>{escape(str(item.get('side', '-')))}</td>"
-                f"<td>{escape(str(item.get('open_reason', '-')))}</td>"
-                f"<td>{escape(str(item.get('close_reason', '-')))}</td>"
+                f"<td>{escape(_humanize_setup_reason(item.get('open_reason')))}</td>"
+                f"<td>{escape(_humanize_close_reason(item.get('close_reason')))}</td>"
                 f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
                 f"<td>{fmt_number(item.get('exit_price'), 6)}</td>"
                 f"<td>{'-' if item.get('notional_usd') is None else format(float(item.get('notional_usd', 0.0)), '.2f')}</td>"
@@ -1208,6 +1370,22 @@ def _control_center_html(
         )
         for item in runtime_report["pods"]
     )
+    runtime_service_report_rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(str(item['label']))}</td>"
+            f"<td>{_status_badge('good' if bool(item['healthy']) else 'bad', 'healthy' if bool(item['healthy']) else 'degraded')}</td>"
+            f"<td>{escape(str(item.get('process_state') or '-'))}</td>"
+            f"<td>{int(item.get('symbol_count', 0))}</td>"
+            f"<td>{int(item.get('polls_completed', 0))}</td>"
+            f"<td>{int(item.get('records_written', 0))}</td>"
+            f"<td>{escape(str(item.get('last_collected_at') or '-'))}</td>"
+            f"<td>{escape(str(item.get('output_path') or '-'))}</td>"
+            "</tr>"
+        )
+        for item in runtime_service_rows
+        if bool(item.get("enabled", True))
+    ) or "<tr><td colspan='8'>Aucun collector runtime actif visible.</td></tr>"
     ownership_rows = "".join(
         (
             "<tr>"
@@ -2014,12 +2192,12 @@ def _control_center_html(
           <div class="panel panel-{escape(_panel_tone(pod_a_summary['tone']))}">
             <div class="panel-header">
               <h3>Trades ouverts</h3>
-              <p>Ce tableau répond à la question : qu'est-ce qui est en risque maintenant, pourquoi, et avec quel levier/stop.</p>
+              <p>Ce tableau sert a lire la position telle qu'elle vit maintenant: prix courant, valeur actuelle, marge immobilisee, niveaux TP/SL et etat du trailing.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison ouverture", "Setup ou raison d'entrée.")}{_table_header("Prix entrée", "Prix moyen d'entrée.")}{_table_header("Notional USD", "Valeur notionnelle de la position.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("Confiance", "Score de confiance du signal.")}{_table_header("SL bps", "Distance du stop en basis points.")}{_table_header("Time stop", "Durée maximale du trade si elle existe.")}{_table_header("Ouvert le", "Horodatage d'ouverture.")}{_table_header("Commentaire", "Champ utile pour garder le contexte à l'écran.")}</tr>
+                  <tr>{_table_header("Symbol", "Marché actuellement détenu par le pod.")}{_table_header("Side", "Sens de la position: long si le pod gagne sur une hausse, short s'il gagne sur une baisse.")}{_table_header("Raison ouverture", "Nom lisible du setup qui a ouvert le trade. C'est la logique d'entree initiale, pas l'etat actuel du trade.")}{_table_header("Prix entree", "Prix moyen d'entree retenu par le moteur dry-run au moment de l'ouverture.")}{_table_header("Prix courant", "Dernier prix vu dans le snapshot live pour ce symbole. C'est la reference utilisee pour valoriser le trade maintenant.")}{_table_header("Valeur courante USD", "Valeur notionnelle actuelle de la position au prix courant. Elle peut bouger meme si la taille unitaire ne change pas.")}{_table_header("Marge utilisee", "Capital immobilise pour porter la position. C'est plus utile operatoirement que la notionnelle brute.")}{_table_header("Prix TP", "Prix theorique auquel le take profit fixe sortirait le trade s'il etait touche maintenant.")}{_table_header("Prix SL", "Prix de stop loss actuel. Quand une invalidation structurelle existe, on l'affiche directement; sinon on reconstruit le stop a partir des bps.")}{_table_header("Unrealized PnL", "PnL latent marque au dernier prix courant. Ce n'est pas realise tant que le trade n'est pas ferme.")}{_table_header("Trailing TP", "Etat du trailing: non configure, en attente d'activation, ou actif avec le niveau actuel du stop suiveur.")}{_table_header("Ouvert le", "Horodatage d'ouverture du trade pour juger son age reel.")}</tr>
                 </thead>
                 <tbody>{render_directional_open_rows("pod_a")}</tbody>
               </table>
@@ -2037,12 +2215,12 @@ def _control_center_html(
         <div class="panel panel-neutral">
           <div class="panel-header">
             <h3>Trades fermés récents</h3>
-            <p>Tableau de lecture rapide pour comprendre ce qui a marché, ce qui a coupé, et pourquoi.</p>
+            <p>Les raisons d'ouverture et de fermeture sont maintenant formulees en langage lisible, pour comprendre rapidement ce qui a declenche l'entree puis la sortie.</p>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr>{_table_header("Fermé le", "Horodatage de sortie.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens du trade.")}{_table_header("Raison ouverture", "Setup d'origine.")}{_table_header("Raison fermeture", "Cause de sortie : stop, time stop, upgrade, etc.")}{_table_header("Prix entrée", "Prix d'entrée connu.")}{_table_header("Prix sortie", "Prix de sortie connu.")}{_table_header("Notional USD", "Valeur notionnelle du trade.")}{_table_header("Leverage", "Levier configuré quand disponible.")}{_table_header("PnL USD", "Résultat net du trade.")}</tr>
+                <tr>{_table_header("Ferme le", "Horodatage reel de la sortie du trade.")}{_table_header("Symbol", "Marche concerne par le trade ferme.")}{_table_header("Side", "Sens du trade qui a ete porte: long ou short.")}{_table_header("Raison ouverture", "Setup lisible qui avait justifie l'entree du trade au depart.")}{_table_header("Raison fermeture", "Explication lisible de la sortie: TP touche, trailing stop, stop loss, time stop, signal oppose, etc.")}{_table_header("Prix entree", "Prix moyen d'entree du trade au moment de l'ouverture.")}{_table_header("Prix sortie", "Prix de sortie effectivement retenu lors de la cloture.")}{_table_header("Notional USD", "Notionnelle cible du trade au moment ou il a ete ouvert.")}{_table_header("Leverage", "Levier effectif configure pour ce trade si l'information est disponible.")}{_table_header("PnL USD", "Resultat net du trade, frais inclus.")}</tr>
               </thead>
               <tbody>{render_directional_closed_rows("pod_a")}</tbody>
             </table>
@@ -2153,12 +2331,12 @@ def _control_center_html(
           <div class="panel panel-{escape(_panel_tone(pod_c_summary['tone']))}">
             <div class="panel-header">
               <h3>Trades ouverts</h3>
-              <p>Les positions event-driven vivantes et les informations de risque associées.</p>
+              <p>On lit ici les positions Tradfi vivantes avec les niveaux operatoires vraiment utiles: prix live, valeur, marge, TP, SL et trailing.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison ouverture", "Signal ou setup d'entrée.")}{_table_header("Prix entrée", "Prix moyen d'entrée.")}{_table_header("Notional USD", "Valeur notionnelle de la position.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("Confiance", "Score de confiance du signal.")}{_table_header("SL bps", "Distance du stop en basis points.")}{_table_header("Time stop", "Durée maximale du trade si elle existe.")}{_table_header("Ouvert le", "Horodatage d'ouverture.")}{_table_header("Commentaire", "Champ utile pour garder le contexte à l'écran.")}</tr>
+                  <tr>{_table_header("Symbol", "Marche Tradfi actuellement porte par Pod C.")}{_table_header("Side", "Sens de la position: long a la hausse, short a la baisse.")}{_table_header("Raison ouverture", "Setup lisible qui a motive l'ouverture initiale du trade.")}{_table_header("Prix entree", "Prix moyen d'entree retenu au moment de l'ouverture.")}{_table_header("Prix courant", "Dernier prix live vu par le runner pour ce symbole.")}{_table_header("Valeur courante USD", "Valorisation actuelle de la position au dernier prix courant.")}{_table_header("Marge utilisee", "Capital immobilise pour porter ce trade. C'est la mesure pratique de l'exposition engagee.")}{_table_header("Prix TP", "Prix theorique du take profit fixe si la cible est atteinte.")}{_table_header("Prix SL", "Prix du stop de protection actuellement applicable au trade.")}{_table_header("Unrealized PnL", "PnL latent calcule au dernier prix courant. Il deviendra realise seulement a la sortie.")}{_table_header("Trailing TP", "Indique si le trailing est deja arme, et si oui a quel niveau se situe le stop suiveur actuel.")}{_table_header("Ouvert le", "Horodatage d'ouverture pour estimer l'anciennete du trade.")}</tr>
                 </thead>
                 <tbody>{render_directional_open_rows("pod_c")}</tbody>
               </table>
@@ -2176,12 +2354,12 @@ def _control_center_html(
         <div class="panel panel-neutral">
           <div class="panel-header">
             <h3>Trades fermés récents</h3>
-            <p>Lecture rapide des sorties réussies ou coupées, avec la raison de fermeture.</p>
+            <p>Les codes internes de setup et de sortie sont traduits en formulations lisibles pour faciliter la review operatoire.</p>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr>{_table_header("Fermé le", "Horodatage de sortie.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens du trade.")}{_table_header("Raison ouverture", "Signal d'origine.")}{_table_header("Raison fermeture", "Cause de sortie.")}{_table_header("Prix entrée", "Prix d'entrée connu.")}{_table_header("Prix sortie", "Prix de sortie connu.")}{_table_header("Notional USD", "Valeur notionnelle du trade.")}{_table_header("Leverage", "Levier configuré quand disponible.")}{_table_header("PnL USD", "Résultat net du trade.")}</tr>
+                <tr>{_table_header("Ferme le", "Horodatage reel de sortie du trade.")}{_table_header("Symbol", "Marche Tradfi concerne.")}{_table_header("Side", "Sens du trade qui a ete porte.")}{_table_header("Raison ouverture", "Setup lisible qui avait motive l'ouverture du trade.")}{_table_header("Raison fermeture", "Explication lisible de la sortie: TP, trailing stop, stop, time stop, signal oppose, etc.")}{_table_header("Prix entree", "Prix moyen d'entree du trade.")}{_table_header("Prix sortie", "Prix retenu a la fermeture.")}{_table_header("Notional USD", "Notionnelle cible du trade au moment de l'ouverture.")}{_table_header("Leverage", "Levier effectif configure si disponible.")}{_table_header("PnL USD", "Resultat net final du trade, frais inclus.")}</tr>
               </thead>
               <tbody>{render_directional_closed_rows("pod_c")}</tbody>
             </table>
@@ -2281,6 +2459,20 @@ def _control_center_html(
                 <table>
                   <thead><tr><th>Symbol</th><th>Requested by</th><th>Owner</th></tr></thead>
                   <tbody>{conflict_rows}</tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel" style="box-shadow:none;">
+              <div class="panel-header">
+                <h3>Data collectors</h3>
+                <p>État runtime des services de collecte funding et asset context.</p>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>{_table_header("Service", "Nom logique du collector.")}{_table_header("Healthy", "Fraîcheur du runtime status du collector.")}{_table_header("Process", "État du process de collecte.")}{_table_header("Symbols", "Nombre de symbols suivis.")}{_table_header("Polls", "Nombre de polls terminés.")}{_table_header("Records", "Records JSONL écrits.")}{_table_header("Last collected", "Horodatage du dernier lot collecté.")}{_table_header("Output", "Fichier de sortie courant.")}</tr>
+                  </thead>
+                  <tbody>{runtime_service_report_rows}</tbody>
                 </table>
               </div>
             </div>

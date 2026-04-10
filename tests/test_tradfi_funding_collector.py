@@ -13,24 +13,31 @@ class _FakeFundingCollector:
         self,
         *,
         output_path,
+        status_path=None,
         poll_seconds: float = 60.0,
         iterations: int | None = None,
         symbols: list[str] | None = None,
         include_delisted: bool = False,
+        collector_name: str = "funding_collector",
+        collector_label: str = "Funding Collector",
     ) -> FundingCollectorStats:
         self.calls.append(
             {
                 "output_path": str(output_path),
+                "status_path": str(status_path) if status_path is not None else None,
                 "poll_seconds": poll_seconds,
                 "iterations": iterations,
                 "symbols": list(symbols or []),
                 "include_delisted": include_delisted,
+                "collector_name": collector_name,
+                "collector_label": collector_label,
             }
         )
         return FundingCollectorStats(
             polls_completed=1,
             records_written=len(symbols or []),
             output_path=str(output_path),
+            status_path=str(status_path) if status_path is not None else None,
         )
 
 
@@ -53,6 +60,14 @@ class TradfiFundingCollectorTests(unittest.TestCase):
         self.assertEqual(
             fake.calls[0]["output_path"],
             "data/funding_history/pod_c_tradfi.jsonl",
+        )
+        self.assertEqual(
+            fake.calls[0]["status_path"],
+            "logs/tradfi_funding_collector_status.json",
+        )
+        self.assertEqual(
+            fake.calls[0]["collector_name"],
+            "tradfi_funding_collector",
         )
 
 

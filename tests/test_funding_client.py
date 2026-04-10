@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.hyperliquid.funding_client import HyperliquidFundingClient, extract_current_funding
 from app.live.funding_collector import FundingHistoryCollector
+from app.live.runtime_status import load_runtime_status
 from app.settings import load_config
 
 
@@ -71,6 +72,38 @@ class FundingClientTests(unittest.TestCase):
             payload = json.loads(output_path.read_text(encoding="utf-8").strip())
             self.assertEqual(payload["symbol"], "BTC")
             self.assertEqual(payload["timestamp"], "2026-04-07T12:00:00Z")
+
+    def test_funding_collector_writes_runtime_status(self) -> None:
+        config = load_config("config/trident.toml")
+
+        class _FakeClient:
+            def fetch_current_funding(self, **_: object):
+                return extract_current_funding(
+                    [
+                        {"universe": [{"name": "BTC"}]},
+                        [{"funding": "-0.0001", "openInterest": "10", "markPx": "70000"}],
+                    ]
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "funding.jsonl"
+            status_path = Path(tmpdir) / "funding_status.json"
+            stats = FundingHistoryCollector(config, client=_FakeClient()).run(
+                output_path=output_path,
+                status_path=status_path,
+                poll_seconds=0.0,
+                iterations=1,
+                symbols=["BTC"],
+            )
+
+            self.assertEqual(stats.polls_completed, 1)
+            payload = load_runtime_status(status_path)
+            self.assertIsNotNone(payload)
+            assert payload is not None
+            self.assertEqual(payload["service"], "funding_collector")
+            self.assertEqual(payload["process_state"], "completed")
+            self.assertEqual(payload["symbol_count"], 1)
+            self.assertEqual(payload["records_written"], 1)
 
 
 if __name__ == "__main__":

@@ -431,6 +431,10 @@ class PodALiveRunner:
             "invalidation_price": getattr(trade, "invalidation_price", None),
             "stop_bps": getattr(trade, "stop_bps", None),
             "time_stop_hours": getattr(trade, "time_stop_hours", None),
+            "take_profit_bps": getattr(trade, "take_profit_bps", None),
+            "break_even_trigger_bps": getattr(trade, "break_even_trigger_bps", None),
+            "trailing_activation_bps": getattr(trade, "trailing_activation_bps", None),
+            "trailing_distance_bps": getattr(trade, "trailing_distance_bps", None),
             "gross_pnl_usd": trade.gross_pnl_usd,
             "fees_usd": trade.fees_usd,
             "pnl_usd": trade.pnl_usd,
@@ -502,6 +506,11 @@ class PodALiveRunner:
                     "unrealized_pnl_usd": unrealized_pnl_usd,
                     "stop_bps": position.stop_bps,
                     "time_stop_hours": position.time_stop_hours,
+                    "take_profit_bps": position.take_profit_bps,
+                    "break_even_trigger_bps": position.break_even_trigger_bps,
+                    "trailing_activation_bps": position.trailing_activation_bps,
+                    "trailing_distance_bps": position.trailing_distance_bps,
+                    "best_price_seen": position.best_price_seen,
                     "opened_at": position.opened_at.isoformat() if position.opened_at else None,
                 }
             )

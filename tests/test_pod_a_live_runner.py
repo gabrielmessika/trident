@@ -125,6 +125,10 @@ class PodALiveRunnerTests(unittest.TestCase):
             eth_position = next(item for item in open_positions if item["symbol"] == "ETH")
             self.assertEqual(eth_position["current_price"], 3100.0)
             self.assertIn("unrealized_pnl_usd", eth_position)
+            self.assertIn("take_profit_bps", eth_position)
+            self.assertIn("trailing_activation_bps", eth_position)
+            self.assertIn("trailing_distance_bps", eth_position)
+            self.assertIn("best_price_seen", eth_position)
 
 
 if __name__ == "__main__":

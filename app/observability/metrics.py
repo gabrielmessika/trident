@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
+from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
 from app.trident.supervisor import TridentSupervisor
 
 
@@ -18,11 +19,10 @@ class MetricsRegistry:
         symbol_ownership = supervisor.registry.snapshot()
         pod_a_runtime = load_runtime_status("logs/pod_a_live_status.json")
         pod_c_runtime = load_runtime_status("logs/pod_c_live_status.json")
-        runtime_supervisor = None
-        if runtime_status_is_fresh(pod_a_runtime):
-            runtime_supervisor = pod_a_runtime.get("supervisor")
-        if runtime_supervisor is None and runtime_status_is_fresh(pod_c_runtime):
-            runtime_supervisor = pod_c_runtime.get("supervisor")
+        runtime_supervisor = merge_runtime_supervisor_snapshot(
+            pod_a_runtime,
+            pod_c_runtime,
+        )
 
         runtime_pod_a_healthy = runtime_status_is_fresh(pod_a_runtime)
         runtime_pod_c_healthy = runtime_status_is_fresh(pod_c_runtime)

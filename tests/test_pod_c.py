@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -342,6 +343,16 @@ class PodCTests(unittest.TestCase):
             try:
                 result = asyncio.run(runner.run(max_runtime_seconds=0.1, journal_path=journal_path))
                 self.assertEqual(result["records_processed"], 1)
+                runtime_status = json.loads(status_path.read_text(encoding="utf-8"))
+                open_positions = runtime_status["open_positions"]
+                self.assertIsInstance(open_positions, list)
+                if open_positions:
+                    spx_position = next(item for item in open_positions if item["symbol"] == "SPX")
+                    self.assertEqual(spx_position["current_price"], 5100.0)
+                    self.assertIn("margin_usd", spx_position)
+                    self.assertIn("take_profit_bps", spx_position)
+                    self.assertIn("trailing_activation_bps", spx_position)
+                    self.assertIn("best_price_seen", spx_position)
             finally:
                 if original_status is None:
                     status_path.unlink(missing_ok=True)
