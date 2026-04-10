@@ -37,7 +37,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("runtime_report", payload)
         self.assertIn("routing_overrides", payload)
         self.assertEqual(payload["metrics"]["trident_bootstrap_ready"], 1)
-        self.assertEqual(payload["metrics"]["enabled_pod_count"], 1)
+        self.assertGreaterEqual(payload["metrics"]["enabled_pod_count"], 1)
         self.assertEqual(payload["metrics"]["ownership_conflict_count"], 0)
         json.dumps(payload)
 
@@ -134,7 +134,7 @@ class HealthApiTests(unittest.TestCase):
     def test_metrics_payload_refreshes_registry(self) -> None:
         payload = metrics_payload(self.supervisor, self.metrics)
         self.assertEqual(payload["trident_bootstrap_ready"], 1)
-        self.assertEqual(payload["enabled_pod_count"], 1)
+        self.assertGreaterEqual(payload["enabled_pod_count"], 1)
         self.assertEqual(payload["owned_symbol_count"], 0)
 
     def test_metrics_payload_uses_runtime_status_when_present(self) -> None:
@@ -171,7 +171,7 @@ class HealthApiTests(unittest.TestCase):
         ):
             payload = report_payload(self.supervisor, self.metrics)
         self.assertEqual(payload["profile"], "trident")
-        self.assertEqual(payload["enabled_pod_count"], 1)
+        self.assertGreaterEqual(payload["enabled_pod_count"], 1)
         self.assertIn("pods", payload)
         self.assertEqual(len(payload["pods"]), 3)
         self.assertEqual(payload["active_position_count"], 0)

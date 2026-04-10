@@ -98,9 +98,13 @@
 
 ### Etape 5 — Pod B range engine natif
 
-- statut: 92%
+- statut: 95%
 - objectif:
   - rendre Pod B fiable comme complement du run principal
+- fait:
+  - paper_live_runner reecrit: superviseur partage, routing dynamique, allocation par regime
+  - Pod B utilise `config/trident.toml` (plus de dependance a `runtime/passivbot/live.json`)
+  - comportement identique au full-bot backtest
 - reste a faire:
   - run long avec le profil actif `Pod A + Pod B`
   - audit expectancy/churn/toxicite

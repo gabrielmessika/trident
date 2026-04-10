@@ -177,24 +177,13 @@ class PodBPaperRunnerTests(unittest.TestCase):
             self.assertGreaterEqual(result.report["fills_by_date"]["2026-04-05"], 2)
             self.assertIn("inventory_skew_by_symbol", result.report)
 
-    def test_paper_live_runner_writes_report_output(self) -> None:
+    def test_paper_live_runner_skips_history_and_uses_supervisor(self) -> None:
+        """Live runner skips existing snapshots and uses supervisor routing."""
         config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        config.pod_b.symbols = ["DOGE"]
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            config.pod_b.passivbot_config_path = str(config_path)
-            manager = PassivbotManager(config)
-            manager.sync(
-                allocation=PodAllocation(
-                    pod=PodName.POD_B,
-                    target_pct=0.2,
-                    target_usd=200.0,
-                ),
-                owned_symbols=["DOGE"],
-            )
             input_dir = Path(tmpdir) / "snapshots"
             input_dir.mkdir(parents=True, exist_ok=True)
+            # Write historical file (should be skipped)
             (input_dir / "2026-04-05.jsonl").write_text(
                 "\n".join(
                     json.dumps(record)
@@ -209,19 +198,19 @@ class PodBPaperRunnerTests(unittest.TestCase):
             )
             report_path = Path(tmpdir) / "live_report.json"
 
-            stats = PodBPaperLiveRunner(config_path).run_live(
+            runner = PodBPaperLiveRunner(config)
+            stats = runner.run_live(
                 input_path=input_dir,
                 poll_seconds=0.01,
                 max_idle_loops=1,
                 report_output=report_path,
             )
 
-            self.assertEqual(stats.records_processed, 3)
-            self.assertGreaterEqual(stats.fills_emitted, 2)
-            self.assertEqual(stats.report_path, str(report_path))
-            payload = json.loads(report_path.read_text(encoding="utf-8"))
-            self.assertGreaterEqual(payload["fills_by_symbol"]["DOGE"], 2)
-            self.assertGreaterEqual(payload["fills_by_date"]["2026-04-05"], 2)
+            # All 3 records should be skipped as historical
+            self.assertEqual(stats.skipped_historical, 3)
+            # No new records to process → 0 records processed
+            self.assertEqual(stats.records_processed, 0)
+            self.assertTrue(report_path.exists())
 
 
 if __name__ == "__main__":

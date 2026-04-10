@@ -1,19 +1,29 @@
+"""Long-lived Pod B live runner that mirrors the full-bot backtest behavior.
+
+Key principles (matching full_bot_replay._process_pod_b):
+1. Uses a TridentSupervisor for routing — Pod B only sees coins assigned to it
+2. Allocation (target_usd) comes from the supervisor capital plan, not runtime config
+3. Only processes NEW snapshots — skips historical files already on disk at startup
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import os
-import sys
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.backtest.snapshot_loader import SnapshotLoader
 from app.persistence.journal import JsonlJournal
 from app.reporting.pod_b import PodBReport
-from app.trident.pod_b.paper_runner import PodBPaperRunner
-from app.trident.types import SymbolMarketSnapshot
+from app.settings import AppConfig, load_config
+from app.trident.pod_b.models import PassivbotStatus
+from app.trident.pod_b.paper_engine import PodBPaperEngine
+from app.trident.supervisor import TridentSupervisor
+from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +33,25 @@ class PodBPaperLiveStats:
     records_processed: int = 0
     fills_emitted: int = 0
     idle_loops: int = 0
+    skipped_historical: int = 0
     report_path: str | None = None
 
 
-class PodBPaperLiveRunner(PodBPaperRunner):
-    """Long-lived Pod B paper wrapper that tails snapshot files or directories."""
+class PodBPaperLiveRunner:
+    """Long-lived Pod B paper wrapper that tails snapshot files, using supervisor routing."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self.config = config
+        self.supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-live-pod-b",
+            mode="dry-run",
+        )
+        self.engine = PodBPaperEngine(
+            managed_symbols=[],
+            target_usd=0.0,
+            config=config.pod_b,
+        )
 
     def run_live(
         self,
@@ -42,34 +66,39 @@ class PodBPaperLiveRunner(PodBPaperRunner):
         input_path = Path(input_path)
         journal = JsonlJournal(journal_output, truncate=True) if journal_output is not None else None
         report = PodBReport()
-        status_path = self.config_path.with_suffix(".status.json")
-        logger.info(
-            "Pod B live runner starting; input=%s config=%s poll_seconds=%.2f max_runtime_seconds=%s max_idle_loops=%s managed_symbols=%s target_usd=%.2f",
-            input_path,
-            self.config_path,
-            poll_seconds,
-            max_runtime_seconds,
-            max_idle_loops,
-            self.managed_symbols,
-            self.target_usd,
-        )
+        status_path = Path("runtime/passivbot/live.json.status.json")
+        status_path.parent.mkdir(parents=True, exist_ok=True)
         meta = self._status_meta(status_path)
+
+        logger.info(
+            "Pod B live runner starting; input=%s poll_seconds=%.2f",
+            input_path, poll_seconds,
+        )
         self._write_status(
             self.engine.build_status(
                 process_state="running",
                 last_sync_reason="paper_live_runner_started",
                 status_meta=meta,
-            )
+            ),
+            status_path,
         )
 
         stats = PodBPaperLiveStats()
         started = time.monotonic()
-        processed_offsets: dict[str, int] = {}
         loader = SnapshotLoader()
+
+        # Skip all existing files at startup — only process new data
+        existing_offsets = self._scan_existing_offsets(input_path, loader)
+        stats.skipped_historical = sum(existing_offsets.values())
+        if stats.skipped_historical > 0:
+            logger.info(
+                "Pod B skipping %d historical records from %d files",
+                stats.skipped_historical, len(existing_offsets),
+            )
+        processed_offsets = dict(existing_offsets)
 
         try:
             while True:
-                self.reload_runtime_config()
                 new_records_processed = 0
                 files = [input_path] if input_path.is_file() else sorted(input_path.glob("*.jsonl"))
                 for file_path in files:
@@ -78,33 +107,52 @@ class PodBPaperLiveRunner(PodBPaperRunner):
                     for index, record in enumerate(loader.iter_jsonl(file_path), start=1):
                         if index <= offset:
                             continue
-                        snapshots = [
+                        processed_offsets[file_key] = index
+
+                        all_snapshots = [
                             SymbolMarketSnapshot(**item)
                             for item in record.symbols
                             if isinstance(item, dict)
-                            and str(item.get("symbol", "")).upper() in self.managed_symbols
                         ]
-                        processed_offsets[file_key] = index
-                        if not snapshots:
+                        regime_snapshot = record.regime_snapshot
+
+                        # Apply regime + routing via supervisor (like full_bot_replay)
+                        self.supervisor.apply_regime_snapshot(RegimeSnapshot(**regime_snapshot))
+                        self.supervisor.refresh_symbol_routing(all_snapshots)
+
+                        # Get Pod B allocation from supervisor (like full_bot_replay)
+                        pod_b_allocation = self.supervisor.capital_plan.pod_allocations[PodName.POD_B]
+                        pod_b_owned = self.supervisor.registry.symbols_for(PodName.POD_B)
+
+                        self.engine.update_allocation(
+                            managed_symbols=pod_b_owned,
+                            target_usd=pod_b_allocation.target_usd,
+                        )
+
+                        pod_b_snapshots = [
+                            s for s in all_snapshots if s.symbol in pod_b_owned
+                        ]
+                        if not pod_b_snapshots:
                             continue
+
                         status, fills = self.engine.process_record(
                             timestamp=record.timestamp,
-                            snapshots=snapshots,
+                            snapshots=pod_b_snapshots,
                             status_meta=meta,
-                            regime_snapshot=record.regime_snapshot,
+                            regime_snapshot=regime_snapshot,
                             last_sync_reason="paper_live_runner_tick",
                         )
                         new_records_processed += 1
                         stats.records_processed += 1
                         stats.fills_emitted += len(fills)
-                        self._write_status(status)
+                        self._write_status(status, status_path)
                         report.add_tick(
                             timestamp=record.timestamp,
                             status=status,
                             fills=fills,
                         )
                         if journal is not None:
-                            snapshot_by_symbol = {snapshot.symbol: snapshot for snapshot in snapshots}
+                            snapshot_by_symbol = {s.symbol: s for s in pod_b_snapshots}
                             for fill in fills:
                                 journal.append(
                                     {
@@ -126,41 +174,26 @@ class PodBPaperLiveRunner(PodBPaperRunner):
                         stats.idle_loops % 30 == 0 and max_idle_loops != 1
                     ):
                         logger.info(
-                            "Pod B live runner idle; idle_loops=%s managed_symbols=%s files_seen=%s last_offsets=%s",
+                            "Pod B live runner idle; idle_loops=%s owned=%s files=%s",
                             stats.idle_loops,
-                            self.managed_symbols,
+                            self.engine.managed_symbols,
                             len(files),
-                            {
-                                Path(path).name: offset
-                                for path, offset in sorted(processed_offsets.items())
-                            },
                         )
                 else:
                     stats.idle_loops = 0
                     logger.info(
-                        "Pod B review summary; records=%s cumulative_records=%s fills_emitted=%s managed_symbols=%s positions=%s open_orders=%s realized_pnl_usd=%.4f",
+                        "Pod B tick; records=%s cumulative=%s fills=%s owned=%s target_usd=%.2f pnl=%.4f",
                         new_records_processed,
                         stats.records_processed,
                         stats.fills_emitted,
-                        self.managed_symbols,
-                        status.total_position_count,
-                        status.total_open_order_count,
-                        status.realized_pnl_usd,
+                        self.engine.managed_symbols,
+                        self.engine.target_usd,
+                        self.engine.realized_pnl_usd,
                     )
 
                 if max_idle_loops is not None and stats.idle_loops >= max_idle_loops:
-                    logger.info(
-                        "Pod B live runner stopping after idle threshold; idle_loops=%s threshold=%s",
-                        stats.idle_loops,
-                        max_idle_loops,
-                    )
                     break
                 if max_runtime_seconds is not None and time.monotonic() - started >= max_runtime_seconds:
-                    logger.info(
-                        "Pod B live runner stopping after max runtime; elapsed_seconds=%.2f threshold=%s",
-                        time.monotonic() - started,
-                        max_runtime_seconds,
-                    )
                     break
                 time.sleep(poll_seconds)
         finally:
@@ -169,7 +202,7 @@ class PodBPaperLiveRunner(PodBPaperRunner):
                 last_sync_reason="paper_live_runner_completed",
                 status_meta=meta,
             )
-            self._write_status(final_status)
+            self._write_status(final_status, status_path)
             if report_output is not None:
                 report_path = Path(report_output)
                 report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,22 +212,60 @@ class PodBPaperLiveRunner(PodBPaperRunner):
                 )
                 stats.report_path = str(report_path)
             logger.info(
-                "Pod B live runner completed; records_processed=%s fills_emitted=%s idle_loops=%s total_fill_count=%s open_orders=%s realized_pnl_usd=%.4f report_path=%s",
+                "Pod B live runner completed; records=%s fills=%s skipped_historical=%s pnl=%.4f",
                 stats.records_processed,
                 stats.fills_emitted,
-                stats.idle_loops,
-                final_status.total_fill_count,
-                final_status.total_open_order_count,
+                stats.skipped_historical,
                 final_status.realized_pnl_usd,
-                stats.report_path,
             )
 
         return stats
 
+    def _scan_existing_offsets(
+        self,
+        input_path: Path,
+        loader: SnapshotLoader,
+    ) -> dict[str, int]:
+        """Count records in all existing files so we skip them."""
+        offsets: dict[str, int] = {}
+        files = [input_path] if input_path.is_file() else sorted(input_path.glob("*.jsonl"))
+        for file_path in files:
+            count = 0
+            for _ in loader.iter_jsonl(file_path):
+                count += 1
+            offsets[str(file_path.resolve())] = count
+        return offsets
+
+    def _status_meta(self, status_path: Path) -> dict[str, object]:
+        import os, sys
+        payload: dict[str, object] = {}
+        if status_path.exists():
+            try:
+                payload = json.loads(status_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {
+            "config_path": str(self.config.pod_b.passivbot_config_path),
+            "status_path": str(status_path),
+            "leverage": None,
+            "pid": payload.get("pid") if payload.get("pid") not in (None, "") else os.getpid(),
+            "launch_command": payload.get("launch_command") or sys.argv,
+            "stdout_path": payload.get("stdout_path", ""),
+            "stderr_path": payload.get("stderr_path", ""),
+            "started_at": payload.get("started_at") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+
+    def _write_status(self, status: PassivbotStatus, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(status.as_dict(), indent=2) + "\n",
+            encoding="utf-8",
+        )
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Pod B paper wrapper in long-lived tail mode")
-    parser.add_argument("--config-path", required=True, help="Path to Pod B runtime config JSON")
+    parser = argparse.ArgumentParser(description="Run Pod B paper wrapper with supervisor routing")
+    parser.add_argument("--config", default="config/trident.toml", help="Path to trident.toml")
     parser.add_argument("--input", required=True, help="Snapshot JSONL file or directory")
     parser.add_argument("--journal-output", help="Optional JSONL fill journal output")
     parser.add_argument("--report-output", help="Optional JSON summary output")
@@ -210,7 +281,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     args = build_parser().parse_args()
-    runner = PodBPaperLiveRunner(args.config_path)
+    config = load_config(args.config)
+    runner = PodBPaperLiveRunner(config)
     stats = runner.run_live(
         input_path=args.input,
         poll_seconds=args.poll_seconds,
@@ -219,9 +291,9 @@ def main() -> None:
         report_output=args.report_output,
         max_idle_loops=args.max_idle_loops,
     )
-    print(f"config_path={runner.config_path}")
     print(f"records_processed={stats.records_processed}")
     print(f"fills_emitted={stats.fills_emitted}")
+    print(f"skipped_historical={stats.skipped_historical}")
     print(f"idle_loops={stats.idle_loops}")
     if stats.report_path:
         print(f"report_path={stats.report_path}")

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.observability.metrics import MetricsRegistry
+from app.version import VERSION
 from app.reporting.multi_pod import build_runtime_report
 from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
 from app.live.runtime_status import (
@@ -417,6 +418,7 @@ def health_payload(supervisor: TridentSupervisor) -> dict[str, object]:
             regime = str(runtime_supervisor["regime"])
     return {
         "status": "ok",
+        "version": VERSION,
         "profile": supervisor.profile,
         "mode": supervisor.mode,
         "regime": regime,
@@ -1909,6 +1911,7 @@ def _control_center_html(
   <main>
     <header class="hero">
       <div class="chip-row">
+        <span class="chip">Version {escape(VERSION)}</span>
         <span class="chip">Profile {escape(str(snapshot['profile']))}</span>
         <span class="chip">Mode {escape(str(snapshot['mode']))}</span>
         <span class="chip">Régime {escape(str(snapshot['regime']))}</span>

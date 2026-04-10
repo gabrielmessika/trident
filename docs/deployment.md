@@ -168,7 +168,7 @@ Pour démarrer tous les pods :
 
 Important :
 
-- Pod B nécessite `runtime/passivbot/live.json` sur le serveur
+- Pod B utilise `config/trident.toml` (plus besoin de `runtime/passivbot/live.json`)
 - Pod C n'a de sens que si sa recherche a conclu à un `go`
 - `--with-funding` lance un collecteur séparé qui écrit `data/funding_history/current.jsonl`
 - `--with-pod-b` et `--with-pod-c` activent maintenant aussi logiquement les pods côté superviseur/UI, pas seulement leurs containers Docker
@@ -439,7 +439,6 @@ Il rapatrie localement :
 - `logs/pod_a_live_status.json`
 - `logs/pod_c_live_status.json`
 - `runtime/passivbot/live.status.json`
-- `runtime/passivbot/live.json`
 - snapshots API courants
 - tails de logs Docker
 
@@ -475,7 +474,7 @@ La revue générée par défaut est écrite dans :
 
 - ne pas commiter de secrets
 - si le dashboard est expose publiquement, considerer qu'il revele l'etat runtime et le PnL
-- Pod B ne doit pas être lancé sans `runtime/passivbot/live.json`
+- Pod B utilise désormais `config/trident.toml` et le superviseur partagé (plus de dépendance à `runtime/passivbot/live.json`)
 - Pod C ne doit pas être activé par réflexe si la recherche est `no-go`
 - le rate limiter partagé HL vit sur disque et doit rester persistant entre les runs
 

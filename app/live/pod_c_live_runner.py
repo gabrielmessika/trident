@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,14 +31,8 @@ class PodCLiveRunner:
             or config.hyperliquid.default_coins
         )
         self.collector = HyperliquidLiveCollector(config, coins=self.coins)
-        supervisor_config = replace(
-            config,
-            pod_a=replace(config.pod_a, enabled=False),
-            pod_b=replace(config.pod_b, enabled=False),
-            pod_c=replace(config.pod_c, enabled=True),
-        )
         self.supervisor = TridentSupervisor(
-            config=supervisor_config,
+            config=config,
             profile="trident-live-pod-c",
             mode="dry-run",
         )

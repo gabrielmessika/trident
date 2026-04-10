@@ -113,7 +113,7 @@ case "$ACTION" in
         require_runtime_files
         mapfile -t SERVICES < <(default_services)
         info "Démarrage: ${SERVICES[*]}"
-        compose up -d "${SERVICES[@]}"
+        compose up -d --force-recreate "${SERVICES[@]}"
         ok "Services démarrés"
         ;;
     stop)

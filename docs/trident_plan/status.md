@@ -10,17 +10,61 @@
 | 3. Capital allocator + cash mode | 100% | Rien, etape fermee |
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider sur une plage dry-run live plus longue |
-| 5. Pod B range engine natif | 92% | Recaler Pod B comme complement du profil actif sur run long |
+| 5. Pod B range engine natif | 95% | Valider engine Avellaneda-Stoikov sur run long serveur |
 | 5bis. Routing dynamique symbols / ownership | 100% | Rien, etape fermee |
 | 6. Reporting par pod | 100% | Rien, etape fermee |
 | 7. Research Pod pour Pod C | 100% | Rien, etape fermee |
 | 8. Pod C minimal | 100% | Rien, etape fermee |
 | 9. Hardening deployment | 100% | Rien, etape fermee |
-| 10. Passage live progressif | 40% | Dry-run serveur long avec profil actif `Pod A + Pod B` |
+| 10. Passage live progressif | 45% | Dry-run serveur long avec profil 10x + AS engine |
 | 11. Pistes futures Hydra revisitees | 35% | Continuer les runs offline funding/liq |
 | 12. Pod C v2 Squeeze Breakout | 80% | Valider offline puis activer |
 
 ## Journal condense
+
+### 2026-04-10
+
+- **Pod B paper_live_runner reecrit**: le runner live Pod B utilise desormais le
+  superviseur partage (identique au full-bot backtest) au lieu d'une config fixe
+  `runtime/passivbot/live.json`.
+  - routing: via le superviseur (rotation dynamique ~3 coins vs 10 coins fixes)
+  - allocation: capital plan du superviseur par regime (plus de target_usd fixe)
+  - historique: skip les fichiers existants, ne traite que les nouveaux snapshots
+    (plus de replay complet au demarrage)
+  - config: `--config config/trident.toml` remplace `--config-path runtime/passivbot/live.json`
+  - fichier: `app/trident/pod_b/paper_live_runner.py`
+- **docker-compose.trident.yml**: `--config-path` → `--config` pour pod-b-live
+- **deploy.sh**: build avec les profiles Docker (Pod B/C etaient pas rebuild
+  quand leurs profiles etaient actives)
+- **trident_server.sh**: ajout `--force-recreate` au `start` pour garantir que
+  les containers repartent avec la derniere config/image
+- **Bug fix Pod C live runner**: le container Pod C creait un superviseur isole
+  (`pod_a=False, pod_b=False`) qui lui attribuait tous les coins et ignorait les
+  allocations de regime (toutes a 0%). En live il tradait donc sur 14 coins en
+  parallele de Pod A/B → conflits d'ownership potentiels et PnL negatif constant
+  (-6 USD en 3 jours, 223 trades perdants).
+  - fix: le runner utilise desormais la config telle quelle, comme Pod A.
+    Le superviseur voit les 3 pods, l'allocateur donne 0% a Pod C → 0 trades.
+  - fichier: `app/live/pod_c_live_runner.py` (suppression du `replace()` qui
+    desactivait Pod A/B)
+- **Journals reinitialises au demarrage**: `JsonlJournal` accepte `truncate=True`
+  active dans les 3 live runners (Pod A, Pod B, Pod C). Avant, les journaux
+  JSONL s'accumulaient entre les redeploys, donnant un PnL cumule trompeur
+  pour Pod B et Pod C.
+  - fichier: `app/persistence/journal.py`
+- **Pod A max_leverage passe de 5x a 10x**: 131/132 trades etaient deja au
+  plafond de 5x. Le sizing risk-based demande typiquement 15-17x mais etait
+  bride. A 10x le PnL double (+429 USD vs +215 USD sur 6 jours) pour un
+  drawdown proportionnel (43 vs 21 USD).
+  - sweep valide: 5x/10x/15x/20x — le profil risque/rendement est lineaire
+  - 10x reste bien en-dessous des limites HL (min 10x pour les alts)
+- full bot replay sur 6 jours (5-10 avril) avec config actuelle:
+  - Pod A: +429 USD, 130 trades, 62.3% win, drawdown 43 USD
+  - Pod B: -0.61 USD, 1349 fills (Avellaneda-Stoikov engine)
+  - Pod C: 0 USD, 0 trades (allocations a 0%, comme prevu)
+  - total: +428.46 USD
+- **Versioning automatique**: version git (hash + date) affichee dans le dashboard
+  et exposee dans `/health`. Module `app/version.py`, suffixe `-dirty` si non committe.
 
 ### 2026-04-08 (suite)
 
@@ -133,19 +177,25 @@
   - `max_allocation_pct` reduit a 0.40 pour ne pas monopoliser les coins
   - prochaine validation: run long serveur avec profil actif `Pod A + Pod B`
 
-### Profil actif 2026-04-08
+### Profil actif 2026-04-10
 
 - decision retenue:
-  - `Pod A` principal
-  - `Pod B` complement
-  - `Pod C` desactive par defaut
+  - `Pod A` principal, max_leverage=10x (au lieu de 5x)
+  - `Pod B` complement (engine Avellaneda-Stoikov), max_allocation_pct=0.40
+  - `Pod C` desactive (allocations a 0% dans tous les regimes)
 - preuve actuelle:
-  - meilleur replay valide sur `2026-04-05 -> 2026-04-07`
-  - [full_bot_backtest_20260407T214946Z.json](/workspaces/trident/data/replay_reports/full_bot/full_bot_backtest_20260407T214946Z.json)
-  - `+27.0668 USD` realise
+  - replay valide sur `2026-04-05 -> 2026-04-10` (6 jours)
+  - Pod A: `+429.07 USD`, 130 trades, 62.3% win rate
+  - Pod B: `-0.61 USD`, 1349 fills
+  - Pod C: `0 USD`, 0 trades
+- bug corrige:
+  - le live runner Pod C ignorait les allocations et tradait en parallele de Pod A/B
+  - desormais il respecte le meme routing que le backtest full-bot
 - consequence:
-  - les prochains dry-runs longs doivent partir de ce profil
-  - `Pod C` reste disponible pour la recherche, pas pour le run principal
+  - le prochain deploy doit utiliser la config actuelle
+  - `Pod C` ne prendra aucun trade tant que ses allocations restent a 0%
+  - pour reactiver Pod C, lui donner du capital dans un regime (ex: `panic_squeeze.pod_c = 0.15`)
+    et s'assurer que la strategie est profitable en replay d'abord
 
 ### Hydra
 

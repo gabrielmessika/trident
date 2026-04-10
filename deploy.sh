@@ -130,6 +130,14 @@ deploy_code() {
     info "Transfert du code vers ${HOST}..."
     ssh_remote "mkdir -p ${DEPLOY_DIR}/data ${DEPLOY_DIR}/logs ${DEPLOY_DIR}/runtime"
 
+    # Write VERSION file from git before rsync
+    local _commit _date _version
+    _commit="$(git rev-parse --short=8 HEAD 2>/dev/null || echo 'unknown')"
+    _date="$(TZ=Europe/Paris git log -1 --format='%cd' --date=format-local:'%Y-%m-%d %H:%M' 2>/dev/null || echo '')"
+    _version="${_commit} (${_date})"
+    echo "${_version}" > "${SCRIPT_DIR}/VERSION"
+    info "Version: ${_version}"
+
     rsync -azP --delete \
         --exclude='.git' \
         --exclude='.venv' \
@@ -156,7 +164,11 @@ deploy_code() {
 
 build_remote() {
     info "Build Docker sur le serveur..."
-    ssh_remote "cd ${DEPLOY_DIR} && docker compose -f docker-compose.trident.yml build"
+    local profile_args=""
+    [ -n "$WITH_POD_B" ] && profile_args="${profile_args} --profile pod_b"
+    [ -n "$WITH_POD_C" ] && profile_args="${profile_args} --profile pod_c"
+    [ -n "$WITH_FUNDING" ] && profile_args="${profile_args} --profile funding"
+    ssh_remote "cd ${DEPLOY_DIR} && docker compose -f docker-compose.trident.yml${profile_args} build"
     ok "Image Docker buildée"
 }
 

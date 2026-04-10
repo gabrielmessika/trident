@@ -11,7 +11,7 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir uv
 
-COPY pyproject.toml uv.lock README.md plan_trident.md ./
+COPY pyproject.toml uv.lock README.md plan_trident.md VERSION* ./
 COPY app ./app
 COPY config ./config
 COPY scripts ./scripts

@@ -132,7 +132,8 @@ Etat actuel:
 
 - socle Python initialise,
 - API HTTP stdlib minimale,
-- dashboard HTML minimal sur `/` et `/dashboard`,
+- dashboard HTML minimal sur `/` et `/dashboard` avec version git affichee,
+- route JSON `/health` expose la version, le regime et l'etat du kill switch,
 - route JSON `/api/metrics` pour les compteurs de supervision,
 - route JSON `/api/report` pour le reporting runtime multi-pods,
 - superviseur TRIDENT minimal,
@@ -152,7 +153,7 @@ Etat actuel:
 - Pod C relie au meme pipeline d'execution/risk que Pod A via un executor directionnel partage,
 - replay de cohabitation Pod A / Pod B present dans `app/backtest/cohabitation_replay.py`,
 - convertisseur `gbot` capable de produire des snapshots enrichis a partir de `l2 + trades`,
-- moteur Pod B natif present dans `app/trident/pod_b/`,
+- moteur Pod B natif present dans `app/trident/pod_b/` (engine Avellaneda-Stoikov),
 - wrapper de process Pod B `start/stop/restart` present,
 - paper runner Pod B present dans `app/trident/pod_b/paper_runner.py`,
 - wrapper live Pod B present dans `app/trident/pod_b/paper_live_runner.py`,
@@ -177,9 +178,16 @@ Etat actuel:
   - `scripts/fetch_trident_data.sh`
   - `docs/deployment.md`
 
+Versioning:
+
+- la version est derivee automatiquement de git: `short_hash (date du commit)`
+- affichee dans le dashboard (chip "Version") et dans `/health` (champ `version`)
+- le suffixe `-dirty` apparait si le code deploye a des modifications non committees
+- module: `app/version.py`
+
 Decision d'architecture actuelle:
 
-- Pod B V1 est natif a `trident`.
+- Pod B V2 est natif a `trident`, base sur le modele Avellaneda-Stoikov (fair value EMA, inventory skew, vol-adaptive spread).
 - Passivbot reste une reference de benchmark et d'inspiration, pas une dependance runtime obligatoire.
 - univers observe et univers trade sont separes:
   - `hyperliquid.observation_universe` = coins observes par le collector
@@ -219,7 +227,11 @@ Le point cle:
 - les pods peuvent tourner en meme temps
 - ils ne doivent pas gerer le meme coin en meme temps
 - c'est le `supervisor` qui arbitre et evite les conflits
-- la config Pod B ecrite sur disque est un artefact derive du `supervisor`, pas une source d'autorite
+- chaque live runner (Pod A, Pod B, Pod C) utilise la config globale pour le routing
+  (le supervisor voit les 3 pods et alloue les coins en fonction du regime)
+- Pod C ne recoit des coins que si ses allocations de regime sont > 0%
+  (actuellement a 0% dans tous les regimes → inactif)
+- la config Pod B est lue depuis `config/trident.toml` (comme tous les pods), plus depuis `runtime/passivbot/live.json`
 
 Exemple d'ownership valide:
 
@@ -259,8 +271,9 @@ Donc:
 En pratique, on a choisi ce mode pour garder un lancement safe:
 
 - `Pod A` est le pod le plus mature
-- `Pod B` a sa propre config runtime, mais elle est republiee par le `supervisor`
-- `Pod C` est plus experimental
+- `Pod B` utilise le superviseur partage pour le routing et l'allocation (identique au backtest full-bot)
+- `Pod C` est desactive par defaut (allocations a 0% dans tous les regimes);
+  meme lance avec `--with-pod-c`, il ne prend aucun trade tant que ses allocations restent a 0%
 - il vaut mieux allumer peu de choses au debut, puis elargir
 
 Reporting actuel:
@@ -303,8 +316,8 @@ uv run python -m app.live.pod_a_live_runner --coins BTC,ETH --max-runtime-second
 uv run python -m app.live.pod_c_live_runner --coins BTC,ETH,SOL --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_c_live_journal.jsonl
 python3.12 -m app.backtest.pod_c_runner --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --output /tmp/pod_c_journal.jsonl
 python3.12 -m app.research.pod_c_research_suite --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --leader-symbols BTC,ETH --follower-symbols SOL,HYPE,SUI --output-json /tmp/pod_c_research.json --output-md /tmp/pod_c_research.md
-python3.12 -m app.trident.pod_b.paper_runner --config-path /tmp/trident/runtime/passivbot/live.json --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --report-output /tmp/pod_b_report.json --journal-output /tmp/pod_b_fills.jsonl
-python3.12 -m app.trident.pod_b.paper_live_runner --config-path /tmp/trident/runtime/passivbot/live.json --input /workspaces/trident/data/live_snapshots --poll-seconds 0.1 --max-idle-loops 5
+python3.12 -m app.trident.pod_b.paper_runner --config config/trident.toml --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --report-output /tmp/pod_b_report.json --journal-output /tmp/pod_b_fills.jsonl
+python3.12 -m app.trident.pod_b.paper_live_runner --config config/trident.toml --input /workspaces/trident/data/live_snapshots --poll-seconds 0.1 --max-idle-loops 5
 python3.12 -m app.backtest.cohabitation_replay --config config/trident.toml --input /tmp/trident_snapshots.jsonl --output /tmp/cohabitation_report.json
 python3.12 -m app.reporting.export_daily --pod-b-report /tmp/pod_b_report.json --reference-equity-usd 1000 --cash-balance-usd 1001 --output-json /tmp/trident_daily_summary.json --output-md /tmp/trident_daily_summary.md
 ./scripts/trident_healthcheck.sh
@@ -362,6 +375,13 @@ Validation recente:
   - `candidate_count = 2`
   - `go_count = 0`
   - `recommendation = no-go`
+
+Replay full-bot 2026-04-05 -> 2026-04-10 (config actuelle):
+
+- Pod A: `+429.07 USD`, 130 trades, 62.3% win rate, max_leverage=10x
+- Pod B: `-0.61 USD`, 1349 fills (engine Avellaneda-Stoikov)
+- Pod C: `0 USD`, 0 trades (allocations a 0%, comme prevu)
+- total: `+428.46 USD`
 
 Limite connue:
 

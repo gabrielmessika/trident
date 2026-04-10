@@ -84,8 +84,8 @@ services:
       - python
       - -m
       - app.trident.pod_b.paper_live_runner
-      - --config-path
-      - runtime/passivbot/live.json
+      - --config
+      - config/trident.toml
       - --input
       - data/live_snapshots
       - --journal-output

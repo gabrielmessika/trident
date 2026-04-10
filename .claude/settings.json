@@ -53,7 +53,12 @@
       "Bash(timeout 10 python -m unittest tests.test_pod_a.AnchorTrendServiceTests.test_trade_planner_uses_symbol_allocation -v)",
       "Bash(timeout 30 python -m unittest tests.test_pod_a tests.test_pod_b tests.test_pod_b_paper_runner tests.test_full_bot_replay -v)",
       "Bash(timeout 30 python -m unittest tests.test_pod_a tests.test_pod_b tests.test_pod_b_paper_runner tests.test_full_bot_replay tests.test_pod_a_live_runner -v)",
-      "Bash(wc -l server-data/live_snapshots/*.jsonl)"
+      "Bash(wc -l server-data/live_snapshots/*.jsonl)",
+      "Bash(ls -la server-data/logs/pod_*_live* server-data/runtime/pod_*_live*)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_c tests.test_full_bot_replay tests.test_pod_b tests.test_pod_a -v)",
+      "Bash(python3 -c \"from app.version import VERSION; print\\(f'Version: {VERSION}'\\)\")",
+      "Bash(timeout 15 python -m unittest tests.test_health -v)",
+      "Bash(echo \"---exists: $?\")"
     ],
     "additionalDirectories": [
       "/workspaces/trident/app/backtest"
