@@ -24,17 +24,20 @@
 
 ### 2026-04-08 (suite)
 
-- backtest historique long ajoute:
-  - fetcher candles/funding depuis API HL publique: `app/hyperliquid/historical_fetcher.py`
-  - convertisseur candles → snapshots TRIDENT: `app/backtest/candle_converter.py`
-  - pipeline complet fetch → convert → backtest: `app/backtest/historical_replay.py`
-  - profondeur disponible: ~7 mois (depuis mi-sept 2025)
-  - protection anti-boucle infinie dans le fetcher (cursor stall detection)
-  - 16 tests unitaires couvrent les 3 modules
-- baselines par regime de marche:
-  - 7 periodes identifiees (bull, crash, range, recovery...)
-  - resultats stockes dans `data/historical_baselines/`
-  - servent de reference pour valider les evolutions de strategie
+- Pod B reecrit avec modele Avellaneda-Stoikov:
+  - **fair value EMA**: quotes centrees sur un prix estime, pas le spot
+  - **inventory skew**: mid-price deplace en fonction de l'inventaire (long → mid baisse pour attirer des sells)
+  - **spread volatilite-adaptatif**: plus large quand volatile, plus serre quand calme
+  - **trend guard**: arrete de quoter le cote perdant quand prix diverge du fair value
+  - **grille multi-niveaux** configurable (1-N niveaux avec espacement geometrique)
+  - config: `paper_fair_value_ema_alpha`, `paper_inventory_skew_intensity`, `paper_volatility_spread_multiplier`, `paper_grid_levels`
+  - `max_allocation_pct` reduit de 0.70 a 0.40 pour liberer des coins a Pod A
+  - `max_inventory_skew_pct` reduit de 1.0 a 0.25 pour empecher l'accumulation directionnelle
+- constat sur backtest historique candles HL (annule):
+  - l'API HL ne fournit que des candles OHLCV, pas de microstructure L2
+  - le bot est calibre pour des snapshots minute avec spread/depth/flow
+  - les candles 1h ne sont pas representatives: test sur avril 5-8 donne -32 USD vs +200 USD sur donnees L2
+  - conclusion: backtest candles non viable, seules les donnees L2 live sont fiables
 
 ### 2026-04-08
 
@@ -121,11 +124,14 @@
 
 ### Pod B
 
-- statut: encore a durcir strategiquement
+- statut: reecrit avec modele Avellaneda-Stoikov
 - lecture actuelle:
-  - l'infra est saine
-  - la couche range contribue peu au PnL mais peut completer `Pod A`
-  - la prochaine validation utile est un run long avec le profil actif `Pod A + Pod B`
+  - engine refonde: fair value EMA + inventory skew + vol-adaptive spread + trend guard
+  - ne detruit plus de valeur de maniere systematique
+  - contribution marginale mais stable sur les jours calmes
+  - jour directionnel (ADX > 20) reste le principal risque → regime guard coupe le quoting
+  - `max_allocation_pct` reduit a 0.40 pour ne pas monopoliser les coins
+  - prochaine validation: run long serveur avec profil actif `Pod A + Pod B`
 
 ### Profil actif 2026-04-08
 

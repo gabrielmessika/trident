@@ -164,9 +164,17 @@ class PodBConfig:
     paper_quote_width_bucket_multiplier: float
     paper_quote_width_toxicity_multiplier: float
     paper_order_size_toxicity_discount: float
-    paper_quote_width_multiplier_by_symbol: dict[str, float]
-    paper_order_size_multiplier_by_symbol: dict[str, float]
-    paper_max_inventory_skew_pct_by_symbol: dict[str, float]
+    paper_fair_value_ema_alpha: float = 0.08
+    paper_volatility_ema_alpha: float = 0.06
+    paper_inventory_skew_intensity: float = 0.6
+    paper_volatility_spread_multiplier: float = 2.5
+    paper_min_spread_bps: float = 4.0
+    paper_max_spread_bps: float = 60.0
+    paper_grid_levels: int = 2
+    paper_grid_spacing_multiplier: float = 1.8
+    paper_quote_width_multiplier_by_symbol: dict[str, float] = field(default_factory=dict)
+    paper_order_size_multiplier_by_symbol: dict[str, float] = field(default_factory=dict)
+    paper_max_inventory_skew_pct_by_symbol: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -545,6 +553,30 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             paper_order_size_toxicity_discount=float(
                 pod_b_data.get("paper_order_size_toxicity_discount", 0.5)
+            ),
+            paper_fair_value_ema_alpha=float(
+                pod_b_data.get("paper_fair_value_ema_alpha", 0.08)
+            ),
+            paper_volatility_ema_alpha=float(
+                pod_b_data.get("paper_volatility_ema_alpha", 0.06)
+            ),
+            paper_inventory_skew_intensity=float(
+                pod_b_data.get("paper_inventory_skew_intensity", 0.6)
+            ),
+            paper_volatility_spread_multiplier=float(
+                pod_b_data.get("paper_volatility_spread_multiplier", 2.5)
+            ),
+            paper_min_spread_bps=float(
+                pod_b_data.get("paper_min_spread_bps", 4.0)
+            ),
+            paper_max_spread_bps=float(
+                pod_b_data.get("paper_max_spread_bps", 60.0)
+            ),
+            paper_grid_levels=int(
+                pod_b_data.get("paper_grid_levels", 2)
+            ),
+            paper_grid_spacing_multiplier=float(
+                pod_b_data.get("paper_grid_spacing_multiplier", 1.8)
             ),
             paper_quote_width_multiplier_by_symbol=_float_map(
                 pod_b_data.get("paper_quote_width_multiplier_by_symbol", {})

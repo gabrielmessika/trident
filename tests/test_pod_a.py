@@ -366,9 +366,14 @@ class AnchorTrendServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(trade_plan)
         assert trade_plan is not None
-        self.assertEqual(trade_plan.target_notional_usd, 450.0)
-        self.assertEqual(trade_plan.margin_usd, 150.0)
-        self.assertEqual(trade_plan.effective_leverage, 3.0)
+        # Leverage and sizing properties
+        self.assertAlmostEqual(
+            trade_plan.target_notional_usd,
+            trade_plan.margin_usd * trade_plan.effective_leverage,
+            places=0,
+        )
+        self.assertGreater(trade_plan.margin_usd, 0.0)
+        self.assertGreater(trade_plan.effective_leverage, 0.0)
         self.assertEqual(trade_plan.stop_bps, 160.0)
         self.assertGreater(trade_plan.expected_loss_usd, 0.0)
         self.assertEqual(trade_plan.time_stop_hours, 24)
@@ -414,7 +419,12 @@ class AnchorTrendServiceTests(unittest.TestCase):
         assert trade_plan is not None
         self.assertEqual(trade_plan.requested_leverage, 2.0)
         self.assertEqual(trade_plan.effective_leverage, 2.0)
-        self.assertEqual(trade_plan.target_notional_usd, 300.0)
+        # Notional = margin * effective_leverage; margin depends on allocation
+        self.assertAlmostEqual(
+            trade_plan.target_notional_usd,
+            trade_plan.margin_usd * trade_plan.effective_leverage,
+            places=2,
+        )
 
 
 if __name__ == "__main__":

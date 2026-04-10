@@ -65,7 +65,7 @@ class PodALiveRunner:
         max_messages: int | None = None,
         journal_path: str | Path | None = None,
     ) -> dict[str, object]:
-        journal = JsonlJournal(journal_path) if journal_path is not None else None
+        journal = JsonlJournal(journal_path, truncate=True) if journal_path is not None else None
         status_path = Path("logs/pod_a_live_status.json")
         self._write_runtime_status(status_path)
         async for record in self._iter_live_records(

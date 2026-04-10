@@ -42,7 +42,18 @@
       "Bash(grep -E \"\\\\.py$\")",
       "Bash(ls -lah /workspaces/trident/server-data/api/report-2026-04-08*.json)",
       "Bash(timeout 30 python -m unittest tests.test_pod_b -v)",
-      "Bash(timeout 30 python -m unittest tests.test_pod_b tests.test_full_bot_replay -v)"
+      "Bash(timeout 30 python -m unittest tests.test_pod_b tests.test_full_bot_replay -v)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_b tests.test_full_bot_replay tests.test_pod_b_paper_runner -v)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_b tests.test_pod_b_paper_runner tests.test_full_bot_replay -v)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_b tests.test_pod_b_paper_runner tests.test_full_bot_replay tests.test_full_bot_experiment_sweep -v)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_b_paper_runner -v)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_a tests.test_pod_b tests.test_pod_b_paper_runner tests.test_pod_a_live_runner tests.test_live_collector tests.test_full_bot_replay -v)",
+      "Bash(timeout 10 python -m unittest tests.test_pod_b tests.test_pod_b_paper_runner tests.test_full_bot_replay -v)",
+      "Bash(timeout 10 python -m unittest tests.test_pod_a.AnchorTrendServiceTests.test_trade_planner_clamps_leverage_to_asset_limit -v)",
+      "Bash(timeout 10 python -m unittest tests.test_pod_a.AnchorTrendServiceTests.test_trade_planner_uses_symbol_allocation -v)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_a tests.test_pod_b tests.test_pod_b_paper_runner tests.test_full_bot_replay -v)",
+      "Bash(timeout 30 python -m unittest tests.test_pod_a tests.test_pod_b tests.test_pod_b_paper_runner tests.test_full_bot_replay tests.test_pod_a_live_runner -v)",
+      "Bash(wc -l server-data/live_snapshots/*.jsonl)"
     ],
     "additionalDirectories": [
       "/workspaces/trident/app/backtest"

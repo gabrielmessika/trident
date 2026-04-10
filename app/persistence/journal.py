@@ -8,9 +8,11 @@ from typing import Iterable
 class JsonlJournal:
     """Small JSONL writer for signals and backtest outputs."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, truncate: bool = False) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if truncate and self.path.exists():
+            self.path.write_text("", encoding="utf-8")
 
     def append(self, record: dict[str, object]) -> None:
         with self.path.open("a", encoding="utf-8") as handle:

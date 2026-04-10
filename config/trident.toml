@@ -178,19 +178,34 @@ passivbot_config_path = "./runtime/passivbot/live.json"
 launch_command = []
 launch_workdir = ""
 max_allocation_pct = 0.40
-paper_quote_width_bps = 10.0
-paper_order_size_pct = 0.18
-paper_max_inventory_skew_pct = 0.40
+# --- Avellaneda-Stoikov MM parameters ---
+paper_quote_width_bps = 20.0
+paper_order_size_pct = 0.12
+paper_max_inventory_skew_pct = 0.25
 paper_maker_fee_bps = 0.0
 paper_recent_fills_limit = 20
+# Fair value & volatility tracking
+paper_fair_value_ema_alpha = 0.05
+paper_volatility_ema_alpha = 0.06
+# Inventory skew: how aggressively mid-price shifts with inventory
+paper_inventory_skew_intensity = 0.8
+# Spread adapts to realized volatility
+paper_volatility_spread_multiplier = 4.0
+paper_min_spread_bps = 4.0
+paper_max_spread_bps = 60.0
+# Multi-level grid
+paper_grid_levels = 1
+paper_grid_spacing_multiplier = 1.8
+# Regime guards
 paper_pause_outside_range = true
 paper_guard_max_adx = 20.0
 paper_guard_max_atr_ratio = 0.9
 paper_guard_max_abs_structure_score = 0.2
 paper_guard_max_range_width_bps = 90.0
+# Toxicity
 paper_flow_toxicity_threshold = 0.15
 paper_one_sided_inventory_threshold_pct = 0.30
-paper_quote_width_bucket_multiplier = 0.45
+paper_quote_width_bucket_multiplier = 0.80
 paper_quote_width_toxicity_multiplier = 2.0
 paper_order_size_toxicity_discount = 0.6
 

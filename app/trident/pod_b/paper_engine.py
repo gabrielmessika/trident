@@ -1,5 +1,16 @@
+"""Pod B market-making engine based on Avellaneda-Stoikov principles.
+
+Core ideas:
+1. Fair value estimation via EMA — quotes center on fair value, not spot price
+2. Inventory-based mid-price skew — when long, shift mid down to attract sells
+3. Volatility-adaptive spread — wider in volatile markets, tighter in calm
+4. Multi-level grid — multiple bid/ask levels for deeper capture
+5. Aggressive inventory reduction — hard limits + active unwind
+"""
+
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -22,6 +33,45 @@ class PaperPositionState:
 
 
 @dataclass(slots=True)
+class SymbolMMState:
+    """Per-symbol market-making state for fair value and volatility tracking."""
+
+    fair_value: float = 0.0
+    volatility_bps: float = 25.0
+    last_price: float = 0.0
+    initialized: bool = False
+
+    def update(
+        self,
+        price: float,
+        vwap_distance_bps: float,
+        *,
+        fv_alpha: float,
+        vol_alpha: float,
+    ) -> None:
+        if not self.initialized:
+            self.fair_value = price
+            self.last_price = price
+            self.initialized = True
+            return
+
+        # Fair value: EMA of price, biased toward VWAP
+        # If price is far above VWAP, fair value lags (avoids chasing)
+        vwap_drag = 1.0 - min(abs(vwap_distance_bps) / 50.0, 0.5) * 0.3
+        effective_alpha = fv_alpha * vwap_drag
+        self.fair_value = self.fair_value * (1.0 - effective_alpha) + price * effective_alpha
+
+        # Realized volatility: EMA of absolute returns in bps
+        if self.last_price > 0:
+            ret_bps = abs(price - self.last_price) / self.last_price * 10_000.0
+            self.volatility_bps = max(
+                self.volatility_bps * (1.0 - vol_alpha) + ret_bps * vol_alpha,
+                1.0,
+            )
+        self.last_price = price
+
+
+@dataclass(slots=True)
 class PodBPaperEngine:
     managed_symbols: list[str]
     target_usd: float
@@ -32,6 +82,7 @@ class PodBPaperEngine:
     total_fill_count: int = 0
     realized_pnl_usd: float = 0.0
     last_mark_price_by_symbol: dict[str, float] = field(default_factory=dict)
+    mm_state_by_symbol: dict[str, SymbolMMState] = field(default_factory=dict)
 
     def update_allocation(self, *, managed_symbols: list[str], target_usd: float) -> None:
         managed = [symbol.upper() for symbol in managed_symbols]
@@ -42,6 +93,7 @@ class PodBPaperEngine:
             self.positions_by_symbol.pop(symbol, None)
             self.open_orders_by_symbol.pop(symbol, None)
             self.last_mark_price_by_symbol.pop(symbol, None)
+            self.mm_state_by_symbol.pop(symbol, None)
         self.managed_symbols = managed
         self.target_usd = target_usd
 
@@ -61,6 +113,14 @@ class PodBPaperEngine:
 
         for snapshot in relevant_snapshots:
             self.last_mark_price_by_symbol[snapshot.symbol] = snapshot.price
+            # Update MM state before executing orders
+            mm = self.mm_state_by_symbol.setdefault(snapshot.symbol, SymbolMMState())
+            mm.update(
+                snapshot.price,
+                snapshot.vwap_distance_bps,
+                fv_alpha=self.config.paper_fair_value_ema_alpha,
+                vol_alpha=self.config.paper_volatility_ema_alpha,
+            )
             fills.extend(self._execute_resting_orders(snapshot=snapshot, timestamp=timestamp))
 
         for snapshot in relevant_snapshots:
@@ -131,6 +191,10 @@ class PodBPaperEngine:
                 4,
             ),
         )
+
+    # ------------------------------------------------------------------
+    # Order execution
+    # ------------------------------------------------------------------
 
     def _execute_resting_orders(
         self,
@@ -210,6 +274,10 @@ class PodBPaperEngine:
         if abs(position.signed_size) < 1e-12:
             self.positions_by_symbol.pop(fill.symbol, None)
 
+    # ------------------------------------------------------------------
+    # Avellaneda-Stoikov quoting
+    # ------------------------------------------------------------------
+
     def _build_quotes(
         self,
         snapshot: SymbolMarketSnapshot,
@@ -220,163 +288,191 @@ class PodBPaperEngine:
         if target_per_symbol <= 0:
             return []
 
+        mm = self.mm_state_by_symbol.get(snapshot.symbol)
+        if mm is None or not mm.initialized:
+            return []
+
         signed_notional = self._signed_notional(snapshot.symbol, snapshot.price)
-        abs_inventory_limit = target_per_symbol * max(
-            self._inventory_skew_limit_pct(snapshot.symbol),
-            0.1,
-        )
-        toxicity = self._toxicity_score(snapshot)
-        toxicity_size_discount = self._clamp(
-            1.0 - toxicity * max(self.config.paper_order_size_toxicity_discount, 0.0),
-            0.25,
-            1.0,
-        )
-        order_notional = max(
-            target_per_symbol
-            * self.config.paper_order_size_pct
-            * self._order_size_multiplier(snapshot.symbol)
-            * toxicity_size_discount,
-            25.0,
-        )
-        base_width_bps = max(
-            self.config.paper_quote_width_bps,
-            snapshot.spread_bps * 8.0,
-            snapshot.bucket_range_bps * self.config.paper_quote_width_bucket_multiplier,
-        )
-        base_width_bps *= self._quote_width_multiplier(snapshot.symbol)
-        base_width_bps *= 1.0 + toxicity * max(
-            self.config.paper_quote_width_toxicity_multiplier,
-            0.0,
-        )
-        skew_ratio = signed_notional / target_per_symbol if target_per_symbol > 0 else 0.0
-        bid_width_bps = base_width_bps * self._clamp(
-            1.0 + max(skew_ratio, 0.0) - max(-skew_ratio, 0.0) * 0.5,
-            0.5,
-            2.5,
-        )
-        ask_width_bps = base_width_bps * self._clamp(
-            1.0 + max(-skew_ratio, 0.0) - max(skew_ratio, 0.0) * 0.5,
-            0.5,
-            2.5,
-        )
 
-        allow_buy = signed_notional < abs_inventory_limit
-        allow_sell = signed_notional > -abs_inventory_limit
-        one_sided_threshold = max(
-            self.config.paper_one_sided_inventory_threshold_pct,
-            0.1,
-        )
-        if skew_ratio >= one_sided_threshold:
-            allow_buy = False
-        elif skew_ratio <= -one_sided_threshold:
-            allow_sell = False
-
+        # --- Regime / toxicity guards ---
         if not self._regime_allows_quoting(regime_snapshot):
-            return self._unwind_only_quotes(
+            return self._unwind_quotes(
                 snapshot=snapshot,
                 signed_notional=signed_notional,
-                order_notional=order_notional,
-                width_bps=base_width_bps * 2.0,
+                target_per_symbol=target_per_symbol,
+                width_bps=mm.volatility_bps * 2.0,
             )
         if self._is_toxic_flow(snapshot):
-            return self._unwind_only_quotes(
+            return self._unwind_quotes(
                 snapshot=snapshot,
                 signed_notional=signed_notional,
-                order_notional=order_notional,
-                width_bps=base_width_bps * 1.5,
+                target_per_symbol=target_per_symbol,
+                width_bps=mm.volatility_bps * 1.5,
             )
 
-        orders: list[PassivbotOrder] = []
-
-        # --- Take-profit close: aggressively close profitable positions ---
-        tp_order = self._take_profit_close(
+        # --- Avellaneda-Stoikov pricing ---
+        reservation_price, half_spread_bps = self._compute_reservation_price(
+            mm=mm,
             snapshot=snapshot,
-            base_width_bps=base_width_bps,
+            signed_notional=signed_notional,
+            target_per_symbol=target_per_symbol,
         )
-        if tp_order is not None:
-            orders.append(tp_order)
+        allow_buy, allow_sell = self._compute_side_permissions(
+            snapshot=snapshot,
+            signed_notional=signed_notional,
+            target_per_symbol=target_per_symbol,
+            fair_value=mm.fair_value,
+            half_spread_bps=half_spread_bps,
+        )
 
-        if allow_buy:
-            bid_price = round(snapshot.price * (1.0 - bid_width_bps / 10_000.0), 8)
-            if bid_price > 0:
-                orders.append(
-                    PassivbotOrder(
-                        symbol=snapshot.symbol,
-                        side="buy",
-                        price=bid_price,
-                        size=round(order_notional / bid_price, 8),
-                    )
-                )
-        if allow_sell:
-            ask_price = round(snapshot.price * (1.0 + ask_width_bps / 10_000.0), 8)
-            if ask_price > 0:
-                orders.append(
-                    PassivbotOrder(
-                        symbol=snapshot.symbol,
-                        side="sell",
-                        price=ask_price,
-                        size=round(order_notional / ask_price, 8),
-                    )
-                )
-        return orders
+        return self._place_grid_orders(
+            snapshot=snapshot,
+            reservation_price=reservation_price,
+            half_spread_bps=half_spread_bps,
+            target_per_symbol=target_per_symbol,
+            allow_buy=allow_buy,
+            allow_sell=allow_sell,
+        )
 
-    def _take_profit_close(
+    def _compute_reservation_price(
         self,
         *,
+        mm: SymbolMMState,
         snapshot: SymbolMarketSnapshot,
-        base_width_bps: float,
-    ) -> PassivbotOrder | None:
-        """Place a tight take-profit order to close profitable inventory.
+        signed_notional: float,
+        target_per_symbol: float,
+    ) -> tuple[float, float]:
+        """Return (reservation_price, half_spread_bps) via Avellaneda-Stoikov."""
+        inventory_ratio = self._clamp(
+            signed_notional / target_per_symbol if target_per_symbol > 0 else 0.0,
+            -1.0,
+            1.0,
+        )
+        skew_bps = -inventory_ratio * self.config.paper_inventory_skew_intensity * mm.volatility_bps
+        reservation_price = mm.fair_value * (1.0 + skew_bps / 10_000.0)
 
-        When holding a position, if the current price is favorable enough
-        (profit >= half the base width), place a close order at a tighter
-        spread than the regular grid to lock in the gain quickly.
-        """
-        position = self.positions_by_symbol.get(snapshot.symbol)
-        if position is None or abs(position.signed_size) < 1e-12:
-            return None
+        vol_spread_bps = mm.volatility_bps * self.config.paper_volatility_spread_multiplier
+        base_spread_bps = max(
+            self.config.paper_quote_width_bps,
+            vol_spread_bps,
+            snapshot.spread_bps * 6.0,
+            snapshot.bucket_range_bps * self.config.paper_quote_width_bucket_multiplier,
+        )
+        base_spread_bps *= self._quote_width_multiplier(snapshot.symbol)
+        half_spread_bps = self._clamp(
+            base_spread_bps / 2.0,
+            self.config.paper_min_spread_bps / 2.0,
+            self.config.paper_max_spread_bps / 2.0,
+        )
+        return reservation_price, half_spread_bps
 
-        entry = position.avg_entry_price
-        if entry <= 0:
-            return None
-
-        price_delta_bps = (snapshot.price - entry) / entry * 10_000.0
-        tp_threshold_bps = base_width_bps * 0.4
-
-        if position.signed_size > 0 and price_delta_bps >= tp_threshold_bps:
-            # Long position in profit — sell to close at a tight ask
-            tp_price = round(snapshot.price * (1.0 - base_width_bps * 0.15 / 10_000.0), 8)
-            if tp_price > entry:
-                return PassivbotOrder(
-                    symbol=snapshot.symbol,
-                    side="sell",
-                    price=tp_price,
-                    size=round(abs(position.signed_size), 8),
-                )
-        elif position.signed_size < 0 and price_delta_bps <= -tp_threshold_bps:
-            # Short position in profit — buy to close at a tight bid
-            tp_price = round(snapshot.price * (1.0 + base_width_bps * 0.15 / 10_000.0), 8)
-            if tp_price < entry:
-                return PassivbotOrder(
-                    symbol=snapshot.symbol,
-                    side="buy",
-                    price=tp_price,
-                    size=round(abs(position.signed_size), 8),
-                )
-        return None
-
-    def _unwind_only_quotes(
+    def _compute_side_permissions(
         self,
         *,
         snapshot: SymbolMarketSnapshot,
         signed_notional: float,
-        order_notional: float,
+        target_per_symbol: float,
+        fair_value: float,
+        half_spread_bps: float,
+    ) -> tuple[bool, bool]:
+        """Determine which sides are allowed based on inventory + trend guards."""
+        abs_inventory_limit = target_per_symbol * max(
+            self._inventory_skew_limit_pct(snapshot.symbol), 0.1,
+        )
+        allow_buy = signed_notional < abs_inventory_limit
+        allow_sell = signed_notional > -abs_inventory_limit
+
+        inventory_ratio = self._clamp(
+            signed_notional / target_per_symbol if target_per_symbol > 0 else 0.0,
+            -1.0, 1.0,
+        )
+        one_sided_threshold = max(self.config.paper_one_sided_inventory_threshold_pct, 0.1)
+        if inventory_ratio >= one_sided_threshold:
+            allow_buy = False
+        elif inventory_ratio <= -one_sided_threshold:
+            allow_sell = False
+
+        # Trend guard: don't add to losing side when price diverges from FV
+        fv_divergence_bps = (snapshot.price - fair_value) / fair_value * 10_000.0
+        divergence_threshold = half_spread_bps * 0.8
+        if fv_divergence_bps > divergence_threshold and inventory_ratio < -0.05:
+            allow_sell = False
+        elif fv_divergence_bps < -divergence_threshold and inventory_ratio > 0.05:
+            allow_buy = False
+
+        return allow_buy, allow_sell
+
+    def _place_grid_orders(
+        self,
+        *,
+        snapshot: SymbolMarketSnapshot,
+        reservation_price: float,
+        half_spread_bps: float,
+        target_per_symbol: float,
+        allow_buy: bool,
+        allow_sell: bool,
+    ) -> list[PassivbotOrder]:
+        """Place multi-level grid orders around the reservation price."""
+        grid_levels = max(self.config.paper_grid_levels, 1)
+        spacing_mult = max(self.config.paper_grid_spacing_multiplier, 1.1)
+        toxicity_size_discount = self._clamp(
+            1.0 - self._toxicity_score(snapshot) * max(
+                self.config.paper_order_size_toxicity_discount, 0.0,
+            ),
+            0.25, 1.0,
+        )
+        base_order_notional = max(
+            target_per_symbol
+            * self.config.paper_order_size_pct
+            * self._order_size_multiplier(snapshot.symbol)
+            * toxicity_size_discount
+            / grid_levels,
+            10.0,
+        )
+
+        orders: list[PassivbotOrder] = []
+        for level in range(grid_levels):
+            level_offset_bps = half_spread_bps * (spacing_mult ** level)
+            level_notional = base_order_notional / (1.0 + level * 0.4)
+
+            if allow_buy:
+                bid_price = round(
+                    reservation_price * (1.0 - level_offset_bps / 10_000.0), 8,
+                )
+                if bid_price > 0:
+                    orders.append(PassivbotOrder(
+                        symbol=snapshot.symbol, side="buy",
+                        price=bid_price, size=round(level_notional / bid_price, 8),
+                    ))
+            if allow_sell:
+                ask_price = round(
+                    reservation_price * (1.0 + level_offset_bps / 10_000.0), 8,
+                )
+                if ask_price > 0:
+                    orders.append(PassivbotOrder(
+                        symbol=snapshot.symbol, side="sell",
+                        price=ask_price, size=round(level_notional / ask_price, 8),
+                    ))
+        return orders
+
+    def _unwind_quotes(
+        self,
+        *,
+        snapshot: SymbolMarketSnapshot,
+        signed_notional: float,
+        target_per_symbol: float,
         width_bps: float,
     ) -> list[PassivbotOrder]:
+        """When regime or toxicity forces us out, aggressively reduce inventory."""
         if abs(signed_notional) < 1e-9:
             return []
+        order_notional = max(
+            target_per_symbol * self.config.paper_order_size_pct,
+            10.0,
+        )
+        clamped_width = max(width_bps, self.config.paper_min_spread_bps)
         if signed_notional > 0:
-            ask_price = round(snapshot.price * (1.0 + width_bps / 10_000.0), 8)
+            ask_price = round(snapshot.price * (1.0 + clamped_width / 10_000.0), 8)
             if ask_price <= 0:
                 return []
             return [
@@ -387,7 +483,7 @@ class PodBPaperEngine:
                     size=round(order_notional / ask_price, 8),
                 )
             ]
-        bid_price = round(snapshot.price * (1.0 - width_bps / 10_000.0), 8)
+        bid_price = round(snapshot.price * (1.0 - clamped_width / 10_000.0), 8)
         if bid_price <= 0:
             return []
         return [
@@ -398,6 +494,10 @@ class PodBPaperEngine:
                 size=round(order_notional / bid_price, 8),
             )
         ]
+
+    # ------------------------------------------------------------------
+    # Guards
+    # ------------------------------------------------------------------
 
     def _regime_allows_quoting(self, regime_snapshot: dict[str, object] | None) -> bool:
         if not self.config.paper_pause_outside_range:
@@ -429,6 +529,20 @@ class PodBPaperEngine:
             1.0,
         )
 
+    def _is_toxic_flow(self, snapshot: SymbolMarketSnapshot) -> bool:
+        threshold = max(self.config.paper_flow_toxicity_threshold, 0.0)
+        if threshold <= 0:
+            return False
+        if snapshot.trade_flow_bias >= threshold and snapshot.book_imbalance >= threshold:
+            return True
+        if snapshot.trade_flow_bias <= -threshold and snapshot.book_imbalance <= -threshold:
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Per-symbol config helpers
+    # ------------------------------------------------------------------
+
     def _quote_width_multiplier(self, symbol: str) -> float:
         return max(
             float(self.config.paper_quote_width_multiplier_by_symbol.get(symbol.upper(), 1.0)),
@@ -452,21 +566,9 @@ class PodBPaperEngine:
             0.1,
         )
 
-    def _is_toxic_flow(self, snapshot: SymbolMarketSnapshot) -> bool:
-        threshold = max(self.config.paper_flow_toxicity_threshold, 0.0)
-        if threshold <= 0:
-            return False
-        if snapshot.trade_flow_bias >= threshold and snapshot.book_imbalance >= threshold:
-            return True
-        if snapshot.trade_flow_bias <= -threshold and snapshot.book_imbalance <= -threshold:
-            return True
-        return False
-
-    def _float_value(self, value: Any) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.0
+    # ------------------------------------------------------------------
+    # Position / inventory helpers
+    # ------------------------------------------------------------------
 
     def _positions(self) -> list[PassivbotPosition]:
         positions: list[PassivbotPosition] = []
@@ -552,6 +654,12 @@ class PodBPaperEngine:
         if position.signed_size > 0:
             return (mark_price - position.avg_entry_price) * position.signed_size
         return (position.avg_entry_price - mark_price) * abs(position.signed_size)
+
+    def _float_value(self, value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _clamp(self, value: float, lower: float, upper: float) -> float:
         return max(lower, min(value, upper))

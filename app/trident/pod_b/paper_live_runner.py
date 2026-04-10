@@ -40,7 +40,7 @@ class PodBPaperLiveRunner(PodBPaperRunner):
         max_idle_loops: int | None = None,
     ) -> PodBPaperLiveStats:
         input_path = Path(input_path)
-        journal = JsonlJournal(journal_output) if journal_output is not None else None
+        journal = JsonlJournal(journal_output, truncate=True) if journal_output is not None else None
         report = PodBReport()
         status_path = self.config_path.with_suffix(".status.json")
         logger.info(
