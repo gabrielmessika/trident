@@ -93,6 +93,9 @@
 - statut: 99%
 - objectif:
   - confirmer le comportement live petit wallet sur une plage plus longue
+- fait recemment:
+  - fallback REST `allMids` pour les positions ouvertes sans snapshot WS (evite les positions "fantomes" sans exit check)
+  - `ClosedTrade` preserve desormais `trailing_activation_bps`, `trailing_distance_bps`, `break_even_trigger_bps`
 - reste a faire:
   - validation dry-run live prolongee
 

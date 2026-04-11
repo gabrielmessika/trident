@@ -57,6 +57,9 @@ class ClosedTrade:
     close_reason: str
     opened_at: datetime | None
     closed_at: datetime | None
+    break_even_trigger_bps: float = 0.0
+    trailing_activation_bps: float = 0.0
+    trailing_distance_bps: float = 0.0
     margin_usd: float = 0.0
     effective_leverage: float = 1.0
     risk_budget_usd: float = 0.0
@@ -143,6 +146,9 @@ class DirectionalPortfolioState:
             close_reason=reason,
             opened_at=position.opened_at,
             closed_at=parse_timestamp(timestamp),
+            break_even_trigger_bps=position.break_even_trigger_bps,
+            trailing_activation_bps=position.trailing_activation_bps,
+            trailing_distance_bps=position.trailing_distance_bps,
             margin_usd=position.margin_usd,
             effective_leverage=position.effective_leverage,
             risk_budget_usd=position.risk_budget_usd,

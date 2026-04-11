@@ -583,3 +583,65 @@ class PodAExecutorTests(unittest.TestCase):
         self.assertEqual(len(batch.closed_trades), 1)
         self.assertEqual(batch.closed_trades[0].close_reason, "trailing_stop")
         self.assertGreater(batch.closed_trades[0].pnl_usd, 0)
+
+    def test_closed_trade_preserves_trailing_and_break_even_fields(self) -> None:
+        executor = PodAExecutor(load_config("config/trident.toml"))
+        decision = RiskDecision(
+            accepted=True,
+            reason="accepted",
+            trade_plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.7,
+                target_notional_usd=300.0,
+                stop_bps=80.0,
+                time_stop_hours=24,
+                take_profit_bps=100.0,
+                break_even_trigger_bps=56.0,
+                trailing_activation_bps=80.0,
+                trailing_distance_bps=44.0,
+            ),
+        )
+
+        executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3000.0,
+                    ema_fast=2990.0,
+                    ema_slow=2950.0,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.6,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[decision],
+            signal_sides_by_symbol={"ETH": "long"},
+            timestamp="2026-04-04T00:00:00Z",
+        )
+
+        closed, _ = executor.finalize(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3010.0,
+                    ema_fast=3005.0,
+                    ema_slow=2970.0,
+                    vwap_distance_bps=3.0,
+                    structure_score=0.4,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            timestamp="2026-04-04T01:00:00Z",
+        )
+
+        self.assertEqual(len(closed), 1)
+        trade = closed[0]
+        self.assertEqual(trade.trailing_activation_bps, 80.0)
+        self.assertEqual(trade.trailing_distance_bps, 44.0)
+        self.assertEqual(trade.break_even_trigger_bps, 56.0)

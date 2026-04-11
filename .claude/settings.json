@@ -76,7 +76,9 @@
       "Bash(find /workspaces -name \"*.py\" -type f -exec grep -l \"class.*Planner\" {} \\\\;)",
       "Bash(python3 -c \"import sys, json; d=json.load\\(sys.stdin\\); print\\('Keys:', list\\(d.keys\\(\\)\\)[:10]\\); print\\('Source:', d.get\\('source'\\)\\); print\\('Record keys:', list\\(d.get\\('record', {}\\).keys\\(\\)\\)[:15] if 'record' in d else 'no record'\\)\")",
       "Bash(python3 -c \"import sys, json; d=json.load\\(sys.stdin\\); sig=d.get\\('signal', {}\\); print\\('Signal keys:', list\\(sig.keys\\(\\)\\)\\); print\\('Risk keys:', list\\(sig.get\\('risk', {}\\).keys\\(\\)\\)\\)\")",
-      "Bash(python3 -c \"import sys, json; d=json.load\\(sys.stdin\\); trade=d.get\\('record', {}\\); print\\('Trade keys:', sorted\\(trade.keys\\(\\)\\)\\); print\\('Trailing keys:', [k for k in trade.keys\\(\\) if 'trailing' in k]\\)\")"
+      "Bash(python3 -c \"import sys, json; d=json.load\\(sys.stdin\\); trade=d.get\\('record', {}\\); print\\('Trade keys:', sorted\\(trade.keys\\(\\)\\)\\); print\\('Trailing keys:', [k for k in trade.keys\\(\\) if 'trailing' in k]\\)\")",
+      "Bash(python -m pytest tests/test_pod_a_executor.py tests/test_hyperliquid_http.py -v)",
+      "Bash(python -m pytest tests/ -v)"
     ],
     "additionalDirectories": [
       "/workspaces/trident/app/backtest"

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.backtest.pod_a_executor import PodAExecutor
 from app.backtest.pod_report import PodABacktestReport
-from app.hyperliquid.info_client import apply_live_asset_leverage_caps
+from app.hyperliquid.info_client import HyperliquidInfoClient, apply_live_asset_leverage_caps
 from app.live.collector import HyperliquidLiveCollector
 from app.live.runtime_status import write_runtime_status
 from app.persistence.journal import (
@@ -56,6 +56,7 @@ class PodALiveRunner:
         self.executor = PodAExecutor(self.config)
         self.report = PodABacktestReport()
         self._latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
+        self._info_client = HyperliquidInfoClient(self.config.hyperliquid)
 
     async def run(
         self,
@@ -186,6 +187,7 @@ class PodALiveRunner:
 
         snapshots = [SymbolMarketSnapshot(**item) for item in symbols if isinstance(item, dict)]
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
+        snapshots = self._backfill_missing_position_snapshots(snapshots)
         previews = self.supervisor.preview_pod_a_signals(snapshots, timestamp=timestamp)
         trade_plans = self.supervisor.build_pod_a_trade_plans(snapshots, timestamp=timestamp)
         risk_decisions = self.risk_gate.evaluate_many(trade_plans)
@@ -476,6 +478,45 @@ class PodALiveRunner:
                 "supervisor": self.supervisor.snapshot(),
             },
         )
+
+    def _backfill_missing_position_snapshots(
+        self,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> list[SymbolMarketSnapshot]:
+        """Fetch REST mid-prices for open positions missing from the WS snapshot batch."""
+        snapshot_symbols = {s.symbol for s in snapshots}
+        missing = [
+            sym for sym in self.executor.portfolio.open_positions
+            if sym not in snapshot_symbols
+        ]
+        if not missing:
+            return snapshots
+        try:
+            all_mids = self._info_client.fetch_all_mids()
+        except Exception:
+            logger.warning("REST allMids fallback failed for symbols: %s", missing)
+            return snapshots
+        extended = list(snapshots)
+        for sym in missing:
+            mid = all_mids.get(sym)
+            if mid is None or mid <= 0:
+                continue
+            fallback = SymbolMarketSnapshot(
+                symbol=sym,
+                price=mid,
+                ema_fast=mid,
+                ema_slow=mid,
+                vwap_distance_bps=0.0,
+                structure_score=0.0,
+                funding_rate=0.0,
+                spread_bps=0.0,
+                btc_aligned=True,
+                source="rest_fallback",
+            )
+            extended.append(fallback)
+            self._latest_snapshots_by_symbol[sym] = fallback
+            logger.info("REST fallback price for %s: %s", sym, mid)
+        return extended
 
     def _build_open_positions_payload(self) -> list[dict[str, object]]:
         positions: list[dict[str, object]] = []

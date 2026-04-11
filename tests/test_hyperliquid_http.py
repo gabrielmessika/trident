@@ -93,6 +93,35 @@ class HyperliquidHttpTests(unittest.TestCase):
             self.assertEqual(client.stats.retry_count, 1)
             self.assertEqual(client.stats.rate_limit_count, 1)
 
+    def test_fetch_all_mids_returns_prices(self) -> None:
+        config = load_config("config/trident.toml").hyperliquid
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config.rate_limit_state_path = str(Path(tmpdir) / "rate_limits.json")
+            client = HyperliquidInfoClient(config, sleep_fn=lambda _: None)
+            fake_payload = {"BTC": "60123.5", "ETH": "3100.0", "BAD": "invalid"}
+
+            with patch(
+                "app.hyperliquid.info_client.request.urlopen",
+                return_value=_FakeResponse(fake_payload),
+            ):
+                result = client.fetch_all_mids()
+
+            self.assertEqual(result, {"BTC": 60123.5, "ETH": 3100.0})
+
+    def test_fetch_all_mids_handles_empty_response(self) -> None:
+        config = load_config("config/trident.toml").hyperliquid
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config.rate_limit_state_path = str(Path(tmpdir) / "rate_limits.json")
+            client = HyperliquidInfoClient(config, sleep_fn=lambda _: None)
+
+            with patch(
+                "app.hyperliquid.info_client.request.urlopen",
+                return_value=_FakeResponse("not a dict"),
+            ):
+                result = client.fetch_all_mids()
+
+            self.assertEqual(result, {})
+
     def test_raises_rate_limit_error_after_exhaustion(self) -> None:
         config = load_config("config/trident.toml").hyperliquid
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -22,6 +22,21 @@
 
 ## Journal condense
 
+### 2026-04-11
+
+- **Bug fix: ClosedTrade perdait les champs trailing/break-even**:
+  - le dataclass `ClosedTrade` ne contenait pas `trailing_activation_bps`, `trailing_distance_bps`, `break_even_trigger_bps`
+  - a la fermeture d'un trade, ces valeurs etaient perdues → l'API affichait "Non configure" meme pour des trades qui avaient un trailing actif
+  - fix: ajout des 3 champs a `ClosedTrade` et copie dans `close_position()`
+  - fichier: `app/portfolio/directional_state.py`
+
+- **Bug fix: positions ouvertes sans market data (pas de prix courant / PnL)**:
+  - le live runner dependait exclusivement du flux WebSocket pour les prix
+  - si un shard WS perdait la connexion ou qu'un symbol cessait d'emettre, la position devenait invisible: pas de prix, pas de PnL, et aucun exit check (stop, trailing, time-stop) n'etait evalue
+  - fix: ajout d'un fallback REST via l'endpoint `allMids` de Hyperliquid
+  - a chaque record, le runner detecte les positions ouvertes sans snapshot WS et injecte des snapshots synthetiques via l'API REST
+  - fichiers: `app/hyperliquid/info_client.py` (`fetch_all_mids()`), `app/live/pod_a_live_runner.py` (`_backfill_missing_position_snapshots()`)
+
 ### 2026-04-10
 
 - **Correction de cap Pod C / Tradfi**:

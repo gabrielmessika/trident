@@ -108,6 +108,21 @@ class HyperliquidInfoClient:
 
         raise HyperliquidAPIError("Exhausted Hyperliquid info retries")
 
+    def fetch_all_mids(self) -> dict[str, float]:
+        """Fetch current mid prices for all symbols via the REST ``allMids`` endpoint."""
+        payload = self.post_info({"type": "allMids"})
+        if not isinstance(payload, dict):
+            return {}
+        result: dict[str, float] = {}
+        for symbol, price_str in payload.items():
+            try:
+                price = float(price_str)
+                if price > 0:
+                    result[str(symbol).upper()] = price
+            except (TypeError, ValueError):
+                continue
+        return result
+
     def fetch_max_leverage_by_symbol(
         self,
         *,

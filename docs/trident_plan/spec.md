@@ -155,6 +155,19 @@ Le routing peut etre pilote manuellement:
   - un backtest credible pour les pods directionnels repose sur des snapshots minute TRIDENT (`l2Book + trades`) ou des archives equivalentes
   - les candles HL seules ne sont pas considerees suffisantes pour valider un pod live
 
+### Resilience market data
+
+Le live runner Pod A dispose d'un fallback REST pour les positions ouvertes dont le flux WebSocket est absent:
+
+- a chaque record, le runner compare les positions ouvertes aux symbols presents dans le snapshot WS
+- si un symbol avec position ouverte est absent, le runner appelle l'endpoint REST `allMids` de Hyperliquid
+- un snapshot synthetique est injecte pour que l'executor puisse evaluer les conditions de sortie (stop, trailing, time-stop)
+- sans ce fallback, une position sans snapshot WS serait invisible: aucun exit check ne serait evalue
+
+Le `ClosedTrade` preserve desormais les champs d'exit policy complets:
+- `trailing_activation_bps`, `trailing_distance_bps`, `break_even_trigger_bps`
+- ces champs etaient precedemment perdus a la fermeture du trade
+
 ### Dashboard
 
 Le dashboard doit permettre:
