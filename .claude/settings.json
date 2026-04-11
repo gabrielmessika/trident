@@ -69,7 +69,14 @@
       "Bash(python -m pytest tests/ -q --ignore=tests/test_backtest_runner.py --ignore=tests/test_cohabitation_replay.py --ignore=tests/test_routing_replay.py --ignore=tests/test_snapshot_universe_compare.py -k \"not \\(reassignment_cooldown or reassignment_debounce\\)\")",
       "Bash(python -c \"from app.live.collector import HyperliquidLiveCollector; from app.live.snapshot_builder import LiveSnapshotBuilder; from app.settings import load_config; c = load_config\\('config/trident.toml'\\); print\\('spot_coin_ids:', c.hyperliquid.spot_coin_ids\\); col = HyperliquidLiveCollector\\(c\\); print\\('coins:', col.coins\\); print\\('name_to_ws:', col._name_to_ws\\); print\\('ws_to_name:', col._ws_to_name\\); print\\('shards:', col.coin_shards\\)\")",
       "Bash(python -m pytest tests/ -q --ignore=tests/test_backtest_runner.py --ignore=tests/test_cohabitation_replay.py -k \"not \\(reassignment_cooldown or reassignment_debounce or routing_replay or universe_compare\\)\")",
-      "Bash(python -m pytest tests/test_pod_a.py::AnchorTrendServiceTests::test_generates_signal_for_index_cluster_without_btc_dependency tests/test_pod_c.py::PodCTests::test_pod_c_live_runner_processes_records tests/test_supervisor.py::SupervisorTests::test_supervisor_routes_symbols_dynamically_by_market_context -q)"
+      "Bash(python -m pytest tests/test_pod_a.py::AnchorTrendServiceTests::test_generates_signal_for_index_cluster_without_btc_dependency tests/test_pod_c.py::PodCTests::test_pod_c_live_runner_processes_records tests/test_supervisor.py::SupervisorTests::test_supervisor_routes_symbols_dynamically_by_market_context -q)",
+      "Bash(grep -n \"open_positions\\\\|best_price_seen\\\\|trailing_activation\\\\|current_price\\\\|current_notional\\\\|margin_usd\\\\|unrealized_pnl\" /workspaces/trident/app/trident/pod_a/*.py)",
+      "Bash(python3)",
+      "Bash(find /workspaces/trident -name \"*.py\" -type f -exec grep -l \"TradePlan\\(\" {} \\\\;)",
+      "Bash(find /workspaces -name \"*.py\" -type f -exec grep -l \"class.*Planner\" {} \\\\;)",
+      "Bash(python3 -c \"import sys, json; d=json.load\\(sys.stdin\\); print\\('Keys:', list\\(d.keys\\(\\)\\)[:10]\\); print\\('Source:', d.get\\('source'\\)\\); print\\('Record keys:', list\\(d.get\\('record', {}\\).keys\\(\\)\\)[:15] if 'record' in d else 'no record'\\)\")",
+      "Bash(python3 -c \"import sys, json; d=json.load\\(sys.stdin\\); sig=d.get\\('signal', {}\\); print\\('Signal keys:', list\\(sig.keys\\(\\)\\)\\); print\\('Risk keys:', list\\(sig.get\\('risk', {}\\).keys\\(\\)\\)\\)\")",
+      "Bash(python3 -c \"import sys, json; d=json.load\\(sys.stdin\\); trade=d.get\\('record', {}\\); print\\('Trade keys:', sorted\\(trade.keys\\(\\)\\)\\); print\\('Trailing keys:', [k for k in trade.keys\\(\\) if 'trailing' in k]\\)\")"
     ],
     "additionalDirectories": [
       "/workspaces/trident/app/backtest"
