@@ -97,8 +97,10 @@ API_DIR="${LOCAL_DIR}/api"
 RUNTIME_DIR="${LOCAL_DIR}/runtime"
 DOCKER_DIR="${LOCAL_DIR}/docker"
 HYDRA_DOCS_DIR="${LOCAL_DIR}/hydra_docs"
+REPLAY_INPUT_DIR="${LOCAL_DIR}/replay_inputs"
+FULL_BOT_REPLAY_INPUT="${REPLAY_INPUT_DIR}/full_bot_latest_fetch.jsonl"
 
-mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${FUNDING_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${HYDRA_DOCS_DIR}" "${OUTPUT_DIR}"
+mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${FUNDING_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${HYDRA_DOCS_DIR}" "${REPLAY_INPUT_DIR}" "${OUTPUT_DIR}"
 
 SSH_CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/trident-fetch-XXXXXX")"
 SSH_CONTROL_PATH="${SSH_CONTROL_DIR}/cm-%C"
@@ -349,6 +351,31 @@ fetch_funding_history() {
     ok "Funding/OI rapatrie (${funding_count} fichier(s) locaux)"
 }
 
+prepare_backtest_inputs() {
+    info "Preparation d'un input local pret pour full_bot_replay..."
+
+    local snapshot_files
+    snapshot_files="$(find "${SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | sort)"
+    if [[ -z "${snapshot_files}" ]]; then
+        warn "Aucun snapshot local disponible pour preparer un input de backtest"
+        rm -f "${FULL_BOT_REPLAY_INPUT}"
+        return
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        printf '  [dry-run] concat snapshots -> %s\n' "${FULL_BOT_REPLAY_INPUT}"
+        return
+    fi
+
+    find "${SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | sort | while IFS= read -r file_path; do
+        cat "${file_path}"
+    done > "${FULL_BOT_REPLAY_INPUT}"
+
+    local merged_lines
+    merged_lines="$(wc -l < "${FULL_BOT_REPLAY_INPUT}" | tr -d ' ')"
+    ok "Input full-bot prepare (${merged_lines} lignes): ${FULL_BOT_REPLAY_INPUT}"
+}
+
 fetch_logs_and_runtime() {
     info "Rapatriement des logs runtime et statuses..."
     fetch_remote_file "logs/pod_a_live.jsonl" "${LOG_DIR}/pod_a_live.jsonl" "Journal Pod A"
@@ -357,6 +384,8 @@ fetch_logs_and_runtime() {
     fetch_remote_file "logs/pod_b_live_report.json" "${LOG_DIR}/pod_b_live_report.json" "Report Pod B"
     fetch_remote_file "logs/pod_a_live_status.json" "${RUNTIME_DIR}/pod_a_live_status.json" "Runtime status Pod A"
     fetch_remote_file "logs/pod_c_live_status.json" "${RUNTIME_DIR}/pod_c_live_status.json" "Runtime status Pod C"
+    fetch_remote_file "logs/funding_collector_status.json" "${RUNTIME_DIR}/funding_collector_status.json" "Runtime status Funding Collector"
+    fetch_remote_file "logs/tradfi_funding_collector_status.json" "${RUNTIME_DIR}/tradfi_funding_collector_status.json" "Runtime status Tradfi Funding Collector"
     fetch_remote_file "runtime/passivbot/live.status.json" "${RUNTIME_DIR}/pod_b_live_status.json" "Runtime status Pod B"
     fetch_remote_file "runtime/passivbot/live.json" "${RUNTIME_DIR}/pod_b_live_config.json" "Config runtime Pod B"
     fetch_remote_file "docs/pod_funding_research_latest.json" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.json" "Research funding JSON"
@@ -440,6 +469,7 @@ fetch_api_snapshot
 if [[ "${LOGS_ONLY}" != "true" ]]; then
     fetch_snapshots
     fetch_funding_history
+    prepare_backtest_inputs
 fi
 
 if [[ "${SNAPSHOTS_ONLY}" != "true" ]]; then
@@ -470,9 +500,18 @@ if [[ "${DRY_RUN}" != "true" ]]; then
     echo "    - hydra docs : ${HYDRA_DOCS_DIR}"
     echo "    - API snapshots : ${API_DIR}"
     echo "    - docker logs : ${DOCKER_DIR}"
+    if [[ -f "${FULL_BOT_REPLAY_INPUT}" ]]; then
+        echo "    - input full-bot pret : ${FULL_BOT_REPLAY_INPUT}"
+    fi
     if [[ "${SKIP_REVIEW}" != "true" ]]; then
         echo "    - review summary : ${OUTPUT_DIR}/review_summary.md"
         echo "    - review json : ${OUTPUT_DIR}/review_summary.json"
     fi
     echo
+    if [[ -f "${FULL_BOT_REPLAY_INPUT}" ]]; then
+        echo "  Commandes utiles :"
+        echo "    uv run python -m app.backtest.full_bot_replay --config config/trident.toml --input ${SNAPSHOT_DIR}"
+        echo "    uv run python -m app.backtest.full_bot_replay --config config/trident.toml --input ${FULL_BOT_REPLAY_INPUT}"
+        echo
+    fi
 fi

@@ -40,10 +40,34 @@ def runtime_status_age_seconds(payload: dict[str, object] | None) -> float | Non
     return max((datetime.now(timezone.utc) - updated_dt).total_seconds(), 0.0)
 
 
+def runtime_status_max_age_seconds(
+    payload: dict[str, object] | None,
+    *,
+    default_max_age_seconds: float = 180.0,
+) -> float:
+    if not isinstance(payload, dict):
+        return float(default_max_age_seconds)
+    poll_seconds = payload.get("poll_seconds")
+    try:
+        poll_seconds_value = float(poll_seconds)
+    except (TypeError, ValueError):
+        return float(default_max_age_seconds)
+    if poll_seconds_value <= 0.0:
+        return float(default_max_age_seconds)
+    return max(float(default_max_age_seconds), poll_seconds_value * 1.25)
+
+
 def runtime_status_is_fresh(
     payload: dict[str, object] | None,
     *,
-    max_age_seconds: float = 180.0,
+    max_age_seconds: float | None = None,
 ) -> bool:
     age_seconds = runtime_status_age_seconds(payload)
-    return age_seconds is not None and age_seconds <= max_age_seconds
+    if age_seconds is None:
+        return False
+    allowed_age_seconds = (
+        float(max_age_seconds)
+        if max_age_seconds is not None
+        else runtime_status_max_age_seconds(payload)
+    )
+    return age_seconds <= allowed_age_seconds

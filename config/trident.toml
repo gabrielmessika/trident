@@ -214,7 +214,7 @@ target_pct = 0.00
 
 [pod_a]
 enabled = true
-symbols = ["BTC", "ETH", "SOL", "HYPE"]
+allowed_market_clusters = ["crypto"]
 max_allocation_pct = 0.85
 default_leverage = 2.0
 max_leverage = 10.0
@@ -243,7 +243,7 @@ ARB = 10
 
 [pod_b]
 enabled = true
-symbols = ["DOGE", "XRP", "SUI"]
+allowed_market_clusters = ["crypto"]
 passivbot_config_path = "./runtime/passivbot/live.json"
 launch_command = []
 launch_workdir = ""
@@ -296,8 +296,9 @@ XRP = 0.65
 
 [pod_c]
 enabled = true
-symbols = ["PAXG", "SPY", "GLD", "SLV", "QQQ"]
-allowed_market_clusters = ["index", "gold", "silver"]
+# Pod C derive son scope du `hyperliquid.observation_universe`
+# filtre par cluster autorise.
+allowed_market_clusters = ["index", "gold", "silver", "equity"]
 max_allocation_pct = 0.90
 max_spread_bps = 8.0
 max_abs_funding_rate = 0.015

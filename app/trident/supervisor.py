@@ -7,7 +7,12 @@ from pathlib import Path
 from app.settings import AppConfig
 from app.trident.capital_allocator import CapitalAllocator
 from app.trident.kill_switch import KillSwitch
-from app.trident.market_clusters import cluster_for_symbol, enrich_snapshots
+from app.trident.market_clusters import (
+    cluster_for_symbol,
+    enrich_snapshots,
+    normalize_cluster_names,
+    observation_universe_symbols,
+)
 from app.trident.pod_a import AnchorTrendPlanner, AnchorTrendService, MarketContextService
 from app.trident.pod_b import PassivbotManager
 from app.trident.pod_c import TradfiTrendContextService, TradfiTrendPlanner, TradfiTrendService
@@ -76,20 +81,19 @@ class TridentSupervisor:
         self.sync_pod_b()
 
     def _observed_symbols(self) -> list[str]:
-        source = (
-            self.config.hyperliquid.observation_universe
-            or self.config.hyperliquid.default_coins
-            or self.config.pod_a.symbols
-        )
-        seen: set[str] = set()
-        normalized: list[str] = []
-        for symbol in source:
-            name = str(symbol).strip().upper()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            normalized.append(name)
-        return normalized
+        return observation_universe_symbols(self.config)
+
+    def _symbol_matches_pod_clusters(
+        self,
+        snapshot: SymbolMarketSnapshot | None,
+        allowed_clusters: list[str],
+    ) -> bool:
+        if snapshot is None:
+            return False
+        cluster_scope = normalize_cluster_names(allowed_clusters)
+        if not cluster_scope:
+            return False
+        return str(snapshot.market_cluster).strip().lower() in cluster_scope
 
     def _enabled_pods(self) -> list[PodName]:
         enabled: list[PodName] = []
@@ -251,17 +255,31 @@ class TridentSupervisor:
                 for pod_name, pod in self.pods.items()
                 if pod.enabled
             }
-        crypto_only = [
-            symbol
-            for symbol in tradable_symbols
-            if (
-                snapshot_by_symbol.get(symbol) is not None
-                and snapshot_by_symbol[symbol].market_cluster == "crypto"
-            )
-        ]
         candidates = {
-            PodName.POD_A: crypto_only if self.config.pod_a.enabled else [],
-            PodName.POD_B: crypto_only if self.config.pod_b.enabled else [],
+            PodName.POD_A: (
+                [
+                    symbol
+                    for symbol in tradable_symbols
+                    if self._symbol_matches_pod_clusters(
+                        snapshot_by_symbol.get(symbol),
+                        self.config.pod_a.allowed_market_clusters,
+                    )
+                ]
+                if self.config.pod_a.enabled
+                else []
+            ),
+            PodName.POD_B: (
+                [
+                    symbol
+                    for symbol in tradable_symbols
+                    if self._symbol_matches_pod_clusters(
+                        snapshot_by_symbol.get(symbol),
+                        self.config.pod_b.allowed_market_clusters,
+                    )
+                ]
+                if self.config.pod_b.enabled
+                else []
+            ),
             PodName.POD_C: (
                 [
                     symbol

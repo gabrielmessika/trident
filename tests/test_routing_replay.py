@@ -84,8 +84,107 @@ class RoutingReplayTests(unittest.TestCase):
 
         self.assertEqual(result.records_processed, 1)
         self.assertEqual(result.unique_timestamps_processed, 1)
-        self.assertEqual(result.duplicate_timestamps_skipped, 1)
+        self.assertEqual(result.duplicate_timestamps_skipped, 0)
         self.assertEqual(result.initial_assignment_count, 1)
+
+    def test_routing_replay_merges_split_snapshot_lines_before_routing(self) -> None:
+        self.config.hyperliquid.observation_universe = ["BTC", "PAXG"]
+        self.config.pod_a.enabled = True
+        self.config.pod_b.enabled = False
+        self.config.pod_c.enabled = True
+        self.config.pod_c.allowed_market_clusters = ["gold"]
+        records = [
+            {
+                "timestamp": "2026-04-07T00:00:00Z",
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 28.0,
+                    "atr_ratio": 1.1,
+                    "range_width_bps": 140.0,
+                    "structure_score": 0.5,
+                    "btc_impulse": False,
+                },
+                "cluster_regime_snapshots": {
+                    "crypto": {
+                        "ready": True,
+                        "adx": 28.0,
+                        "atr_ratio": 1.1,
+                        "range_width_bps": 140.0,
+                        "structure_score": 0.5,
+                        "btc_impulse": False,
+                    },
+                },
+                "symbols": [
+                    {
+                        "symbol": "BTC",
+                        "price": 5100.0,
+                        "ema_fast": 5112.0,
+                        "ema_slow": 5087.0,
+                        "vwap_distance_bps": -3.0,
+                        "structure_score": 0.44,
+                        "funding_rate": 0.0,
+                        "spread_bps": 1.0,
+                        "btc_aligned": True,
+                        "book_imbalance": 0.12,
+                        "trade_flow_bias": 0.10,
+                        "bucket_volume": 1.8,
+                        "bucket_trade_count": 7,
+                        "bucket_range_bps": 20.0,
+                    }
+                ],
+            },
+            {
+                "timestamp": "2026-04-07T00:00:00Z",
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 12.0,
+                    "atr_ratio": 0.2,
+                    "range_width_bps": 25.0,
+                    "structure_score": 0.1,
+                    "btc_impulse": False,
+                },
+                "cluster_regime_snapshots": {
+                    "gold": {
+                        "ready": True,
+                        "adx": 12.0,
+                        "atr_ratio": 0.2,
+                        "range_width_bps": 25.0,
+                        "structure_score": 0.1,
+                        "btc_impulse": False,
+                    },
+                },
+                "symbols": [
+                    {
+                        "symbol": "PAXG",
+                        "price": 2400.0,
+                        "ema_fast": 2401.5,
+                        "ema_slow": 2397.0,
+                        "vwap_distance_bps": -1.0,
+                        "structure_score": 0.2,
+                        "funding_rate": 0.0,
+                        "spread_bps": 0.3,
+                        "btc_aligned": True,
+                        "book_imbalance": 0.05,
+                        "trade_flow_bias": 0.04,
+                        "bucket_volume": 10.0,
+                        "bucket_trade_count": 5,
+                        "bucket_range_bps": 8.0,
+                    }
+                ],
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "routing_replay_merged.jsonl"
+            input_path.write_text(
+                "".join(json.dumps(item) + "\n" for item in records),
+                encoding="utf-8",
+            )
+            result = RoutingReplayRunner(self.config).run_jsonl(input_path)
+
+        self.assertEqual(result.records_processed, 1)
+        self.assertEqual(result.unique_timestamps_processed, 1)
+        self.assertEqual(result.duplicate_timestamps_skipped, 0)
+        self.assertEqual(result.initial_assignment_count, 2)
 
     def test_routing_replay_tracks_reassignments(self) -> None:
         self.config.trident.routing.reassignment_cooldown_seconds = 0

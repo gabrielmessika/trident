@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 
 from app.settings import PodCConfig
+from app.trident.market_clusters import normalize_cluster_names
 from app.trident.pod_c.signals import TradfiTrendContext, TradfiTrendSignal
 
 
@@ -17,12 +18,7 @@ class TradfiTrendService:
         self.config = config
         self._notional_history: dict[str, deque[float]] = {}
         self._trade_count_history: dict[str, deque[int]] = {}
-        self._allowed_symbols = {symbol.upper() for symbol in config.symbols}
-        self._allowed_clusters = {
-            str(cluster).strip().lower()
-            for cluster in config.allowed_market_clusters
-            if str(cluster).strip()
-        }
+        self._allowed_clusters = normalize_cluster_names(config.allowed_market_clusters)
 
     def update_history(
         self,
@@ -56,10 +52,7 @@ class TradfiTrendService:
         return current_trade_count / avg
 
     def is_eligible_symbol(self, symbol: str, market_cluster: str) -> bool:
-        normalized_symbol = str(symbol).upper()
         normalized_cluster = str(market_cluster).strip().lower()
-        if self._allowed_symbols and normalized_symbol in self._allowed_symbols:
-            return True
         return bool(normalized_cluster) and normalized_cluster in self._allowed_clusters
 
     def evaluate(self, context: TradfiTrendContext) -> TradfiTrendSignal | None:

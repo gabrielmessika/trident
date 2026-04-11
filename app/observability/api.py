@@ -21,6 +21,11 @@ from app.live.runtime_status import (
     runtime_status_is_fresh,
 )
 from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
+from app.trident.market_clusters import (
+    normalize_cluster_names,
+    observation_universe_symbols,
+    symbols_in_allowed_clusters,
+)
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot
 
@@ -813,7 +818,7 @@ def _latest_snapshot_record(
         return None
     loader = SnapshotLoader()
     latest_record: SnapshotRecord | None = None
-    for record in loader.iter_jsonl(latest_file):
+    for record in loader.iter_merged_jsonl(latest_file):
         latest_record = record
     return latest_record
 
@@ -865,11 +870,15 @@ def _control_center_html(
         for item in runtime_report.get("services", [])
         if isinstance(item, dict) and item.get("service") is not None
     ]
-    pod_c_configured_symbols = [
-        str(symbol).upper()
-        for symbol in supervisor.config.pod_c.symbols
-        if str(symbol).strip()
-    ]
+    pod_c_allowed_clusters = sorted(
+        normalize_cluster_names(supervisor.config.pod_c.allowed_market_clusters)
+    )
+    pod_c_scope_symbols = symbols_in_allowed_clusters(
+        supervisor.config,
+        observation_universe_symbols(supervisor.config),
+        supervisor.config.pod_c.allowed_market_clusters,
+    )
+    pod_c_scope_symbol_set = set(pod_c_scope_symbols)
     observed_status_rows = [
         item
         for item in snapshot.get("observed_symbol_status", [])
@@ -892,7 +901,7 @@ def _control_center_html(
     pod_c_routing_rows = [
         item
         for item in routing_rows
-        if str(item.get("symbol")).upper() in set(pod_c_configured_symbols)
+        if str(item.get("symbol")).upper() in pod_c_scope_symbol_set
     ]
     pod_c_routed_symbols = [
         str(item.get("symbol")).upper()
@@ -900,10 +909,10 @@ def _control_center_html(
         if item.get("owner") == "pod_c"
     ]
     pod_c_seen_not_observed = [
-        symbol for symbol in pod_c_configured_symbols if symbol not in observed_symbols
+        symbol for symbol in pod_c_scope_symbols if symbol not in observed_symbols
     ]
     pod_c_observed_not_tradable = [
-        symbol for symbol in pod_c_configured_symbols if symbol in observed_symbols and symbol not in tradable_symbols
+        symbol for symbol in pod_c_scope_symbols if symbol in observed_symbols and symbol not in tradable_symbols
     ]
 
     def fmt_number(value: object, digits: int = 2, *, fallback: str = "-") -> str:
@@ -1443,8 +1452,8 @@ def _control_center_html(
             f"<td>{escape(str(next((item.get('reason') for item in pod_c_routing_rows if str(item.get('symbol')).upper() == symbol), '-')))}</td>"
             "</tr>"
         )
-        for symbol in pod_c_configured_symbols
-    ) or "<tr><td colspan='5'>Aucun symbole configure pour Pod C.</td></tr>"
+        for symbol in pod_c_scope_symbols
+    ) or "<tr><td colspan='5'>Aucun symbole Pod C derive de l'univers observe.</td></tr>"
     ownership_rows = "".join(
         (
             "<tr>"
@@ -2538,13 +2547,14 @@ def _control_center_html(
             <div class="panel" style="box-shadow:none;">
               <div class="panel-header">
                 <h3>Pod C scope visibility</h3>
-                <p>Cette vue separe les symbols Tradfi configures pour Pod C de ce que le superviseur voit vraiment maintenant. Si un symbol n'apparait pas dans Routing decisions, c'est souvent qu'il n'est pas observe ou pas tradable, pas qu'il est absent du pod.</p>
+                <p>Cette vue derive le scope de Pod C depuis `hyperliquid.observation_universe`, puis le filtre avec `pod_c.allowed_market_clusters`. Si un symbol n'apparait pas dans Routing decisions, c'est souvent qu'il n'est pas observe ou pas tradable, pas qu'il manque dans une liste secondaire.</p>
               </div>
               <div class="metric-grid" style="margin-bottom:16px;">
                 {render_stat_cards([
-                    {"label": "Configured", "value": str(len(pod_c_configured_symbols)), "note": ", ".join(pod_c_configured_symbols) or "-"},
-                    {"label": "Observed", "value": str(len([symbol for symbol in pod_c_configured_symbols if symbol in observed_symbols])), "note": "Symbols Pod C presents dans les snapshots visibles"},
-                    {"label": "Tradable", "value": str(len([symbol for symbol in pod_c_configured_symbols if symbol in tradable_symbols])), "note": "Symbols Pod C qui passent les gates live"},
+                    {"label": "Clusters", "value": str(len(pod_c_allowed_clusters)), "note": ", ".join(pod_c_allowed_clusters) or "-"},
+                    {"label": "In Scope", "value": str(len(pod_c_scope_symbols)), "note": ", ".join(pod_c_scope_symbols) or "-"},
+                    {"label": "Observed", "value": str(len([symbol for symbol in pod_c_scope_symbols if symbol in observed_symbols])), "note": "Symbols Pod C presents dans les snapshots visibles"},
+                    {"label": "Tradable", "value": str(len([symbol for symbol in pod_c_scope_symbols if symbol in tradable_symbols])), "note": "Symbols Pod C qui passent les gates live"},
                     {"label": "Routed To Pod C", "value": str(len(pod_c_routed_symbols)), "note": ", ".join(pod_c_routed_symbols) or "-"},
                 ])}
               </div>

@@ -26,6 +26,51 @@ DEFAULT_CLUSTER_OVERRIDES: dict[str, str] = {
 }
 
 
+def normalize_symbols(symbols: list[str] | None) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for symbol in symbols or []:
+        name = str(symbol).strip().upper()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+    return normalized
+
+
+def observation_universe_symbols(config: AppConfig) -> list[str]:
+    source = (
+        config.hyperliquid.observation_universe
+        or config.hyperliquid.default_coins
+        or []
+    )
+    return normalize_symbols(source)
+
+
+def normalize_cluster_names(clusters: list[str] | None) -> set[str]:
+    return {
+        str(cluster).strip().lower()
+        for cluster in clusters or []
+        if str(cluster).strip()
+    }
+
+
+def symbols_in_allowed_clusters(
+    config: AppConfig,
+    symbols: list[str] | None,
+    allowed_clusters: list[str] | None,
+) -> list[str]:
+    normalized_symbols = normalize_symbols(symbols)
+    cluster_scope = normalize_cluster_names(allowed_clusters)
+    if not cluster_scope:
+        return []
+    return [
+        symbol
+        for symbol in normalized_symbols
+        if cluster_for_symbol(config, symbol) in cluster_scope
+    ]
+
+
 def cluster_for_symbol(config: AppConfig, symbol: str) -> str:
     normalized = str(symbol).strip().upper()
     if not normalized:

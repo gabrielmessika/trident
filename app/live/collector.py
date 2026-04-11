@@ -44,7 +44,6 @@ class HyperliquidLiveCollector:
             coins
             or config.hyperliquid.observation_universe
             or config.hyperliquid.default_coins
-            or config.pod_a.symbols
         )
         spot_ids = {
             name.strip().upper(): ws_id.strip()

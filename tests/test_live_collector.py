@@ -37,6 +37,15 @@ class LiveCollectorTests(unittest.TestCase):
         with self.assertRaises(HyperliquidRateLimitError):
             collector._handle_payload({"channel": "error", "data": "rate limit exceeded"})
 
+    def test_collector_does_not_fallback_to_pod_a_symbols(self) -> None:
+        config = load_config("config/trident.toml")
+        config.hyperliquid.observation_universe = []
+        config.hyperliquid.default_coins = []
+
+        collector = HyperliquidLiveCollector(config)
+
+        self.assertEqual(collector.coins, [])
+
     def test_backoff_is_capped(self) -> None:
         collector = HyperliquidLiveCollector(load_config("config/trident.toml"), coins=["BTC"])
         collector.stats.consecutive_failures = 8

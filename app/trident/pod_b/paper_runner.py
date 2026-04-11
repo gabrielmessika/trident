@@ -87,7 +87,7 @@ class PodBPaperRunner:
 
         records_processed = 0
         fills_emitted = 0
-        for record in loader.iter_jsonl(input_path):
+        for record in loader.iter_merged_jsonl(input_path):
             snapshots = [
                 SymbolMarketSnapshot(**item)
                 for item in record.symbols
@@ -179,7 +179,7 @@ class PodBPaperRunner:
 
         return PodBConfig(
             enabled=True,
-            symbols=self.managed_symbols,
+            allowed_market_clusters=["crypto"],
             passivbot_config_path=str(self.config_path),
             launch_command=[],
             launch_workdir="",

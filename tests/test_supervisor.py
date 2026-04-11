@@ -12,6 +12,115 @@ class SupervisorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = load_config("config/trident.toml")
 
+    def test_supervisor_observed_symbols_do_not_fallback_to_pod_a_symbols(self) -> None:
+        self.config.hyperliquid.observation_universe = []
+        self.config.hyperliquid.default_coins = []
+
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+
+        self.assertEqual(supervisor._observed_symbols(), [])
+
+    def test_supervisor_filters_candidates_by_allowed_market_clusters(self) -> None:
+        self.config.hyperliquid.observation_universe = ["BTC", "GLD", "SPY"]
+        self.config.pod_a.enabled = True
+        self.config.pod_b.enabled = True
+        self.config.pod_c.enabled = True
+        self.config.pod_a.allowed_market_clusters = ["crypto"]
+        self.config.pod_b.allowed_market_clusters = ["gold"]
+        self.config.pod_c.allowed_market_clusters = ["index"]
+
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=24.0,
+                atr_ratio=0.9,
+                range_width_bps=100.0,
+                structure_score=0.3,
+            ),
+            cluster_regime_snapshots={
+                "index": RegimeSnapshot(
+                    ready=True,
+                    adx=30.0,
+                    atr_ratio=1.0,
+                    range_width_bps=120.0,
+                    structure_score=0.35,
+                ),
+            },
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="BTC",
+                    price=68000.0,
+                    ema_fast=68100.0,
+                    ema_slow=67950.0,
+                    vwap_distance_bps=-3.0,
+                    structure_score=0.4,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.05,
+                    trade_flow_bias=0.04,
+                    bucket_volume=120.0,
+                    bucket_trade_count=100,
+                    bucket_range_bps=35.0,
+                    market_cluster="crypto",
+                ),
+                SymbolMarketSnapshot(
+                    symbol="GLD",
+                    price=220.0,
+                    ema_fast=220.4,
+                    ema_slow=219.8,
+                    vwap_distance_bps=-1.5,
+                    structure_score=0.22,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=False,
+                    book_imbalance=0.04,
+                    trade_flow_bias=0.03,
+                    bucket_volume=300.0,
+                    bucket_trade_count=40,
+                    bucket_range_bps=18.0,
+                    market_cluster="gold",
+                    cluster_aligned=True,
+                    cluster_leader="GLD",
+                ),
+                SymbolMarketSnapshot(
+                    symbol="SPY",
+                    price=510.0,
+                    ema_fast=511.2,
+                    ema_slow=509.4,
+                    vwap_distance_bps=-4.0,
+                    structure_score=0.33,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=False,
+                    book_imbalance=0.04,
+                    trade_flow_bias=0.05,
+                    bucket_volume=500.0,
+                    bucket_trade_count=60,
+                    bucket_range_bps=22.0,
+                    market_cluster="index",
+                    cluster_aligned=True,
+                    cluster_leader="SPY",
+                ),
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+        self.assertEqual(snapshot["pods"]["pod_a"]["candidate_symbols"], ["BTC"])
+        self.assertEqual(snapshot["pods"]["pod_b"]["candidate_symbols"], ["GLD"])
+        self.assertEqual(snapshot["pods"]["pod_c"]["candidate_symbols"], ["SPY"])
+
     def test_supervisor_claims_symbols_for_enabled_pods(self) -> None:
         supervisor = TridentSupervisor(
             config=self.config,
@@ -453,7 +562,16 @@ class SupervisorTests(unittest.TestCase):
                 atr_ratio=1.1,
                 range_width_bps=150.0,
                 structure_score=0.45,
-            )
+            ),
+            cluster_regime_snapshots={
+                "index": RegimeSnapshot(
+                    ready=True,
+                    adx=28.0,
+                    atr_ratio=1.1,
+                    range_width_bps=150.0,
+                    structure_score=0.45,
+                )
+            },
         )
 
         supervisor.refresh_symbol_routing(

@@ -99,7 +99,7 @@ class RoutingReplayRunner:
         divergent_state_count = 0
         divergent_symbols: set[str] = set()
 
-        for record in self.loader.iter_jsonl(input_path):
+        for record in self.loader.iter_merged_jsonl(input_path):
             timestamp = record.timestamp
             if dedupe_by_timestamp and timestamp:
                 if timestamp in seen_timestamps:

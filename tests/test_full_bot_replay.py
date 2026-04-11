@@ -132,6 +132,84 @@ class FullBotReplayTests(unittest.TestCase):
             self.assertIn("pod_b_total_fill_count", history_entry)
             self.assertIn("pod_c_realized_pnl_usd", history_entry)
 
+    def test_full_bot_replay_merges_same_timestamp_snapshot_lines(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_a.enabled = True
+        config.pod_b.enabled = True
+        config.pod_c.enabled = True
+        config.pod_b.paper_pause_outside_range = False
+        config.hyperliquid.observation_universe = ["BTC", "PAXG"]
+
+        crypto_record = _full_bot_record(
+            "2026-04-05T10:00:00Z",
+            btc_price=1000.0,
+            eth_price=100.0,
+            sol_price=200.0,
+        )
+        crypto_record["cluster_regime_snapshots"] = {
+            "crypto": {
+                "ready": True,
+                "adx": 30.0,
+                "atr_ratio": 1.15,
+                "range_width_bps": 150.0,
+                "structure_score": 0.55,
+                "btc_impulse": False,
+            }
+        }
+        tradfi_record = {
+            "timestamp": "2026-04-05T10:00:00Z",
+            "regime_snapshot": {
+                "ready": True,
+                "adx": 12.0,
+                "atr_ratio": 0.3,
+                "range_width_bps": 20.0,
+                "structure_score": 0.1,
+                "btc_impulse": False,
+            },
+            "cluster_regime_snapshots": {
+                "gold": {
+                    "ready": True,
+                    "adx": 12.0,
+                    "atr_ratio": 0.3,
+                    "range_width_bps": 20.0,
+                    "structure_score": 0.1,
+                    "btc_impulse": False,
+                }
+            },
+            "symbols": [
+                {
+                    "symbol": "PAXG",
+                    "price": 2400.0,
+                    "ema_fast": 2401.0,
+                    "ema_slow": 2398.0,
+                    "vwap_distance_bps": -1.0,
+                    "structure_score": 0.12,
+                    "funding_rate": 0.0,
+                    "spread_bps": 0.3,
+                    "btc_aligned": True,
+                    "book_imbalance": 0.04,
+                    "trade_flow_bias": 0.03,
+                    "bucket_volume": 20.0,
+                    "bucket_trade_count": 9,
+                    "bucket_range_bps": 6.0,
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "snapshots.jsonl"
+            input_path.write_text(
+                json.dumps(crypto_record) + "\n" + json.dumps(tradfi_record) + "\n",
+                encoding="utf-8",
+            )
+
+            result = FullBotBacktestRunner(config).run_jsonl(input_path=input_path)
+
+        self.assertEqual(result.records_processed, 1)
+        self.assertEqual(result.duplicate_timestamps_skipped, 0)
+        self.assertEqual(result.first_timestamp, "2026-04-05T10:00:00Z")
+        self.assertEqual(result.last_timestamp, "2026-04-05T10:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()

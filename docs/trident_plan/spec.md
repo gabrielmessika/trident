@@ -82,8 +82,9 @@ Principes:
 Pour chaque symbol observe:
 
 - le superviseur filtre les candidats par `market_cluster`:
-  - Pod A et Pod B: cluster `crypto` uniquement
-  - Pod C: clusters configures dans `pod_c.allowed_market_clusters` (ou symbols explicites dans `pod_c.symbols`)
+  - Pod A: clusters configures dans `pod_a.allowed_market_clusters`
+  - Pod B: clusters configures dans `pod_b.allowed_market_clusters`
+  - Pod C: clusters configures dans `pod_c.allowed_market_clusters`
 - le superviseur calcule un score d'affinite par pod eligible
 - choisit un owner unique
 - applique un fallback seulement si le signal est trop faible

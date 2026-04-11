@@ -78,9 +78,7 @@ class CohabitationReplayTests(unittest.TestCase):
     def test_replay_separates_pod_a_and_pod_b_symbol_ownership(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_a.enabled = True
-        config.pod_a.symbols = ["BTC", "ETH"]
         config.pod_b.enabled = True
-        config.pod_b.symbols = ["ETH", "XRP"]
         config.pod_b.paper_pause_outside_range = False
 
         with tempfile.TemporaryDirectory() as tmpdir:

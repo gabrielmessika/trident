@@ -1,5 +1,7 @@
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -10,10 +12,18 @@ from app.trident.pod_b.paper_runner import PodBPaperRunner
 from app.trident.types import PodAllocation, PodName
 
 
-def _snapshot_record(timestamp: str, symbol: str, price: float) -> dict[str, object]:
+def _snapshot_record(
+    timestamp: str,
+    symbol: str,
+    price: float,
+    *,
+    market_cluster: str = "crypto",
+    regime_snapshot: dict[str, object] | None = None,
+) -> dict[str, object]:
     return {
         "timestamp": timestamp,
-        "regime_snapshot": {
+        "regime_snapshot": regime_snapshot
+        or {
             "ready": True,
             "adx": 12.0,
             "atr_ratio": 0.4,
@@ -32,6 +42,7 @@ def _snapshot_record(timestamp: str, symbol: str, price: float) -> dict[str, obj
                 "funding_rate": 0.0,
                 "spread_bps": 1.0,
                 "btc_aligned": True,
+                "market_cluster": market_cluster,
                 "book_imbalance": 0.0,
                 "trade_flow_bias": 0.0,
                 "bucket_volume": 10.0,
@@ -104,7 +115,6 @@ class PodBPaperRunnerTests(unittest.TestCase):
     def test_paper_runner_writes_status_with_positions_orders_and_fills(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_b.enabled = True
-        config.pod_b.symbols = ["DOGE"]
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
             config.pod_b.passivbot_config_path = str(config_path)
@@ -210,6 +220,85 @@ class PodBPaperRunnerTests(unittest.TestCase):
             self.assertEqual(stats.skipped_historical, 3)
             # No new records to process → 0 records processed
             self.assertEqual(stats.records_processed, 0)
+            self.assertTrue(report_path.exists())
+
+    def test_paper_live_runner_merges_same_timestamp_records_before_routing(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_b.enabled = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "snapshots"
+            input_dir.mkdir(parents=True, exist_ok=True)
+            input_path = input_dir / "2026-04-05.jsonl"
+            input_path.write_text("", encoding="utf-8")
+
+            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
+            config.pod_b.passivbot_config_path = str(config_path)
+            report_path = Path(tmpdir) / "live_report.json"
+            status_path = config_path.with_suffix(".status.json")
+
+            runner = PodBPaperLiveRunner(config)
+            holder: dict[str, object] = {}
+
+            def _run() -> None:
+                holder["stats"] = runner.run_live(
+                    input_path=input_dir,
+                    poll_seconds=0.01,
+                    max_idle_loops=50,
+                    report_output=report_path,
+                )
+
+            thread = threading.Thread(target=_run)
+            thread.start()
+            time.sleep(0.05)
+
+            crypto_regime = {
+                "ready": True,
+                "adx": 12.0,
+                "atr_ratio": 0.4,
+                "range_width_bps": 30.0,
+                "structure_score": 0.0,
+                "btc_impulse": False,
+            }
+            tradfi_regime = {
+                "ready": True,
+                "adx": 4.0,
+                "atr_ratio": 0.1,
+                "range_width_bps": 10.0,
+                "structure_score": 0.05,
+                "btc_impulse": False,
+            }
+            input_path.write_text(
+                json.dumps(
+                    _snapshot_record(
+                        "2026-04-05T10:00:00Z",
+                        "BTC",
+                        100.0,
+                        market_cluster="crypto",
+                        regime_snapshot=crypto_regime,
+                    )
+                )
+                + "\n"
+                + json.dumps(
+                    _snapshot_record(
+                        "2026-04-05T10:00:00Z",
+                        "PAXG",
+                        3000.0,
+                        market_cluster="gold",
+                        regime_snapshot=tradfi_regime,
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive(), "Pod B live runner thread did not stop")
+
+            stats = holder["stats"]
+            self.assertEqual(stats.records_processed, 1)
+            status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(status_payload["managed_symbols"], ["BTC"])
+            self.assertEqual(status_payload["process_state"], "stopped")
             self.assertTrue(report_path.exists())
 
 

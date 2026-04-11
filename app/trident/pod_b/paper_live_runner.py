@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.backtest.snapshot_loader import merge_snapshot_payloads
 from app.persistence.journal import JsonlJournal
 from app.reporting.pod_b import PodBReport
 from app.settings import AppConfig, load_config
@@ -86,9 +87,12 @@ class PodBPaperLiveRunner:
 
         stats = PodBPaperLiveStats()
         started = time.monotonic()
+        merge_wait_seconds = max(poll_seconds * 2.0, 0.25)
 
         # Track byte offsets per file — skip to end of existing files at startup
         file_byte_offsets: dict[str, int] = {}
+        pending_payload_groups: dict[str, list[dict[str, object]]] = {}
+        pending_payload_first_seen: dict[str, float] = {}
         files = [input_path] if input_path.is_file() else sorted(input_path.glob("*.jsonl"))
         for file_path in files:
             file_key = str(file_path.resolve())
@@ -134,74 +138,50 @@ class PodBPaperLiveRunner:
                         except json.JSONDecodeError:
                             logger.warning("Pod B skipping malformed line in %s", file_path.name)
                             continue
-
-                        all_snapshots = [
-                            SymbolMarketSnapshot(**item)
-                            for item in payload.get("symbols", [])
-                            if isinstance(item, dict)
-                        ]
-                        regime_snapshot = payload.get("regime_snapshot", {})
-                        cluster_regime_snapshots_raw = payload.get("cluster_regime_snapshots", {})
-                        cluster_regime_snapshots = {
-                            cluster: RegimeSnapshot(**snap)
-                            for cluster, snap in (cluster_regime_snapshots_raw or {}).items()
-                            if isinstance(snap, dict)
-                        }
-
-                        # Apply regime + routing via supervisor (like full_bot_replay)
-                        self.supervisor.apply_regime_snapshot(
-                            RegimeSnapshot(**regime_snapshot),
-                            cluster_regime_snapshots=cluster_regime_snapshots,
-                        )
-                        self.supervisor.refresh_symbol_routing(all_snapshots)
-
-                        # Get Pod B allocation from supervisor (like full_bot_replay)
-                        pod_b_allocation = self.supervisor.capital_plan.pod_allocations[PodName.POD_B]
-                        pod_b_owned = self.supervisor.registry.symbols_for(PodName.POD_B)
-
-                        self.engine.update_allocation(
-                            managed_symbols=pod_b_owned,
-                            target_usd=pod_b_allocation.target_usd,
-                        )
-
-                        pod_b_snapshots = [
-                            s for s in all_snapshots if s.symbol in pod_b_owned
-                        ]
-                        if not pod_b_snapshots:
+                        payload_timestamp = str(payload.get("timestamp") or "")
+                        pending_group = pending_payload_groups.get(file_key, [])
+                        if not pending_group:
+                            pending_payload_groups[file_key] = [payload]
+                            pending_payload_first_seen[file_key] = time.monotonic()
                             continue
-
-                        status, fills = self.engine.process_record(
-                            timestamp=payload.get("timestamp"),
-                            snapshots=pod_b_snapshots,
-                            status_meta=meta,
-                            regime_snapshot=regime_snapshot,
-                            last_sync_reason="paper_live_runner_tick",
+                        pending_timestamp = str(pending_group[0].get("timestamp") or "")
+                        if payload_timestamp == pending_timestamp:
+                            pending_group.append(payload)
+                            continue
+                        processed, fill_count = self._process_payload(
+                            merge_snapshot_payloads(pending_group),
+                            meta=meta,
+                            report=report,
+                            journal=journal,
+                            status_path=status_path,
                         )
+                        if processed:
+                            new_records_processed += 1
+                            stats.records_processed += 1
+                            stats.fills_emitted += fill_count
+                        pending_payload_groups[file_key] = [payload]
+                        pending_payload_first_seen[file_key] = time.monotonic()
+
+                now = time.monotonic()
+                flush_before = now - merge_wait_seconds
+                for file_key, first_seen in list(pending_payload_first_seen.items()):
+                    if first_seen > flush_before:
+                        continue
+                    group = pending_payload_groups.pop(file_key, [])
+                    pending_payload_first_seen.pop(file_key, None)
+                    if not group:
+                        continue
+                    processed, fill_count = self._process_payload(
+                        merge_snapshot_payloads(group),
+                        meta=meta,
+                        report=report,
+                        journal=journal,
+                        status_path=status_path,
+                    )
+                    if processed:
                         new_records_processed += 1
                         stats.records_processed += 1
-                        stats.fills_emitted += len(fills)
-                        self._write_status(status, status_path)
-                        report.add_tick(
-                            timestamp=payload.get("timestamp"),
-                            status=status,
-                            fills=fills,
-                        )
-                        if journal is not None:
-                            snapshot_by_symbol = {s.symbol: s for s in pod_b_snapshots}
-                            for fill in fills:
-                                journal.append(
-                                    {
-                                        "event_type": "pod_b_live_fill",
-                                        "timestamp": fill.timestamp,
-                                        "source": "pod_b_paper_live_runner",
-                                        "fill": fill.as_dict(),
-                                        "symbol_snapshot": (
-                                            asdict(snapshot_by_symbol[fill.symbol])
-                                            if fill.symbol in snapshot_by_symbol
-                                            else None
-                                        ),
-                                    }
-                                )
+                        stats.fills_emitted += fill_count
 
                 if new_records_processed == 0:
                     stats.idle_loops += 1
@@ -232,6 +212,17 @@ class PodBPaperLiveRunner:
                     break
                 time.sleep(poll_seconds)
         finally:
+            for group in pending_payload_groups.values():
+                processed, fill_count = self._process_payload(
+                    merge_snapshot_payloads(group),
+                    meta=meta,
+                    report=report,
+                    journal=journal,
+                    status_path=status_path,
+                )
+                if processed:
+                    stats.records_processed += 1
+                    stats.fills_emitted += fill_count
             final_status = self.engine.build_status(
                 process_state="stopped",
                 last_sync_reason="paper_live_runner_completed",
@@ -255,6 +246,78 @@ class PodBPaperLiveRunner:
             )
 
         return stats
+
+    def _process_payload(
+        self,
+        payload: dict[str, object],
+        *,
+        meta: dict[str, object],
+        report: PodBReport,
+        journal: JsonlJournal | None,
+        status_path: Path,
+    ) -> tuple[bool, int]:
+        all_snapshots = [
+            SymbolMarketSnapshot(**item)
+            for item in payload.get("symbols", [])
+            if isinstance(item, dict)
+        ]
+        regime_snapshot = payload.get("regime_snapshot", {})
+        if not isinstance(regime_snapshot, dict):
+            return False, 0
+        cluster_regime_snapshots_raw = payload.get("cluster_regime_snapshots", {})
+        cluster_regime_snapshots = {
+            cluster: RegimeSnapshot(**snap)
+            for cluster, snap in (cluster_regime_snapshots_raw or {}).items()
+            if isinstance(snap, dict)
+        }
+
+        self.supervisor.apply_regime_snapshot(
+            RegimeSnapshot(**regime_snapshot),
+            cluster_regime_snapshots=cluster_regime_snapshots,
+        )
+        self.supervisor.refresh_symbol_routing(all_snapshots)
+
+        pod_b_allocation = self.supervisor.capital_plan.pod_allocations[PodName.POD_B]
+        pod_b_owned = self.supervisor.registry.symbols_for(PodName.POD_B)
+        self.engine.update_allocation(
+            managed_symbols=pod_b_owned,
+            target_usd=pod_b_allocation.target_usd,
+        )
+
+        pod_b_snapshots = [snapshot for snapshot in all_snapshots if snapshot.symbol in pod_b_owned]
+        if not pod_b_snapshots:
+            return False, 0
+
+        status, fills = self.engine.process_record(
+            timestamp=payload.get("timestamp"),
+            snapshots=pod_b_snapshots,
+            status_meta=meta,
+            regime_snapshot=regime_snapshot,
+            last_sync_reason="paper_live_runner_tick",
+        )
+        self._write_status(status, status_path)
+        report.add_tick(
+            timestamp=payload.get("timestamp"),
+            status=status,
+            fills=fills,
+        )
+        if journal is not None:
+            snapshot_by_symbol = {snapshot.symbol: snapshot for snapshot in pod_b_snapshots}
+            for fill in fills:
+                journal.append(
+                    {
+                        "event_type": "pod_b_live_fill",
+                        "timestamp": fill.timestamp,
+                        "source": "pod_b_paper_live_runner",
+                        "fill": fill.as_dict(),
+                        "symbol_snapshot": (
+                            asdict(snapshot_by_symbol[fill.symbol])
+                            if fill.symbol in snapshot_by_symbol
+                            else None
+                        ),
+                    }
+                )
+        return True, len(fills)
 
     def _count_lines(self, file_path: Path) -> int:
         """Count non-empty lines in a JSONL file (for stats only, no parsing)."""

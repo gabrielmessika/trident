@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.live.funding_collector import FundingCollectorStats, FundingHistoryCollector
 from app.settings import AppConfig, load_config
+from app.trident.market_clusters import observation_universe_symbols, symbols_in_allowed_clusters
 
 
 class TradfiFundingCollectorRunner:
@@ -20,7 +21,11 @@ class TradfiFundingCollectorRunner:
         self.collector = collector or FundingHistoryCollector(config)
 
     def default_symbols(self) -> list[str]:
-        return [str(symbol).strip().upper() for symbol in self.config.pod_c.symbols if str(symbol).strip()]
+        return symbols_in_allowed_clusters(
+            self.config,
+            observation_universe_symbols(self.config),
+            self.config.pod_c.allowed_market_clusters,
+        )
 
     def run(
         self,

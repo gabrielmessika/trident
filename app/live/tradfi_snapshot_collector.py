@@ -10,6 +10,7 @@ from typing import Callable
 from app.live.collector import HyperliquidLiveCollector
 from app.live.funding_collector import FundingHistoryCollector
 from app.settings import AppConfig, load_config
+from app.trident.market_clusters import observation_universe_symbols, symbols_in_allowed_clusters
 
 
 @dataclass(slots=True)
@@ -43,7 +44,11 @@ class TradfiSnapshotCollectionRunner:
         self._funding_collector_factory = funding_collector_factory or FundingHistoryCollector
 
     def default_symbols(self) -> list[str]:
-        return list(self.config.pod_c.symbols)
+        return symbols_in_allowed_clusters(
+            self.config,
+            observation_universe_symbols(self.config),
+            self.config.pod_c.allowed_market_clusters,
+        )
 
     async def run(
         self,

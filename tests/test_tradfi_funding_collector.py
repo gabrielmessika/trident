@@ -42,9 +42,10 @@ class _FakeFundingCollector:
 
 
 class TradfiFundingCollectorTests(unittest.TestCase):
-    def test_runner_defaults_to_pod_c_symbols(self) -> None:
+    def test_runner_defaults_to_observation_universe_filtered_by_pod_c_clusters(self) -> None:
         config = load_config("config/trident.toml")
-        config.pod_c.symbols = ["SPX", "PAXG", "XYZ100"]
+        config.hyperliquid.observation_universe = ["BTC", "PAXG", "SPY", "QQQ", "DOGE"]
+        config.pod_c.allowed_market_clusters = ["gold", "index"]
         fake = _FakeFundingCollector()
 
         stats = TradfiFundingCollectorRunner(
@@ -55,7 +56,7 @@ class TradfiFundingCollectorTests(unittest.TestCase):
         self.assertEqual(stats.records_written, 3)
         self.assertEqual(
             fake.calls[0]["symbols"],
-            ["SPX", "PAXG", "XYZ100"],
+            ["PAXG", "SPY", "QQQ"],
         )
         self.assertEqual(
             fake.calls[0]["output_path"],

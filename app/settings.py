@@ -162,7 +162,7 @@ class TridentConfigSection:
 @dataclass(slots=True)
 class PodAConfig:
     enabled: bool
-    symbols: list[str]
+    allowed_market_clusters: list[str]
     max_allocation_pct: float
     default_leverage: float
     max_leverage: float
@@ -182,7 +182,7 @@ class PodAConfig:
 @dataclass(slots=True)
 class PodBConfig:
     enabled: bool
-    symbols: list[str]
+    allowed_market_clusters: list[str]
     passivbot_config_path: str
     launch_command: list[str]
     launch_workdir: str
@@ -218,7 +218,6 @@ class PodBConfig:
 @dataclass(slots=True)
 class PodCConfig:
     enabled: bool
-    symbols: list[str]
     allowed_market_clusters: list[str]
     max_allocation_pct: float
     max_spread_bps: float
@@ -595,7 +594,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         ),
         pod_a=PodAConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_A", bool(pod_a_data.get("enabled", True))),
-            symbols=list(pod_a_data.get("symbols", [])),
+            allowed_market_clusters=_str_list(
+                pod_a_data.get("allowed_market_clusters", ["crypto"]),
+                upper_values=False,
+            ),
             max_allocation_pct=float(pod_a_data.get("max_allocation_pct", 1.0)),
             default_leverage=float(pod_a_data.get("default_leverage", 1.0)),
             max_leverage=float(pod_a_data.get("max_leverage", 1.0)),
@@ -617,7 +619,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         ),
         pod_b=PodBConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_B", bool(pod_b_data.get("enabled", False))),
-            symbols=list(pod_b_data.get("symbols", [])),
+            allowed_market_clusters=_str_list(
+                pod_b_data.get("allowed_market_clusters", ["crypto"]),
+                upper_values=False,
+            ),
             passivbot_config_path=str(
                 pod_b_data.get("passivbot_config_path", "./runtime/passivbot/live.json")
             ),
@@ -695,12 +700,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         ),
         pod_c=PodCConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_C", bool(pod_c_data.get("enabled", False))),
-            symbols=_str_list(
-                pod_c_data.get("symbols", []),
-                upper_values=True,
-            ),
             allowed_market_clusters=_str_list(
-                pod_c_data.get("allowed_market_clusters", []),
+                pod_c_data.get("allowed_market_clusters", ["index", "gold", "silver", "equity"]),
                 upper_values=False,
             ),
             max_allocation_pct=float(pod_c_data.get("max_allocation_pct", 0.90)),

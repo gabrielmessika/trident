@@ -1,6 +1,8 @@
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
+from app.live.runtime_status import runtime_status_is_fresh
 from app.reporting.export_daily import build_daily_summary, render_daily_markdown
 from app.reporting.multi_pod import build_cohabitation_summary, build_runtime_report
 from app.settings import load_config
@@ -248,6 +250,71 @@ class ReportingTests(unittest.TestCase):
         markdown = render_daily_markdown(summary)
         self.assertIn("TRIDENT Daily Summary", markdown)
         self.assertIn("Pod B total fill count: 10", markdown)
+
+    def test_runtime_status_is_fresh_uses_poll_seconds_for_slow_collectors(self) -> None:
+        payload = {
+            "updated_at": "2026-04-11T14:43:30Z",
+            "poll_seconds": 300,
+        }
+
+        with patch("app.live.runtime_status.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(
+                2026, 4, 11, 14, 48, 0, tzinfo=timezone.utc
+            )
+            mock_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            self.assertTrue(runtime_status_is_fresh(payload))
+
+    def test_build_runtime_report_keeps_slow_funding_collector_healthy(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_b.enabled = True
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-reporting-funding-service",
+            mode="observation",
+        )
+        pod_a_runtime = {"updated_at": "2999-01-01T00:00:00Z", "process_state": "running"}
+        pod_c_runtime = {"updated_at": "2999-01-01T00:00:01Z", "process_state": "running"}
+        funding_runtime = {
+            "service": "funding_collector",
+            "label": "Funding Collector",
+            "process_state": "running",
+            "updated_at": "2026-04-11T14:43:30Z",
+            "poll_seconds": 300,
+            "symbol_count": 22,
+            "polls_completed": 245,
+            "records_written": 4410,
+            "last_collected_at": "2026-04-11T14:43:30Z",
+        }
+        tradfi_runtime = {
+            "service": "tradfi_funding_collector",
+            "label": "Tradfi Funding Collector",
+            "process_state": "running",
+            "updated_at": "2999-01-01T00:00:02Z",
+            "poll_seconds": 60,
+            "symbol_count": 5,
+        }
+
+        with patch(
+            "app.reporting.multi_pod.load_runtime_status",
+            side_effect=[
+                pod_a_runtime,
+                pod_c_runtime,
+                None,
+                funding_runtime,
+                tradfi_runtime,
+            ],
+        ), patch("app.live.runtime_status.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(
+                2026, 4, 11, 14, 48, 0, tzinfo=timezone.utc
+            )
+            mock_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            report = build_runtime_report(supervisor).to_dict()
+
+        funding_service = next(
+            item for item in report["services"] if item["service"] == "funding_collector"
+        )
+        self.assertTrue(funding_service["healthy"])
+        self.assertEqual(funding_service["comment"], "Collector healthy.")
 
 
 if __name__ == "__main__":

@@ -359,21 +359,21 @@ class PodCTests(unittest.TestCase):
                 else:
                     status_path.write_text(original_status, encoding="utf-8")
 
-    def test_pod_c_live_runner_defaults_to_pod_c_scope(self) -> None:
+    def test_pod_c_live_runner_defaults_to_observation_universe_filtered_by_cluster(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.enabled = True
-        config.pod_c.symbols = ["PAXG", "SPY", "GLD", "SLV", "QQQ"]
-        config.hyperliquid.observation_universe = ["BTC", "ETH"]
+        config.hyperliquid.observation_universe = ["BTC", "ETH", "PAXG", "SPY", "GLD", "SLV", "QQQ"]
+        config.pod_c.allowed_market_clusters = ["gold", "index"]
 
         runner = PodCLiveRunner(config)
 
         self.assertEqual(
             runner.coins,
-            ["PAXG", "SPY", "GLD", "SLV", "QQQ"],
+            ["PAXG", "SPY", "GLD", "QQQ"],
         )
         self.assertEqual(
             runner.config.hyperliquid.observation_universe,
-            ["PAXG", "SPY", "GLD", "SLV", "QQQ"],
+            ["PAXG", "SPY", "GLD", "QQQ"],
         )
 
 

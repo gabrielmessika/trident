@@ -40,7 +40,6 @@ class PodALiveRunner:
             coins
             or config.hyperliquid.observation_universe
             or config.hyperliquid.default_coins
-            or config.pod_a.symbols
         )
         if use_live_asset_caps:
             self.config = apply_live_asset_leverage_caps(

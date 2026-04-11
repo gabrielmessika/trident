@@ -414,7 +414,6 @@ class PodBTests(unittest.TestCase):
     def test_manager_can_launch_real_paper_live_runner_command(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_b.enabled = True
-        config.pod_b.symbols = ["DOGE"]
         config.pod_b.launch_workdir = "/workspaces/trident"
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"

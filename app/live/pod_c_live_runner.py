@@ -14,7 +14,11 @@ from app.live.runtime_status import write_runtime_status
 from app.persistence.journal import JsonlJournal, build_signal_journal_record, build_trade_journal_record
 from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import AppConfig, load_config
-from app.trident.market_clusters import cluster_for_symbol
+from app.trident.market_clusters import (
+    cluster_for_symbol,
+    observation_universe_symbols,
+    symbols_in_allowed_clusters,
+)
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
 
@@ -27,9 +31,11 @@ class PodCLiveRunner:
     def __init__(self, config: AppConfig, coins: list[str] | None = None) -> None:
         selected_coins = (
             coins
-            or config.pod_c.symbols
-            or config.hyperliquid.observation_universe
-            or config.hyperliquid.default_coins
+            or symbols_in_allowed_clusters(
+                config,
+                observation_universe_symbols(config),
+                config.pod_c.allowed_market_clusters,
+            )
         )
         self.coins = [str(coin).strip().upper() for coin in selected_coins if str(coin).strip()]
         self.config = replace(

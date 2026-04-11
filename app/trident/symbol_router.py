@@ -941,14 +941,10 @@ class SymbolRouter:
         return affinities[pod][local_regime]
 
     def _pod_c_symbol_eligible(self, snapshot: SymbolMarketSnapshot) -> bool:
-        symbol = str(snapshot.symbol).upper()
         cluster = str(snapshot.market_cluster).strip().lower()
-        configured_symbols = {item.upper() for item in self.config.pod_c.symbols}
         configured_clusters = {
             str(item).strip().lower()
             for item in self.config.pod_c.allowed_market_clusters
             if str(item).strip()
         }
-        if configured_symbols and symbol in configured_symbols:
-            return True
         return bool(cluster) and cluster in configured_clusters

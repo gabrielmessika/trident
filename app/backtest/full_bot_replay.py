@@ -99,7 +99,7 @@ class FullBotBacktestRunner:
         records_processed = 0
         duplicate_timestamps_skipped = 0
 
-        for record in self.loader.iter_jsonl(input_path):
+        for record in self.loader.iter_merged_jsonl(input_path):
             timestamp = record.timestamp
             if dedupe_by_timestamp and timestamp:
                 if timestamp in seen_timestamps:

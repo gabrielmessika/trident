@@ -193,13 +193,14 @@ Decision d'architecture actuelle:
   - `hyperliquid.observation_universe` = coins observes par le collector (crypto + tradfi)
   - le `supervisor` construit le pool tradable dynamiquement a partir des snapshots frais de cet univers observe
   - l'ownership effectif, l'allocation et le `managed_symbols` runtime sont decides par le `supervisor`, pas par la config runtime des pods
-  - les listes statiques `pod_a.symbols`, `pod_b.symbols` et `pod_c.follower_symbols` ne pilotent plus le routage live; elles restent seulement des artefacts legacy / de compatibilite tant qu'on ne les retire pas completement
+  - il n'y a plus de liste `symbols` par pod a maintenir
+  - si un symbol doit etre observe, il doit etre present dans `hyperliquid.observation_universe`
   - `pod_c.leader_symbols` reste utile pour exclure les leaders du pool follower de Pod C
   - le collector est automatiquement sharde si l'univers observe depasse la limite empirique stable de ~10 coins par connexion WS
 - isolation par market cluster:
   - chaque symbol a un `market_cluster` (defaut: `crypto`, overrides: `index`, `gold`, `silver`, `oil`, `equity`)
-  - Pod A et Pod B ne recoivent que les symbols de cluster `crypto`
-  - Pod C ne recoit que les symbols dont le cluster est dans `pod_c.allowed_market_clusters` (ou explicitement dans `pod_c.symbols`)
+  - Pod A et Pod B ne recoivent que les symbols dont le cluster est dans `pod_a.allowed_market_clusters` et `pod_b.allowed_market_clusters` (par defaut: `crypto`)
+  - Pod C ne recoit que les symbols dont le cluster est dans `pod_c.allowed_market_clusters`
   - cette isolation empeche un pod crypto de trader accidentellement un instrument Tradfi et vice versa
 
 Comment ca marche, en version simple:
