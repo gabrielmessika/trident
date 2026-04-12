@@ -338,12 +338,14 @@ bis_max_concurrent_positions = 3
 bis_max_total_open_risk_pct = 0.015
 
 [pod_b.bis_max_leverage_by_symbol]
-BTC = 10.0
-ETH = 10.0
-SOL = 10.0
+# Fallback statique: les caps live HL doivent ecraser ces valeurs au runtime
+# quand le fetch `metaAndAssetCtxs` reussit.
+BTC = 40.0
+ETH = 25.0
+SOL = 20.0
 HYPE = 10.0
 DOGE = 10.0
-XRP = 10.0
+XRP = 20.0
 SUI = 10.0
 AVAX = 10.0
 LINK = 10.0

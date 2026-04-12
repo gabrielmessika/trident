@@ -63,8 +63,11 @@ class HyperliquidHttpTests(unittest.TestCase):
 
         self.assertEqual(runtime.pod_a.max_leverage_by_symbol["ETH"], 17.0)
         self.assertEqual(runtime.pod_a.max_leverage_by_symbol["BTC"], 40.0)
+        self.assertEqual(runtime.pod_b.bis_max_leverage_by_symbol["ETH"], 17.0)
+        self.assertEqual(runtime.pod_b.bis_max_leverage_by_symbol["BTC"], 40.0)
         self.assertEqual(runtime.pod_c.max_leverage_by_symbol["ETH"], 17.0)
         self.assertEqual(runtime.pod_a.max_leverage_by_symbol["SPY"], 1.0)
+        self.assertEqual(runtime.pod_b.bis_max_leverage_by_symbol["SPY"], 1.0)
         self.assertEqual(runtime.pod_c.max_leverage_by_symbol["SPY"], 1.0)
 
     def test_fetch_all_mids_merges_default_and_builder_dex_symbols(self) -> None:

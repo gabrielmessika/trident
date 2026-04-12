@@ -769,6 +769,12 @@ def override_app_config(
     pod_a_risk_per_trade_pct: float | None = None,
     pod_a_min_margin_usd: float | None = None,
     pod_a_min_notional_usd: float | None = None,
+    pod_b_bis_default_leverage: float | None = None,
+    pod_b_bis_max_leverage: float | None = None,
+    pod_b_bis_max_leverage_by_symbol: dict[str, float] | None = None,
+    pod_b_bis_risk_per_trade_pct: float | None = None,
+    pod_b_bis_min_margin_usd: float | None = None,
+    pod_b_bis_min_notional_usd: float | None = None,
     pod_c_default_leverage: float | None = None,
     pod_c_max_leverage: float | None = None,
     pod_c_max_leverage_by_symbol: dict[str, float] | None = None,
@@ -818,6 +824,39 @@ def override_app_config(
             else float(pod_a_min_notional_usd)
         ),
     )
+    pod_b = replace(
+        config.pod_b,
+        bis_default_leverage=(
+            config.pod_b.bis_default_leverage
+            if pod_b_bis_default_leverage is None
+            else float(pod_b_bis_default_leverage)
+        ),
+        bis_max_leverage=(
+            config.pod_b.bis_max_leverage
+            if pod_b_bis_max_leverage is None
+            else float(pod_b_bis_max_leverage)
+        ),
+        bis_max_leverage_by_symbol=(
+            dict(config.pod_b.bis_max_leverage_by_symbol)
+            if pod_b_bis_max_leverage_by_symbol is None
+            else _float_map(pod_b_bis_max_leverage_by_symbol)
+        ),
+        bis_risk_per_trade_pct=(
+            config.pod_b.bis_risk_per_trade_pct
+            if pod_b_bis_risk_per_trade_pct is None
+            else float(pod_b_bis_risk_per_trade_pct)
+        ),
+        bis_min_margin_usd=(
+            config.pod_b.bis_min_margin_usd
+            if pod_b_bis_min_margin_usd is None
+            else float(pod_b_bis_min_margin_usd)
+        ),
+        bis_min_notional_usd=(
+            config.pod_b.bis_min_notional_usd
+            if pod_b_bis_min_notional_usd is None
+            else float(pod_b_bis_min_notional_usd)
+        ),
+    )
     pod_c = replace(
         config.pod_c,
         default_leverage=(
@@ -851,4 +890,4 @@ def override_app_config(
             else float(pod_c_min_notional_usd)
         ),
     )
-    return replace(config, trident=trident, pod_a=pod_a, pod_c=pod_c)
+    return replace(config, trident=trident, pod_a=pod_a, pod_b=pod_b, pod_c=pod_c)
