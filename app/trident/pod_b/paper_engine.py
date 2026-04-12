@@ -76,6 +76,7 @@ class PodBPaperEngine:
     managed_symbols: list[str]
     target_usd: float
     config: PodBConfig
+    quoted_symbols: list[str] = field(default_factory=list)
     positions_by_symbol: dict[str, PaperPositionState] = field(default_factory=dict)
     open_orders_by_symbol: dict[str, list[PassivbotOrder]] = field(default_factory=dict)
     recent_fills: list[PassivbotFill] = field(default_factory=list)
@@ -83,18 +84,55 @@ class PodBPaperEngine:
     realized_pnl_usd: float = 0.0
     last_mark_price_by_symbol: dict[str, float] = field(default_factory=dict)
     mm_state_by_symbol: dict[str, SymbolMMState] = field(default_factory=dict)
+    parked_last_mark_price_by_symbol: dict[str, float] = field(default_factory=dict)
+    parked_mm_state_by_symbol: dict[str, SymbolMMState] = field(default_factory=dict)
 
-    def update_allocation(self, *, managed_symbols: list[str], target_usd: float) -> None:
+    def __post_init__(self) -> None:
+        self.managed_symbols = [symbol.upper() for symbol in self.managed_symbols]
+        if not self.quoted_symbols:
+            self.quoted_symbols = list(self.managed_symbols)
+        else:
+            self.quoted_symbols = [symbol.upper() for symbol in self.quoted_symbols]
+
+    def update_allocation(
+        self,
+        *,
+        managed_symbols: list[str],
+        target_usd: float,
+        quoted_symbols: list[str] | None = None,
+    ) -> None:
         managed = [symbol.upper() for symbol in managed_symbols]
+        quoted = (
+            [symbol.upper() for symbol in quoted_symbols]
+            if quoted_symbols is not None
+            else list(managed)
+        )
+        quoted_set = set(quoted)
+        quoted = [symbol for symbol in managed if symbol in quoted_set]
         previous = set(self.managed_symbols)
         current = set(managed)
+        added_symbols = current - previous
         removed_symbols = previous - current
         for symbol in removed_symbols:
             self.positions_by_symbol.pop(symbol, None)
             self.open_orders_by_symbol.pop(symbol, None)
-            self.last_mark_price_by_symbol.pop(symbol, None)
-            self.mm_state_by_symbol.pop(symbol, None)
+            last_mark = self.last_mark_price_by_symbol.pop(symbol, None)
+            if last_mark is not None:
+                self.parked_last_mark_price_by_symbol[symbol] = last_mark
+            mm_state = self.mm_state_by_symbol.pop(symbol, None)
+            if mm_state is not None:
+                self.parked_mm_state_by_symbol[symbol] = mm_state
+        for symbol in added_symbols:
+            last_mark = self.parked_last_mark_price_by_symbol.pop(symbol, None)
+            if last_mark is not None:
+                self.last_mark_price_by_symbol[symbol] = last_mark
+            mm_state = self.parked_mm_state_by_symbol.pop(symbol, None)
+            if mm_state is not None:
+                self.mm_state_by_symbol[symbol] = mm_state
+        for symbol in current - set(quoted):
+            self.open_orders_by_symbol[symbol] = []
         self.managed_symbols = managed
+        self.quoted_symbols = quoted
         self.target_usd = target_usd
 
     def process_record(
@@ -284,15 +322,22 @@ class PodBPaperEngine:
         *,
         regime_snapshot: dict[str, object] | None = None,
     ) -> list[PassivbotOrder]:
+        signed_notional = self._signed_notional(snapshot.symbol, snapshot.price)
         target_per_symbol = self._target_per_symbol()
+
+        if snapshot.symbol not in self.quoted_symbols:
+            return self._unwind_quotes(
+                snapshot=snapshot,
+                signed_notional=signed_notional,
+                target_per_symbol=target_per_symbol,
+                width_bps=max(snapshot.spread_bps * 8.0, self.config.paper_quote_width_bps),
+            )
         if target_per_symbol <= 0:
             return []
 
         mm = self.mm_state_by_symbol.get(snapshot.symbol)
         if mm is None or not mm.initialized:
             return []
-
-        signed_notional = self._signed_notional(snapshot.symbol, snapshot.price)
 
         # --- Regime / toxicity guards ---
         if not self._regime_allows_quoting(regime_snapshot):
@@ -466,10 +511,12 @@ class PodBPaperEngine:
         """When regime or toxicity forces us out, aggressively reduce inventory."""
         if abs(signed_notional) < 1e-9:
             return []
+        unwind_basis = target_per_symbol if target_per_symbol > 0 else abs(signed_notional)
         order_notional = max(
-            target_per_symbol * self.config.paper_order_size_pct,
+            unwind_basis * self.config.paper_order_size_pct,
             10.0,
         )
+        order_notional = min(order_notional, abs(signed_notional))
         clamped_width = max(width_bps, self.config.paper_min_spread_bps)
         if signed_notional > 0:
             ask_price = round(snapshot.price * (1.0 + clamped_width / 10_000.0), 8)
@@ -607,6 +654,7 @@ class PodBPaperEngine:
         open_orders: list[PassivbotOrder],
     ) -> list[PassivbotInventory]:
         target_per_symbol = self._target_per_symbol()
+        quoted_symbols = set(self.quoted_symbols)
         position_by_symbol = {position.symbol: position for position in positions}
         open_order_count_by_symbol: dict[str, int] = {}
         for order in open_orders:
@@ -621,13 +669,14 @@ class PodBPaperEngine:
                 symbol,
                 self.last_mark_price_by_symbol.get(symbol, 0.0),
             )
+            target_notional_usd = target_per_symbol if symbol in quoted_symbols else 0.0
             inventory.append(
                 PassivbotInventory(
                     symbol=symbol,
-                    target_notional_usd=round(target_per_symbol, 4),
+                    target_notional_usd=round(target_notional_usd, 4),
                     current_notional_usd=round(current_notional_usd, 4),
                     inventory_skew_pct=round(
-                        signed_notional / target_per_symbol if target_per_symbol > 0 else 0.0,
+                        signed_notional / target_notional_usd if target_notional_usd > 0 else 0.0,
                         4,
                     ),
                     has_position=position is not None,
@@ -637,9 +686,9 @@ class PodBPaperEngine:
         return inventory
 
     def _target_per_symbol(self) -> float:
-        if not self.managed_symbols:
+        if not self.quoted_symbols:
             return 0.0
-        return self.target_usd / len(self.managed_symbols)
+        return self.target_usd / len(self.quoted_symbols)
 
     def _signed_notional(self, symbol: str, mark_price: float) -> float:
         position = self.positions_by_symbol.get(symbol)

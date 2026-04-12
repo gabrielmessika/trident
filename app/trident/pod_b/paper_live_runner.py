@@ -278,13 +278,20 @@ class PodBPaperLiveRunner:
         self.supervisor.refresh_symbol_routing(all_snapshots)
 
         pod_b_allocation = self.supervisor.capital_plan.pod_allocations[PodName.POD_B]
-        pod_b_owned = self.supervisor.registry.symbols_for(PodName.POD_B)
+        pod_b_entry = sorted(self.supervisor.opening_symbols_for(PodName.POD_B))
+        pod_b_managed = sorted(
+            self.supervisor.managed_symbols_for(
+                PodName.POD_B,
+                set(self.engine.positions_by_symbol),
+            )
+        )
         self.engine.update_allocation(
-            managed_symbols=pod_b_owned,
+            managed_symbols=pod_b_managed,
             target_usd=pod_b_allocation.target_usd,
+            quoted_symbols=pod_b_entry,
         )
 
-        pod_b_snapshots = [snapshot for snapshot in all_snapshots if snapshot.symbol in pod_b_owned]
+        pod_b_snapshots = [snapshot for snapshot in all_snapshots if snapshot.symbol in pod_b_managed]
         if not pod_b_snapshots:
             return False, 0
 

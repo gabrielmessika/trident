@@ -34,16 +34,29 @@ class PassivbotManager:
         self.status_parser = PassivbotStatusParser()
         self._managed_processes: dict[int, subprocess.Popen[bytes]] = {}
 
-    def sync(self, *, allocation: PodAllocation, owned_symbols: list[str]) -> PassivbotStatus:
+    def sync(
+        self,
+        *,
+        allocation: PodAllocation,
+        owned_symbols: list[str],
+        managed_symbols: list[str] | None = None,
+    ) -> PassivbotStatus:
         config_path = Path(self.config.pod_b.passivbot_config_path)
         config_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_scope_symbols = [symbol.upper() for symbol in (managed_symbols or owned_symbols)]
+        opening_symbols = [symbol.upper() for symbol in owned_symbols]
+        unwind_only_symbols = [
+            symbol for symbol in managed_scope_symbols if symbol not in set(opening_symbols)
+        ]
 
         runtime_config = PassivbotConfig(
             config_path=str(config_path),
-            approved_coins=owned_symbols,
+            approved_coins=managed_scope_symbols,
             target_pct=allocation.target_pct,
             target_usd=allocation.target_usd,
             metadata={
+                "opening_symbols": opening_symbols,
+                "unwind_only_symbols": unwind_only_symbols,
                 "capped_by_pod_limit": allocation.capped_by_pod_limit,
                 "paper_quote_width_bps": self.config.pod_b.paper_quote_width_bps,
                 "paper_order_size_pct": self.config.pod_b.paper_order_size_pct,
@@ -73,12 +86,12 @@ class PassivbotManager:
             config_path=str(config_path),
             status_path=str(self.status_path(config_path)),
             target_usd=allocation.target_usd,
-            managed_symbols=owned_symbols,
-            default_reason=self._default_reason(allocation, owned_symbols),
+            managed_symbols=managed_scope_symbols,
+            default_reason=self._default_reason(allocation, managed_scope_symbols),
         )
         return self._normalize_status(
             status=status,
-            managed_symbols=owned_symbols,
+            managed_symbols=managed_scope_symbols,
             target_usd=allocation.target_usd,
         )
 
@@ -87,19 +100,21 @@ class PassivbotManager:
         *,
         allocation: PodAllocation,
         owned_symbols: list[str],
+        managed_symbols: list[str] | None = None,
     ) -> PassivbotStatus:
         config_path = Path(self.config.pod_b.passivbot_config_path)
+        managed_scope_symbols = [symbol.upper() for symbol in (managed_symbols or owned_symbols)]
         status = self.status_parser.parse(
             enabled=self.config.pod_b.enabled,
             config_path=str(config_path),
             status_path=str(self.status_path(config_path)),
             target_usd=allocation.target_usd,
-            managed_symbols=owned_symbols,
-            default_reason=self._default_reason(allocation, owned_symbols),
+            managed_symbols=managed_scope_symbols,
+            default_reason=self._default_reason(allocation, managed_scope_symbols),
         )
         return self._normalize_status(
             status=status,
-            managed_symbols=owned_symbols,
+            managed_symbols=managed_scope_symbols,
             target_usd=allocation.target_usd,
         )
 
@@ -406,25 +421,47 @@ class PassivbotManager:
             )
         )
         if stale_symbols or missing_symbols:
-            logger.warning(
-                "Pod B runtime symbol drift detected; desired=%s runtime=%s effective=%s stale=%s missing=%s process_state=%s reason=%s pid=%s",
-                desired_symbols,
-                status.managed_symbols,
-                effective_symbols,
-                stale_symbols,
-                missing_symbols,
-                status.process_state,
-                status.last_sync_reason,
-                status.pid,
-            )
+            if status.process_state == "running" or status.pid is not None:
+                logger.warning(
+                    "Pod B runtime symbol drift detected; desired=%s runtime=%s effective=%s stale=%s missing=%s process_state=%s reason=%s pid=%s",
+                    desired_symbols,
+                    status.managed_symbols,
+                    effective_symbols,
+                    stale_symbols,
+                    missing_symbols,
+                    status.process_state,
+                    status.last_sync_reason,
+                    status.pid,
+                )
+            else:
+                logger.debug(
+                    "Pod B runtime symbol drift ignored for inactive runtime; desired=%s runtime=%s effective=%s stale=%s missing=%s process_state=%s reason=%s pid=%s",
+                    desired_symbols,
+                    status.managed_symbols,
+                    effective_symbols,
+                    stale_symbols,
+                    missing_symbols,
+                    status.process_state,
+                    status.last_sync_reason,
+                    status.pid,
+                )
         if dropped_order_symbols or dropped_position_symbols:
-            logger.warning(
-                "Pod B trimmed stale runtime artifacts; dropped_order_symbols=%s dropped_position_symbols=%s total_open_orders=%s total_positions=%s",
-                dropped_order_symbols,
-                dropped_position_symbols,
-                len(status.open_orders) - len(filtered_open_orders),
-                len(status.positions) - len(filtered_positions),
-            )
+            if status.process_state == "running" or status.pid is not None:
+                logger.warning(
+                    "Pod B trimmed stale runtime artifacts; dropped_order_symbols=%s dropped_position_symbols=%s total_open_orders=%s total_positions=%s",
+                    dropped_order_symbols,
+                    dropped_position_symbols,
+                    len(status.open_orders) - len(filtered_open_orders),
+                    len(status.positions) - len(filtered_positions),
+                )
+            else:
+                logger.debug(
+                    "Pod B trimmed stale runtime artifacts for inactive runtime; dropped_order_symbols=%s dropped_position_symbols=%s total_open_orders=%s total_positions=%s",
+                    dropped_order_symbols,
+                    dropped_position_symbols,
+                    len(status.open_orders) - len(filtered_open_orders),
+                    len(status.positions) - len(filtered_positions),
+                )
         if not changed:
             return status
 

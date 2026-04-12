@@ -1,0 +1,10 @@
+dates_covered=['2026-04-05', '2026-04-06', '2026-04-07', '2026-04-08', '2026-04-09', '2026-04-10', '2026-04-11', '2026-04-12']
+records_processed=8963
+duplicate_timestamps_skipped=257
+total_realized_pnl_usd=265.2516
+pod_a_realized_pnl_usd=267.95
+pod_b_realized_pnl_usd=-2.7184
+pod_c_realized_pnl_usd=0.02
+routing_reassignment_event_count=2413
+report_path=/workspaces/trident/server-data/replay_reports/full_bot_backtest_fetched_20260412T_warning_check.json
+summary_path=/workspaces/trident/server-data/replay_reports/full_bot_backtest_fetched_20260412T_warning_check.md

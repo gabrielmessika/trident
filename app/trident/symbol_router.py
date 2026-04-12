@@ -158,12 +158,24 @@ class SymbolRouter:
                 capacity_by_pod=capacity_by_pod,
                 decisions_by_symbol=decisions_by_symbol,
             )
+            best_score = max(
+                (item.pod_scores.get(overflowing_pod, 0.0) for item in owned),
+                default=0.0,
+            )
             ranked = sorted(
                 owned,
                 key=lambda item: (
                     -(1 if item.override_active and item.override_owner == overflowing_pod else 0),
+                    -(
+                        1
+                        if (
+                            item.previous_owner == overflowing_pod
+                            and item.pod_scores.get(overflowing_pod, 0.0)
+                            >= max(self.min_hold_score, best_score - self.hysteresis_margin)
+                        )
+                        else 0
+                    ),
                     -item.pod_scores.get(overflowing_pod, 0.0),
-                    -(1 if item.previous_owner == overflowing_pod else 0),
                     item.symbol,
                 ),
             )

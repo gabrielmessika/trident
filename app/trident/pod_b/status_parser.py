@@ -46,7 +46,26 @@ class PassivbotStatusParser:
                 inventory=inventory,
             )
 
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            inventory = self._build_inventory_defaults(
+                managed_symbols=managed_symbols,
+                target_usd=target_usd,
+                positions=[],
+                open_orders=[],
+            )
+            return PassivbotStatus(
+                enabled=enabled,
+                process_state="config_rendered" if enabled else "disabled",
+                managed_symbols=managed_symbols,
+                config_path=config_path,
+                status_path=status_path,
+                target_usd=target_usd,
+                last_sync_reason=default_reason,
+                leverage=config_leverage,
+                inventory=inventory,
+            )
         positions = [
             PassivbotPosition(
                 symbol=str(item.get("symbol", "")),

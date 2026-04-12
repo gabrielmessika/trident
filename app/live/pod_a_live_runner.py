@@ -191,12 +191,21 @@ class PodALiveRunner:
         previews = self.supervisor.preview_pod_a_signals(snapshots, timestamp=timestamp)
         trade_plans = self.supervisor.build_pod_a_trade_plans(snapshots, timestamp=timestamp)
         risk_decisions = self.risk_gate.evaluate_many(trade_plans)
+        entry_allowed_symbols = self.supervisor.opening_symbols_for(PodName.POD_A)
+        managed_symbols = self.supervisor.managed_symbols_for(
+            PodName.POD_A,
+            {
+                str(symbol).upper()
+                for symbol in self.executor.portfolio.open_positions
+            },
+        )
         execution = self.executor.process_record(
             snapshots=snapshots,
             risk_decisions=risk_decisions,
             signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
             timestamp=timestamp,
-            allowed_symbols=self.supervisor.allowed_symbols_for(PodName.POD_A),
+            entry_allowed_symbols=entry_allowed_symbols,
+            managed_symbols=managed_symbols,
         )
 
         snapshot_by_symbol = {

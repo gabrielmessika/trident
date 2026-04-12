@@ -55,6 +55,11 @@ class TridentSupervisor:
         self.config = config
         self.profile = profile
         self.mode = mode
+        self._compact_backtest_logs = self._should_compact_backtest_logs()
+        self._compact_log_flush_every = 250
+        self._compact_tradable_pool_log = self._new_compact_tradable_pool_log()
+        self._compact_routing_log = self._new_compact_routing_log()
+        self._compact_pod_b_sync_log = self._new_compact_pod_b_sync_log()
         self.registry = SymbolRegistry()
         self.kill_switch = KillSwitch()
         self.regime_allocator = RegimeAllocator(config)
@@ -79,6 +84,135 @@ class TridentSupervisor:
         self.sync_symbol_ownership()
         self.capital_plan = self._build_capital_plan()
         self.sync_pod_b()
+
+    def _should_compact_backtest_logs(self) -> bool:
+        profile = self.profile.strip().lower()
+        return any(
+            token in profile
+            for token in ("backtest", "replay", "cohabitation")
+        )
+
+    def _new_compact_tradable_pool_log(self) -> dict[str, object]:
+        return {
+            "event_count": 0,
+            "added_total": 0,
+            "removed_total": 0,
+            "reason_change_total": 0,
+            "current_tradable_total": 0,
+            "peak_tradable_pool": 0,
+            "last_regime": "",
+            "last_added": [],
+            "last_removed": [],
+            "last_reason_changes": [],
+        }
+
+    def _new_compact_routing_log(self) -> dict[str, object]:
+        return {
+            "event_count": 0,
+            "symbol_change_total": 0,
+            "assignment_total": 0,
+            "deassignment_total": 0,
+            "reassignment_total": 0,
+            "pod_b_to_none_total": 0,
+            "capacity_trim_total": 0,
+            "unknown_reason_total": 0,
+            "conflict_peak": 0,
+            "last_regime": "",
+            "last_changes": [],
+        }
+
+    def _new_compact_pod_b_sync_log(self) -> dict[str, object]:
+        return {
+            "event_count": 0,
+            "managed_symbol_total": 0,
+            "peak_managed_symbols": 0,
+            "target_change_count": 0,
+            "process_state_change_count": 0,
+            "reason_change_count": 0,
+            "last_regime": "",
+            "last_process_state": "",
+            "last_reason": "",
+            "last_target_usd": 0.0,
+            "last_symbols": [],
+        }
+
+    def flush_compact_logs(self) -> None:
+        self._flush_compact_tradable_pool_log(force=True)
+        self._flush_compact_routing_log(force=True)
+        self._flush_compact_pod_b_sync_log(force=True)
+
+    def _flush_compact_tradable_pool_log(self, *, force: bool = False) -> None:
+        summary = self._compact_tradable_pool_log
+        event_count = int(summary["event_count"])
+        if event_count == 0:
+            return
+        if not force and event_count < self._compact_log_flush_every:
+            return
+        average_tradable_pool = float(summary["current_tradable_total"]) / event_count
+        logger.info(
+            "Supervisor tradable pool summary; profile=%s regime=%s events=%s added_total=%s removed_total=%s reason_change_total=%s avg_tradable_pool=%.2f peak_tradable_pool=%s last_added=%s last_removed=%s last_reason_changes=%s",
+            self.profile,
+            summary["last_regime"],
+            event_count,
+            summary["added_total"],
+            summary["removed_total"],
+            summary["reason_change_total"],
+            average_tradable_pool,
+            summary["peak_tradable_pool"],
+            summary["last_added"],
+            summary["last_removed"],
+            summary["last_reason_changes"],
+        )
+        self._compact_tradable_pool_log = self._new_compact_tradable_pool_log()
+
+    def _flush_compact_routing_log(self, *, force: bool = False) -> None:
+        summary = self._compact_routing_log
+        event_count = int(summary["event_count"])
+        if event_count == 0:
+            return
+        if not force and event_count < self._compact_log_flush_every:
+            return
+        logger.info(
+            "Supervisor routing summary; profile=%s regime=%s events=%s symbol_changes=%s assignments=%s deassignments=%s reassignments=%s pod_b_to_none=%s capacity_trim=%s unknown_reason=%s conflict_peak=%s last_changes=%s",
+            self.profile,
+            summary["last_regime"],
+            event_count,
+            summary["symbol_change_total"],
+            summary["assignment_total"],
+            summary["deassignment_total"],
+            summary["reassignment_total"],
+            summary["pod_b_to_none_total"],
+            summary["capacity_trim_total"],
+            summary["unknown_reason_total"],
+            summary["conflict_peak"],
+            summary["last_changes"],
+        )
+        self._compact_routing_log = self._new_compact_routing_log()
+
+    def _flush_compact_pod_b_sync_log(self, *, force: bool = False) -> None:
+        summary = self._compact_pod_b_sync_log
+        event_count = int(summary["event_count"])
+        if event_count == 0:
+            return
+        if not force and event_count < self._compact_log_flush_every:
+            return
+        average_managed_symbols = float(summary["managed_symbol_total"]) / event_count
+        logger.info(
+            "Supervisor Pod B sync summary; profile=%s regime=%s events=%s avg_managed_symbols=%.2f peak_managed_symbols=%s target_change_count=%s process_state_change_count=%s reason_change_count=%s last_process_state=%s last_reason=%s last_target_usd=%.2f last_symbols=%s",
+            self.profile,
+            summary["last_regime"],
+            event_count,
+            average_managed_symbols,
+            summary["peak_managed_symbols"],
+            summary["target_change_count"],
+            summary["process_state_change_count"],
+            summary["reason_change_count"],
+            summary["last_process_state"],
+            summary["last_reason"],
+            float(summary["last_target_usd"]),
+            summary["last_symbols"],
+        )
+        self._compact_pod_b_sync_log = self._new_compact_pod_b_sync_log()
 
     def _observed_symbols(self) -> list[str]:
         return observation_universe_symbols(self.config)
@@ -686,28 +820,70 @@ class TridentSupervisor:
             if isinstance(self.state.pod_b_status, dict)
             else {}
         )
+        active_symbols = self._pod_b_active_symbols_from_status(previous_status)
         status = self.pod_b_manager.sync(
             allocation=allocation,
             owned_symbols=self.registry.symbols_for(PodName.POD_B),
+            managed_symbols=sorted(self.managed_symbols_for(PodName.POD_B, active_symbols)),
         )
         self.state.pod_b_status = status.as_dict()
         self._log_pod_b_sync_changes(previous_status=previous_status, current_status=self.state.pod_b_status)
 
     def refresh_pod_b_status(self) -> None:
         allocation = self.capital_plan.pod_allocations[PodName.POD_B]
+        active_symbols = self._pod_b_active_symbols_from_status(self.state.pod_b_status)
         status = self.pod_b_manager.read_status(
             allocation=allocation,
             owned_symbols=self.registry.symbols_for(PodName.POD_B),
+            managed_symbols=sorted(self.managed_symbols_for(PodName.POD_B, active_symbols)),
         )
         self.state.pod_b_status = status.as_dict()
 
-    def allowed_symbols_for(self, pod_name: PodName) -> set[str]:
+    def opening_symbols_for(self, pod_name: PodName) -> set[str]:
         allocation = self.capital_plan.pod_allocations[pod_name]
         return {
             symbol.symbol.upper()
             for symbol in allocation.symbols
             if symbol.target_usd > 0
         }
+
+    def allowed_symbols_for(self, pod_name: PodName) -> set[str]:
+        return self.opening_symbols_for(pod_name)
+
+    def owner_for_symbol(self, symbol: str) -> PodName | None:
+        normalized = str(symbol).strip().upper()
+        for decision in self.state.symbol_routing:
+            if decision.symbol.upper() == normalized:
+                return decision.owner
+        return None
+
+    def managed_symbols_for(
+        self,
+        pod_name: PodName,
+        active_symbols: set[str] | None = None,
+    ) -> set[str]:
+        managed = set(self.opening_symbols_for(pod_name))
+        for symbol in active_symbols or set():
+            normalized = str(symbol).strip().upper()
+            owner = self.owner_for_symbol(normalized)
+            if owner in {None, pod_name}:
+                managed.add(normalized)
+        return managed
+
+    def _pod_b_active_symbols_from_status(self, status_payload: object) -> set[str]:
+        if not isinstance(status_payload, dict):
+            return set()
+        active_symbols = {
+            str(item.get("symbol", "")).strip().upper()
+            for item in status_payload.get("positions", [])
+            if isinstance(item, dict) and str(item.get("symbol", "")).strip()
+        }
+        active_symbols.update(
+            str(symbol).strip().upper()
+            for symbol in status_payload.get("managed_symbols", [])
+            if str(symbol).strip()
+        )
+        return active_symbols
 
     def pod_health(self) -> list[PodHealth]:
         return [pod.health() for pod in self.pods.values() if pod.enabled]
@@ -1140,6 +1316,27 @@ class TridentSupervisor:
                 )
         if not added and not removed and not reason_changes:
             return
+        if self._compact_backtest_logs:
+            summary = self._compact_tradable_pool_log
+            summary["event_count"] = int(summary["event_count"]) + 1
+            summary["added_total"] = int(summary["added_total"]) + len(added)
+            summary["removed_total"] = int(summary["removed_total"]) + len(removed)
+            summary["reason_change_total"] = int(summary["reason_change_total"]) + len(
+                reason_changes
+            )
+            summary["current_tradable_total"] = int(summary["current_tradable_total"]) + len(
+                current_tradable
+            )
+            summary["peak_tradable_pool"] = max(
+                int(summary["peak_tradable_pool"]),
+                len(current_tradable),
+            )
+            summary["last_regime"] = self.state.regime.value
+            summary["last_added"] = added[:5]
+            summary["last_removed"] = removed[:5]
+            summary["last_reason_changes"] = reason_changes[:3]
+            self._flush_compact_tradable_pool_log()
+            return
         logger.info(
             "Supervisor tradable pool changed; regime=%s added=%s removed=%s reason_changes=%s current_tradable=%s",
             self.state.regime.value,
@@ -1156,7 +1353,16 @@ class TridentSupervisor:
         decisions: list[SymbolRoutingDecision],
         previous_conflict_count: int,
     ) -> None:
+        decision_by_symbol = {
+            decision.symbol: decision for decision in decisions
+        }
         changes: list[str] = []
+        assignment_count = 0
+        deassignment_count = 0
+        reassignment_count = 0
+        pod_b_to_none_count = 0
+        capacity_trim_count = 0
+        unknown_reason_count = 0
         current_owners = {
             decision.symbol: decision.owner
             for decision in decisions
@@ -1167,7 +1373,19 @@ class TridentSupervisor:
             current_owner = current_owners.get(symbol)
             if previous_owner == current_owner:
                 continue
-            decision = next((item for item in decisions if item.symbol == symbol), None)
+            if previous_owner is None and current_owner is not None:
+                assignment_count += 1
+            elif previous_owner is not None and current_owner is None:
+                deassignment_count += 1
+            elif previous_owner is not None and current_owner is not None:
+                reassignment_count += 1
+            if previous_owner == PodName.POD_B and current_owner is None:
+                pod_b_to_none_count += 1
+            decision = decision_by_symbol.get(symbol)
+            if decision is None or decision.reason == "unknown":
+                unknown_reason_count += 1
+            elif str(decision.reason).startswith("capacity_trim:"):
+                capacity_trim_count += 1
             changes.append(
                 f"{symbol}:{previous_owner.value if previous_owner else 'none'}->{current_owner.value if current_owner else 'none'}"
                 f" mode={decision.mode if decision else 'unknown'}"
@@ -1175,6 +1393,31 @@ class TridentSupervisor:
             )
         conflict_count = len(self.state.ownership_conflicts)
         if not changes and conflict_count == previous_conflict_count:
+            return
+        if self._compact_backtest_logs:
+            summary = self._compact_routing_log
+            summary["event_count"] = int(summary["event_count"]) + 1
+            summary["symbol_change_total"] = int(summary["symbol_change_total"]) + len(changes)
+            summary["assignment_total"] = int(summary["assignment_total"]) + assignment_count
+            summary["deassignment_total"] = (
+                int(summary["deassignment_total"]) + deassignment_count
+            )
+            summary["reassignment_total"] = (
+                int(summary["reassignment_total"]) + reassignment_count
+            )
+            summary["pod_b_to_none_total"] = (
+                int(summary["pod_b_to_none_total"]) + pod_b_to_none_count
+            )
+            summary["capacity_trim_total"] = (
+                int(summary["capacity_trim_total"]) + capacity_trim_count
+            )
+            summary["unknown_reason_total"] = (
+                int(summary["unknown_reason_total"]) + unknown_reason_count
+            )
+            summary["conflict_peak"] = max(int(summary["conflict_peak"]), conflict_count)
+            summary["last_regime"] = self.state.regime.value
+            summary["last_changes"] = changes[:5]
+            self._flush_compact_routing_log()
             return
         logger.info(
             "Supervisor symbol routing changed; regime=%s changes=%s conflicts=%s",
@@ -1231,6 +1474,31 @@ class TridentSupervisor:
             and previous_state == current_state
             and previous_reason == current_reason
         ):
+            return
+        if self._compact_backtest_logs:
+            summary = self._compact_pod_b_sync_log
+            summary["event_count"] = int(summary["event_count"]) + 1
+            summary["managed_symbol_total"] = int(summary["managed_symbol_total"]) + len(
+                current_symbols
+            )
+            summary["peak_managed_symbols"] = max(
+                int(summary["peak_managed_symbols"]),
+                len(current_symbols),
+            )
+            if previous_target != current_target:
+                summary["target_change_count"] = int(summary["target_change_count"]) + 1
+            if previous_state != current_state:
+                summary["process_state_change_count"] = (
+                    int(summary["process_state_change_count"]) + 1
+                )
+            if previous_reason != current_reason:
+                summary["reason_change_count"] = int(summary["reason_change_count"]) + 1
+            summary["last_regime"] = self.state.regime.value
+            summary["last_process_state"] = current_state
+            summary["last_reason"] = current_reason
+            summary["last_target_usd"] = current_target
+            summary["last_symbols"] = current_symbols[:5]
+            self._flush_compact_pod_b_sync_log()
             return
         logger.info(
             "Supervisor Pod B sync changed; regime=%s managed_symbols=%s target_usd=%.2f process_state=%s reason=%s previous_symbols=%s previous_target_usd=%.2f previous_process_state=%s previous_reason=%s",

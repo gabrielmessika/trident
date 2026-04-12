@@ -46,6 +46,7 @@ class PodBPaperRunner:
         self.config_path = Path(config_path)
         self.runtime_config: dict[str, object] = {}
         self.managed_symbols: list[str] = []
+        self.quoted_symbols: list[str] = []
         self.target_usd: float = 0.0
         self.paper_config = self._build_paper_config({})
         self.engine = PodBPaperEngine(
@@ -230,6 +231,7 @@ class PodBPaperRunner:
 
     def reload_runtime_config(self) -> None:
         previous_symbols = list(self.managed_symbols)
+        previous_quoted_symbols = list(self.quoted_symbols)
         previous_target_usd = self.target_usd
         self.runtime_config = json.loads(self.config_path.read_text(encoding="utf-8"))
         trident = self.runtime_config.get("trident", {})
@@ -238,32 +240,42 @@ class PodBPaperRunner:
         self.managed_symbols = [
             str(symbol).upper() for symbol in trident.get("managed_symbols", [])
         ]
+        opening_symbols = [
+            str(symbol).upper() for symbol in trident.get("opening_symbols", self.managed_symbols)
+        ]
+        opening_set = set(opening_symbols)
+        self.quoted_symbols = [symbol for symbol in self.managed_symbols if symbol in opening_set]
         self.target_usd = float(trident.get("target_usd", 0.0))
         self.paper_config = self._build_paper_config(trident)
         self.engine.config = self.paper_config
         self.engine.update_allocation(
             managed_symbols=self.managed_symbols,
             target_usd=self.target_usd,
+            quoted_symbols=self.quoted_symbols,
         )
         added_symbols = sorted(set(self.managed_symbols) - set(previous_symbols))
         removed_symbols = sorted(set(previous_symbols) - set(self.managed_symbols))
         if (
             self.managed_symbols != previous_symbols
+            or self.quoted_symbols != previous_quoted_symbols
             or self.target_usd != previous_target_usd
         ):
             logger.info(
-                "Pod B runtime config reloaded; managed_symbols=%s target_usd=%.2f added=%s removed=%s previous_symbols=%s previous_target_usd=%.2f",
+                "Pod B runtime config reloaded; managed_symbols=%s quoted_symbols=%s target_usd=%.2f added=%s removed=%s previous_symbols=%s previous_quoted_symbols=%s previous_target_usd=%.2f",
                 self.managed_symbols,
+                self.quoted_symbols,
                 self.target_usd,
                 added_symbols,
                 removed_symbols,
                 previous_symbols,
+                previous_quoted_symbols,
                 previous_target_usd,
             )
         else:
             logger.debug(
-                "Pod B runtime config checked with no allocation change; managed_symbols=%s target_usd=%.2f",
+                "Pod B runtime config checked with no allocation change; managed_symbols=%s quoted_symbols=%s target_usd=%.2f",
                 self.managed_symbols,
+                self.quoted_symbols,
                 self.target_usd,
             )
 

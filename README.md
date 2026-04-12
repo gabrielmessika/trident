@@ -193,6 +193,12 @@ Decision d'architecture actuelle:
   - `hyperliquid.observation_universe` = coins observes par le collector (crypto + tradfi)
   - le `supervisor` construit le pool tradable dynamiquement a partir des snapshots frais de cet univers observe
   - l'ownership effectif, l'allocation et le `managed_symbols` runtime sont decides par le `supervisor`, pas par la config runtime des pods
+  - un pod a maintenant 2 scopes distincts:
+    - `opening_symbols` = symbols sur lesquels il a encore le droit d'ouvrir de nouvelles positions / quotes
+    - `managed_symbols` = symbols qu'il peut encore gerer et deboucler proprement, meme si le routeur les a remis a `none`
+  - donc un `pod_x -> none` ne veut plus dire "abandon immediat du symbole":
+    - Pod A / Pod C n'ouvrent plus de nouveau trade dessus, mais peuvent encore gerer la position deja ouverte
+    - Pod B passe en pratique en mode `unwind-only` sur ce symbole: plus de quote bilaterale, seulement de la reduction d'inventaire
   - il n'y a plus de liste `symbols` par pod a maintenir
   - si un symbol doit etre observe, il doit etre present dans `hyperliquid.observation_universe`
   - `pod_c.leader_symbols` reste utile pour exclure les leaders du pool follower de Pod C
@@ -235,6 +241,9 @@ Le point cle:
 - c'est le `supervisor` qui arbitre et evite les conflits
 - chaque live runner (Pod A, Pod B, Pod C) utilise la config globale pour le routing
   (le supervisor voit les 3 pods et alloue les coins en fonction du regime)
+- quand un symbole sort du scope d'ouverture sans etre repris par un autre pod:
+  - le pod garde un scope de gestion temporaire pour fermer proprement l'existant
+  - il n'y a plus d'obligation de faire `pod_x -> pod_y` pour eviter un `routing_revoked` brutal
 - Pod C ne recoit des coins que si ses allocations de regime sont > 0%
   (actuellement a 0% dans tous les regimes → inactif)
 - la config Pod B est lue depuis `config/trident.toml` (comme tous les pods), plus depuis `runtime/passivbot/live.json`
@@ -259,6 +268,9 @@ Role de chaque pod:
 - `Pod A`: moteur directionnel principal, pour les phases de tendance crypto (filtre: cluster `crypto` uniquement)
 - `Pod B`: moteur de range / market making paper, pour les marches plus plats (filtre: cluster `crypto` uniquement)
 - `Pod C`: moteur directionnel Tradfi HL, scope actuel `SPX`, `PAXG`, `XYZ100`, `WTIOIL`, `GOLD`, `SILVER` (filtre: clusters `index`, `gold`, `silver`, `oil`)
+- sur les 3 pods, il faut maintenant distinguer:
+  - "a le droit d'ouvrir" = scope d'entree courant decide par le routeur et le capital allocator
+  - "a encore le droit de gerer" = scope elargi pour sortir proprement d'une position deja ouverte
 
 Pourquoi `deploy.sh` a maintenant des flags `--without-...`:
 
@@ -298,6 +310,13 @@ Reporting actuel:
   - ceux qui sont vraiment routes a `Pod C`
 - les replays de cohabitation ecrivent aussi un `summary` multi-pods dans leur JSON de sortie.
 - `Pod A` et `Pod C` ferment maintenant une position si le `supervisor` retire le symbol ou remet son allocation a zero (`routing_revoked`),
+- `Pod A` et `Pod C` n'utilisent plus exactement le meme scope pour ouvrir et pour fermer:
+  - ils n'ouvrent plus si le symbole n'est plus dans le scope d'entree
+  - mais ils peuvent encore gerer une position deja ouverte tant que le symbole reste dans leur scope de gestion
+- `Pod B` a maintenant aussi cette separation:
+  - `opening_symbols` = quote / market making normal
+  - `managed_symbols` = peut encore porter le symbole et le deboucler
+  - quand un symbole sort du scope d'entree sans etre reassigne, Pod B passe en `unwind-only` au lieu de disparaitre brutalement du symbole
 - les tables de trades `Pod A` / `Pod C` ont ete refaites pour etre operatoires:
   - trades ouverts: `prix courant`, `valeur courante USD`, `marge utilisee`, `prix TP`, `prix SL`, `unrealized PnL`, `trailing TP`
   - trades fermes: raisons d'ouverture et de fermeture traduites en libelles lisibles

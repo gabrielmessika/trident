@@ -2300,7 +2300,7 @@ def _control_center_html(
         <div class="panel panel-{escape(_panel_tone(pod_b_summary['tone']))}">
           <div class="panel-header">
             <h2>Pod B</h2>
-            <p>Pod B ne se lit pas comme une liste de trades directionnels. Il faut surtout voir son inventory, ses ordres maker ouverts, ses fills récents et sa capacité à rester propre dans un marché range.</p>
+            <p>Pod B ne se lit pas comme une liste de trades directionnels. Il faut surtout voir son inventory, ses ordres maker ouverts, ses fills récents et sa capacité à rester propre dans un marché range. `Managed symbols` veut maintenant dire "scope de gestion", pas seulement "scope d'ouverture".</p>
           </div>
           <div class="metric-grid">
             {render_stat_cards([
@@ -2318,7 +2318,7 @@ def _control_center_html(
           <div class="panel panel-{escape(_panel_tone(pod_b_summary['tone']))}">
             <div class="panel-header">
               <h3>Inventory</h3>
-              <p>Le tableau clé pour Pod B : on voit si l'inventory reste propre, si le skew devient trop fort et si les ordres ouverts suffisent encore à la rééquilibrer.</p>
+              <p>Le tableau clé pour Pod B : on voit si l'inventory reste propre, si le skew devient trop fort et si les ordres ouverts suffisent encore à la rééquilibrer. Un `Target USD = 0` avec une position encore ouverte correspond en pratique a un symbole garde seulement pour l'unwind.</p>
             </div>
             <div class="table-wrap">
               <table>

@@ -102,6 +102,8 @@ max_total_open_risk_pct = 0.03
 dry_run_taker_fee_bps = 3.5
 dry_run_slippage_bps = 0.5
 dry_run_spread_multiplier = 0.5
+# Grace appliquee seulement quand un pod perd le droit d'ouvrir sur un symbol
+# et qu'il doit encore sortir proprement de la position existante.
 routing_revoke_grace_minutes = 60
 
 [trident.execution.routing_revoke_grace_minutes_by_symbol]
@@ -248,8 +250,13 @@ passivbot_config_path = "./runtime/passivbot/live.json"
 launch_command = []
 launch_workdir = ""
 max_allocation_pct = 0.40
+# Pod B distingue maintenant:
+# - opening_symbols: quote normal / market making bilateral
+# - managed_symbols: gestion et unwind d'un symbol deja porte
+# Si un symbol est route a `none` sans reassignment, Pod B peut rester dessus
+# en unwind-only au lieu de couper brutalement toute gestion.
 # --- Avellaneda-Stoikov MM parameters ---
-paper_quote_width_bps = 20.0
+paper_quote_width_bps = 30.0
 paper_order_size_pct = 0.12
 paper_max_inventory_skew_pct = 0.25
 paper_maker_fee_bps = 0.0

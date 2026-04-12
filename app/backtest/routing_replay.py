@@ -185,6 +185,7 @@ class RoutingReplayRunner:
                     if isinstance(owned, list):
                         owned_symbol_tick_totals[pod_name] += len(owned)
 
+        supervisor.flush_compact_logs()
         final_snapshot = supervisor.snapshot()
         average_owned_symbols_by_pod = {
             pod: round(total / records_processed, 4) if records_processed > 0 else 0.0

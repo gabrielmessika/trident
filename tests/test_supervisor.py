@@ -2,10 +2,19 @@ import json
 import unittest
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 from app.settings import load_config, override_app_config
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, Regime, RegimeSnapshot, SignalPreview, SymbolMarketSnapshot
+from app.trident.types import (
+    ObservedSymbolStatus,
+    PodName,
+    Regime,
+    RegimeSnapshot,
+    SignalPreview,
+    SymbolMarketSnapshot,
+    SymbolRoutingDecision,
+)
 
 
 class SupervisorTests(unittest.TestCase):
@@ -120,6 +129,88 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["pods"]["pod_a"]["candidate_symbols"], ["BTC"])
         self.assertEqual(snapshot["pods"]["pod_b"]["candidate_symbols"], ["GLD"])
         self.assertEqual(snapshot["pods"]["pod_c"]["candidate_symbols"], ["SPY"])
+
+    def test_supervisor_keeps_active_symbol_in_managed_scope_when_unassigned(self) -> None:
+        self.config.hyperliquid.observation_universe = ["BTC"]
+        self.config.pod_a.enabled = True
+        self.config.pod_b.enabled = False
+        self.config.pod_c.enabled = False
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+
+        self.assertEqual(
+            supervisor.managed_symbols_for(PodName.POD_A, {"BTC"}),
+            {"BTC"},
+        )
+
+    def test_supervisor_compacts_backtest_logs_into_summaries(self) -> None:
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident-full-bot-backtest",
+            mode="observation",
+        )
+        supervisor._compact_tradable_pool_log = supervisor._new_compact_tradable_pool_log()
+        supervisor._compact_routing_log = supervisor._new_compact_routing_log()
+        supervisor._compact_pod_b_sync_log = supervisor._new_compact_pod_b_sync_log()
+
+        with patch("app.trident.supervisor.logger.info") as mock_info:
+            supervisor._log_tradable_pool_changes(
+                previous_status_by_symbol={
+                    "BTC": ObservedSymbolStatus(
+                        symbol="BTC",
+                        tradable=False,
+                        reasons=["bucket_trade_count_below_min"],
+                    )
+                },
+                current_status_by_symbol={
+                    "BTC": ObservedSymbolStatus(symbol="BTC", tradable=True, reasons=[])
+                },
+            )
+            supervisor._log_symbol_routing_changes(
+                previous_owners={},
+                decisions=[
+                    SymbolRoutingDecision(
+                        symbol="BTC",
+                        owner=PodName.POD_B,
+                        mode="dynamic_affinity",
+                        reason="best_affinity:pod_b (0.86)",
+                    )
+                ],
+                previous_conflict_count=0,
+            )
+            supervisor._log_pod_b_sync_changes(
+                previous_status={},
+                current_status={
+                    "managed_symbols": ["BTC"],
+                    "target_usd": 200.0,
+                    "process_state": "config_rendered",
+                    "last_sync_reason": "config_rendered",
+                },
+            )
+            supervisor.flush_compact_logs()
+
+        messages = [call.args[0] for call in mock_info.call_args_list]
+        self.assertTrue(
+            any("Supervisor tradable pool summary;" in message for message in messages)
+        )
+        self.assertTrue(
+            any("Supervisor routing summary;" in message for message in messages)
+        )
+        self.assertTrue(
+            any("Supervisor Pod B sync summary;" in message for message in messages)
+        )
+        self.assertFalse(
+            any("Supervisor tradable pool changed;" in message for message in messages)
+        )
+        self.assertFalse(
+            any("Supervisor symbol routing changed;" in message for message in messages)
+        )
+        self.assertFalse(
+            any("Supervisor Pod B sync changed;" in message for message in messages)
+        )
 
     def test_supervisor_claims_symbols_for_enabled_pods(self) -> None:
         supervisor = TridentSupervisor(

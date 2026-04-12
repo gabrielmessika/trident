@@ -200,6 +200,7 @@ class CohabitationReplayRunner:
             last_sync_reason="cohabitation_completed",
             status_meta={"config_path": "", "status_path": ""},
         )
+        supervisor.flush_compact_logs()
 
         ownership_conflicts = [
             {

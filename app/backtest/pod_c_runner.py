@@ -219,6 +219,7 @@ class PodCBacktestRunner:
             snapshots=list(last_snapshot_by_symbol.values()),
             timestamp=last_timestamp,
         )
+        supervisor.flush_compact_logs()
         for trade in final_trades:
             if output_journal is not None:
                 output_journal.append(

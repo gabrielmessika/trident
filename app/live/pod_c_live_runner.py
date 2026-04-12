@@ -151,12 +151,21 @@ class PodCLiveRunner:
         previews = self.supervisor.preview_pod_c_signals(snapshots)
         trade_plans = self.supervisor.build_pod_c_trade_plans(snapshots)
         risk_decisions = self.risk_gate.evaluate_many(trade_plans)
+        entry_allowed_symbols = self.supervisor.opening_symbols_for(PodName.POD_C)
+        managed_symbols = self.supervisor.managed_symbols_for(
+            PodName.POD_C,
+            {
+                str(symbol).upper()
+                for symbol in self.executor.portfolio.open_positions
+            },
+        )
         execution = self.executor.process_record(
             snapshots=snapshots,
             risk_decisions=risk_decisions,
             signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
             timestamp=timestamp,
-            allowed_symbols=self.supervisor.allowed_symbols_for(PodName.POD_C),
+            entry_allowed_symbols=entry_allowed_symbols,
+            managed_symbols=managed_symbols,
         )
 
         decisions_by_symbol: dict[str, RiskDecision] = {

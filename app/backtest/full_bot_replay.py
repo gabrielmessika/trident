@@ -154,6 +154,7 @@ class FullBotBacktestRunner:
             )
             records_processed += 1
 
+        supervisor.flush_compact_logs()
         self._finalize_directional_report(
             supervisor=supervisor,
             report=pod_a_report,

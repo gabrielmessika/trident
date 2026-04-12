@@ -43,8 +43,14 @@ class DirectionalExecutor:
         risk_decisions: list[RiskDecision],
         signal_sides_by_symbol: dict[str, str],
         timestamp: str | None,
+        entry_allowed_symbols: set[str] | None = None,
+        managed_symbols: set[str] | None = None,
         allowed_symbols: set[str] | None = None,
     ) -> ExecutionBatch:
+        if entry_allowed_symbols is None:
+            entry_allowed_symbols = allowed_symbols
+        if managed_symbols is None:
+            managed_symbols = allowed_symbols
         snapshot_by_symbol = {snapshot.symbol: snapshot for snapshot in snapshots}
         closed_trades: list[ClosedTrade] = []
         opened_symbols: list[str] = []
@@ -69,8 +75,8 @@ class DirectionalExecutor:
                 close_reason = "time_stop"
             if (
                 close_reason is None
-                and allowed_symbols is not None
-                and snapshot.symbol not in allowed_symbols
+                and managed_symbols is not None
+                and snapshot.symbol not in managed_symbols
                 and not self._routing_revoke_grace_active(existing, timestamp)
             ):
                 close_reason = "routing_revoked"
@@ -108,6 +114,12 @@ class DirectionalExecutor:
                 continue
             snapshot = snapshot_by_symbol.get(decision.trade_plan.symbol)
             if snapshot is None:
+                continue
+            if (
+                entry_allowed_symbols is not None
+                and decision.trade_plan.symbol not in entry_allowed_symbols
+            ):
+                skipped_open_symbols.append(decision.trade_plan.symbol)
                 continue
             if self.portfolio.in_reentry_cooldown(
                 decision.trade_plan.symbol,
