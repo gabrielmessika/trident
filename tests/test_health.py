@@ -183,12 +183,20 @@ class HealthApiTests(unittest.TestCase):
                 "pod_c_signal_preview": [{"symbol": "SPX"}],
             },
         }
+        def _api_runtime_loader(path):
+            path_str = str(path)
+            if "pod_a_live_status.json" in path_str:
+                return pod_a_runtime
+            if "pod_c_live_status.json" in path_str:
+                return pod_c_runtime
+            return None
+
         with patch(
             "app.observability.api.load_runtime_status",
-            side_effect=[pod_a_runtime, pod_c_runtime, None],
+            side_effect=_api_runtime_loader,
         ), patch(
             "app.reporting.multi_pod.load_runtime_status",
-            side_effect=[pod_a_runtime, pod_c_runtime, None, None, None, None],
+            side_effect=_api_runtime_loader,
         ):
             payload = state_payload(self.supervisor, self.metrics)
         self.assertEqual(payload["regime"], "TrendExpansion")
@@ -284,9 +292,17 @@ class HealthApiTests(unittest.TestCase):
             },
             "updated_at": "2999-01-01T00:00:01Z",
         }
+        def _metrics_runtime_loader(path):
+            path_str = str(path)
+            if "pod_a_live_status.json" in path_str:
+                return pod_a_runtime
+            if "pod_c_live_status.json" in path_str:
+                return pod_c_runtime
+            return None
+
         with patch(
             "app.observability.metrics.load_runtime_status",
-            side_effect=[None, pod_a_runtime, pod_c_runtime],
+            side_effect=_metrics_runtime_loader,
         ):
             payload = metrics_payload(self.supervisor, self.metrics)
         self.assertEqual(payload["pod_a_process_running"], 1)
@@ -413,6 +429,9 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn(">System</button>", html)
         self.assertIn("À faire maintenant", html)
         self.assertIn("En un coup d’œil", html)
+        self.assertIn("Régimes par cluster", html)
+        self.assertIn("Crypto", html)
+        self.assertIn("Index", html)
         self.assertIn("Runtime pod report", html)
         self.assertIn("Data collectors", html)
         self.assertIn("Pod C scope visibility", html)

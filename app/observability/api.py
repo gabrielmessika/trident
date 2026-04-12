@@ -22,6 +22,7 @@ from app.live.runtime_status import (
 )
 from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
 from app.trident.market_clusters import (
+    cluster_for_symbol,
     normalize_cluster_names,
     observation_universe_symbols,
     symbols_in_allowed_clusters,
@@ -126,6 +127,20 @@ def _display_process_state(value: object) -> str:
     if process_state == "supervisor_fallback":
         return "Supervisor fallback"
     return process_state
+
+
+def _cluster_display_name(cluster: str) -> str:
+    normalized = str(cluster).strip().lower()
+    labels = {
+        "crypto": "Crypto",
+        "index": "Index",
+        "gold": "Gold",
+        "silver": "Silver",
+        "equity": "Equity",
+        "oil": "Oil",
+        "fx": "FX",
+    }
+    return labels.get(normalized, normalized.replace("_", " ").title() or "-")
 
 
 def _table_header(label: str, tooltip: str) -> str:
@@ -835,6 +850,16 @@ def _control_center_html(
         supervisor.config.pod_c.allowed_market_clusters,
     )
     pod_c_scope_symbol_set = set(pod_c_scope_symbols)
+    cluster_regimes = {
+        str(cluster).strip().lower(): str(regime)
+        for cluster, regime in snapshot.get("cluster_regimes", {}).items()
+        if str(cluster).strip()
+    }
+    cluster_target_allocations = {
+        str(cluster).strip().lower(): float(target_pct)
+        for cluster, target_pct in snapshot.get("cluster_target_allocations", {}).items()
+        if str(cluster).strip()
+    }
     observed_status_rows = [
         item
         for item in snapshot.get("observed_symbol_status", [])
@@ -849,6 +874,20 @@ def _control_center_html(
         for item in observed_status_rows
         if bool(item.get("tradable"))
     }
+    observed_count_by_cluster: dict[str, int] = {}
+    tradable_count_by_cluster: dict[str, int] = {}
+    for item in observed_status_rows:
+        symbol = str(item.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        cluster = cluster_for_symbol(supervisor.config, symbol)
+        observed_count_by_cluster[cluster] = observed_count_by_cluster.get(cluster, 0) + 1
+        if bool(item.get("tradable")):
+            tradable_count_by_cluster[cluster] = tradable_count_by_cluster.get(cluster, 0) + 1
+    scope_count_by_cluster: dict[str, int] = {}
+    for symbol in pod_c_scope_symbols:
+        cluster = cluster_for_symbol(supervisor.config, symbol)
+        scope_count_by_cluster[cluster] = scope_count_by_cluster.get(cluster, 0) + 1
     routing_rows = [
         item
         for item in snapshot.get("symbol_routing", [])
@@ -1131,6 +1170,49 @@ def _control_center_html(
             },
         ]
     )
+    cluster_order: list[str] = ["crypto"]
+    for cluster in sorted(
+        set(pod_c_allowed_clusters)
+        | set(cluster_regimes)
+        | set(cluster_target_allocations)
+        | set(scope_count_by_cluster)
+    ):
+        if cluster != "crypto":
+            cluster_order.append(cluster)
+    cluster_cards = []
+    crypto_budget_pct = float(snapshot.get("allocations", {}).get("pod_a", 0.0)) + float(
+        snapshot.get("allocations", {}).get("pod_b", 0.0)
+    )
+    for cluster in cluster_order:
+        observed_count = int(observed_count_by_cluster.get(cluster, 0))
+        tradable_count = int(tradable_count_by_cluster.get(cluster, 0))
+        scope_count = int(scope_count_by_cluster.get(cluster, 0))
+        regime_value = str(snapshot["regime"]) if cluster == "crypto" else cluster_regimes.get(cluster, "No data")
+        if cluster == "crypto":
+            note = (
+                f"{tradable_count}/{max(observed_count, 1)} tradable"
+                f" · budget pods A/B {crypto_budget_pct:.0%}"
+            )
+        else:
+            population = observed_count if observed_count > 0 else scope_count
+            if population > 0:
+                note = (
+                    f"{tradable_count}/{population} tradable"
+                    f" · budget {cluster_target_allocations.get(cluster, 0.0):.0%}"
+                )
+            else:
+                note = (
+                    f"Pas de snapshot visible"
+                    f" · budget {cluster_target_allocations.get(cluster, 0.0):.0%}"
+                )
+        cluster_cards.append(
+            {
+                "label": _cluster_display_name(cluster),
+                "value": regime_value,
+                "note": note,
+            }
+        )
+    cluster_regime_cards = render_stat_cards(cluster_cards)
 
     pod_cards = "".join(
         (
@@ -2092,6 +2174,16 @@ def _control_center_html(
           </div>
           <div class="metric-grid">
             {summary_cards}
+          </div>
+        </div>
+
+        <div class="panel panel-neutral">
+          <div class="panel-header">
+            <h2>Régimes par cluster</h2>
+            <p>Vue compacte du régime crypto global et des régimes actifs par cluster non-crypto. C'est ici qu'on voit rapidement si un cluster Tradfi peut activer Pod C même quand le crypto reste en DeadZone.</p>
+          </div>
+          <div class="metric-grid">
+            {cluster_regime_cards}
           </div>
         </div>
 
