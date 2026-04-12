@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
 from app.settings import AppConfig
 from app.trident.capital_allocator import CapitalAllocator
 from app.trident.kill_switch import KillSwitch
@@ -14,7 +15,7 @@ from app.trident.market_clusters import (
     observation_universe_symbols,
 )
 from app.trident.pod_a import AnchorTrendPlanner, AnchorTrendService, MarketContextService
-from app.trident.pod_b import PassivbotManager
+from app.trident.pod_b import BreakoutContext, BreakoutPlanner, BreakoutService
 from app.trident.pod_c import TradfiTrendContextService, TradfiTrendPlanner, TradfiTrendService
 from app.trident.routing_overrides import (
     load_runtime_symbol_pod_override_payload,
@@ -68,10 +69,11 @@ class TridentSupervisor:
         self.pod_a_context_service = MarketContextService(config)
         self.pod_a_service = AnchorTrendService()
         self.pod_a_planner = AnchorTrendPlanner(config)
+        self.pod_b_service = BreakoutService(config)
+        self.pod_b_planner = BreakoutPlanner(config)
         self.pod_c_service = TradfiTrendService(config.pod_c)
         self.pod_c_context_service = TradfiTrendContextService(config, self.pod_c_service)
         self.pod_c_planner = TradfiTrendPlanner(config)
-        self.pod_b_manager = PassivbotManager(config)
         self._latest_snapshots: list[SymbolMarketSnapshot] = []
         self.state = SupervisorState(
             regime=self.regime_allocator.current_regime(),
@@ -708,6 +710,112 @@ class TridentSupervisor:
             symbols=symbols,
         )
 
+    def preview_pod_b_signals(
+        self,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> list[SignalPreview]:
+        snapshots = self._prepare_snapshots(snapshots)
+        self.refresh_symbol_routing(snapshots)
+        signals = self.pod_b_service.evaluate_many(self._pod_b_contexts(snapshots))
+        previews = [
+            SignalPreview(
+                symbol=signal.symbol,
+                side=signal.side,
+                setup=signal.setup,
+                confidence=signal.confidence,
+            )
+            for signal in signals
+        ]
+        self.state.pod_b_signal_preview = previews
+        return previews
+
+    def build_pod_b_trade_plans(
+        self,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> list[TradePlan]:
+        snapshots = self._prepare_snapshots(snapshots)
+        self.refresh_symbol_routing(snapshots)
+        signals = self.pod_b_service.evaluate_many(self._pod_b_contexts(snapshots))
+        pod_allocation = self._pod_b_planning_allocation(signals)
+        plans: list[TradePlan] = []
+        for signal in signals:
+            plan = self.pod_b_planner.build_trade_plan(signal, pod_allocation)
+            if plan is not None:
+                plans.append(plan)
+        return plans
+
+    def _pod_b_contexts(
+        self,
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> list[BreakoutContext]:
+        opening_symbols = self.opening_symbols_for(PodName.POD_B)
+        return [
+            BreakoutContext(
+                symbol=snapshot.symbol,
+                regime=self.state.regime.value,
+                price=snapshot.price,
+                ema_fast=snapshot.ema_fast,
+                ema_slow=snapshot.ema_slow,
+                vwap_distance_bps=snapshot.vwap_distance_bps,
+                structure_score=snapshot.structure_score,
+                funding_rate=snapshot.funding_rate,
+                spread_bps=snapshot.spread_bps,
+                btc_aligned=snapshot.btc_aligned,
+                market_cluster=snapshot.market_cluster,
+                cluster_leader=snapshot.cluster_leader,
+                book_imbalance=snapshot.book_imbalance,
+                trade_flow_bias=snapshot.trade_flow_bias,
+                bucket_trade_count=snapshot.bucket_trade_count,
+                bucket_notional_usd=(
+                    snapshot.bucket_notional_usd
+                    if snapshot.bucket_notional_usd > 0
+                    else snapshot.bucket_volume * snapshot.price
+                ),
+                bucket_range_bps=snapshot.bucket_range_bps,
+                delta_book_imbalance=snapshot.delta_book_imbalance,
+                delta_trade_flow_bias=snapshot.delta_trade_flow_bias,
+                volume_ratio=snapshot.volume_ratio,
+                trade_count_ratio=snapshot.trade_count_ratio,
+                realized_vol_short_bps=snapshot.realized_vol_short_bps,
+                realized_vol_long_bps=snapshot.realized_vol_long_bps,
+                compression_score=snapshot.compression_score,
+                microprice_dislocation_bps=snapshot.microprice_dislocation_bps,
+            )
+            for snapshot in snapshots
+            if snapshot.symbol in opening_symbols
+        ]
+
+    def _pod_b_planning_allocation(self, signals: list[object]) -> PodAllocation:
+        base = self.capital_plan.pod_allocations[PodName.POD_B]
+        if not signals:
+            return base
+        signal_symbols = list(dict.fromkeys(str(signal.symbol) for signal in signals))
+        total_equity = max(self.capital_plan.total_equity_usd, 1e-9)
+        target_usd = min(base.target_usd, base.target_pct * total_equity)
+        if target_usd <= 0:
+            return base
+        per_symbol_usd = min(
+            target_usd / len(signal_symbols),
+            self.config.trident.capital.max_allocation_per_symbol_pct * total_equity,
+        )
+        if per_symbol_usd <= 0:
+            return base
+        allocated_usd = round(per_symbol_usd * len(signal_symbols), 2)
+        return PodAllocation(
+            pod=base.pod,
+            target_pct=round(allocated_usd / total_equity, 6),
+            target_usd=allocated_usd,
+            capped_by_pod_limit=base.capped_by_pod_limit,
+            symbols=[
+                SymbolAllocation(
+                    symbol=symbol,
+                    target_pct=round(per_symbol_usd / total_equity, 6),
+                    target_usd=round(per_symbol_usd, 2),
+                )
+                for symbol in signal_symbols
+            ],
+        )
+
     def preview_pod_c_signals(
         self,
         snapshots: list[SymbolMarketSnapshot],
@@ -814,30 +922,16 @@ class TridentSupervisor:
         return enrich_snapshots(self.config, snapshots)
 
     def sync_pod_b(self) -> None:
-        allocation = self.capital_plan.pod_allocations[PodName.POD_B]
         previous_status = (
             dict(self.state.pod_b_status)
             if isinstance(self.state.pod_b_status, dict)
             else {}
         )
-        active_symbols = self._pod_b_active_symbols_from_status(previous_status)
-        status = self.pod_b_manager.sync(
-            allocation=allocation,
-            owned_symbols=self.registry.symbols_for(PodName.POD_B),
-            managed_symbols=sorted(self.managed_symbols_for(PodName.POD_B, active_symbols)),
-        )
-        self.state.pod_b_status = status.as_dict()
+        self.state.pod_b_status = self._load_or_build_pod_b_status(previous_status)
         self._log_pod_b_sync_changes(previous_status=previous_status, current_status=self.state.pod_b_status)
 
     def refresh_pod_b_status(self) -> None:
-        allocation = self.capital_plan.pod_allocations[PodName.POD_B]
-        active_symbols = self._pod_b_active_symbols_from_status(self.state.pod_b_status)
-        status = self.pod_b_manager.read_status(
-            allocation=allocation,
-            owned_symbols=self.registry.symbols_for(PodName.POD_B),
-            managed_symbols=sorted(self.managed_symbols_for(PodName.POD_B, active_symbols)),
-        )
-        self.state.pod_b_status = status.as_dict()
+        self.state.pod_b_status = self._load_or_build_pod_b_status(self.state.pod_b_status)
 
     def opening_symbols_for(self, pod_name: PodName) -> set[str]:
         allocation = self.capital_plan.pod_allocations[pod_name]
@@ -875,7 +969,7 @@ class TridentSupervisor:
             return set()
         active_symbols = {
             str(item.get("symbol", "")).strip().upper()
-            for item in status_payload.get("positions", [])
+            for item in status_payload.get("open_positions", [])
             if isinstance(item, dict) and str(item.get("symbol", "")).strip()
         }
         active_symbols.update(
@@ -884,6 +978,62 @@ class TridentSupervisor:
             if str(symbol).strip()
         )
         return active_symbols
+
+    def _pod_b_runtime_status_path(self) -> Path:
+        return Path("logs/pod_b_live_status.json")
+
+    def _build_pod_b_fallback_status(
+        self,
+        previous_status: object | None = None,
+    ) -> dict[str, object]:
+        allocation = self.capital_plan.pod_allocations[PodName.POD_B]
+        previous_payload = previous_status if isinstance(previous_status, dict) else {}
+        active_symbols = self._pod_b_active_symbols_from_status(previous_payload)
+        managed_symbols = sorted(self.managed_symbols_for(PodName.POD_B, active_symbols))
+        opening_symbols = sorted(self.opening_symbols_for(PodName.POD_B))
+        previous_report = (
+            dict(previous_payload.get("report", {}))
+            if isinstance(previous_payload.get("report"), dict)
+            else {}
+        )
+        open_positions = (
+            list(previous_payload.get("open_positions", []))
+            if isinstance(previous_payload.get("open_positions"), list)
+            else []
+        )
+        return {
+            "pod": "pod_b",
+            "process_state": "planned",
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "last_sync_reason": "supervisor_planned_state",
+            "managed_symbols": managed_symbols,
+            "opening_symbols": opening_symbols,
+            "target_usd": round(allocation.target_usd, 2),
+            "target_pct": round(allocation.target_pct, 6),
+            "total_position_count": len(open_positions),
+            "total_open_order_count": 0,
+            "total_fill_count": int(previous_report.get("closed_trade_count", 0)),
+            "realized_pnl_usd": float(previous_report.get("realized_pnl_usd", 0.0)),
+            "total_unrealized_pnl_usd": round(
+                sum(float(item.get("unrealized_pnl_usd", 0.0)) for item in open_positions if isinstance(item, dict)),
+                4,
+            ),
+            "open_positions": open_positions,
+            "report": previous_report,
+            "status_path": str(self._pod_b_runtime_status_path()),
+        }
+
+    def _load_or_build_pod_b_status(
+        self,
+        previous_status: object | None = None,
+    ) -> dict[str, object]:
+        runtime_path = self._pod_b_runtime_status_path()
+        payload = load_runtime_status(runtime_path)
+        if runtime_status_is_fresh(payload):
+            merged = dict(payload)
+            merged.setdefault("status_path", str(runtime_path))
+            return merged
+        return self._build_pod_b_fallback_status(previous_status)
 
     def pod_health(self) -> list[PodHealth]:
         return [pod.health() for pod in self.pods.values() if pod.enabled]
@@ -1118,6 +1268,15 @@ class TridentSupervisor:
                     "confidence": signal.confidence,
                 }
                 for signal in self.state.pod_a_signal_preview
+            ],
+            "pod_b_signal_preview": [
+                {
+                    "symbol": signal.symbol,
+                    "side": signal.side,
+                    "setup": signal.setup,
+                    "confidence": signal.confidence,
+                }
+                for signal in self.state.pod_b_signal_preview
             ],
             "pod_c_signal_preview": [
                 {

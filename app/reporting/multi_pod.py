@@ -77,9 +77,11 @@ def build_runtime_report(
     if metrics is not None:
         metrics.refresh_from_supervisor(supervisor)
     pod_a_runtime = load_runtime_status("logs/pod_a_live_status.json")
+    pod_b_runtime = load_runtime_status("logs/pod_b_live_status.json")
     pod_c_runtime = load_runtime_status("logs/pod_c_live_status.json")
     runtime_supervisor = merge_runtime_supervisor_snapshot(
         pod_a_runtime,
+        pod_b_runtime,
         pod_c_runtime,
         base_snapshot=runtime_snapshot if isinstance(runtime_snapshot, dict) else None,
     )
@@ -185,16 +187,25 @@ def build_runtime_report(
             report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
         if pod_name.value == "pod_b":
-            report.process_state = str(pod_b_status.get("process_state", "unknown"))
+            runtime_payload = pod_b_status if isinstance(pod_b_status, dict) else None
+            runtime_report = runtime_payload.get("report", {}) if runtime_payload else {}
+            if isinstance(runtime_supervisor, dict):
+                report.preview_count = len(runtime_supervisor.get("pod_b_signal_preview", []))
+            else:
+                report.preview_count = len(supervisor.state.pod_b_signal_preview)
             if pod.enabled:
-                report.healthy = runtime_status_is_fresh(pod_b_status)
-            report.position_count = int(pod_b_status.get("total_position_count", 0))
-            report.open_order_count = int(pod_b_status.get("total_open_order_count", 0))
-            report.total_fill_count = int(pod_b_status.get("total_fill_count", 0))
-            report.realized_pnl_usd = float(pod_b_status.get("realized_pnl_usd", 0.0))
-            report.total_unrealized_pnl_usd = float(
-                pod_b_status.get("total_unrealized_pnl_usd", 0.0)
+                report.healthy = runtime_status_is_fresh(runtime_payload)
+            report.process_state = (
+                str(runtime_payload.get("process_state", "running"))
+                if runtime_payload is not None
+                else None
             )
+            report.position_count, report.total_unrealized_pnl_usd = _directional_open_position_metrics(
+                runtime_payload
+            )
+            report.open_order_count = 0
+            report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
+            report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
         pod_reports.append(report)
         active_position_count += report.position_count
         active_open_order_count += report.open_order_count
@@ -240,7 +251,7 @@ def build_runtime_report(
 
 
 def _pod_b_runtime_status(supervisor: TridentSupervisor) -> dict[str, object]:
-    status_path = Path(supervisor.config.pod_b.passivbot_config_path).with_suffix(".status.json")
+    status_path = Path("logs/pod_b_live_status.json")
     if not status_path.exists():
         return supervisor.state.pod_b_status
     payload = load_runtime_status(status_path)

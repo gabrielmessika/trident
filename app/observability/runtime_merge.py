@@ -261,16 +261,19 @@ def _merge_directional_previews(
 ) -> dict[str, object]:
     previews = {
         "pod_a_signal_preview": copy.deepcopy(base_snapshot.get("pod_a_signal_preview", [])),
+        "pod_b_signal_preview": copy.deepcopy(base_snapshot.get("pod_b_signal_preview", [])),
         "pod_c_signal_preview": copy.deepcopy(base_snapshot.get("pod_c_signal_preview", [])),
     }
     freshest_supervisor = max(sources, key=lambda item: (-item[0], item[1]))[3]
-    for key in ("pod_a_signal_preview", "pod_c_signal_preview"):
+    for key in ("pod_a_signal_preview", "pod_b_signal_preview", "pod_c_signal_preview"):
         if key in freshest_supervisor and not previews.get(key):
             previews[key] = copy.deepcopy(freshest_supervisor[key])
     for _, _, runtime_payload, supervisor in sources:
         runtime_pod = str(runtime_payload.get("pod", "")).strip().lower()
         if runtime_pod == "pod_a" and "pod_a_signal_preview" in supervisor:
             previews["pod_a_signal_preview"] = copy.deepcopy(supervisor["pod_a_signal_preview"])
+        if runtime_pod == "pod_b" and "pod_b_signal_preview" in supervisor:
+            previews["pod_b_signal_preview"] = copy.deepcopy(supervisor["pod_b_signal_preview"])
         if runtime_pod == "pod_c" and "pod_c_signal_preview" in supervisor:
             previews["pod_c_signal_preview"] = copy.deepcopy(supervisor["pod_c_signal_preview"])
     return previews

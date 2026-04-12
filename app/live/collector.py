@@ -12,6 +12,7 @@ from app.live.errors import (
     LiveCollectorRecoverableError,
     classify_payload_error,
 )
+from app.live.pod_b_feature_builder import PodBFeatureBuilder
 from app.live.snapshot_builder import LiveSnapshotBuilder
 from app.live.snapshot_writer import LiveSnapshotWriter
 from app.settings import AppConfig, load_config
@@ -22,6 +23,7 @@ from app.hyperliquid.symbols import normalize_hl_symbol, ws_subscription_symbol
 class LiveCollectorStats:
     messages_processed: int = 0
     snapshots_written: int = 0
+    pod_b_feature_rows_written: int = 0
     reconnect_count: int = 0
     heartbeat_count: int = 0
     pong_count: int = 0
@@ -84,6 +86,14 @@ class HyperliquidLiveCollector:
             cluster_leaders=merged_leaders,
         )
         self.writer = LiveSnapshotWriter(config.hyperliquid.snapshot_output_dir)
+        self.pod_b_feature_builder = PodBFeatureBuilder(
+            coins=self.coins,
+            bucket_ms=config.hyperliquid.pod_b_feature_bucket_ms,
+            ws_to_name=self._ws_to_name,
+        )
+        self.pod_b_feature_writer = LiveSnapshotWriter(
+            config.hyperliquid.pod_b_feature_output_dir
+        )
         self.stats = LiveCollectorStats()
         self.rate_limiter = SharedRateLimiter(
             config.hyperliquid.rate_limit_state_path,
@@ -106,6 +116,10 @@ class HyperliquidLiveCollector:
             self.stats.snapshots_written += len(self.writer.append_many([record]))
         final_records = self.builder.finalize()
         self.stats.snapshots_written += len(self.writer.append_many(final_records))
+        final_feature_rows = self.pod_b_feature_builder.finalize()
+        self.stats.pod_b_feature_rows_written += len(
+            self.pod_b_feature_writer.append_many(final_feature_rows)
+        )
         return self.stats
 
     async def iter_records(
@@ -320,6 +334,10 @@ class HyperliquidLiveCollector:
             return []
 
         self.stats.messages_processed += 1
+        feature_rows = self.pod_b_feature_builder.ingest_ws_message(payload)
+        self.stats.pod_b_feature_rows_written += len(
+            self.pod_b_feature_writer.append_many(feature_rows)
+        )
         return self.builder.ingest_ws_message(payload)
 
     def _deadline_reached(
@@ -405,6 +423,7 @@ async def _run_from_args() -> None:
     print(f"snapshot_output_dir={config.hyperliquid.snapshot_output_dir}")
     print(f"messages_processed={stats.messages_processed}")
     print(f"snapshots_written={stats.snapshots_written}")
+    print(f"pod_b_feature_rows_written={stats.pod_b_feature_rows_written}")
     print(f"reconnect_count={stats.reconnect_count}")
     print(f"heartbeat_count={stats.heartbeat_count}")
     print(f"pong_count={stats.pong_count}")

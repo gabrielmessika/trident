@@ -10,14 +10,27 @@ from app.backtest.pod_report import PodABacktestReport
 from app.backtest.routing_replay import RoutingReplayRunner
 from app.backtest.snapshot_loader import SnapshotLoader
 from app.execution.directional_executor import DirectionalExecutor
-from app.reporting.pod_b import PodBReport
 from app.risk.pod_a_gate import PodARiskGate
 from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import AppConfig, load_config
 from app.trident.market_clusters import cluster_for_symbol
-from app.trident.pod_b.paper_engine import PodBPaperEngine
+from app.trident.pod_b import (
+    BreakoutContext,
+    BreakoutPlanner,
+    BreakoutService,
+    PodBRiskGate,
+    ReplayFeatureEnricher,
+)
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
+from app.trident.types import (
+    PodAllocation,
+    PodName,
+    RegimeSnapshot,
+    RiskDecision,
+    SignalPreview,
+    SymbolAllocation,
+    SymbolMarketSnapshot,
+)
 
 
 @dataclass(slots=True)
@@ -47,13 +60,23 @@ class FullBotBacktestResult:
 class FullBotBacktestRunner:
     """Runs Pod A, Pod B, and Pod C together on one snapshot stream."""
 
-    def __init__(self, config: AppConfig, *, force_enable_all_pods: bool = True) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        force_enable_all_pods: bool = True,
+    ) -> None:
         self.config = self._runtime_config(config, force_enable_all_pods=force_enable_all_pods)
         self.loader = SnapshotLoader()
         self.pod_a_risk_gate = PodARiskGate(self.config)
         self.pod_c_risk_gate = PodCRiskGate(self.config)
         self.pod_a_executor = DirectionalExecutor(self.config)
         self.pod_c_executor = DirectionalExecutor(self.config)
+        self.pod_b_service = BreakoutService(self.config)
+        self.pod_b_planner = BreakoutPlanner(self.config)
+        self.pod_b_risk_gate = PodBRiskGate(self.config)
+        self.pod_b_executor = DirectionalExecutor(self.config)
+        self.pod_b_replay_enricher = ReplayFeatureEnricher()
 
     def _runtime_config(self, config: AppConfig, *, force_enable_all_pods: bool) -> AppConfig:
         if not force_enable_all_pods:
@@ -85,11 +108,8 @@ class FullBotBacktestRunner:
         pod_c_report = PodABacktestReport(
             reference_equity_usd=self.config.trident.capital.reference_equity_usd,
         )
-        pod_b_report = PodBReport()
-        pod_b_engine = PodBPaperEngine(
-            managed_symbols=[],
-            target_usd=0.0,
-            config=self.config.pod_b,
+        pod_b_report = PodABacktestReport(
+            reference_equity_usd=self.config.trident.capital.reference_equity_usd,
         )
         seen_timestamps: set[str] = set()
         latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
@@ -147,10 +167,11 @@ class FullBotBacktestRunner:
             self._process_pod_b(
                 supervisor=supervisor,
                 report=pod_b_report,
-                engine=pod_b_engine,
                 snapshots=snapshots,
                 timestamp=timestamp,
-                regime_snapshot=record.regime_snapshot,
+                source_file=record.source_file,
+                previous_regime=previous_regime,
+                current_regime=current_regime,
             )
             records_processed += 1
 
@@ -169,6 +190,13 @@ class FullBotBacktestRunner:
             latest_snapshots=list(latest_snapshots_by_symbol.values()),
             last_timestamp=last_timestamp,
         )
+        self._finalize_directional_report(
+            supervisor=supervisor,
+            report=pod_b_report,
+            executor=self.pod_b_executor,
+            latest_snapshots=list(latest_snapshots_by_symbol.values()),
+            last_timestamp=last_timestamp,
+        )
 
         routing = RoutingReplayRunner(self.config).run_jsonl(
             input_path=input_path,
@@ -177,6 +205,9 @@ class FullBotBacktestRunner:
         pod_a = pod_a_report.to_dict()
         pod_b = pod_b_report.to_dict()
         pod_c = pod_c_report.to_dict()
+        pod_b_realized = float(pod_b.get("realized_pnl_usd", 0.0))
+        pod_b_fees = float(pod_b.get("fees_usd", 0.0))
+        pod_b_activity = int(pod_b.get("closed_trade_count", 0))
         result = FullBotBacktestResult(
             input_path=str(input_path),
             dedupe_by_timestamp=dedupe_by_timestamp,
@@ -191,23 +222,24 @@ class FullBotBacktestRunner:
             routing=routing,
             total_realized_pnl_usd=round(
                 float(pod_a.get("realized_pnl_usd", 0.0))
-                + float(pod_b.get("realized_pnl_usd", 0.0))
+                + pod_b_realized
                 + float(pod_c.get("realized_pnl_usd", 0.0)),
                 4,
             ),
             directional_fees_usd=round(
                 float(pod_a.get("fees_usd", 0.0))
+                + pod_b_fees
                 + float(pod_c.get("fees_usd", 0.0)),
                 6,
             ),
             total_activity_count=(
                 int(pod_a.get("closed_trade_count", 0))
-                + int(pod_b.get("total_fill_count", 0))
+                + pod_b_activity
                 + int(pod_c.get("closed_trade_count", 0))
             ),
             notes=[
-                "directional_fees_usd ne couvre que Pod A et Pod C; les frais Pod B ne sont pas exposes separement dans PodBReport.",
-                "total_activity_count additionne les trades clotures de Pod A/Pod C et les fills Pod B; c'est un indicateur d'activite, pas un nombre homogene de trades.",
+                "directional_fees_usd couvre Pod A, Pod B et Pod C.",
+                "total_activity_count additionne les trades clotures des trois pods directionnels.",
             ],
             report_path=str(report_output) if report_output is not None else None,
             summary_path=str(summary_output) if summary_output is not None else None,
@@ -314,27 +346,143 @@ class FullBotBacktestRunner:
         self,
         *,
         supervisor: TridentSupervisor,
-        report: PodBReport,
-        engine: PodBPaperEngine,
+        report: PodABacktestReport,
         snapshots: list[SymbolMarketSnapshot],
         timestamp: str | None,
-        regime_snapshot: dict[str, object],
+        source_file: str,
+        previous_regime: str,
+        current_regime: str,
     ) -> None:
-        pod_b_allocation = supervisor.capital_plan.pod_allocations[PodName.POD_B]
-        pod_b_owned = supervisor.registry.symbols_for(PodName.POD_B)
-        engine.update_allocation(
-            managed_symbols=pod_b_owned,
-            target_usd=pod_b_allocation.target_usd,
-        )
-        pod_b_snapshots = [snapshot for snapshot in snapshots if snapshot.symbol in pod_b_owned]
-        status, fills = engine.process_record(
+        self._add_regime_record(
+            report=report,
             timestamp=timestamp,
-            snapshots=pod_b_snapshots,
-            status_meta={"config_path": "", "status_path": ""},
-            regime_snapshot=regime_snapshot,
-            last_sync_reason="full_bot_backtest_tick",
+            source_file=source_file,
+            previous_regime=previous_regime,
+            current_regime=current_regime,
         )
-        report.add_tick(timestamp=timestamp, status=status, fills=fills)
+        snapshots = self.pod_b_replay_enricher.enrich_many(snapshots)
+        supervisor.refresh_symbol_routing(snapshots)
+        opening_symbols = supervisor.opening_symbols_for(PodName.POD_B)
+        managed_symbols = supervisor.managed_symbols_for(
+            PodName.POD_B,
+            active_symbols=self.pod_b_executor.portfolio.open_positions.keys(),
+        )
+        contexts = [
+            BreakoutContext(
+                symbol=snapshot.symbol,
+                regime=supervisor.state.regime.value,
+                price=snapshot.price,
+                ema_fast=snapshot.ema_fast,
+                ema_slow=snapshot.ema_slow,
+                vwap_distance_bps=snapshot.vwap_distance_bps,
+                structure_score=snapshot.structure_score,
+                funding_rate=snapshot.funding_rate,
+                spread_bps=snapshot.spread_bps,
+                btc_aligned=snapshot.btc_aligned,
+                market_cluster=snapshot.market_cluster,
+                cluster_leader=snapshot.cluster_leader,
+                book_imbalance=snapshot.book_imbalance,
+                trade_flow_bias=snapshot.trade_flow_bias,
+                bucket_trade_count=snapshot.bucket_trade_count,
+                bucket_notional_usd=(
+                    snapshot.bucket_notional_usd
+                    if snapshot.bucket_notional_usd > 0
+                    else snapshot.bucket_volume * snapshot.price
+                ),
+                bucket_range_bps=snapshot.bucket_range_bps,
+                delta_book_imbalance=snapshot.delta_book_imbalance,
+                delta_trade_flow_bias=snapshot.delta_trade_flow_bias,
+                volume_ratio=snapshot.volume_ratio,
+                trade_count_ratio=snapshot.trade_count_ratio,
+                realized_vol_short_bps=snapshot.realized_vol_short_bps,
+                realized_vol_long_bps=snapshot.realized_vol_long_bps,
+                compression_score=snapshot.compression_score,
+                microprice_dislocation_bps=snapshot.microprice_dislocation_bps,
+            )
+            for snapshot in snapshots
+            if snapshot.symbol in opening_symbols
+        ]
+        signals = self.pod_b_service.evaluate_many(contexts)
+        previews = [
+            SignalPreview(
+                symbol=signal.symbol,
+                side=signal.side,
+                setup=signal.setup,
+                confidence=signal.confidence,
+            )
+            for signal in signals
+        ]
+        pod_allocation = self._pod_b_planning_allocation(
+            supervisor.capital_plan.pod_allocations[PodName.POD_B],
+            signals,
+        )
+        trade_plans = [
+            plan
+            for signal in signals
+            if (plan := self.pod_b_planner.build_trade_plan(signal, pod_allocation)) is not None
+        ]
+        current_open_positions = list(self.pod_b_executor.portfolio.open_positions.values())
+        risk_decisions = self.pod_b_risk_gate.evaluate_many(
+            trade_plans,
+            current_open_expected_loss_usd=sum(
+                max(float(getattr(position, "expected_loss_usd", 0.0)), 0.0)
+                for position in current_open_positions
+            ),
+            current_open_position_count=len(current_open_positions),
+        )
+        execution = self.pod_b_executor.process_record(
+            snapshots=snapshots,
+            risk_decisions=risk_decisions,
+            signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
+            timestamp=timestamp,
+            entry_allowed_symbols=opening_symbols,
+            managed_symbols=managed_symbols,
+        )
+        self._record_directional_tick(
+            report=report,
+            config=self.config,
+            current_regime=supervisor.state.regime.value,
+            timestamp=timestamp,
+            source_file=source_file,
+            previews=previews,
+            risk_decisions=risk_decisions,
+            execution=execution,
+            executor=self.pod_b_executor,
+        )
+
+    def _pod_b_planning_allocation(
+        self,
+        base: PodAllocation,
+        signals: list[object],
+    ) -> PodAllocation:
+        if not signals:
+            return base
+        signal_symbols = list(dict.fromkeys(str(signal.symbol) for signal in signals))
+        total_equity = max(self.config.trident.capital.reference_equity_usd, 1e-9)
+        target_usd = min(base.target_usd, base.target_pct * total_equity)
+        if target_usd <= 0:
+            return base
+        per_symbol_usd = min(
+            target_usd / len(signal_symbols),
+            self.config.trident.capital.max_allocation_per_symbol_pct * total_equity,
+        )
+        if per_symbol_usd <= 0:
+            return base
+        allocated_usd = round(per_symbol_usd * len(signal_symbols), 2)
+        return PodAllocation(
+            pod=base.pod,
+            target_pct=round(allocated_usd / total_equity, 6),
+            target_usd=allocated_usd,
+            capped_by_pod_limit=base.capped_by_pod_limit,
+            symbols=[
+                SymbolAllocation(
+                    symbol=symbol,
+                    target_pct=round(per_symbol_usd / total_equity, 6),
+                    target_usd=round(per_symbol_usd, 2),
+                )
+                for symbol in signal_symbols
+            ],
+        )
 
     def _add_regime_record(
         self,
@@ -516,7 +664,7 @@ class FullBotBacktestRunner:
             "pod_b_realized_pnl_usd": pod_b.get("realized_pnl_usd", 0.0),
             "pod_c_realized_pnl_usd": pod_c.get("realized_pnl_usd", 0.0),
             "pod_a_closed_trade_count": pod_a.get("closed_trade_count", 0),
-            "pod_b_total_fill_count": pod_b.get("total_fill_count", 0),
+            "pod_b_closed_trade_count": pod_b.get("closed_trade_count", 0),
             "pod_c_closed_trade_count": pod_c.get("closed_trade_count", 0),
             "routing_reassignment_event_count": routing.get("reassignment_event_count", 0),
             "routing_max_ownership_conflict_count": routing.get(
@@ -532,30 +680,32 @@ class FullBotBacktestRunner:
         pod_b = result.pod_b
         pod_c = result.pod_c
         routing = result.routing
-        return (
-            "# TRIDENT full-bot backtest\n\n"
-            f"- input: `{result.input_path}`\n"
-            f"- dates: `{', '.join(result.dates_covered)}`\n"
-            f"- records_processed: `{result.records_processed}`\n"
-            f"- duplicate_timestamps_skipped: `{result.duplicate_timestamps_skipped}`\n"
-            f"- total_realized_pnl_usd: `{result.total_realized_pnl_usd}`\n"
-            f"- directional_fees_usd: `{result.directional_fees_usd}`\n"
-            "\n"
-            "## PnL par pod\n\n"
-            f"- Pod A realized_pnl_usd: `{pod_a.get('realized_pnl_usd', 0.0)}`\n"
-            f"- Pod B realized_pnl_usd: `{pod_b.get('realized_pnl_usd', 0.0)}`\n"
-            f"- Pod C realized_pnl_usd: `{pod_c.get('realized_pnl_usd', 0.0)}`\n"
-            "\n"
-            "## Activite\n\n"
-            f"- Pod A closed_trade_count: `{pod_a.get('closed_trade_count', 0)}`\n"
-            f"- Pod B total_fill_count: `{pod_b.get('total_fill_count', 0)}`\n"
-            f"- Pod C closed_trade_count: `{pod_c.get('closed_trade_count', 0)}`\n"
-            f"- total_activity_count: `{result.total_activity_count}`\n"
-            f"- routing reassignment_event_count: `{routing.get('reassignment_event_count', 0)}`\n"
-            f"- routing max_ownership_conflict_count: `{routing.get('max_ownership_conflict_count', 0)}`\n"
-            "\n"
-            "## Notes\n\n"
-            + "".join(f"- {note}\n" for note in result.notes)
+        return "".join(
+            [
+                "# TRIDENT full-bot backtest\n\n",
+                f"- input: `{result.input_path}`\n",
+                f"- dates: `{', '.join(result.dates_covered)}`\n",
+                f"- records_processed: `{result.records_processed}`\n",
+                f"- duplicate_timestamps_skipped: `{result.duplicate_timestamps_skipped}`\n",
+                f"- total_realized_pnl_usd: `{result.total_realized_pnl_usd}`\n",
+                f"- directional_fees_usd: `{result.directional_fees_usd}`\n",
+                "\n",
+                "## PnL par pod\n\n",
+                f"- Pod A realized_pnl_usd: `{pod_a.get('realized_pnl_usd', 0.0)}`\n",
+                f"- Pod B realized_pnl_usd: `{pod_b.get('realized_pnl_usd', 0.0)}`\n",
+                f"- Pod C realized_pnl_usd: `{pod_c.get('realized_pnl_usd', 0.0)}`\n",
+                "\n",
+                "## Activite\n\n",
+                f"- Pod A closed_trade_count: `{pod_a.get('closed_trade_count', 0)}`\n",
+                f"- Pod B closed_trade_count: `{pod_b.get('closed_trade_count', 0)}`\n",
+                f"- Pod C closed_trade_count: `{pod_c.get('closed_trade_count', 0)}`\n",
+                f"- total_activity_count: `{result.total_activity_count}`\n",
+                f"- routing reassignment_event_count: `{routing.get('reassignment_event_count', 0)}`\n",
+                f"- routing max_ownership_conflict_count: `{routing.get('max_ownership_conflict_count', 0)}`\n",
+                "\n",
+                "## Notes\n\n",
+                "".join(f"- {note}\n" for note in result.notes),
+            ]
         )
 
 

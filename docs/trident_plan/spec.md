@@ -5,7 +5,7 @@
 TRIDENT est un systeme compose de 3 pods live et 1 pod research:
 
 - `Pod A — Anchor Trend`: swing / trend following
-- `Pod B — Range Harvester`: maker/range/inventory management
+- `Pod B — Breakout Expansion`: breakout / vol-expansion directionnel crypto
 - `Pod C — Tradfi Trend`: moteur directionnel dedie aux instruments Tradfi HL
 - `Research Pod`: experimentation offline uniquement
 
@@ -39,7 +39,7 @@ Le superviseur central:
   - borne les caps par pod (Pod A, Pod B)
   - decrit la posture macro crypto
 - `cluster_regimes` (derive des leaders par cluster):
-  - chaque cluster a un leader: BTC→crypto, SPY→index, GLD→gold, SLV→silver
+  - chaque cluster a un leader: BTC→crypto, `XYZ:SP500`→index, `XYZ:GOLD`→gold, `XYZ:SILVER`→silver, `XYZ:CL`→oil, `XYZ:JPY`→fx
   - chaque leader produit un `RegimeSnapshot` independant
   - `crypto_regime` = regime du cluster crypto (BTC)
   - les clusters non-crypto ne doivent pas etre applatis en un seul driver d'allocation
@@ -53,7 +53,7 @@ Le superviseur central:
 
 ### Allocation cible
 
-La reponse cible au probleme SPY/GLD n'est pas un simple `tradfi_regime` unique.
+La reponse cible au probleme des clusters Tradfi divergents n'est pas un simple `tradfi_regime` unique.
 
 Le systeme doit separer:
 
@@ -64,6 +64,8 @@ Le systeme doit separer:
   - `index`
   - `gold`
   - `silver`
+  - `oil`
+  - `fx`
   - `equity`
   - autres clusters actives si ajoutees
 
@@ -122,22 +124,23 @@ Le routing peut etre pilote manuellement:
   - fermeture `routing_revoked`
   - adaptation par cluster de marche
 
-### Pod B — Range Harvester
+### Pod B — Breakout Expansion
 
-- role: range/maker/inventory
-- statut: moteur natif present, mais calibration encore ouverte
+- role: breakout / impulsion / expansion naissante sur le sleeve crypto
+- statut: moteur directionnel branche sur le pipeline partage, calibration encore ouverte
 - points cle:
-  - manager + status runtime coherents
-  - drift trimming et logs renforces
-  - paper/live runner disponibles
+  - runtime status homogene avec Pod A / Pod C
+  - replay et live runner dedies
+  - filtres de contexte pour eviter l'overtrading hors regime
 
 ### Pod C — Tradfi Trend
 
 - role: directionnel Tradfi / macro trend sur HL
-- statut: slot reserve, transport cluster-aware en place, budget par cluster et logique directionnelle a finaliser
+- statut: slot live branche sur un panier builder-dex HL, budget par cluster actif, logique directionnelle partagee avec `Pod A`
 - points cle:
   - execution et risk gate partages avec `Pod A`
-  - univers restreint aux symbols Tradfi valides
+  - univers restreint aux symbols Tradfi builder-dex valides
+  - symbols canoniques en config (`XYZ:SP500`) puis resolution dex-aware pour `allMids`, `metaAndAssetCtxs` et le websocket HL
   - allocations derivees de budgets par cluster Tradfi (pas du regime crypto global)
   - le routeur utilise le regime du cluster du symbol pour scorer Pod C
   - validation offline sur snapshots minute microstructure, pas sur candles HL seules

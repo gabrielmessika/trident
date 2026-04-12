@@ -80,8 +80,7 @@ class FullBotReplayTests(unittest.TestCase):
         config.pod_a.enabled = True
         config.pod_b.enabled = True
         config.pod_c.enabled = True
-        config.pod_b.paper_pause_outside_range = False
-
+        
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_dir = Path(tmpdir)
             input_path = temp_dir / "snapshots.jsonl"
@@ -129,7 +128,7 @@ class FullBotReplayTests(unittest.TestCase):
             history_entry = json.loads(history_lines[0])
             self.assertEqual(history_entry["records_processed"], 2)
             self.assertIn("pod_a_realized_pnl_usd", history_entry)
-            self.assertIn("pod_b_total_fill_count", history_entry)
+            self.assertIn("pod_b_closed_trade_count", history_entry)
             self.assertIn("pod_c_realized_pnl_usd", history_entry)
 
     def test_full_bot_replay_merges_same_timestamp_snapshot_lines(self) -> None:
@@ -137,7 +136,6 @@ class FullBotReplayTests(unittest.TestCase):
         config.pod_a.enabled = True
         config.pod_b.enabled = True
         config.pod_c.enabled = True
-        config.pod_b.paper_pause_outside_range = False
         config.hyperliquid.observation_universe = ["BTC", "PAXG"]
 
         crypto_record = _full_bot_record(
@@ -209,6 +207,116 @@ class FullBotReplayTests(unittest.TestCase):
         self.assertEqual(result.duplicate_timestamps_skipped, 0)
         self.assertEqual(result.first_timestamp, "2026-04-05T10:00:00Z")
         self.assertEqual(result.last_timestamp, "2026-04-05T10:00:00Z")
+
+    def test_full_bot_replay_runs_directional_pod_b(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_a.enabled = True
+        config.pod_b.enabled = True
+        config.pod_c.enabled = True
+        config.hyperliquid.observation_universe = ["BTC"]
+        config.trident.routing.symbol_pod_overrides["BTC"] = "pod_b"
+
+        records = [
+            {
+                "timestamp": "2026-04-05T10:00:00Z",
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 28.0,
+                    "atr_ratio": 1.0,
+                    "range_width_bps": 120.0,
+                    "structure_score": 0.50,
+                    "btc_impulse": True,
+                },
+                "symbols": [
+                    {
+                        "symbol": "BTC",
+                        "price": 100.0,
+                        "ema_fast": 100.8,
+                        "ema_slow": 99.9,
+                        "vwap_distance_bps": 9.0,
+                        "structure_score": 0.42,
+                        "funding_rate": 0.0,
+                        "spread_bps": 1.1,
+                        "btc_aligned": True,
+                        "market_cluster": "crypto",
+                        "cluster_aligned": True,
+                        "cluster_leader": "BTC",
+                        "book_imbalance": 0.32,
+                        "trade_flow_bias": 0.28,
+                        "bucket_volume": 8.0,
+                        "bucket_notional_usd": 800.0,
+                        "bucket_trade_count": 24,
+                        "bucket_range_bps": 15.0,
+                        "delta_book_imbalance": 0.22,
+                        "delta_trade_flow_bias": 0.30,
+                        "volume_ratio": 2.4,
+                        "trade_count_ratio": 1.9,
+                        "realized_vol_short_bps": 7.0,
+                        "realized_vol_long_bps": 4.0,
+                        "compression_score": 0.70,
+                        "microprice_dislocation_bps": 1.4,
+                        "source": "test",
+                    }
+                ],
+            },
+            {
+                "timestamp": "2026-04-05T10:01:00Z",
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 30.0,
+                    "atr_ratio": 1.1,
+                    "range_width_bps": 140.0,
+                    "structure_score": 0.54,
+                    "btc_impulse": True,
+                },
+                "symbols": [
+                    {
+                        "symbol": "BTC",
+                        "price": 101.0,
+                        "ema_fast": 101.2,
+                        "ema_slow": 100.3,
+                        "vwap_distance_bps": 11.0,
+                        "structure_score": 0.48,
+                        "funding_rate": 0.0,
+                        "spread_bps": 1.2,
+                        "btc_aligned": True,
+                        "market_cluster": "crypto",
+                        "cluster_aligned": True,
+                        "cluster_leader": "BTC",
+                        "book_imbalance": 0.30,
+                        "trade_flow_bias": 0.22,
+                        "bucket_volume": 9.0,
+                        "bucket_notional_usd": 909.0,
+                        "bucket_trade_count": 26,
+                        "bucket_range_bps": 18.0,
+                        "delta_book_imbalance": 0.10,
+                        "delta_trade_flow_bias": 0.12,
+                        "volume_ratio": 1.8,
+                        "trade_count_ratio": 1.4,
+                        "realized_vol_short_bps": 8.0,
+                        "realized_vol_long_bps": 4.5,
+                        "compression_score": 0.62,
+                        "microprice_dislocation_bps": 1.0,
+                        "source": "test",
+                    }
+                ],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "snapshots.jsonl"
+            input_path.write_text(
+                "\n".join(json.dumps(record) for record in records) + "\n",
+                encoding="utf-8",
+            )
+            result = FullBotBacktestRunner(config).run_jsonl(
+                input_path=input_path,
+            )
+
+        self.assertGreaterEqual(result.pod_b.get("signal_count", 0), 1)
+        self.assertGreaterEqual(result.pod_b.get("closed_trade_count", 0), 1)
+        self.assertGreater(result.pod_b.get("realized_pnl_usd", 0.0), 0.0)
+        self.assertEqual(result.pod_b.get("trades_by_cluster", {}).get("crypto", 0), 1)
 
 
 if __name__ == "__main__":

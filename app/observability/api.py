@@ -89,7 +89,11 @@ def _tail_jsonl_records(
 
 def _recent_activity_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for pod_name, log_name in (("pod_a", "pod_a_live.jsonl"), ("pod_c", "pod_c_live.jsonl")):
+    for pod_name, log_name in (
+        ("pod_a", "pod_a_live.jsonl"),
+        ("pod_b", "pod_b_live.jsonl"),
+        ("pod_c", "pod_c_live.jsonl"),
+    ):
         for record in _tail_jsonl_records(Path("logs") / log_name, event_type="trade_close", limit=4):
             trade = record.get("trade", {})
             if not isinstance(trade, dict):
@@ -108,30 +112,6 @@ def _recent_activity_rows(snapshot: dict[str, object]) -> list[dict[str, object]
                     "comment": str(trade.get("close_reason", "-")),
                 }
             )
-
-    pod_b_status = snapshot.get("pod_b_status", {})
-    pod_b_leverage = None
-    if isinstance(pod_b_status, dict):
-        pod_b_leverage = pod_b_status.get("leverage")
-        recent_fills = pod_b_status.get("recent_fills", [])
-        if isinstance(recent_fills, list):
-            for fill in reversed(recent_fills[-6:]):
-                if not isinstance(fill, dict):
-                    continue
-                rows.append(
-                    {
-                        "timestamp": str(fill.get("timestamp") or "-"),
-                        "pod": "pod_b",
-                        "symbol": str(fill.get("symbol", "-")),
-                        "side": str(fill.get("side", "-")),
-                        "event": f"fill_{fill.get('action', 'unknown')}",
-                        "price": fill.get("price"),
-                        "notional_usd": fill.get("notional_usd"),
-                        "leverage": pod_b_leverage,
-                        "pnl_usd": None,
-                        "comment": f"fee={float(fill.get('fee_usd', 0.0)):.4f}",
-                    }
-                )
 
     rows.sort(key=lambda item: str(item.get("timestamp", "")), reverse=True)
     return rows[:10]
@@ -354,7 +334,7 @@ def _recent_directional_trade_rows(runtime_payload: dict[str, object] | None, *,
 
 def _open_position_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for pod_name in ("pod_a", "pod_c"):
+    for pod_name in ("pod_a", "pod_b", "pod_c"):
         runtime_payload = snapshot.get(f"{pod_name}_runtime")
         if not isinstance(runtime_payload, dict):
             continue
@@ -397,31 +377,6 @@ def _open_position_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
                 }
             )
 
-    pod_b_status = snapshot.get("pod_b_status", {})
-    if isinstance(pod_b_status, dict):
-        for item in pod_b_status.get("positions", []) if isinstance(pod_b_status.get("positions", []), list) else []:
-            if not isinstance(item, dict):
-                continue
-            rows.append(
-                {
-                    "pod": "pod_b",
-                    "symbol": str(item.get("symbol", "-")),
-                    "side": str(item.get("side", "-")),
-                    "status": "open",
-                    "open_reason": "maker inventory fill",
-                    "close_reason": "-",
-                    "entry_price": item.get("entry_price"),
-                    "exit_price": None,
-                    "notional_usd": item.get("notional_usd"),
-                    "leverage": pod_b_status.get("leverage"),
-                    "pnl_usd": item.get("unrealized_pnl_usd"),
-                    "opened_at": pod_b_status.get("started_at"),
-                    "closed_at": None,
-                    "stop_bps": None,
-                    "time_stop_hours": None,
-                    "confidence": None,
-                }
-            )
     rows.sort(key=lambda item: (str(item.get("pod")), str(item.get("symbol"))))
     return rows
 
@@ -429,34 +384,8 @@ def _open_position_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
 def _trade_event_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     rows.extend(_recent_directional_trade_rows(snapshot.get("pod_a_runtime"), pod="pod_a"))
+    rows.extend(_recent_directional_trade_rows(snapshot.get("pod_b_runtime"), pod="pod_b"))
     rows.extend(_recent_directional_trade_rows(snapshot.get("pod_c_runtime"), pod="pod_c"))
-
-    pod_b_status = snapshot.get("pod_b_status", {})
-    if isinstance(pod_b_status, dict):
-        leverage = pod_b_status.get("leverage")
-        recent_fills = pod_b_status.get("recent_fills", [])
-        if isinstance(recent_fills, list):
-            for fill in reversed(recent_fills[-20:]):
-                if not isinstance(fill, dict):
-                    continue
-                rows.append(
-                    {
-                        "timestamp": str(fill.get("timestamp") or "-"),
-                        "pod": "pod_b",
-                        "symbol": str(fill.get("symbol", "-")),
-                        "side": str(fill.get("side", "-")),
-                        "status": "fill",
-                        "open_reason": "maker quote fill",
-                        "close_reason": "-",
-                        "entry_price": fill.get("price"),
-                        "exit_price": None,
-                        "notional_usd": fill.get("notional_usd"),
-                        "leverage": leverage,
-                        "pnl_usd": None,
-                        "opened_at": fill.get("timestamp"),
-                        "closed_at": None,
-                    }
-                )
     rows.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
     return rows[:30]
 
@@ -649,12 +578,10 @@ def _merge_runtime_snapshot(
     allow_runtime_authority_override: bool = True,
 ) -> dict[str, object]:
     pod_a_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_a_live_status.json"))
+    pod_b_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_b_live_status.json"))
     pod_c_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_c_live_status.json"))
-    pod_b_runtime = None
-    pod_b_status_path = Path(_pod_b_status_path_from_snapshot(snapshot))
-    if pod_b_status_path.exists():
-        pod_b_runtime = _normalized_runtime_payload(load_runtime_status(pod_b_status_path))
     snapshot["pod_a_runtime"] = pod_a_runtime
+    snapshot["pod_b_runtime"] = pod_b_runtime
     snapshot["pod_c_runtime"] = pod_c_runtime
     if isinstance(pod_b_runtime, dict):
         snapshot["pod_b_status"] = pod_b_runtime
@@ -695,6 +622,7 @@ def _merge_runtime_snapshot(
 
     runtime_supervisor = merge_runtime_supervisor_snapshot(
         pod_a_runtime,
+        pod_b_runtime,
         pod_c_runtime,
         base_snapshot=snapshot,
     )
@@ -722,6 +650,7 @@ def _merge_runtime_snapshot(
         "regime_evaluation_count",
         "regime_history",
         "pod_a_signal_preview",
+        "pod_b_signal_preview",
         "pod_c_signal_preview",
     ):
         if key in runtime_supervisor:
@@ -730,6 +659,8 @@ def _merge_runtime_snapshot(
     embedded_supervisor = _embedded_supervisor_snapshot(snapshot)
     if isinstance(pod_a_runtime, dict):
         pod_a_runtime["supervisor"] = copy.deepcopy(embedded_supervisor)
+    if isinstance(pod_b_runtime, dict):
+        pod_b_runtime["supervisor"] = copy.deepcopy(embedded_supervisor)
     if isinstance(pod_c_runtime, dict):
         pod_c_runtime["supervisor"] = copy.deepcopy(embedded_supervisor)
     return snapshot
@@ -741,7 +672,7 @@ def _pod_b_status_path_from_snapshot(snapshot: dict[str, object]) -> str:
         status_path = pod_b_status.get("status_path")
         if isinstance(status_path, str) and status_path:
             return status_path
-    return "runtime/passivbot/live.status.json"
+    return "logs/pod_b_live_status.json"
 
 
 def _normalized_runtime_payload(payload: dict[str, object] | None) -> dict[str, object] | None:
@@ -776,6 +707,7 @@ def _embedded_supervisor_snapshot(snapshot: dict[str, object]) -> dict[str, obje
         "regime_evaluation_count",
         "regime_history",
         "pod_a_signal_preview",
+        "pod_b_signal_preview",
         "pod_c_signal_preview",
     ):
         if key in snapshot:
@@ -1010,18 +942,7 @@ def _control_center_html(
                 pod_health.get("message")
                 or "Statut runtime absent ou obsolète."
             )
-        if enabled and pod_name == "pod_b":
-            if int(pod_report.get("open_order_count", 0)) > 0:
-                comment = (
-                    f"{len(pod_report.get('owned_symbols', []))} symbole(s), "
-                    f"{int(pod_report.get('open_order_count', 0))} ordre(s) maker."
-                )
-            elif int(pod_report.get("total_fill_count", 0)) > 0:
-                comment = (
-                    f"{int(pod_report.get('total_fill_count', 0))} fill(s), "
-                    "inventory en nettoyage."
-                )
-        if enabled and pod_name in {"pod_a", "pod_c"}:
+        if enabled and pod_name in {"pod_a", "pod_b", "pod_c"}:
             if int(pod_report.get("position_count", 0)) > 0:
                 comment = f"{int(pod_report.get('position_count', 0))} position(s) ouverte(s)."
             elif int(pod_report.get("preview_count", 0)) > 0:
@@ -1339,89 +1260,8 @@ def _control_center_html(
             "Les trades apparaîtront ici dès qu'un pod écrira un trade close ou un fill récent.</td></tr>"
         )
 
-    pod_b_positions_rows = "".join(
-        (
-            "<tr>"
-            f"<td>{escape(str(item.get('symbol', '-')))}</td>"
-            f"<td>{escape(str(item.get('side', '-')))}</td>"
-            f"<td>{fmt_number(item.get('size'), 6)}</td>"
-            f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
-            f"<td>{fmt_number(item.get('mark_price'), 6)}</td>"
-            f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
-            f"<td>{fmt_signed_usd(item.get('unrealized_pnl_usd'))}</td>"
-            "</tr>"
-        )
-        for item in (
-            pod_b_status.get("positions", []) if isinstance(pod_b_status, dict) else []
-        )
-        if isinstance(item, dict)
-    )
-    if not pod_b_positions_rows:
-        pod_b_positions_rows = "<tr><td colspan='7'>Aucune position d'inventory ouverte.</td></tr>"
-
-    pod_b_orders_rows = "".join(
-        (
-            "<tr>"
-            f"<td>{escape(str(item.get('symbol', '-')))}</td>"
-            f"<td>{escape(str(item.get('side', '-')))}</td>"
-            f"<td>{fmt_number(item.get('price'), 6)}</td>"
-            f"<td>{fmt_number(item.get('size'), 6)}</td>"
-            f"<td>{escape(str(item.get('order_type', '-')))}</td>"
-            f"<td>{escape(str(item.get('status', '-')))}</td>"
-            "</tr>"
-        )
-        for item in (
-            pod_b_status.get("open_orders", []) if isinstance(pod_b_status, dict) else []
-        )
-        if isinstance(item, dict)
-    )
-    if not pod_b_orders_rows:
-        pod_b_orders_rows = "<tr><td colspan='6'>Aucun ordre maker ouvert pour le moment.</td></tr>"
-
-    pod_b_inventory_rows = "".join(
-        (
-            "<tr>"
-            f"<td>{escape(str(item.get('symbol', '-')))}</td>"
-            f"<td>{fmt_number(item.get('target_notional_usd'), 2)}</td>"
-            f"<td>{fmt_number(item.get('current_notional_usd'), 2)}</td>"
-            f"<td>{fmt_number(item.get('inventory_skew_pct'), 2)}</td>"
-            f"<td>{'oui' if bool(item.get('has_position')) else 'non'}</td>"
-            f"<td>{escape(str(item.get('open_order_count', '-')))}</td>"
-            "</tr>"
-        )
-        for item in (
-            pod_b_status.get("inventory", []) if isinstance(pod_b_status, dict) else []
-        )
-        if isinstance(item, dict)
-    )
-    if not pod_b_inventory_rows:
-        pod_b_inventory_rows = "<tr><td colspan='6'>Aucune ligne d'inventory disponible.</td></tr>"
-
-    pod_b_fill_rows = "".join(
-        (
-            "<tr>"
-            f"<td>{escape(str(item.get('timestamp') or '-'))}</td>"
-            f"<td>{escape(str(item.get('symbol', '-')))}</td>"
-            f"<td>{escape(str(item.get('side', '-')))}</td>"
-            f"<td>{escape(str(item.get('action', '-')))}</td>"
-            f"<td>{fmt_number(item.get('price'), 6)}</td>"
-            f"<td>{fmt_number(item.get('size'), 6)}</td>"
-            f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
-            f"<td>{fmt_number(item.get('fee_usd'), 4)}</td>"
-            "</tr>"
-        )
-        for item in reversed(
-            [
-                item
-                for item in (
-                    pod_b_status.get("recent_fills", []) if isinstance(pod_b_status, dict) else []
-                )
-                if isinstance(item, dict)
-            ][-20:]
-        )
-    )
-    if not pod_b_fill_rows:
-        pod_b_fill_rows = "<tr><td colspan='8'>Aucun fill récent visible pour Pod B.</td></tr>"
+    pod_b_open_rows = render_directional_open_rows("pod_b")
+    pod_b_closed_rows = render_directional_closed_rows("pod_b")
 
     runtime_report_rows = "".join(
         (
@@ -2312,15 +2152,16 @@ def _control_center_html(
         <div class="panel panel-{escape(_panel_tone(pod_b_summary['tone']))}">
           <div class="panel-header">
             <h2>Pod B</h2>
-            <p>Pod B ne se lit pas comme une liste de trades directionnels. Il faut surtout voir son inventory, ses ordres maker ouverts, ses fills récents et sa capacité à rester propre dans un marché range. `Managed symbols` veut maintenant dire "scope de gestion", pas seulement "scope d'ouverture".</p>
+            <p>Pod B est maintenant un pod breakout directionnel. On le lit comme Pod A: positions ouvertes, signal preview, puis trades fermés avec leur motif de sortie.</p>
           </div>
           <div class="metric-grid">
             {render_stat_cards([
                 {"label": "Status", "value": str(pod_b_summary["badge"]), "note": str(pod_b_summary["comment"])},
                 {"label": "Process", "value": str(pod_b_summary["process_state"]), "note": f"Sync reason {escape(str(pod_b_status.get('last_sync_reason', '-')))}"},
                 {"label": "Managed symbols", "value": str(len(pod_b_status.get("managed_symbols", []) if isinstance(pod_b_status, dict) else [])), "note": ", ".join(str(x) for x in (pod_b_status.get("managed_symbols", []) if isinstance(pod_b_status, dict) else [])) or "-"},
-                {"label": "Open orders", "value": str(pod_b_summary["open_order_count"]), "note": "Quotes maker visibles"},
-                {"label": "Fills", "value": str(pod_b_summary["total_fill_count"]), "note": "Exécutions observées"},
+                {"label": "Open positions", "value": str(pod_b_summary['position_count']), "note": "Positions breakout actuellement ouvertes"},
+                {"label": "Signals", "value": str(pod_b_summary['preview_count']), "note": "Previews actuellement visibles"},
+                {"label": "Exec", "value": str(pod_b_summary['total_fill_count']), "note": "Trades fermés observés"},
                 {"label": "Realized PnL", "value": f"{float(pod_b_summary['realized_pnl_usd']):.4f} USD", "note": f"Unrealized {float(pod_b_summary['total_unrealized_pnl_usd']):.4f} USD"},
             ])}
           </div>
@@ -2329,62 +2170,39 @@ def _control_center_html(
         <div class="pod-detail-grid">
           <div class="panel panel-{escape(_panel_tone(pod_b_summary['tone']))}">
             <div class="panel-header">
-              <h3>Inventory</h3>
-              <p>Le tableau clé pour Pod B : on voit si l'inventory reste propre, si le skew devient trop fort et si les ordres ouverts suffisent encore à la rééquilibrer. Un `Target USD = 0` avec une position encore ouverte correspond en pratique a un symbole garde seulement pour l'unwind.</p>
+              <h3>Trades ouverts</h3>
+              <p>On lit ici les positions breakout vivantes avec les niveaux operatoires utiles: prix live, valeur, marge, TP, SL et trailing.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Symbol", "Marché suivi.")}{_table_header("Target USD", "Notionnel cible sur ce symbole.")}{_table_header("Current USD", "Notionnel actuellement porté.")}{_table_header("Skew %", "Décalage entre cible et inventory actuelle.")}{_table_header("Position", "Indique si une position est actuellement ouverte.")}{_table_header("Open orders", "Nombre d'ordres maker en attente sur ce symbole.")}</tr>
+                  <tr>{_table_header("Symbol", "Marche crypto actuellement porte par Pod B.")}{_table_header("Side", "Sens de la position: long a la hausse, short a la baisse.")}{_table_header("Raison ouverture", "Setup lisible qui a motive l'ouverture initiale du trade.")}{_table_header("Prix entree", "Prix moyen d'entree retenu au moment de l'ouverture.")}{_table_header("Prix courant", "Dernier prix live vu par le runner pour ce symbole.")}{_table_header("Valeur courante USD", "Valorisation actuelle de la position au dernier prix courant.")}{_table_header("Marge utilisee", "Capital immobilise pour porter ce trade.")}{_table_header("Prix TP", "Prix theorique du take profit fixe si la cible est atteinte.")}{_table_header("Prix SL", "Prix du stop de protection actuellement applicable au trade.")}{_table_header("Unrealized PnL", "PnL latent calcule au dernier prix courant.")}{_table_header("Trailing TP", "Indique si le trailing est arme et ou se situe le stop suiveur.")}{_table_header("Ouvert le", "Horodatage d'ouverture pour juger l'anciennete du trade.")}</tr>
                 </thead>
-                <tbody>{pod_b_inventory_rows}</tbody>
+                <tbody>{pod_b_open_rows}</tbody>
               </table>
             </div>
           </div>
           <div class="panel panel-neutral">
             <div class="panel-header">
-              <h3>Positions d'inventory</h3>
-              <p>Quand Pod B est chargé dans un sens, c'est ici qu'on voit son exposition réelle et son PnL latent.</p>
+              <h3>Signal preview</h3>
+              <p>Signaux breakout vus par le superviseur mais pas encore transformés en position.</p>
             </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de l'inventory.")}{_table_header("Size", "Taille unitaire.")}{_table_header("Entry", "Prix moyen d'entrée.")}{_table_header("Mark", "Prix courant marqué.")}{_table_header("Notional USD", "Valeur notionnelle actuelle.")}{_table_header("Unrealized", "PnL latent actuel.")}</tr>
-                </thead>
-                <tbody>{pod_b_positions_rows}</tbody>
-              </table>
-            </div>
+            {render_preview_list(snapshot.get("pod_b_signal_preview"))}
           </div>
         </div>
 
-        <div class="pod-detail-grid">
-          <div class="panel panel-neutral">
-            <div class="panel-header">
-              <h3>Ordres maker ouverts</h3>
-              <p>La lecture la plus utile pour savoir si Pod B quote bilatéralement ou s'il reste seulement en mode de désencombrement.</p>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Côté du quote.")}{_table_header("Prix", "Prix du quote.")}{_table_header("Size", "Taille de l'ordre.")}{_table_header("Type", "Type d'ordre, ici généralement maker.")}{_table_header("Status", "Statut de l'ordre dans le status runtime.")}</tr>
-                </thead>
-                <tbody>{pod_b_orders_rows}</tbody>
-              </table>
-            </div>
+        <div class="panel panel-neutral">
+          <div class="panel-header">
+            <h3>Trades fermés récents</h3>
+            <p>Les motifs d'ouverture et de fermeture sont traduits en formulation lisible pour la review operatoire de Pod B.</p>
           </div>
-          <div class="panel panel-neutral">
-            <div class="panel-header">
-              <h3>Fills récents</h3>
-              <p>Vue exécution de Pod B : on suit la cadence, la fee et le sens des fills, pas une logique TP/SL directionnelle.</p>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>{_table_header("Timestamp", "Horodatage du fill.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens du fill.")}{_table_header("Action", "Type d'action enregistrée.")}{_table_header("Prix", "Prix d'exécution.")}{_table_header("Size", "Taille exécutée.")}{_table_header("Notional USD", "Valeur notionnelle du fill.")}{_table_header("Fee USD", "Frais du fill.")}</tr>
-                </thead>
-                <tbody>{pod_b_fill_rows}</tbody>
-              </table>
-            </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>{_table_header("Ferme le", "Horodatage reel de sortie du trade.")}{_table_header("Symbol", "Marche crypto concerne.")}{_table_header("Side", "Sens du trade qui a ete porte.")}{_table_header("Raison ouverture", "Setup lisible qui avait motive l'ouverture du trade.")}{_table_header("Raison fermeture", "Explication lisible de la sortie: TP, trailing stop, stop, time stop, signal oppose, etc.")}{_table_header("Prix entree", "Prix moyen d'entree du trade.")}{_table_header("Prix sortie", "Prix retenu a la fermeture.")}{_table_header("Notional USD", "Notionnelle cible du trade au moment de l'ouverture.")}{_table_header("Leverage", "Levier effectif configure si disponible.")}{_table_header("PnL USD", "Resultat net final du trade, frais inclus.")}</tr>
+              </thead>
+              <tbody>{pod_b_closed_rows}</tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -2460,7 +2278,7 @@ def _control_center_html(
             <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_b">Pod B</button>
             <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_c">Pod C</button>
           </div>
-          <p class="soft-note" style="margin-bottom:16px;">Les fills maker de Pod B restent visibles ici comme de l'activité d'inventory. Pour comprendre vraiment Pod B, son onglet dédié reste la meilleure vue.</p>
+          <p class="soft-note" style="margin-bottom:16px;">Les trois pods sont maintenant lus de manière homogène: positions ouvertes, previews et trades fermés.</p>
 
           <div class="panel" style="box-shadow:none;">
             <div class="panel-header">
@@ -2480,12 +2298,12 @@ def _control_center_html(
           <div class="panel" style="box-shadow:none;">
             <div class="panel-header">
               <h3>Recent trade events</h3>
-              <p>Historique récent des sorties directionnelles et fills Pod B.</p>
+              <p>Historique récent des sorties directionnelles sur les trois pods.</p>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>{_table_header("Timestamp", "Horodatage de l'évènement.")}{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens buy/sell ou long/short.")}{_table_header("Status", "closed pour un trade fermé, fill pour un fill Pod B.")}{_table_header("Open reason", "Pourquoi la position ou l'exécution a été initiée.")}{_table_header("Close reason", "Pourquoi le trade s'est fermé.")}{_table_header("Entry", "Prix d'entrée si connu.")}{_table_header("Exit", "Prix de sortie si connu.")}{_table_header("Notional USD", "Valeur notionnelle concernée.")}{_table_header("Leverage", "Levier configuré quand il est disponible.")}{_table_header("PnL USD", "PnL net quand disponible.")}</tr>
+                  <tr>{_table_header("Timestamp", "Horodatage de l'évènement.")}{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens long/short porté par le trade.")}{_table_header("Status", "closed pour un trade fermé.")}{_table_header("Open reason", "Pourquoi la position a été initiée.")}{_table_header("Close reason", "Pourquoi le trade s'est fermé.")}{_table_header("Entry", "Prix d'entrée si connu.")}{_table_header("Exit", "Prix de sortie si connu.")}{_table_header("Notional USD", "Valeur notionnelle concernée.")}{_table_header("Leverage", "Levier configuré quand il est disponible.")}{_table_header("PnL USD", "PnL net quand disponible.")}</tr>
                 </thead>
                 <tbody>{render_activity_event_rows()}</tbody>
               </table>

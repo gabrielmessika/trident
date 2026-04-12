@@ -786,33 +786,49 @@ class SymbolRouter:
         local_regime: SymbolLocalRegime | None,
     ) -> float:
         global_quality = {
-            Regime.RANGE_AUCTION: 1.0,
-            Regime.DEAD_ZONE: 0.7,
-            Regime.TREND_EXPANSION: 0.15,
-            Regime.PANIC_SQUEEZE: 0.05,
+            Regime.TREND_EXPANSION: 0.75,
+            Regime.PANIC_SQUEEZE: 1.0,
+            Regime.RANGE_AUCTION: 0.15,
+            Regime.DEAD_ZONE: 0.0,
             Regime.CASH: 0.0,
         }[regime]
         local_quality = self._local_regime_affinity(PodName.POD_B, local_regime)
-        range_limit = max(self.config.pod_b.paper_guard_max_range_width_bps, 1.0)
-        range_quality = _clamp(1.0 - snapshot.bucket_range_bps / (range_limit * 1.5))
+        trend_bps = abs(snapshot.ema_fast - snapshot.ema_slow) / max(snapshot.price, 1e-9) * 10_000.0
+        trend_quality = _clamp(
+            trend_bps / max(self.config.pod_b.bis_min_trend_quality_bps * 4.0, 24.0)
+        )
         structure_quality = _clamp(
-            1.0
-            - abs(snapshot.structure_score)
-            / max(self.config.pod_b.paper_guard_max_abs_structure_score * 3.0, 0.6)
+            abs(snapshot.structure_score)
+            / max(self.config.pod_b.bis_min_abs_structure_score * 3.0, 0.45)
         )
-        toxicity = max(abs(snapshot.trade_flow_bias), abs(snapshot.book_imbalance))
-        toxicity_quality = _clamp(
-            1.0
-            - toxicity / max(self.config.pod_b.paper_flow_toxicity_threshold * 4.0, 0.8)
+        flow_quality = _clamp(
+            abs(snapshot.trade_flow_bias) * 0.45
+            + abs(snapshot.book_imbalance) * 0.25
+            + abs(snapshot.delta_trade_flow_bias) * 0.20
+            + abs(snapshot.microprice_dislocation_bps) / 4.0 * 0.10
         )
-        spread_quality = _clamp(1.0 - snapshot.spread_bps / 8.0)
+        activity_quality = _clamp(
+            max(snapshot.volume_ratio, snapshot.trade_count_ratio)
+            / max(self.config.pod_b.bis_min_volume_ratio * 2.0, 1.0)
+        )
+        impulse_quality = _clamp(
+            _clamp(abs(snapshot.delta_trade_flow_bias) / 0.18) * 0.35
+            + _clamp(abs(snapshot.microprice_dislocation_bps) / 1.5) * 0.20
+            + _clamp(snapshot.realized_vol_short_bps / max(self.config.pod_b.bis_min_realized_vol_short_bps * 2.0, 8.0)) * 0.25
+            + _clamp(max(snapshot.volume_ratio, snapshot.trade_count_ratio) / max(self.config.pod_b.bis_min_volume_ratio * 1.4, 1.0)) * 0.20
+        )
+        spread_quality = _clamp(
+            1.0 - snapshot.spread_bps / max(self.config.pod_b.bis_max_spread_bps * 1.2, 1.0)
+        )
         return (
-            local_quality * 0.15
-            + global_quality * 0.25
-            + range_quality * 0.25
-            + structure_quality * 0.20
-            + toxicity_quality * 0.10
-            + spread_quality * 0.05
+            local_quality * 0.16
+            + global_quality * 0.18
+            + trend_quality * 0.08
+            + structure_quality * 0.12
+            + flow_quality * 0.16
+            + activity_quality * 0.10
+            + impulse_quality * 0.18
+            + spread_quality * 0.02
         )
 
     def _score_pod_c(
@@ -867,9 +883,9 @@ class SymbolRouter:
         trend_bps = abs(snapshot.ema_fast - snapshot.ema_slow) / max(snapshot.price, 1e-9) * 10_000.0
         structure_abs = abs(snapshot.structure_score)
         toxicity = max(abs(snapshot.trade_flow_bias), abs(snapshot.book_imbalance))
-        range_limit = max(self.config.pod_b.paper_guard_max_range_width_bps, 1.0)
+        range_limit = max(self.config.pod_b.bis_min_directional_vwap_distance_bps * 12.0, 40.0)
         event_score = (
-            _clamp(toxicity / max(self.config.pod_b.paper_flow_toxicity_threshold, 0.2))
+            _clamp((toxicity + abs(snapshot.delta_trade_flow_bias) * 0.5) / 0.45)
             * 0.45
             + _clamp(snapshot.bucket_range_bps / max(range_limit, 40.0)) * 0.30
             + _clamp(structure_abs / 0.35) * 0.25
@@ -885,13 +901,13 @@ class SymbolRouter:
             + _clamp(
                 1.0
                 - structure_abs
-                / max(self.config.pod_b.paper_guard_max_abs_structure_score * 2.5, 0.5)
+                / max(self.config.pod_b.bis_min_abs_structure_score * 3.5, 0.6)
             )
             * 0.25
             + _clamp(
                 1.0
                 - toxicity
-                / max(self.config.pod_b.paper_flow_toxicity_threshold * 3.0, 0.8)
+                / 0.8
             )
             * 0.25
             + _clamp(1.0 - trend_bps / 45.0) * 0.15
@@ -938,10 +954,10 @@ class SymbolRouter:
                 SymbolLocalRegime.NEUTRAL: 0.45,
             },
             PodName.POD_B: {
-                SymbolLocalRegime.TREND_STRUCTURE: 0.20,
-                SymbolLocalRegime.EVENT_IMPULSE: 0.10,
-                SymbolLocalRegime.RANGE_STRUCTURE: 1.0,
-                SymbolLocalRegime.NEUTRAL: 0.55,
+                SymbolLocalRegime.TREND_STRUCTURE: 0.45,
+                SymbolLocalRegime.EVENT_IMPULSE: 1.0,
+                SymbolLocalRegime.RANGE_STRUCTURE: 0.05,
+                SymbolLocalRegime.NEUTRAL: 0.35,
             },
             PodName.POD_C: {
                 SymbolLocalRegime.TREND_STRUCTURE: 1.0,

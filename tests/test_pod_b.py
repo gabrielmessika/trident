@@ -1,848 +1,209 @@
-import json
-import sys
-import tempfile
-import time
 import unittest
+import json
+import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
+from app.backtest.pod_b_runner import PodBBacktestRunner
 from app.settings import load_config
-from app.trident.pod_b import PassivbotConfig, PassivbotConfigRenderer, PassivbotManager
-from app.trident.pod_b.paper_engine import PaperPositionState, PodBPaperEngine
-from app.trident.types import SymbolMarketSnapshot
-from app.trident.types import PodAllocation, PodName
+from app.trident.pod_b import BreakoutContext, BreakoutPlanner, BreakoutService, PodBRiskGate
+from app.trident.types import PodAllocation, PodName, SymbolAllocation
 
 
 class PodBTests(unittest.TestCase):
-    def test_pod_b_engine_pauses_quotes_when_regime_is_not_range_friendly(self) -> None:
+    def test_service_planner_and_risk_gate_produce_directional_plan(self) -> None:
         config = load_config("config/trident.toml")
-        engine = PodBPaperEngine(
-            managed_symbols=["DOGE"],
-            target_usd=200.0,
-            config=config.pod_b,
-        )
+        service = BreakoutService(config)
+        planner = BreakoutPlanner(config)
+        risk_gate = PodBRiskGate(config)
 
-        status, fills = engine.process_record(
-            timestamp="2026-04-05T10:00:00Z",
-            snapshots=[
-                SymbolMarketSnapshot(
-                    symbol="DOGE",
-                    price=100.0,
-                    ema_fast=100.0,
-                    ema_slow=100.0,
-                    vwap_distance_bps=0.0,
-                    structure_score=0.0,
-                    funding_rate=0.0,
-                    spread_bps=1.0,
-                    btc_aligned=True,
-                    book_imbalance=0.0,
-                    trade_flow_bias=0.0,
-                    bucket_volume=10.0,
-                    bucket_trade_count=5,
-                    bucket_range_bps=12.0,
-                )
-            ],
-            status_meta={"config_path": "", "status_path": ""},
-            regime_snapshot={
-                "ready": True,
-                "adx": 30.0,
-                "atr_ratio": 1.1,
-                "range_width_bps": 160.0,
-                "structure_score": 0.35,
-                "btc_impulse": True,
-            },
-        )
-
-        self.assertEqual(fills, [])
-        self.assertEqual(status.total_open_order_count, 0)
-
-    def test_pod_b_engine_switches_to_unwind_only_when_inventory_is_skewed(self) -> None:
-        config = load_config("config/trident.toml")
-        engine = PodBPaperEngine(
-            managed_symbols=["DOGE"],
-            target_usd=200.0,
-            config=config.pod_b,
-        )
-        engine.positions_by_symbol["DOGE"] = PaperPositionState(
-            signed_size=1.5,
-            avg_entry_price=100.0,
-        )
-
-        status, _ = engine.process_record(
-            timestamp="2026-04-05T10:00:00Z",
-            snapshots=[
-                SymbolMarketSnapshot(
-                    symbol="DOGE",
-                    price=100.0,
-                    ema_fast=100.0,
-                    ema_slow=100.0,
-                    vwap_distance_bps=0.0,
-                    structure_score=0.0,
-                    funding_rate=0.0,
-                    spread_bps=1.0,
-                    btc_aligned=True,
-                    book_imbalance=0.0,
-                    trade_flow_bias=0.0,
-                    bucket_volume=10.0,
-                    bucket_trade_count=5,
-                    bucket_range_bps=12.0,
-                )
-            ],
-            status_meta={"config_path": "", "status_path": ""},
-            regime_snapshot={
-                "ready": True,
-                "adx": 10.0,
-                "atr_ratio": 0.4,
-                "range_width_bps": 40.0,
-                "structure_score": 0.0,
-                "btc_impulse": False,
-            },
-        )
-
-        self.assertGreaterEqual(status.total_open_order_count, 1)
-        self.assertTrue(all(order.side == "sell" for order in status.open_orders))
-
-    def test_pod_b_engine_widens_quotes_and_reduces_size_in_toxic_conditions(self) -> None:
-        config = load_config("config/trident.toml")
-        calm_engine = PodBPaperEngine(
-            managed_symbols=["DOGE"],
-            target_usd=200.0,
-            config=config.pod_b,
-        )
-        toxic_engine = PodBPaperEngine(
-            managed_symbols=["DOGE"],
-            target_usd=200.0,
-            config=config.pod_b,
-        )
-        regime_snapshot = {
-            "ready": True,
-            "adx": 10.0,
-            "atr_ratio": 0.4,
-            "range_width_bps": 40.0,
-            "structure_score": 0.0,
-            "btc_impulse": False,
-        }
-
-        calm_status, _ = calm_engine.process_record(
-            timestamp="2026-04-05T10:00:00Z",
-            snapshots=[
-                SymbolMarketSnapshot(
-                    symbol="DOGE",
-                    price=100.0,
-                    ema_fast=100.0,
-                    ema_slow=100.0,
-                    vwap_distance_bps=0.0,
-                    structure_score=0.0,
-                    funding_rate=0.0,
-                    spread_bps=1.0,
-                    btc_aligned=True,
-                    book_imbalance=0.0,
-                    trade_flow_bias=0.0,
-                    bucket_volume=10.0,
-                    bucket_trade_count=5,
-                    bucket_range_bps=12.0,
-                )
-            ],
-            status_meta={"config_path": "", "status_path": ""},
-            regime_snapshot=regime_snapshot,
-        )
-        toxic_status, _ = toxic_engine.process_record(
-            timestamp="2026-04-05T10:00:00Z",
-            snapshots=[
-                SymbolMarketSnapshot(
-                    symbol="DOGE",
-                    price=100.0,
-                    ema_fast=100.0,
-                    ema_slow=100.0,
-                    vwap_distance_bps=4.0,
-                    structure_score=0.0,
-                    funding_rate=0.0,
-                    spread_bps=1.0,
-                    btc_aligned=True,
-                    book_imbalance=0.0,
-                    trade_flow_bias=0.18,
-                    bucket_volume=10.0,
-                    bucket_trade_count=5,
-                    bucket_range_bps=80.0,
-                )
-            ],
-            status_meta={"config_path": "", "status_path": ""},
-            regime_snapshot=regime_snapshot,
-        )
-
-        calm_buy = next(order for order in calm_status.open_orders if order.side == "buy")
-        toxic_buy = next(order for order in toxic_status.open_orders if order.side == "buy")
-
-        # Toxic flow reduces order size via toxicity_size_discount
-        self.assertLessEqual(toxic_buy.size, calm_buy.size)
-
-    def test_pod_b_engine_applies_symbol_specific_quote_and_size_multipliers(self) -> None:
-        config = load_config("config/trident.toml")
-        doge_engine = PodBPaperEngine(
-            managed_symbols=["DOGE"],
-            target_usd=200.0,
-            config=config.pod_b,
-        )
-        hype_engine = PodBPaperEngine(
-            managed_symbols=["HYPE"],
-            target_usd=200.0,
-            config=config.pod_b,
-        )
-        regime_snapshot = {
-            "ready": True,
-            "adx": 10.0,
-            "atr_ratio": 0.4,
-            "range_width_bps": 40.0,
-            "structure_score": 0.0,
-            "btc_impulse": False,
-        }
-
-        doge_status, _ = doge_engine.process_record(
-            timestamp="2026-04-05T10:00:00Z",
-            snapshots=[
-                SymbolMarketSnapshot(
-                    symbol="DOGE",
-                    price=100.0,
-                    ema_fast=100.0,
-                    ema_slow=100.0,
-                    vwap_distance_bps=0.0,
-                    structure_score=0.0,
-                    funding_rate=0.0,
-                    spread_bps=1.0,
-                    btc_aligned=True,
-                    book_imbalance=0.0,
-                    trade_flow_bias=0.0,
-                    bucket_volume=10.0,
-                    bucket_trade_count=5,
-                    bucket_range_bps=12.0,
-                )
-            ],
-            status_meta={"config_path": "", "status_path": ""},
-            regime_snapshot=regime_snapshot,
-        )
-        hype_status, _ = hype_engine.process_record(
-            timestamp="2026-04-05T10:00:00Z",
-            snapshots=[
-                SymbolMarketSnapshot(
-                    symbol="HYPE",
-                    price=100.0,
-                    ema_fast=100.0,
-                    ema_slow=100.0,
-                    vwap_distance_bps=0.0,
-                    structure_score=0.0,
-                    funding_rate=0.0,
-                    spread_bps=1.0,
-                    btc_aligned=True,
-                    book_imbalance=0.0,
-                    trade_flow_bias=0.0,
-                    bucket_volume=10.0,
-                    bucket_trade_count=5,
-                    bucket_range_bps=12.0,
-                )
-            ],
-            status_meta={"config_path": "", "status_path": ""},
-            regime_snapshot=regime_snapshot,
-        )
-
-        doge_buy = next(order for order in doge_status.open_orders if order.side == "buy")
-        hype_buy = next(order for order in hype_status.open_orders if order.side == "buy")
-        doge_sell = next(order for order in doge_status.open_orders if order.side == "sell")
-        hype_sell = next(order for order in hype_status.open_orders if order.side == "sell")
-
-        # HYPE has quote_width_multiplier=1.50 → wider spread → lower bid, higher ask
-        self.assertLessEqual(hype_buy.price, doge_buy.price)
-        self.assertGreaterEqual(hype_sell.price, doge_sell.price)
-        # HYPE has order_size_multiplier=0.50 → smaller orders
-        self.assertLess(hype_buy.size, doge_buy.size)
-
-    def test_pod_b_engine_preserves_market_state_when_symbol_is_temporarily_unassigned(self) -> None:
-        config = load_config("config/trident.toml")
-        engine = PodBPaperEngine(
-            managed_symbols=["DOGE"],
-            target_usd=200.0,
-            config=config.pod_b,
-        )
-        engine.last_mark_price_by_symbol["DOGE"] = 101.0
-
-        status, _ = engine.process_record(
-            timestamp="2026-04-05T10:00:00Z",
-            snapshots=[
-                SymbolMarketSnapshot(
-                    symbol="DOGE",
-                    price=101.0,
-                    ema_fast=101.0,
-                    ema_slow=101.0,
-                    vwap_distance_bps=0.0,
-                    structure_score=0.0,
-                    funding_rate=0.0,
-                    spread_bps=1.0,
-                    btc_aligned=True,
-                    book_imbalance=0.0,
-                    trade_flow_bias=0.0,
-                    bucket_volume=10.0,
-                    bucket_trade_count=5,
-                    bucket_range_bps=12.0,
-                )
-            ],
-            status_meta={"config_path": "", "status_path": ""},
-            regime_snapshot={
-                "ready": True,
-                "adx": 10.0,
-                "atr_ratio": 0.4,
-                "range_width_bps": 40.0,
-                "structure_score": 0.0,
-                "btc_impulse": False,
-            },
-        )
-
-        self.assertGreater(engine.mm_state_by_symbol["DOGE"].fair_value, 0.0)
-        self.assertGreaterEqual(status.total_open_order_count, 1)
-        previous_fair_value = engine.mm_state_by_symbol["DOGE"].fair_value
-
-        engine.update_allocation(managed_symbols=[], target_usd=0.0)
-        self.assertNotIn("DOGE", engine.mm_state_by_symbol)
-        self.assertIn("DOGE", engine.parked_mm_state_by_symbol)
-
-        engine.update_allocation(managed_symbols=["DOGE"], target_usd=200.0)
-        self.assertIn("DOGE", engine.mm_state_by_symbol)
-        restored = engine.build_status(
-            process_state="running",
-            last_sync_reason="test_restore",
-            status_meta={"config_path": "", "status_path": ""},
-        )
-
-        self.assertEqual(restored.total_position_count, 0)
-        self.assertEqual(restored.inventory[0].symbol, "DOGE")
-        self.assertAlmostEqual(restored.inventory[0].current_notional_usd, 0.0, places=4)
-        self.assertAlmostEqual(engine.mm_state_by_symbol["DOGE"].fair_value, previous_fair_value)
-
-    def test_pod_b_engine_keeps_position_in_unwind_only_scope_when_symbol_is_unassigned(self) -> None:
-        config = load_config("config/trident.toml")
-        engine = PodBPaperEngine(
-            managed_symbols=["DOGE"],
-            target_usd=200.0,
-            config=config.pod_b,
-        )
-        engine.positions_by_symbol["DOGE"] = PaperPositionState(
-            signed_size=1.0,
-            avg_entry_price=100.0,
-        )
-        engine.last_mark_price_by_symbol["DOGE"] = 100.0
-        engine.update_allocation(
-            managed_symbols=["DOGE"],
-            quoted_symbols=[],
-            target_usd=0.0,
-        )
-
-        status, _ = engine.process_record(
-            timestamp="2026-04-05T10:00:00Z",
-            snapshots=[
-                SymbolMarketSnapshot(
-                    symbol="DOGE",
-                    price=101.0,
-                    ema_fast=101.0,
-                    ema_slow=100.5,
-                    vwap_distance_bps=0.0,
-                    structure_score=0.0,
-                    funding_rate=0.0,
-                    spread_bps=1.0,
-                    btc_aligned=True,
-                    book_imbalance=0.0,
-                    trade_flow_bias=0.0,
-                    bucket_volume=10.0,
-                    bucket_trade_count=5,
-                    bucket_range_bps=12.0,
-                )
-            ],
-            status_meta={"config_path": "", "status_path": ""},
-            regime_snapshot={
-                "ready": True,
-                "adx": 10.0,
-                "atr_ratio": 0.4,
-                "range_width_bps": 40.0,
-                "structure_score": 0.0,
-                "btc_impulse": False,
-            },
-        )
-
-        self.assertEqual(status.managed_symbols, ["DOGE"])
-        self.assertEqual(status.inventory[0].target_notional_usd, 0.0)
-        self.assertEqual(len(status.positions), 1)
-        self.assertGreaterEqual(status.total_open_order_count, 1)
-        self.assertTrue(all(order.side == "sell" for order in status.open_orders))
-
-    def test_renderer_builds_minimal_passivbot_live_config(self) -> None:
-        renderer = PassivbotConfigRenderer()
-        payload = renderer.render(
-            PassivbotConfig(
-                config_path="runtime/passivbot/live.json",
-                approved_coins=["DOGE", "XRP"],
-                target_pct=0.7,
-                target_usd=700.0,
+        signal = service.evaluate(
+            BreakoutContext(
+                symbol="BTC",
+                regime="TrendExpansion",
+                price=100.0,
+                ema_fast=100.8,
+                ema_slow=99.9,
+                vwap_distance_bps=9.0,
+                structure_score=0.42,
+                funding_rate=0.0,
+                spread_bps=1.1,
+                btc_aligned=True,
+                market_cluster="crypto",
+                cluster_leader="BTC",
+                book_imbalance=0.32,
+                trade_flow_bias=0.28,
+                bucket_trade_count=24,
+                bucket_notional_usd=800.0,
+                bucket_range_bps=15.0,
+                delta_book_imbalance=0.22,
+                delta_trade_flow_bias=0.30,
+                volume_ratio=2.4,
+                trade_count_ratio=1.9,
+                realized_vol_short_bps=7.0,
+                realized_vol_long_bps=4.0,
+                compression_score=0.70,
+                microprice_dislocation_bps=1.4,
             )
         )
 
-        self.assertEqual(payload["live"]["approved_coins"], ["DOGE", "XRP"])
-        self.assertEqual(payload["live"]["time_in_force"], "post_only")
-        self.assertEqual(payload["trident"]["target_usd"], 700.0)
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.side, "long")
+        allocation = PodAllocation(
+            pod=PodName.POD_B,
+            target_pct=0.10,
+            target_usd=100.0,
+            symbols=[SymbolAllocation(symbol="BTC", target_pct=0.10, target_usd=100.0)],
+        )
+        plan = planner.build_trade_plan(signal, allocation)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertGreater(plan.target_notional_usd, 0.0)
+        self.assertGreater(plan.effective_leverage, 1.0)
+        self.assertEqual(plan.risk_budget_usd, 7.5)
 
-    def test_manager_sync_writes_runtime_config(self) -> None:
+        decisions = risk_gate.evaluate_many([plan])
+        self.assertEqual(len(decisions), 1)
+        self.assertTrue(decisions[0].accepted)
+
+    def test_service_rejects_dead_zone_even_with_good_microstructure(self) -> None:
         config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            config.pod_b.passivbot_config_path = str(config_path)
-            manager = PassivbotManager(config)
+        service = BreakoutService(config)
 
-            status = manager.sync(
-                allocation=PodAllocation(
-                    pod=PodName.POD_B,
-                    target_pct=0.7,
-                    target_usd=700.0,
-                ),
-                owned_symbols=["DOGE", "XRP"],
-                managed_symbols=["DOGE", "XRP", "LTC"],
+        signal = service.evaluate(
+            BreakoutContext(
+                symbol="BTC",
+                regime="DeadZone",
+                price=100.0,
+                ema_fast=100.8,
+                ema_slow=99.9,
+                vwap_distance_bps=9.0,
+                structure_score=0.42,
+                funding_rate=0.0,
+                spread_bps=1.1,
+                btc_aligned=True,
+                market_cluster="crypto",
+                cluster_leader="BTC",
+                book_imbalance=0.32,
+                trade_flow_bias=0.28,
+                bucket_trade_count=24,
+                bucket_notional_usd=800.0,
+                bucket_range_bps=15.0,
+                delta_book_imbalance=0.22,
+                delta_trade_flow_bias=0.30,
+                volume_ratio=2.4,
+                trade_count_ratio=1.9,
+                realized_vol_short_bps=7.0,
+                realized_vol_long_bps=4.0,
+                compression_score=0.70,
+                microprice_dislocation_bps=1.4,
             )
+        )
 
-            self.assertTrue(config_path.exists())
-            payload = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["live"]["approved_coins"], ["DOGE", "XRP", "LTC"])
-            self.assertEqual(payload["trident"]["opening_symbols"], ["DOGE", "XRP"])
-            self.assertEqual(payload["trident"]["unwind_only_symbols"], ["LTC"])
-            self.assertIn("paper_quote_width_multiplier_by_symbol", payload["trident"])
-            self.assertIn("paper_order_size_multiplier_by_symbol", payload["trident"])
-            self.assertIn("paper_max_inventory_skew_pct_by_symbol", payload["trident"])
-            self.assertEqual(status.managed_symbols, ["DOGE", "XRP", "LTC"])
-            self.assertEqual(status.last_sync_reason, "config_rendered")
-            self.assertEqual(status.total_position_count, 0)
-            self.assertEqual(status.total_open_order_count, 0)
-            self.assertEqual(status.total_fill_count, 0)
-            self.assertEqual(status.realized_pnl_usd, 0.0)
-            self.assertEqual(len(status.inventory), 3)
-            self.assertAlmostEqual(status.inventory[0].target_notional_usd, 233.3333, places=4)
+        self.assertIsNone(signal)
 
-    def test_manager_reads_status_file_when_present(self) -> None:
+    def test_runner_replays_strategy_on_routed_symbol_universe(self) -> None:
         config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            config.pod_b.passivbot_config_path = str(config_path)
-            manager = PassivbotManager(config)
-            status_path = manager.status_path(config_path)
-            status_path.parent.mkdir(parents=True, exist_ok=True)
-            status_path.write_text(
-                json.dumps(
+        config.hyperliquid.observation_universe = ["BTC"]
+
+        records = [
+            {
+                "timestamp": "2026-04-05T10:00:00Z",
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 28.0,
+                    "atr_ratio": 1.0,
+                    "range_width_bps": 120.0,
+                    "structure_score": 0.50,
+                    "btc_impulse": True,
+                },
+                "symbols": [
                     {
-                        "process_state": "running",
-                        "managed_symbols": ["DOGE"],
-                        "target_usd": 123.0,
-                        "last_sync_reason": "external_wrapper_running",
-                        "positions": [
-                            {
-                                "symbol": "DOGE",
-                                "side": "long",
-                                "size": 1200.0,
-                                "entry_price": 0.18,
-                                "mark_price": 0.181,
-                                "notional_usd": 217.2,
-                                "unrealized_pnl_usd": 1.2,
-                            }
-                        ],
-                        "open_orders": [
-                            {
-                                "symbol": "DOGE",
-                                "side": "buy",
-                                "price": 0.179,
-                                "size": 500.0,
-                            }
-                        ],
-                        "recent_fills": [
-                            {
-                                "symbol": "DOGE",
-                                "side": "buy",
-                                "action": "fill",
-                                "price": 0.179,
-                                "size": 500.0,
-                                "notional_usd": 89.5,
-                                "fee_usd": 0.0,
-                                "timestamp": "2026-04-05T10:00:00Z",
-                            }
-                        ],
-                        "total_fill_count": 1,
-                        "realized_pnl_usd": 2.5,
+                        "symbol": "BTC",
+                        "price": 100.0,
+                        "ema_fast": 100.8,
+                        "ema_slow": 99.9,
+                        "vwap_distance_bps": 9.0,
+                        "structure_score": 0.42,
+                        "funding_rate": 0.0,
+                        "spread_bps": 1.1,
+                        "btc_aligned": True,
+                        "market_cluster": "crypto",
+                        "cluster_aligned": True,
+                        "cluster_leader": "BTC",
+                        "book_imbalance": 0.32,
+                        "trade_flow_bias": 0.28,
+                        "bucket_volume": 8.0,
+                        "bucket_notional_usd": 800.0,
+                        "bucket_trade_count": 24,
+                        "bucket_range_bps": 15.0,
+                        "delta_book_imbalance": 0.22,
+                        "delta_trade_flow_bias": 0.30,
+                        "volume_ratio": 2.4,
+                        "trade_count_ratio": 1.9,
+                        "realized_vol_short_bps": 7.0,
+                        "realized_vol_long_bps": 4.0,
+                        "compression_score": 0.70,
+                        "microprice_dislocation_bps": 1.4,
+                        "source": "test",
                     }
-                ),
-                encoding="utf-8",
-            )
-
-            status = manager.sync(
-                allocation=PodAllocation(
-                    pod=PodName.POD_B,
-                    target_pct=0.2,
-                    target_usd=200.0,
-                ),
-                owned_symbols=["DOGE", "XRP"],
-            )
-
-            self.assertEqual(status.process_state, "running")
-            self.assertEqual(status.managed_symbols, ["DOGE"])
-            self.assertEqual(status.target_usd, 123.0)
-            self.assertEqual(status.total_position_count, 1)
-            self.assertEqual(status.total_open_order_count, 1)
-            self.assertEqual(status.total_fill_count, 1)
-            self.assertEqual(status.realized_pnl_usd, 2.5)
-            self.assertEqual(status.positions[0].symbol, "DOGE")
-            self.assertEqual(status.inventory[0].symbol, "DOGE")
-            self.assertTrue(status.inventory[0].has_position)
-            self.assertEqual(status.recent_fills[0].symbol, "DOGE")
-
-    def test_manager_can_start_and_stop_wrapper_process(self) -> None:
-        config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            config.pod_b.passivbot_config_path = str(config_path)
-            manager = PassivbotManager(config)
-
-            running_status = manager.start(
-                allocation=PodAllocation(
-                    pod=PodName.POD_B,
-                    target_pct=0.2,
-                    target_usd=200.0,
-                ),
-                owned_symbols=["DOGE"],
-                command=[
-                    sys.executable,
-                    "-c",
-                    "import time; time.sleep(60)",
                 ],
-            )
-            try:
-                self.assertEqual(running_status.process_state, "running")
-                self.assertIsNotNone(running_status.pid)
-                self.assertEqual(running_status.last_sync_reason, "started_by_trident")
-                self.assertTrue(Path(running_status.stdout_path).exists())
-                self.assertTrue(Path(running_status.stderr_path).exists())
-
-                stopped_status = manager.stop()
-                self.assertEqual(stopped_status.process_state, "stopped")
-                self.assertIsNone(stopped_status.pid)
-                self.assertEqual(stopped_status.last_sync_reason, "stopped_by_trident")
-            finally:
-                manager.stop()
-
-    def test_manager_can_launch_real_paper_live_runner_command(self) -> None:
-        config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        config.pod_b.launch_workdir = "/workspaces/trident"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            snapshot_dir = Path(tmpdir) / "snapshots"
-            snapshot_dir.mkdir(parents=True, exist_ok=True)
-            (snapshot_dir / "2026-04-05.jsonl").write_text(
-                json.dumps(
+            },
+            {
+                "timestamp": "2026-04-05T10:01:00Z",
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 30.0,
+                    "atr_ratio": 1.1,
+                    "range_width_bps": 140.0,
+                    "structure_score": 0.54,
+                    "btc_impulse": True,
+                },
+                "symbols": [
                     {
-                        "timestamp": "2026-04-05T10:00:00Z",
-                        "regime_snapshot": {
-                            "ready": True,
-                            "adx": 12.0,
-                            "atr_ratio": 0.4,
-                            "range_width_bps": 30.0,
-                            "structure_score": 0.0,
-                            "btc_impulse": False,
-                        },
-                        "symbols": [
-                            {
-                                "symbol": "DOGE",
-                                "price": 100.0,
-                                "ema_fast": 100.0,
-                                "ema_slow": 100.0,
-                                "vwap_distance_bps": 0.0,
-                                "structure_score": 0.0,
-                                "funding_rate": 0.0,
-                                "spread_bps": 1.0,
-                                "btc_aligned": True,
-                                "book_imbalance": 0.0,
-                                "trade_flow_bias": 0.0,
-                                "bucket_volume": 10.0,
-                                "bucket_trade_count": 5,
-                                "bucket_range_bps": 10.0,
-                                "source": "test",
-                            }
-                        ],
+                        "symbol": "BTC",
+                        "price": 101.0,
+                        "ema_fast": 101.2,
+                        "ema_slow": 100.3,
+                        "vwap_distance_bps": 11.0,
+                        "structure_score": 0.48,
+                        "funding_rate": 0.0,
+                        "spread_bps": 1.2,
+                        "btc_aligned": True,
+                        "market_cluster": "crypto",
+                        "cluster_aligned": True,
+                        "cluster_leader": "BTC",
+                        "book_imbalance": 0.30,
+                        "trade_flow_bias": 0.22,
+                        "bucket_volume": 9.0,
+                        "bucket_notional_usd": 909.0,
+                        "bucket_trade_count": 26,
+                        "bucket_range_bps": 18.0,
+                        "delta_book_imbalance": 0.10,
+                        "delta_trade_flow_bias": 0.12,
+                        "volume_ratio": 1.8,
+                        "trade_count_ratio": 1.4,
+                        "realized_vol_short_bps": 8.0,
+                        "realized_vol_long_bps": 4.5,
+                        "compression_score": 0.62,
+                        "microprice_dislocation_bps": 1.0,
+                        "source": "test",
                     }
-                )
-                + "\n",
+                ],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "snapshots.jsonl"
+            input_path.write_text(
+                "\n".join(json.dumps(record) for record in records) + "\n",
                 encoding="utf-8",
             )
-            config.pod_b.passivbot_config_path = str(config_path)
-            config.pod_b.launch_command = [
-                sys.executable,
-                "-m",
-                "app.trident.pod_b.paper_live_runner",
-                "--config",
-                "config/trident.toml",
-                "--input",
-                str(snapshot_dir),
-                "--poll-seconds",
-                "0.05",
-                "--max-runtime-seconds",
-                "60",
-            ]
-            manager = PassivbotManager(config)
+            result = PodBBacktestRunner(config).run_jsonl(input_path)
 
-            running_status = manager.start(
-                allocation=PodAllocation(
-                    pod=PodName.POD_B,
-                    target_pct=0.2,
-                    target_usd=200.0,
-                ),
-                owned_symbols=["DOGE"],
-            )
-            try:
-                time.sleep(0.25)
-                synced_status = manager.sync(
-                    allocation=PodAllocation(
-                        pod=PodName.POD_B,
-                        target_pct=0.2,
-                        target_usd=200.0,
-                    ),
-                    owned_symbols=["DOGE"],
-                )
-                self.assertEqual(running_status.process_state, "running")
-                self.assertIsNotNone(running_status.pid)
-                self.assertEqual(synced_status.process_state, "running")
-                # Live runner skips historical data, so 0 orders is expected
-                self.assertGreaterEqual(synced_status.total_open_order_count, 0)
-            finally:
-                manager.stop()
-
-    def test_manager_marks_stale_running_status_as_stopped(self) -> None:
-        config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            config.pod_b.passivbot_config_path = str(config_path)
-            manager = PassivbotManager(config)
-            status_path = manager.status_path(config_path)
-            status_path.parent.mkdir(parents=True, exist_ok=True)
-            status_path.write_text(
-                json.dumps(
-                    {
-                        "process_state": "running",
-                        "managed_symbols": ["DOGE"],
-                        "target_usd": 123.0,
-                        "last_sync_reason": "external_wrapper_running",
-                        "pid": 999999,
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            status = manager.sync(
-                allocation=PodAllocation(
-                    pod=PodName.POD_B,
-                    target_pct=0.2,
-                    target_usd=200.0,
-                ),
-                owned_symbols=["DOGE", "XRP"],
-            )
-
-            self.assertEqual(status.process_state, "stopped")
-            self.assertIsNone(status.pid)
-            self.assertEqual(status.last_sync_reason, "process_exited")
-            self.assertEqual(status.total_position_count, 0)
-            self.assertEqual(len(status.inventory), 2)
-
-    def test_manager_builds_default_inventory_from_positions_and_orders(self) -> None:
-        config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            config.pod_b.passivbot_config_path = str(config_path)
-            manager = PassivbotManager(config)
-            status_path = manager.status_path(config_path)
-            status_path.parent.mkdir(parents=True, exist_ok=True)
-            status_path.write_text(
-                json.dumps(
-                    {
-                        "process_state": "running",
-                        "managed_symbols": ["DOGE", "XRP"],
-                        "target_usd": 300.0,
-                        "positions": [
-                            {
-                                "symbol": "DOGE",
-                                "side": "short",
-                                "size": 1000.0,
-                                "entry_price": 0.2,
-                                "mark_price": 0.19,
-                                "notional_usd": 190.0,
-                            }
-                        ],
-                        "open_orders": [
-                            {"symbol": "DOGE", "side": "buy", "price": 0.189, "size": 200.0},
-                            {"symbol": "XRP", "side": "sell", "price": 0.55, "size": 300.0},
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            status = manager.sync(
-                allocation=PodAllocation(
-                    pod=PodName.POD_B,
-                    target_pct=0.3,
-                    target_usd=300.0,
-                ),
-                owned_symbols=["DOGE", "XRP"],
-            )
-
-            self.assertEqual(status.total_notional_usd, 190.0)
-            self.assertEqual(status.total_open_order_count, 2)
-            inventory = {item.symbol: item for item in status.inventory}
-            self.assertEqual(inventory["DOGE"].target_notional_usd, 150.0)
-            self.assertEqual(inventory["DOGE"].current_notional_usd, 190.0)
-            self.assertEqual(inventory["DOGE"].open_order_count, 1)
-            self.assertEqual(inventory["XRP"].open_order_count, 1)
-
-    def test_manager_trims_stale_runtime_symbols_outside_assignment(self) -> None:
-        config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            config.pod_b.passivbot_config_path = str(config_path)
-            manager = PassivbotManager(config)
-            status_path = manager.status_path(config_path)
-            status_path.parent.mkdir(parents=True, exist_ok=True)
-            status_path.write_text(
-                json.dumps(
-                    {
-                        "process_state": "running",
-                        "managed_symbols": ["DOGE", "XRP", "LTC"],
-                        "target_usd": 300.0,
-                        "last_sync_reason": "external_wrapper_running",
-                        "positions": [
-                            {
-                                "symbol": "DOGE",
-                                "side": "long",
-                                "size": 1000.0,
-                                "entry_price": 0.2,
-                                "mark_price": 0.21,
-                                "notional_usd": 210.0,
-                                "unrealized_pnl_usd": 10.0,
-                            }
-                        ],
-                        "open_orders": [
-                            {"symbol": "DOGE", "side": "buy", "price": 0.209, "size": 100.0},
-                            {"symbol": "LTC", "side": "sell", "price": 53.0, "size": 1.0},
-                        ],
-                        "inventory": [
-                            {
-                                "symbol": "DOGE",
-                                "target_notional_usd": 100.0,
-                                "current_notional_usd": 210.0,
-                                "inventory_skew_pct": 2.1,
-                                "has_position": True,
-                                "open_order_count": 1,
-                            },
-                            {
-                                "symbol": "XRP",
-                                "target_notional_usd": 100.0,
-                                "current_notional_usd": 0.0,
-                                "inventory_skew_pct": 0.0,
-                                "has_position": False,
-                                "open_order_count": 0,
-                            },
-                            {
-                                "symbol": "LTC",
-                                "target_notional_usd": 100.0,
-                                "current_notional_usd": 0.0,
-                                "inventory_skew_pct": 0.0,
-                                "has_position": False,
-                                "open_order_count": 1,
-                            },
-                        ],
-                        "total_open_order_count": 2,
-                        "total_position_count": 1,
-                        "realized_pnl_usd": 1.5,
-                        "total_notional_usd": 210.0,
-                        "total_unrealized_pnl_usd": 10.0,
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            status = manager.sync(
-                allocation=PodAllocation(
-                    pod=PodName.POD_B,
-                    target_pct=0.3,
-                    target_usd=300.0,
-                ),
-                owned_symbols=["DOGE", "XRP"],
-            )
-
-            self.assertEqual(status.managed_symbols, ["DOGE", "XRP"])
-            self.assertEqual([order.symbol for order in status.open_orders], ["DOGE"])
-            self.assertEqual([item.symbol for item in status.inventory], ["DOGE", "XRP"])
-            self.assertEqual(status.total_open_order_count, 1)
-            self.assertEqual(status.total_position_count, 1)
-
-    def test_manager_suppresses_runtime_drift_warning_for_inactive_status(self) -> None:
-        config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            config.pod_b.passivbot_config_path = str(config_path)
-            manager = PassivbotManager(config)
-            status_path = manager.status_path(config_path)
-            status_path.parent.mkdir(parents=True, exist_ok=True)
-            status_path.write_text(
-                json.dumps(
-                    {
-                        "process_state": "stopped",
-                        "managed_symbols": ["DOGE"],
-                        "target_usd": 50.0,
-                        "last_sync_reason": "process_exited",
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            with patch("app.trident.pod_b.passivbot_manager.logger.warning") as mock_warning:
-                status = manager.sync(
-                    allocation=PodAllocation(
-                        pod=PodName.POD_B,
-                        target_pct=0.3,
-                        target_usd=300.0,
-                    ),
-                    owned_symbols=["DOGE", "XRP"],
-                )
-
-            self.assertEqual(status.managed_symbols, ["DOGE"])
-            mock_warning.assert_not_called()
-
-    def test_manager_tolerates_empty_status_file(self) -> None:
-        config = load_config("config/trident.toml")
-        config.pod_b.enabled = True
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "runtime" / "passivbot" / "live.json"
-            config.pod_b.passivbot_config_path = str(config_path)
-            manager = PassivbotManager(config)
-            status_path = manager.status_path(config_path)
-            status_path.parent.mkdir(parents=True, exist_ok=True)
-            status_path.write_text("", encoding="utf-8")
-
-            status = manager.sync(
-                allocation=PodAllocation(
-                    pod=PodName.POD_B,
-                    target_pct=0.3,
-                    target_usd=300.0,
-                ),
-                owned_symbols=["DOGE", "XRP"],
-            )
-
-            self.assertEqual(status.process_state, "config_rendered")
-            self.assertEqual(status.managed_symbols, ["DOGE", "XRP"])
+        self.assertGreaterEqual(result.backtest.get("signal_count", 0), 1)
+        self.assertGreaterEqual(result.backtest.get("closed_trade_count", 0), 1)
+        self.assertGreater(result.backtest.get("realized_pnl_usd", 0.0), 0.0)
 
 
 if __name__ == "__main__":

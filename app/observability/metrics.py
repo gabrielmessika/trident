@@ -18,9 +18,11 @@ class MetricsRegistry:
         pod_b_status = self._pod_b_runtime_status(supervisor)
         symbol_ownership = supervisor.registry.snapshot()
         pod_a_runtime = load_runtime_status("logs/pod_a_live_status.json")
+        pod_b_runtime = load_runtime_status("logs/pod_b_live_status.json")
         pod_c_runtime = load_runtime_status("logs/pod_c_live_status.json")
         runtime_supervisor = merge_runtime_supervisor_snapshot(
             pod_a_runtime,
+            pod_b_runtime,
             pod_c_runtime,
         )
 
@@ -64,13 +66,14 @@ class MetricsRegistry:
             "pod_a_closed_trade_count": int(pod_a_report.get("closed_trade_count", 0)),
             "pod_a_realized_pnl_usd": float(pod_a_report.get("realized_pnl_usd", 0.0)),
             "pod_b_managed_symbol_count": len(pod_b_status.get("managed_symbols", [])),
-            "pod_b_process_running": 1
-            if pod_b_status.get("process_state") == "running"
-            else 0,
-            "pod_b_total_position_count": int(pod_b_status.get("total_position_count", 0)),
-            "pod_b_total_open_order_count": int(
-                pod_b_status.get("total_open_order_count", 0)
+            "pod_b_preview_count": len(
+                runtime_supervisor.get("pod_b_signal_preview", [])
+                if isinstance(runtime_supervisor, dict)
+                else supervisor.state.pod_b_signal_preview
             ),
+            "pod_b_process_running": 1 if runtime_pod_b_healthy else 0,
+            "pod_b_total_position_count": int(pod_b_status.get("total_position_count", 0)),
+            "pod_b_total_open_order_count": 0,
             "pod_b_total_fill_count": int(pod_b_status.get("total_fill_count", 0)),
             "pod_b_realized_pnl_usd": float(pod_b_status.get("realized_pnl_usd", 0.0)),
             "pod_b_total_unrealized_pnl_usd": float(
@@ -90,7 +93,7 @@ class MetricsRegistry:
         self,
         supervisor: TridentSupervisor,
     ) -> dict[str, object]:
-        status_path = Path(supervisor.config.pod_b.passivbot_config_path).with_suffix(".status.json")
+        status_path = Path("logs/pod_b_live_status.json")
         if not status_path.exists():
             return supervisor.state.pod_b_status
         payload = load_runtime_status(status_path)

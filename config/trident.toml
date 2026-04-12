@@ -9,7 +9,9 @@ ws_url = "wss://api.hyperliquid.xyz/ws"
 info_url = "https://api.hyperliquid.xyz/info"
 rate_limit_state_path = "./runtime/hyperliquid_rate_limits.json"
 snapshot_output_dir = "./data/live_snapshots"
+pod_b_feature_output_dir = "./data/live_features/pod_b"
 bucket_ms = 60000
+pod_b_feature_bucket_ms = 10000
 reconnect_delay_seconds = 5.0
 max_reconnect_delay_seconds = 30.0
 connect_timeout_seconds = 10.0
@@ -302,60 +304,49 @@ ARB = 10
 [pod_b]
 enabled = true
 allowed_market_clusters = ["crypto"]
-passivbot_config_path = "./runtime/passivbot/live.json"
-launch_command = []
-launch_workdir = ""
 max_allocation_pct = 0.40
-# Pod B distingue maintenant:
-# - opening_symbols: quote normal / market making bilateral
-# - managed_symbols: gestion et unwind d'un symbol deja porte
-# Si un symbol est route a `none` sans reassignment, Pod B peut rester dessus
-# en unwind-only au lieu de couper brutalement toute gestion.
-# --- Avellaneda-Stoikov MM parameters ---
-paper_quote_width_bps = 30.0
-paper_order_size_pct = 0.12
-paper_max_inventory_skew_pct = 0.25
-paper_maker_fee_bps = 0.0
-paper_recent_fills_limit = 20
-# Fair value & volatility tracking
-paper_fair_value_ema_alpha = 0.05
-paper_volatility_ema_alpha = 0.06
-# Inventory skew: how aggressively mid-price shifts with inventory
-paper_inventory_skew_intensity = 0.8
-# Spread adapts to realized volatility
-paper_volatility_spread_multiplier = 4.0
-paper_min_spread_bps = 4.0
-paper_max_spread_bps = 60.0
-# Multi-level grid
-paper_grid_levels = 1
-paper_grid_spacing_multiplier = 1.8
-# Regime guards
-paper_pause_outside_range = true
-paper_guard_max_adx = 20.0
-paper_guard_max_atr_ratio = 0.9
-paper_guard_max_abs_structure_score = 0.2
-paper_guard_max_range_width_bps = 90.0
-# Toxicity
-paper_flow_toxicity_threshold = 0.15
-paper_one_sided_inventory_threshold_pct = 0.30
-paper_quote_width_bucket_multiplier = 0.80
-paper_quote_width_toxicity_multiplier = 2.0
-paper_order_size_toxicity_discount = 0.6
+# --- Pod B breakout directional parameters ---
+bis_min_confidence = 0.58
+bis_default_leverage = 2.0
+bis_max_leverage = 10.0
+bis_risk_per_trade_pct = 0.0075
+bis_min_margin_usd = 20
+bis_min_notional_usd = 10
+bis_reentry_cooldown_minutes = 120
+bis_time_stop_hours = 2
+bis_max_spread_bps = 8.0
+bis_min_bucket_notional_usd = 100.0
+bis_min_bucket_trade_count = 3
+bis_min_compression_score = 0.55
+bis_min_activity_score = 0.60
+bis_min_breakout_score = 0.45
+bis_min_volume_ratio = 1.35
+bis_min_trade_count_ratio = 1.10
+bis_max_chase_distance_bps = 35.0
+bis_allowed_regimes = ["TrendExpansion", "PanicSqueeze"]
+bis_min_abs_structure_score = 0.15
+bis_min_trend_quality_bps = 6.0
+bis_min_realized_vol_short_bps = 6.0
+bis_min_directional_vwap_distance_bps = 4.0
+bis_stop_floor_bps = 18.0
+bis_stop_ceiling_bps = 80.0
+bis_enable_longs = true
+bis_enable_shorts = false
+bis_enabled_setups = ["vol_expansion_long"]
+bis_max_concurrent_positions = 3
+bis_max_total_open_risk_pct = 0.015
 
-[pod_b.paper_quote_width_multiplier_by_symbol]
-BTC = 1.25
-HYPE = 1.50
-XRP = 1.35
-
-[pod_b.paper_order_size_multiplier_by_symbol]
-BTC = 0.70
-HYPE = 0.50
-XRP = 0.60
-
-[pod_b.paper_max_inventory_skew_pct_by_symbol]
-BTC = 0.75
-HYPE = 0.60
-XRP = 0.65
+[pod_b.bis_max_leverage_by_symbol]
+BTC = 10.0
+ETH = 10.0
+SOL = 10.0
+HYPE = 10.0
+DOGE = 10.0
+XRP = 10.0
+SUI = 10.0
+AVAX = 10.0
+LINK = 10.0
+ARB = 10.0
 
 [pod_c]
 enabled = true

@@ -266,12 +266,12 @@ class SupervisorTests(unittest.TestCase):
 
         snapshot = supervisor.snapshot()
 
-        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["SOL"])
-        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], [])
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], [])
+        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["SOL"])
         self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], [])
         self.assertEqual(snapshot["ownership_conflicts"], [])
         sol_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SOL")
-        self.assertEqual(sol_routing["mode"], "dynamic_affinity")
+        self.assertEqual(sol_routing["mode"], "fallback_priority")
 
     def test_supervisor_exposes_capital_plan_and_regime_snapshot(self) -> None:
         supervisor = TridentSupervisor(
@@ -363,6 +363,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["capital_plan"]["regime"], "TrendExpansion")
         self.assertEqual(snapshot["capital_plan"]["total_equity_usd"], 1000.0)
         self.assertEqual(snapshot["pods"]["pod_a"]["target_pct"], 0.7)
+        self.assertEqual(snapshot["pods"]["pod_b"]["target_pct"], 0.0)
+        self.assertEqual(snapshot["capital_plan"]["cash_pct"], 0.3)
         self.assertEqual(snapshot["capital_plan"]["pods"]["pod_a"]["symbols"][0]["target_pct"], 0.175)
 
     def test_supervisor_previews_pod_a_signals(self) -> None:
@@ -528,68 +530,75 @@ class SupervisorTests(unittest.TestCase):
 
     def test_supervisor_syncs_pod_b_runtime_status(self) -> None:
         self.config.pod_b.enabled = True
-        with tempfile.TemporaryDirectory() as tmpdir:
-            self.config.pod_b.passivbot_config_path = str(
-                Path(tmpdir) / "runtime" / "passivbot" / "live.json"
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=28.0,
+                atr_ratio=1.0,
+                range_width_bps=120.0,
+                structure_score=0.35,
             )
-            supervisor = TridentSupervisor(
-                config=self.config,
-                profile="trident",
-                mode="observation",
-            )
-            supervisor.apply_regime_snapshot(
-                RegimeSnapshot(
-                    ready=True,
-                    adx=8.0,
-                    atr_ratio=0.5,
-                    range_width_bps=35.0,
-                    structure_score=0.05,
-                )
-            )
-            supervisor.refresh_symbol_routing(
-                [
-                    SymbolMarketSnapshot(
-                        symbol="DOGE",
-                        price=0.18,
-                        ema_fast=0.1801,
-                        ema_slow=0.18,
-                        vwap_distance_bps=-1.0,
-                        structure_score=0.03,
-                        funding_rate=0.0,
-                        spread_bps=1.0,
-                        btc_aligned=True,
-                        book_imbalance=0.01,
-                        trade_flow_bias=0.01,
-                        bucket_volume=5000.0,
-                        bucket_trade_count=30,
-                        bucket_range_bps=12.0,
-                    ),
-                    SymbolMarketSnapshot(
-                        symbol="XRP",
-                        price=0.64,
-                        ema_fast=0.6401,
-                        ema_slow=0.64,
-                        vwap_distance_bps=-1.0,
-                        structure_score=0.02,
-                        funding_rate=0.0,
-                        spread_bps=1.1,
-                        btc_aligned=True,
-                        book_imbalance=0.01,
-                        trade_flow_bias=0.01,
-                        bucket_volume=4000.0,
-                        bucket_trade_count=24,
-                        bucket_range_bps=14.0,
-                    ),
-                ]
-            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="DOGE",
+                    price=0.18,
+                    ema_fast=0.1812,
+                    ema_slow=0.1798,
+                    vwap_distance_bps=10.0,
+                    structure_score=0.28,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.22,
+                    trade_flow_bias=0.25,
+                    bucket_volume=5000.0,
+                    bucket_trade_count=30,
+                    bucket_notional_usd=900.0,
+                    bucket_range_bps=20.0,
+                    volume_ratio=1.6,
+                    trade_count_ratio=1.4,
+                    realized_vol_short_bps=7.0,
+                ),
+                SymbolMarketSnapshot(
+                    symbol="XRP",
+                    price=0.64,
+                    ema_fast=0.6401,
+                    ema_slow=0.64,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.02,
+                    funding_rate=0.0,
+                    spread_bps=1.1,
+                    btc_aligned=True,
+                    book_imbalance=0.01,
+                    trade_flow_bias=0.01,
+                    bucket_volume=4000.0,
+                    bucket_trade_count=24,
+                    bucket_range_bps=14.0,
+                ),
+            ]
+        )
 
-            snapshot = supervisor.snapshot()
+        snapshot = supervisor.snapshot()
 
-            self.assertEqual(snapshot["pod_b_status"]["managed_symbols"], ["DOGE", "XRP"])
-            self.assertEqual(snapshot["pod_b_status"]["last_sync_reason"], "config_rendered")
-            self.assertTrue(Path(self.config.pod_b.passivbot_config_path).exists())
-            self.assertIn("inventory", snapshot["pod_b_status"])
-            self.assertEqual(snapshot["pod_b_status"]["total_position_count"], 0)
+        self.assertEqual(snapshot["pod_b_status"]["managed_symbols"], [])
+        self.assertEqual(
+            snapshot["pod_b_status"]["last_sync_reason"],
+            "supervisor_planned_state",
+        )
+        self.assertEqual(
+            snapshot["pod_b_status"]["status_path"],
+            "logs/pod_b_live_status.json",
+        )
+        self.assertEqual(snapshot["pod_b_status"]["opening_symbols"], [])
+        self.assertEqual(snapshot["pod_b_status"]["open_positions"], [])
+        self.assertEqual(snapshot["pod_b_status"]["total_position_count"], 0)
 
     def test_supervisor_tracks_regime_history(self) -> None:
         supervisor = TridentSupervisor(
@@ -797,12 +806,14 @@ class SupervisorTests(unittest.TestCase):
         snapshot = supervisor.snapshot()
 
         self.assertEqual(snapshot["ownership_conflicts"], [])
-        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC", "ETH", "HYPE", "SOL"])
-        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["DOGE", "SUI", "XRP"])
+        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC", "DOGE", "ETH", "HYPE", "SOL", "SUI", "XRP"])
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], [])
         self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["SPY"])
         sui_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SUI")
+        btc_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "BTC")
         spy_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SPY")
-        self.assertEqual(sui_routing["owner"], "pod_b")
+        self.assertEqual(btc_routing["owner"], "pod_a")
+        self.assertEqual(sui_routing["owner"], "pod_a")
         self.assertEqual(sui_routing["mode"], "dynamic_affinity")
         self.assertEqual(spy_routing["owner"], "pod_c")
         self.assertEqual(spy_routing["mode"], "dynamic_affinity")
@@ -848,9 +859,10 @@ class SupervisorTests(unittest.TestCase):
         snapshot = supervisor.snapshot()
         ada_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "ADA")
 
-        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["ADA"])
-        self.assertEqual(ada_routing["owner"], "pod_b")
-        self.assertEqual(ada_routing["mode"], "dynamic_affinity")
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], [])
+        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["ADA"])
+        self.assertEqual(ada_routing["owner"], "pod_a")
+        self.assertEqual(ada_routing["mode"], "fallback_priority")
 
     def test_supervisor_routing_uses_hysteresis_before_switching_owner(self) -> None:
         self.config.pod_c.enabled = True
@@ -1014,7 +1026,8 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(snapshot["tradable_pool"], ["DOGE"])
         self.assertEqual(snapshot["pods"]["pod_b"]["candidate_symbols"], ["DOGE"])
-        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], ["DOGE"])
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], [])
+        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["DOGE"])
         self.assertEqual(quality_by_symbol["DOGE"]["reasons"], [])
         self.assertIn("spread_above_max", quality_by_symbol["XRP"]["reasons"])
         self.assertIn("bucket_notional_below_min", quality_by_symbol["ADA"]["reasons"])
@@ -1534,13 +1547,12 @@ class SupervisorTests(unittest.TestCase):
         snapshot = supervisor.snapshot()
 
         self.assertEqual(snapshot["capital_plan"]["regime"], "DeadZone")
-        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_pct"], 0.2)
-        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_usd"], 200.0)
-        self.assertEqual(len(snapshot["pods"]["pod_b"]["owned_symbols"]), 8)
-        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], symbols[:8])
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_pct"], 0.0)
+        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_b"]["target_usd"], 0.0)
+        self.assertEqual(snapshot["pods"]["pod_b"]["owned_symbols"], [])
         self.assertEqual(
             [item["symbol"] for item in snapshot["capital_plan"]["pods"]["pod_b"]["symbols"]],
-            symbols[:8],
+            [],
         )
         self.assertEqual(snapshot["ownership_conflicts"], [])
 

@@ -99,19 +99,18 @@
 - reste a faire:
   - validation dry-run live prolongee
 
-### Etape 5 — Pod B range engine natif
+### Etape 5 — Pod B breakout directionnel
 
-- statut: 95%
+- statut: completee
 - objectif:
-  - rendre Pod B fiable comme complement du run principal
+  - rendre Pod B fiable comme complement directionnel de Pod A sur le sleeve crypto
 - fait:
-  - paper_live_runner reecrit: superviseur partage, routing dynamique, allocation par regime
-  - Pod B utilise `config/trident.toml` (plus de dependance a `runtime/passivbot/live.json`)
-  - comportement identique au full-bot backtest
+  - remplacement complet de l'ancien moteur maker par une strategie breakout/vol-expansion
+  - live runner `app/live/pod_b_live_runner.py`, runtime status `logs/pod_b_live_status.json`
+  - replay full-bot et standalone alignes sur le meme pipeline directionnel
 - reste a faire:
-  - run long avec le profil actif `Pod A + Pod B`
-  - audit expectancy/churn/toxicite
-  - recalibrage de la couche range pour un role de complement, pas de coeur de perf
+  - validation dry-run live plus longue
+  - raffinement du routing pour donner a Pod B un sous-univers encore plus selectif
 
 ### Etape 10 — Passage live progressif
 
@@ -119,7 +118,7 @@
 - objectif:
   - sortir du mode validations courtes vers de vrais runs operables
 - reste a faire:
-  - lancer des dry-runs serveur longs avec le profil `Pod A + Pod B, Pod C off`
+  - lancer des dry-runs serveur longs avec un profil prudent, en activant ou non Pod C selon la validation de son scope courant
   - review systematique
   - augmenter progressivement le niveau de confiance
 

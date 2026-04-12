@@ -120,10 +120,12 @@ class HyperliquidConfig:
     info_url: str = "https://api.hyperliquid.xyz/info"
     rate_limit_state_path: str = "./runtime/hyperliquid_rate_limits.json"
     snapshot_output_dir: str = "./data/live_snapshots"
+    pod_b_feature_output_dir: str = "./data/live_features/pod_b"
     observation_universe: list[str] | None = None
     max_coins_per_connection: int = 10
     subscription_pacing_ms: int = 250
     bucket_ms: int = 60_000
+    pod_b_feature_bucket_ms: int = 10_000
     reconnect_delay_seconds: float = 5.0
     max_reconnect_delay_seconds: float = 30.0
     connect_timeout_seconds: float = 10.0
@@ -183,36 +185,37 @@ class PodAConfig:
 class PodBConfig:
     enabled: bool
     allowed_market_clusters: list[str]
-    passivbot_config_path: str
-    launch_command: list[str]
-    launch_workdir: str
     max_allocation_pct: float
-    paper_quote_width_bps: float
-    paper_order_size_pct: float
-    paper_max_inventory_skew_pct: float
-    paper_maker_fee_bps: float
-    paper_recent_fills_limit: int
-    paper_pause_outside_range: bool
-    paper_guard_max_adx: float
-    paper_guard_max_atr_ratio: float
-    paper_guard_max_abs_structure_score: float
-    paper_guard_max_range_width_bps: float
-    paper_flow_toxicity_threshold: float
-    paper_one_sided_inventory_threshold_pct: float
-    paper_quote_width_bucket_multiplier: float
-    paper_quote_width_toxicity_multiplier: float
-    paper_order_size_toxicity_discount: float
-    paper_fair_value_ema_alpha: float = 0.08
-    paper_volatility_ema_alpha: float = 0.06
-    paper_inventory_skew_intensity: float = 0.6
-    paper_volatility_spread_multiplier: float = 2.5
-    paper_min_spread_bps: float = 4.0
-    paper_max_spread_bps: float = 60.0
-    paper_grid_levels: int = 2
-    paper_grid_spacing_multiplier: float = 1.8
-    paper_quote_width_multiplier_by_symbol: dict[str, float] = field(default_factory=dict)
-    paper_order_size_multiplier_by_symbol: dict[str, float] = field(default_factory=dict)
-    paper_max_inventory_skew_pct_by_symbol: dict[str, float] = field(default_factory=dict)
+    bis_min_confidence: float
+    bis_default_leverage: float
+    bis_max_leverage: float
+    bis_max_leverage_by_symbol: dict[str, float]
+    bis_risk_per_trade_pct: float
+    bis_min_margin_usd: float
+    bis_min_notional_usd: float
+    bis_reentry_cooldown_minutes: int
+    bis_time_stop_hours: int
+    bis_max_spread_bps: float
+    bis_min_bucket_notional_usd: float
+    bis_min_bucket_trade_count: int
+    bis_min_compression_score: float
+    bis_min_activity_score: float
+    bis_min_breakout_score: float
+    bis_min_volume_ratio: float
+    bis_min_trade_count_ratio: float
+    bis_max_chase_distance_bps: float
+    bis_allowed_regimes: list[str]
+    bis_min_abs_structure_score: float
+    bis_min_trend_quality_bps: float
+    bis_min_realized_vol_short_bps: float
+    bis_min_directional_vwap_distance_bps: float
+    bis_stop_floor_bps: float
+    bis_stop_ceiling_bps: float
+    bis_enable_longs: bool
+    bis_enable_shorts: bool
+    bis_enabled_setups: list[str]
+    bis_max_concurrent_positions: int
+    bis_max_total_open_risk_pct: float
 
 
 @dataclass(slots=True)
@@ -417,6 +420,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             snapshot_output_dir=str(
                 hyperliquid_data.get("snapshot_output_dir", "./data/live_snapshots")
             ),
+            pod_b_feature_output_dir=str(
+                hyperliquid_data.get(
+                    "pod_b_feature_output_dir",
+                    "./data/live_features/pod_b",
+                )
+            ),
             observation_universe=list(
                 hyperliquid_data.get(
                     "observation_universe",
@@ -430,6 +439,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 hyperliquid_data.get("subscription_pacing_ms", 250)
             ),
             bucket_ms=int(hyperliquid_data.get("bucket_ms", 60_000)),
+            pod_b_feature_bucket_ms=int(
+                hyperliquid_data.get("pod_b_feature_bucket_ms", 10_000)
+            ),
             reconnect_delay_seconds=float(
                 hyperliquid_data.get("reconnect_delay_seconds", 5.0)
             ),
@@ -629,79 +641,75 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 pod_b_data.get("allowed_market_clusters", ["crypto"]),
                 upper_values=False,
             ),
-            passivbot_config_path=str(
-                pod_b_data.get("passivbot_config_path", "./runtime/passivbot/live.json")
-            ),
-            launch_command=list(pod_b_data.get("launch_command", [])),
-            launch_workdir=str(pod_b_data.get("launch_workdir", "")),
             max_allocation_pct=float(pod_b_data.get("max_allocation_pct", 1.0)),
-            paper_quote_width_bps=float(pod_b_data.get("paper_quote_width_bps", 6.0)),
-            paper_order_size_pct=float(pod_b_data.get("paper_order_size_pct", 0.25)),
-            paper_max_inventory_skew_pct=float(
-                pod_b_data.get("paper_max_inventory_skew_pct", 1.0)
+            bis_min_confidence=float(pod_b_data.get("bis_min_confidence", 0.58)),
+            bis_default_leverage=float(pod_b_data.get("bis_default_leverage", 2.0)),
+            bis_max_leverage=float(pod_b_data.get("bis_max_leverage", 20.0)),
+            bis_max_leverage_by_symbol=_float_map(
+                pod_b_data.get("bis_max_leverage_by_symbol", {})
             ),
-            paper_maker_fee_bps=float(pod_b_data.get("paper_maker_fee_bps", 0.0)),
-            paper_recent_fills_limit=int(pod_b_data.get("paper_recent_fills_limit", 20)),
-            paper_pause_outside_range=bool(
-                pod_b_data.get("paper_pause_outside_range", True)
+            bis_risk_per_trade_pct=float(
+                pod_b_data.get("bis_risk_per_trade_pct", 0.01)
             ),
-            paper_guard_max_adx=float(pod_b_data.get("paper_guard_max_adx", 20.0)),
-            paper_guard_max_atr_ratio=float(
-                pod_b_data.get("paper_guard_max_atr_ratio", 0.9)
+            bis_min_margin_usd=float(pod_b_data.get("bis_min_margin_usd", 20.0)),
+            bis_min_notional_usd=float(pod_b_data.get("bis_min_notional_usd", 10.0)),
+            bis_reentry_cooldown_minutes=int(
+                pod_b_data.get("bis_reentry_cooldown_minutes", 45)
             ),
-            paper_guard_max_abs_structure_score=float(
-                pod_b_data.get("paper_guard_max_abs_structure_score", 0.2)
+            bis_time_stop_hours=int(pod_b_data.get("bis_time_stop_hours", 2)),
+            bis_max_spread_bps=float(pod_b_data.get("bis_max_spread_bps", 8.0)),
+            bis_min_bucket_notional_usd=float(
+                pod_b_data.get("bis_min_bucket_notional_usd", 100.0)
             ),
-            paper_guard_max_range_width_bps=float(
-                pod_b_data.get("paper_guard_max_range_width_bps", 90.0)
+            bis_min_bucket_trade_count=int(
+                pod_b_data.get("bis_min_bucket_trade_count", 3)
             ),
-            paper_flow_toxicity_threshold=float(
-                pod_b_data.get("paper_flow_toxicity_threshold", 0.2)
+            bis_min_compression_score=float(
+                pod_b_data.get("bis_min_compression_score", 0.55)
             ),
-            paper_one_sided_inventory_threshold_pct=float(
-                pod_b_data.get("paper_one_sided_inventory_threshold_pct", 0.6)
+            bis_min_activity_score=float(
+                pod_b_data.get("bis_min_activity_score", 0.55)
             ),
-            paper_quote_width_bucket_multiplier=float(
-                pod_b_data.get("paper_quote_width_bucket_multiplier", 0.35)
+            bis_min_breakout_score=float(
+                pod_b_data.get("bis_min_breakout_score", 0.45)
             ),
-            paper_quote_width_toxicity_multiplier=float(
-                pod_b_data.get("paper_quote_width_toxicity_multiplier", 1.5)
+            bis_min_volume_ratio=float(pod_b_data.get("bis_min_volume_ratio", 1.2)),
+            bis_min_trade_count_ratio=float(
+                pod_b_data.get("bis_min_trade_count_ratio", 1.1)
             ),
-            paper_order_size_toxicity_discount=float(
-                pod_b_data.get("paper_order_size_toxicity_discount", 0.5)
+            bis_max_chase_distance_bps=float(
+                pod_b_data.get("bis_max_chase_distance_bps", 35.0)
             ),
-            paper_fair_value_ema_alpha=float(
-                pod_b_data.get("paper_fair_value_ema_alpha", 0.08)
+            bis_allowed_regimes=_str_list(
+                pod_b_data.get(
+                    "bis_allowed_regimes",
+                    ["TrendExpansion", "PanicSqueeze"],
+                )
             ),
-            paper_volatility_ema_alpha=float(
-                pod_b_data.get("paper_volatility_ema_alpha", 0.06)
+            bis_min_abs_structure_score=float(
+                pod_b_data.get("bis_min_abs_structure_score", 0.15)
             ),
-            paper_inventory_skew_intensity=float(
-                pod_b_data.get("paper_inventory_skew_intensity", 0.6)
+            bis_min_trend_quality_bps=float(
+                pod_b_data.get("bis_min_trend_quality_bps", 6.0)
             ),
-            paper_volatility_spread_multiplier=float(
-                pod_b_data.get("paper_volatility_spread_multiplier", 2.5)
+            bis_min_realized_vol_short_bps=float(
+                pod_b_data.get("bis_min_realized_vol_short_bps", 6.0)
             ),
-            paper_min_spread_bps=float(
-                pod_b_data.get("paper_min_spread_bps", 4.0)
+            bis_min_directional_vwap_distance_bps=float(
+                pod_b_data.get("bis_min_directional_vwap_distance_bps", 4.0)
             ),
-            paper_max_spread_bps=float(
-                pod_b_data.get("paper_max_spread_bps", 60.0)
+            bis_stop_floor_bps=float(pod_b_data.get("bis_stop_floor_bps", 18.0)),
+            bis_stop_ceiling_bps=float(pod_b_data.get("bis_stop_ceiling_bps", 80.0)),
+            bis_enable_longs=bool(pod_b_data.get("bis_enable_longs", True)),
+            bis_enable_shorts=bool(pod_b_data.get("bis_enable_shorts", False)),
+            bis_enabled_setups=_str_list(
+                pod_b_data.get("bis_enabled_setups", ["vol_expansion_long"])
             ),
-            paper_grid_levels=int(
-                pod_b_data.get("paper_grid_levels", 2)
+            bis_max_concurrent_positions=int(
+                pod_b_data.get("bis_max_concurrent_positions", 4)
             ),
-            paper_grid_spacing_multiplier=float(
-                pod_b_data.get("paper_grid_spacing_multiplier", 1.8)
-            ),
-            paper_quote_width_multiplier_by_symbol=_float_map(
-                pod_b_data.get("paper_quote_width_multiplier_by_symbol", {})
-            ),
-            paper_order_size_multiplier_by_symbol=_float_map(
-                pod_b_data.get("paper_order_size_multiplier_by_symbol", {})
-            ),
-            paper_max_inventory_skew_pct_by_symbol=_float_map(
-                pod_b_data.get("paper_max_inventory_skew_pct_by_symbol", {})
+            bis_max_total_open_risk_pct=float(
+                pod_b_data.get("bis_max_total_open_risk_pct", 0.02)
             ),
         ),
         pod_c=PodCConfig(

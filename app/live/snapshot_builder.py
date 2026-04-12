@@ -35,6 +35,10 @@ class BookState:
     time_ms: int
     price: float
     spread_bps: float
+    best_bid: float
+    best_ask: float
+    best_bid_size: float
+    best_ask_size: float
     bid_depth_10bps: float
     ask_depth_10bps: float
 
@@ -98,12 +102,18 @@ class LiveSnapshotBuilder:
         asks = levels[1] if isinstance(levels, list) and len(levels) > 1 else []
         best_bid = float(bids[0]["px"]) if bids else 0.0
         best_ask = float(asks[0]["px"]) if asks else 0.0
+        best_bid_size = float(bids[0]["sz"]) if bids else 0.0
+        best_ask_size = float(asks[0]["sz"]) if asks else 0.0
         mid = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else max(best_bid, best_ask)
         spread_bps = ((best_ask - best_bid) / mid * 10_000) if mid > 0 and best_ask >= best_bid else 0.0
         self.latest_book_by_symbol[coin] = BookState(
             time_ms=event_time,
             price=mid,
             spread_bps=round(spread_bps, 4),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            best_bid_size=best_bid_size,
+            best_ask_size=best_ask_size,
             bid_depth_10bps=round(self._depth_within_bps(bids, mid, "bid", 10.0), 6),
             ask_depth_10bps=round(self._depth_within_bps(asks, mid, "ask", 10.0), 6),
         )
@@ -168,6 +178,13 @@ class LiveSnapshotBuilder:
                     "last_price": row.price,
                     "recent_high": row.price,
                     "recent_low": row.price,
+                    "prev_spread_bps": row.spread_bps,
+                    "prev_book_imbalance": 0.0,
+                    "prev_trade_flow_bias": 0.0,
+                    "avg_bucket_volume": 0.0,
+                    "avg_bucket_trade_count": 0.0,
+                    "realized_vol_short_bps": 0.0,
+                    "realized_vol_long_bps": 0.0,
                 },
             )
             state["ema_fast"] = self._ema(state["ema_fast"], row.price, alpha=0.35)
@@ -180,6 +197,27 @@ class LiveSnapshotBuilder:
             momentum_by_symbol[coin] = momentum_bps
 
             book_imbalance = self._book_imbalance(row.bid_depth_10bps, row.ask_depth_10bps)
+            delta_spread_bps = row.spread_bps - state["prev_spread_bps"]
+            delta_book_imbalance = book_imbalance - state["prev_book_imbalance"]
+            delta_trade_flow_bias = trades.flow_bias - state["prev_trade_flow_bias"]
+            volume_ratio = self._ratio_against_baseline(
+                trades.total_volume,
+                state["avg_bucket_volume"],
+            )
+            trade_count_ratio = self._ratio_against_baseline(
+                float(trades.trade_count),
+                state["avg_bucket_trade_count"],
+            )
+            realized_vol_short_bps = self._ema(
+                state["realized_vol_short_bps"],
+                abs(momentum_bps),
+                alpha=0.35,
+            )
+            realized_vol_long_bps = self._ema(
+                state["realized_vol_long_bps"],
+                abs(momentum_bps),
+                alpha=0.08,
+            )
             trend_score = self._clamp(
                 ((state["ema_fast"] - state["ema_slow"]) / row.price) * 100.0,
                 -1.0,
@@ -193,6 +231,24 @@ class LiveSnapshotBuilder:
             vwap_anchor = trades.vwap if trades.vwap is not None else state["ema_fast"]
             range_width_bps = self._range_width_bps(
                 state["recent_low"], state["recent_high"], row.price
+            )
+            bucket_notional_usd = trades.total_volume * (trades.vwap if trades.vwap is not None else row.price)
+            microprice = self._microprice(
+                row.best_bid,
+                row.best_ask,
+                row.best_bid_size,
+                row.best_ask_size,
+                row.price,
+            )
+            microprice_dislocation_bps = (
+                (microprice - row.price) / row.price * 10_000 if row.price > 0 else 0.0
+            )
+            compression_score = self._compression_score(
+                range_width_bps=range_width_bps,
+                spread_bps=row.spread_bps,
+                realized_vol_short_bps=realized_vol_short_bps,
+                realized_vol_long_bps=realized_vol_long_bps,
+                structure_score=structure_score,
             )
             symbols.append(
                 {
@@ -208,14 +264,52 @@ class LiveSnapshotBuilder:
                     "funding_rate": 0.0,
                     "spread_bps": round(row.spread_bps, 4),
                     "btc_aligned": True,
+                    "best_bid": round(row.best_bid, 8),
+                    "best_ask": round(row.best_ask, 8),
+                    "best_bid_size": round(row.best_bid_size, 6),
+                    "best_ask_size": round(row.best_ask_size, 6),
+                    "bid_depth_10bps": round(row.bid_depth_10bps, 6),
+                    "ask_depth_10bps": round(row.ask_depth_10bps, 6),
+                    "microprice": round(microprice, 8),
+                    "microprice_dislocation_bps": round(microprice_dislocation_bps, 4),
                     "book_imbalance": round(book_imbalance, 4),
                     "trade_flow_bias": round(trades.flow_bias, 4),
+                    "buy_count": trades.buy_count,
+                    "sell_count": trades.sell_count,
+                    "buy_volume": round(trades.buy_volume, 6),
+                    "sell_volume": round(trades.sell_volume, 6),
+                    "vwap": round(trades.vwap, 8) if trades.vwap is not None else None,
                     "bucket_volume": round(trades.total_volume, 6),
+                    "bucket_notional_usd": round(bucket_notional_usd, 4),
                     "bucket_trade_count": trades.trade_count,
+                    "signed_trade_delta": round(trades.buy_volume - trades.sell_volume, 6),
                     "bucket_range_bps": round(range_width_bps, 4),
+                    "delta_spread_bps": round(delta_spread_bps, 4),
+                    "delta_book_imbalance": round(delta_book_imbalance, 4),
+                    "delta_trade_flow_bias": round(delta_trade_flow_bias, 4),
+                    "volume_ratio": round(volume_ratio, 4),
+                    "trade_count_ratio": round(trade_count_ratio, 4),
+                    "realized_vol_short_bps": round(realized_vol_short_bps, 4),
+                    "realized_vol_long_bps": round(realized_vol_long_bps, 4),
+                    "compression_score": round(compression_score, 4),
                     "source": "hyperliquid_live_collector",
                 }
             )
+            state["prev_spread_bps"] = row.spread_bps
+            state["prev_book_imbalance"] = book_imbalance
+            state["prev_trade_flow_bias"] = trades.flow_bias
+            state["avg_bucket_volume"] = self._update_baseline(
+                state["avg_bucket_volume"],
+                trades.total_volume,
+                alpha=0.20,
+            )
+            state["avg_bucket_trade_count"] = self._update_baseline(
+                state["avg_bucket_trade_count"],
+                float(trades.trade_count),
+                alpha=0.20,
+            )
+            state["realized_vol_short_bps"] = realized_vol_short_bps
+            state["realized_vol_long_bps"] = realized_vol_long_bps
 
         if not symbols:
             return []
@@ -317,6 +411,61 @@ class LiveSnapshotBuilder:
         if total <= 0:
             return 0.0
         return (bid_depth - ask_depth) / total
+
+    def _microprice(
+        self,
+        best_bid: float,
+        best_ask: float,
+        best_bid_size: float,
+        best_ask_size: float,
+        fallback_price: float,
+    ) -> float:
+        total_size = best_bid_size + best_ask_size
+        if best_bid > 0 and best_ask > 0 and total_size > 0:
+            return (
+                best_ask * best_bid_size
+                + best_bid * best_ask_size
+            ) / total_size
+        return fallback_price
+
+    def _ratio_against_baseline(self, current: float, baseline: float) -> float:
+        if baseline > 0:
+            return current / baseline
+        return 2.0 if current > 0 else 1.0
+
+    def _update_baseline(self, baseline: float, current: float, alpha: float) -> float:
+        if baseline <= 0:
+            return current
+        return self._ema(baseline, current, alpha)
+
+    def _compression_score(
+        self,
+        *,
+        range_width_bps: float,
+        spread_bps: float,
+        realized_vol_short_bps: float,
+        realized_vol_long_bps: float,
+        structure_score: float,
+    ) -> float:
+        range_component = 1.0 - self._clamp(range_width_bps / 35.0, 0.0, 1.0)
+        spread_component = 1.0 - self._clamp(spread_bps / 8.0, 0.0, 1.0)
+        vol_component = 1.0 - self._clamp(realized_vol_short_bps / 12.0, 0.0, 1.0)
+        if realized_vol_long_bps <= 0:
+            relative_vol_component = 1.0
+        else:
+            relative_vol_component = 1.0 - self._clamp(
+                realized_vol_short_bps / max(realized_vol_long_bps * 1.5, 1e-9),
+                0.0,
+                1.0,
+            )
+        structure_component = 1.0 - self._clamp(abs(structure_score), 0.0, 1.0)
+        return (
+            range_component * 0.30
+            + spread_component * 0.20
+            + vol_component * 0.20
+            + relative_vol_component * 0.15
+            + structure_component * 0.15
+        )
 
     def _range_width_bps(self, recent_low: float, recent_high: float, price: float) -> float:
         if price <= 0 or recent_low <= 0 or recent_high <= 0:

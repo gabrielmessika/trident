@@ -8,10 +8,10 @@ Si on oublie le vocabulaire technique, `Trident` est surtout un **chef d'orchest
 
 Son rôle est simple :
 
-- regarder ce qu'il se passe sur le marché crypto en direct ;
+- regarder ce qu'il se passe sur les marchés Hyperliquid en direct ;
 - reconnaître le type de marché du moment ;
 - répartir l'argent entre plusieurs modules spécialisés ;
-- s'assurer qu'une même crypto n'est gérée que par un seul module à la fois ;
+- s'assurer qu'un même marché n'est géré que par un seul module à la fois ;
 - vérifier que le niveau de risque reste acceptable avant d'agir.
 
 ### Qu'est-ce qu'un pod ?
@@ -22,7 +22,7 @@ Chaque pod a sa propre façon de chercher des opportunités :
 
 - `Pod A` aime les mouvements déjà bien lancés ;
 - `Pod B` préfère les marchés plus calmes, qui tournent un peu sur place ;
-- `Pod C` cherche des mouvements plus rapides et plus rares.
+- `Pod C` cherche des tendances Tradfi HL sur un panier builder-dex dédié.
 
 On peut imaginer `Trident` comme une petite équipe :
 
@@ -33,10 +33,10 @@ On peut imaginer `Trident` comme une petite équipe :
 
 ### Comment fonctionne Trident, sans jargon
 
-1. `Trident` reçoit des données en direct sur plusieurs cryptos.
+1. `Trident` reçoit des données en direct sur plusieurs marchés HL.
 2. Il essaie de comprendre l'ambiance du marché : est-ce que ça monte franchement, est-ce que ça tourne en rond, ou est-ce que ça devient très agité ?
 3. En fonction de cette lecture, il donne plus ou moins de place à chaque pod.
-4. Chaque pod ne travaille que sur les cryptos qui lui ont été attribuées.
+4. Chaque pod ne travaille que sur les marchés qui lui ont été attribués.
 5. Le pod peut proposer une action : acheter, vendre, ou ne rien faire.
 6. `Trident` vérifie ensuite que cette action n'est pas trop risquée.
 7. Si tout est correct, l'action est envoyée au système d'exécution, ou simplement simulée en `dry-run`.
@@ -46,7 +46,7 @@ On peut imaginer `Trident` comme une petite équipe :
 
 #### Pod A : le suiveur de tendance
 
-`Pod A` cherche les cryptos qui ont déjà commencé un mouvement clair.
+`Pod A` cherche surtout les cryptos qui ont déjà commencé un mouvement clair.
 
 En pratique :
 
@@ -68,17 +68,17 @@ En pratique :
 
 Autrement dit, `Pod B` travaille mieux quand le marché **tourne en rond** que lorsqu'il part très fort dans une direction.
 
-#### Pod C : le pod opportuniste
+#### Pod C : le pod Tradfi directionnel
 
-`Pod C` surveille surtout les réactions rapides entre plusieurs cryptos.
+`Pod C` surveille surtout un panier Tradfi builder-dex sur Hyperliquid.
 
 L'idée simple est la suivante :
 
-- une grosse crypto comme `BTC` ou `ETH` bouge fortement ;
-- une autre crypto peut réagir juste après ;
-- `Pod C` essaie de profiter de ce petit décalage.
+- un marché comme `XYZ:SP500`, `XYZ:GOLD` ou `XYZ:CL` entre dans une tendance propre ;
+- `Pod C` essaie de suivre ce mouvement avec les mêmes briques d'exécution/risk que `Pod A` ;
+- son univers est volontairement séparé de `Pod A`/`Pod B`, qui restent focalisés sur `crypto`.
 
-Donc `Pod C` ne cherche pas les situations ordinaires du marché. Il attend surtout des **moments rares, rapides et opportunistes**.
+Donc `Pod C` n'est plus un pod de lead-lag crypto opportuniste. C'est un pod **directionnel Tradfi HL**, cluster-aware (`index`, `gold`, `silver`, `oil`, `fx`, `equity`).
 
 ### Qui décide quel pod gère quelle crypto ?
 
@@ -86,11 +86,11 @@ C'est `Trident` qui décide.
 
 La règle importante est la suivante :
 
-- **une crypto ne doit être gérée que par un seul pod à la fois**.
+- **un symbole ne doit être géré que par un seul pod à la fois**.
 
 Pourquoi ?
 
-- pour éviter que deux pods prennent des décisions contradictoires sur la même crypto ;
+- pour éviter que deux pods prennent des décisions contradictoires sur le même marché ;
 - pour garder une répartition claire de l'argent et du risque.
 
 ### À quoi servent les "modes de marché" ?
@@ -111,7 +111,7 @@ Ensuite, il adapte la répartition :
 
 ### Les mots utiles à connaître
 
-- `crypto` ou `coin` : une monnaie comme `BTC`, `ETH`, `SOL` ;
+- `coin` ou `symbol` : un marché HL comme `BTC`, `ETH` ou `XYZ:SP500` ;
 - `acheter` : parier que le prix va monter ;
 - `vendre` ou `short` : parier que le prix va baisser ;
 - `tendance` : un mouvement assez clair dans une direction ;
@@ -147,16 +147,13 @@ Etat actuel:
   - client HTTP retriable dans `app/hyperliquid/info_client.py`,
   - rate limiter partage sur disque dans `app/hyperliquid/rate_limiter.py`,
 - runner live Pod A dans `app/live/pod_a_live_runner.py`,
+- runner live Pod B dans `app/live/pod_b_live_runner.py`,
 - runner live Pod C dans `app/live/pod_c_live_runner.py`,
 - snapshots live ecrits localement dans `data/live_snapshots/`,
 - Pod A relie a un pipeline `snapshot -> signal -> trade plan -> risk -> dry-run execution`,
+- Pod B relie au meme pipeline directionnel partage, avec une strategie breakout/vol-expansion crypto,
 - Pod C relie au meme pipeline d'execution/risk que Pod A via un executor directionnel partage,
-- replay de cohabitation Pod A / Pod B present dans `app/backtest/cohabitation_replay.py`,
 - convertisseur `gbot` capable de produire des snapshots enrichis a partir de `l2 + trades`,
-- moteur Pod B natif present dans `app/trident/pod_b/` (engine Avellaneda-Stoikov),
-- wrapper de process Pod B `start/stop/restart` present,
-- paper runner Pod B present dans `app/trident/pod_b/paper_runner.py`,
-- wrapper live Pod B present dans `app/trident/pod_b/paper_live_runner.py`,
 - research Pod C present dans `app/research/pod_c_leadlag.py` et `app/research/pod_c_research_suite.py`,
 - outillage Hydra research/shadow ajoute:
   - collecteur funding autonome dans `app/live/funding_collector.py`,
@@ -187,8 +184,8 @@ Versioning:
 
 Decision d'architecture actuelle:
 
-- Pod B V2 est natif a `trident`, base sur le modele Avellaneda-Stoikov (fair value EMA, inventory skew, vol-adaptive spread).
-- Passivbot reste une reference de benchmark et d'inspiration, pas une dependance runtime obligatoire.
+- Pod B est desormais un pod directionnel breakout/vol-expansion, pas un moteur maker.
+- l'architecture live/backtest/runtime des 3 pods est unifiee autour du meme contrat directionnel: previews, trade plans, risk gate, execution, journal, runtime status.
 - univers observe et univers trade sont separes:
   - `hyperliquid.observation_universe` = coins observes par le collector (crypto + tradfi)
   - le `supervisor` construit le pool tradable dynamiquement a partir des snapshots frais de cet univers observe
@@ -198,7 +195,7 @@ Decision d'architecture actuelle:
     - `managed_symbols` = symbols qu'il peut encore gerer et deboucler proprement, meme si le routeur les a remis a `none`
   - donc un `pod_x -> none` ne veut plus dire "abandon immediat du symbole":
     - Pod A / Pod C n'ouvrent plus de nouveau trade dessus, mais peuvent encore gerer la position deja ouverte
-    - Pod B passe en pratique en mode `unwind-only` sur ce symbole: plus de quote bilaterale, seulement de la reduction d'inventaire
+    - Pod B n'ouvre plus de nouveau trade dessus, mais garde la gestion de l'existant jusqu'a la sortie
   - il n'y a plus de liste `symbols` par pod a maintenir
   - si un symbol doit etre observe, il doit etre present dans `hyperliquid.observation_universe`
   - `pod_c.leader_symbols` reste utile pour exclure les leaders du pool follower de Pod C
@@ -226,9 +223,9 @@ Supervisor TRIDENT
 - alloue le capital
 - attribue chaque coin a un seul pod
    |
-   +--> Pod A = trend / swing
-   +--> Pod B = range / maker
-   +--> Pod C = event / opportunites rares
+   +--> Pod A = trend / swing crypto
+   +--> Pod B = breakout / vol-expansion crypto
+   +--> Pod C = tradfi / directional
    |
    v
 Risk checks + execution + journal + dashboard
@@ -237,16 +234,16 @@ Risk checks + execution + journal + dashboard
 Le point cle:
 
 - les pods peuvent tourner en meme temps
-- ils ne doivent pas gerer le meme coin en meme temps
+- ils ne doivent pas gerer le meme symbol en meme temps
 - c'est le `supervisor` qui arbitre et evite les conflits
 - chaque live runner (Pod A, Pod B, Pod C) utilise la config globale pour le routing
-  (le supervisor voit les 3 pods et alloue les coins en fonction du regime)
+  (le supervisor voit les 3 pods et alloue les symbols en fonction du regime)
 - quand un symbole sort du scope d'ouverture sans etre repris par un autre pod:
   - le pod garde un scope de gestion temporaire pour fermer proprement l'existant
   - il n'y a plus d'obligation de faire `pod_x -> pod_y` pour eviter un `routing_revoked` brutal
-- Pod C ne recoit des coins que si ses allocations de regime sont > 0%
-  (actuellement a 0% dans tous les regimes → inactif)
-- la config Pod B est lue depuis `config/trident.toml` (comme tous les pods), plus depuis `runtime/passivbot/live.json`
+- Pod C ne recoit des symbols que si ses allocations de regime sont > 0%
+  (dans la config actuelle, Pod C a des allocations globales et des budgets cluster actifs)
+- la config Pod B est entierement centralisee dans `config/trident.toml`, comme les autres pods
 
 Exemple d'ownership valide:
 
@@ -254,7 +251,7 @@ Exemple d'ownership valide:
 BTC -> Pod A
 ETH -> Pod A
 XRP -> Pod B
-SOL -> Pod C
+XYZ:SP500 -> Pod C
 ```
 
 Exemple invalide:
@@ -266,8 +263,11 @@ BTC -> Pod A et Pod B en meme temps
 Role de chaque pod:
 
 - `Pod A`: moteur directionnel principal, pour les phases de tendance crypto (filtre: cluster `crypto` uniquement)
-- `Pod B`: moteur de range / market making paper, pour les marches plus plats (filtre: cluster `crypto` uniquement)
+- `Pod B`: moteur breakout/vol-expansion crypto, reserve aux phases impulsives et expansions naissantes (filtre: cluster `crypto` uniquement)
 - `Pod C`: moteur directionnel Tradfi HL, scope actuel derive de `hyperliquid.observation_universe` et filtre par clusters `index`, `gold`, `silver`, `equity`, `oil`, `fx`; dans la config courante: `XYZ:CL`, `XYZ:BRENTOIL`, `XYZ:SP500`, `XYZ:XYZ100`, `XYZ:SILVER`, `XYZ:GOLD`, `XYZ:JPY`, `XYZ:TSLA`, `XYZ:NVDA`, `XYZ:CRCL`
+- les symbols builder-dex sont stockes en forme canonique `XYZ:SP500` / `XYZ:GOLD` / etc.
+- au runtime, le collector WS traduit automatiquement vers le format HL attendu (`xyz:SP500`, `xyz:GOLD`, ...)
+- les caps live et `allMids` sont aussi resolus par dex, donc `Pod C` recupere bien les `maxLeverage` / mids de ces marches et pas ceux du perp global
 - sur les 3 pods, il faut maintenant distinguer:
   - "a le droit d'ouvrir" = scope d'entree courant decide par le routeur et le capital allocator
   - "a encore le droit de gerer" = scope elargi pour sortir proprement d'une position deja ouverte
@@ -291,8 +291,8 @@ En pratique:
 
 - `Pod A` est le pod le plus mature
 - `Pod B` utilise le superviseur partage pour le routing et l'allocation (identique au backtest full-bot)
-- `Pod C` est desactive par defaut (allocations a 0% dans tous les regimes);
-  meme lance, il ne prend aucun trade tant que ses allocations restent a 0%
+- `Pod C` est maintenant un pod Tradfi builder-dex actif dans la config
+- il reste borne par ses budgets cluster (`index`, `gold`, `silver`, `oil`, `fx`, `equity`) et par ses caps de levier live par marche
 - si on veut un lancement minimal, on coupe explicitement les briques non voulues avec `--without-...`
 
 Reporting actuel:
@@ -300,7 +300,7 @@ Reporting actuel:
 - `state_payload` inclut maintenant `runtime_report`,
 - `/api/report` expose un resume multi-pods runtime,
 - `/health`, `/api/state`, `/api/metrics` et `/api/report` se recalent d'abord sur le dernier snapshot live frais pour eviter un regime stale,
-- quand `runtime/passivbot/live.status.json` est present et frais, il devient la source de verite de `pod_b_status`,
+- `logs/pod_b_live_status.json` est maintenant la source de verite runtime de `pod_b_status`,
 - le dashboard affiche un tableau `Runtime pod report`,
 - le dashboard affiche aussi l'etat des `Data collectors`,
 - l'onglet `System` expose maintenant `Pod C scope visibility` pour distinguer:
@@ -314,21 +314,15 @@ Reporting actuel:
   - ils n'ouvrent plus si le symbole n'est plus dans le scope d'entree
   - mais ils peuvent encore gerer une position deja ouverte tant que le symbole reste dans leur scope de gestion
 - `Pod B` a maintenant aussi cette separation:
-  - `opening_symbols` = quote / market making normal
-  - `managed_symbols` = peut encore porter le symbole et le deboucler
-  - quand un symbole sort du scope d'entree sans etre reassigne, Pod B passe en `unwind-only` au lieu de disparaitre brutalement du symbole
-- les tables de trades `Pod A` / `Pod C` ont ete refaites pour etre operatoires:
+  - `opening_symbols` = scope sur lequel le pod peut encore ouvrir un nouveau trade
+  - `managed_symbols` = scope elargi qui permet de gerer et fermer proprement une position deja ouverte
+  - quand un symbole sort du scope d'entree sans etre reassigne, Pod B garde l'existant mais n'ouvre plus
+- les tables de trades `Pod A` / `Pod B` / `Pod C` sont maintenant homogenes et operatoires:
   - trades ouverts: `prix courant`, `valeur courante USD`, `marge utilisee`, `prix TP`, `prix SL`, `unrealized PnL`, `trailing TP`
   - trades fermes: raisons d'ouverture et de fermeture traduites en libelles lisibles
 - les collectors funding ecrivent maintenant leurs runtime status:
   - `logs/funding_collector_status.json`
   - `logs/tradfi_funding_collector_status.json`
-- les runners Pod B ecrivent maintenant un report detaille:
-  - `fills_by_symbol`
-  - `fills_by_date`
-  - `fill_notional_by_symbol`
-  - `realized_pnl_by_date`
-  - `inventory_skew_by_symbol`
 - `app/reporting/export_daily.py` consolide maintenant:
   - realized / unrealized
   - max drawdown par pod
@@ -349,13 +343,12 @@ python3.12 -m app.backtest.archive_replay --data-dir /workspaces/trident/data/se
 # les candles HL seules ont ete invalidees pour TRIDENT, qui depend de snapshots minute `l2Book + trades`.
 uv run python -m app.live.collector --coins BTC,ETH --max-runtime-seconds 8
 uv run python -m app.live.pod_a_live_runner --coins BTC,ETH --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_a_live_journal.jsonl
+uv run python -m app.live.pod_b_live_runner --coins BTC,ETH --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_b_live_journal.jsonl
 uv run python -m app.live.pod_c_live_runner --coins XYZ:CL,XYZ:BRENTOIL,XYZ:SP500,XYZ:XYZ100,XYZ:SILVER,XYZ:GOLD,XYZ:JPY,XYZ:TSLA,XYZ:NVDA,XYZ:CRCL --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_c_live_journal.jsonl
 uv run python -m app.live.tradfi_funding_collector --poll-seconds 60 --output /workspaces/trident/data/funding_history/pod_c_tradfi.jsonl
+uv run python -m app.backtest.pod_b_runner --config config/trident.toml --input /workspaces/trident/server-data/live_snapshots --output /tmp/pod_b_report.json
 python3.12 -m app.backtest.pod_c_runner --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --output /tmp/pod_c_journal.jsonl
 python3.12 -m app.research.pod_c_research_suite --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --leader-symbols BTC,ETH --follower-symbols SOL,HYPE,SUI --output-json /tmp/pod_c_research.json --output-md /tmp/pod_c_research.md
-python3.12 -m app.trident.pod_b.paper_runner --config config/trident.toml --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --report-output /tmp/pod_b_report.json --journal-output /tmp/pod_b_fills.jsonl
-python3.12 -m app.trident.pod_b.paper_live_runner --config config/trident.toml --input /workspaces/trident/data/live_snapshots --poll-seconds 0.1 --max-idle-loops 5
-python3.12 -m app.backtest.cohabitation_replay --config config/trident.toml --input /tmp/trident_snapshots.jsonl --output /tmp/cohabitation_report.json
 python3.12 -m app.reporting.export_daily --pod-b-report /tmp/pod_b_report.json --reference-equity-usd 1000 --cash-balance-usd 1001 --output-json /tmp/trident_daily_summary.json --output-md /tmp/trident_daily_summary.md
 ./scripts/trident_healthcheck.sh
 ./scripts/fetch_trident_data.sh
@@ -403,21 +396,21 @@ Validation recente:
 - smoke live Pod C:
   - `records_processed = 1`
   - `signal_count = 0`
-- replay multi-jour Pod B sur `2026-04-01 -> 2026-04-05`:
-  - `records_processed = 5151`
-  - `fills_emitted = 199`
-  - `realized_pnl_usd = -16.5853`
-  - `max_drawdown_usd = 16.5989`
-- suite research Pod C sur `data/live_snapshots/2026-04-05.jsonl`:
-  - `candidate_count = 2`
-  - `go_count = 0`
-  - `recommendation = no-go`
+- replay fetched complet avec le Pod B directionnel actuel:
+  - `2026-04-05 -> 2026-04-12`
+  - total bot `+326.19 USD`
+  - `Pod A = +320.85 USD`
+  - `Pod B = +5.34 USD`
+  - `Pod C = 0 USD`
+- ancienne suite research Pod C sur `data/live_snapshots/2026-04-05.jsonl`:
+  - ce bloc correspond a l'ancien Pod C research/lead-lag
+  - il ne decrit pas le Pod C builder-dex actuel
 
-Replay full-bot 2026-04-05 -> 2026-04-10 (config actuelle):
+Replay full-bot 2026-04-05 -> 2026-04-10 (historique, avant le remplacement du Pod B et avant la migration builder-dex de Pod C):
 
 - Pod A: `+429.07 USD`, 130 trades, 62.3% win rate, max_leverage=10x
-- Pod B: `-0.61 USD`, 1349 fills (engine Avellaneda-Stoikov)
-- Pod C: `0 USD`, 0 trades (allocations a 0%, comme prevu)
+- Pod B historique: `-0.61 USD`, 1349 trades de l'ancien moteur maker
+- Pod C: `0 USD`, 0 trades (ancien scope/config, avant l'activation du panier builder-dex actuel)
 - total: `+428.46 USD`
 
 Limite connue:

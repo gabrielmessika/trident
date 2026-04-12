@@ -162,8 +162,8 @@ Pour démarrer tout sauf Pod B :
 
 Important :
 
-- Pod B utilise `config/trident.toml` (plus besoin de `runtime/passivbot/live.json`)
-- Pod C n'a de sens que si sa recherche a conclu à un `go`
+- Pod B est maintenant un pod directionnel breakout pilote par le superviseur et expose son runtime via `logs/pod_b_live_status.json`
+- Pod C utilise maintenant un panier Tradfi builder-dex actif dans la config; le démarrer sans lui reste utile seulement si on veut un run minimal ou si on désactive explicitement son scope
 - `./deploy.sh --start` lance maintenant aussi le collecteur funding global `data/funding_history/current.jsonl`
 - `Pod C` lance en plus son collecteur Tradfi dédié `data/funding_history/pod_c_tradfi.jsonl`
 - le collecteur funding global écrit aussi `logs/funding_collector_status.json`
@@ -434,10 +434,9 @@ Il rapatrie localement :
 - `logs/pod_a_live.jsonl`
 - `logs/pod_b_live.jsonl`
 - `logs/pod_c_live.jsonl`
-- `logs/pod_b_live_report.json`
 - `logs/pod_a_live_status.json`
+- `logs/pod_b_live_status.json`
 - `logs/pod_c_live_status.json`
-- `runtime/passivbot/live.status.json`
 - snapshots API courants
 - tails de logs Docker
 
@@ -473,8 +472,8 @@ La revue générée par défaut est écrite dans :
 
 - ne pas commiter de secrets
 - si le dashboard est expose publiquement, considerer qu'il revele l'etat runtime et le PnL
-- Pod B utilise désormais `config/trident.toml` et le superviseur partagé (plus de dépendance à `runtime/passivbot/live.json`)
-- Pod C ne doit pas être activé par réflexe si la recherche est `no-go`
+- Pod B est maintenant un pod directionnel breakout, avec runtime status dans `logs/pod_b_live_status.json`
+- Pod C ne doit pas être modifié par réflexe sans revérifier son univers builder-dex, ses caps live et son replay associé
 - le rate limiter partagé HL vit sur disque et doit rester persistant entre les runs
 
 ---

@@ -10,17 +10,34 @@
 | 3. Capital allocator + cash mode | 100% | Rien, etape fermee |
 | 4. Pod A minimal | 100% | Rien, etape fermee |
 | 4bis. Pod A complet / t-bot+ | 99% | Valider sur une plage dry-run live plus longue |
-| 5. Pod B range engine natif | 95% | Valider engine Avellaneda-Stoikov sur run long serveur |
+| 5. Pod B breakout directionnel | 100% | Continuer le tuning durable et valider sur une plage dry-run plus longue |
 | 5bis. Routing dynamique symbols / ownership | 100% | Rien, etape fermee |
 | 6. Reporting par pod | 100% | Rien, etape fermee |
 | 7. Research Pod pour Pod C | 100% | Rien, etape fermee |
 | 8. Pod C minimal | 100% | Rien, etape fermee |
 | 9. Hardening deployment | 100% | Rien, etape fermee |
-| 10. Passage live progressif | 45% | Dry-run serveur long avec profil 10x + AS engine |
+| 10. Passage live progressif | 45% | Dry-run serveur long avec Pod A + nouveau Pod B directionnel |
 | 11. Pistes futures Hydra revisitees | 35% | Continuer les runs offline funding/liq |
 | 12. Pod C v2 Tradfi Trend | 45% | Refondre l'allocation Tradfi par cluster, puis valider en replay |
 
 ## Journal condense
+
+### 2026-04-12
+
+- **Remplacement complet de Pod B**:
+  - l'ancien Pod B maker/range a ete retire des chemins runtime, replay et observabilite
+  - `Pod B` designe maintenant officiellement le moteur directionnel breakout/vol-expansion crypto
+  - runtime status: `logs/pod_b_live_status.json`
+  - live runner: `app/live/pod_b_live_runner.py`
+  - replay standalone: `app/backtest/pod_b_runner.py`
+  - UI Pod B alignee sur le contrat directionnel de Pod A / Pod C
+- **Resultat replay fetched retenu avec le nouveau Pod B**:
+  - fenetre `2026-04-05 -> 2026-04-12`
+  - total bot `+326.19 USD`
+  - `Pod A = +320.85 USD`
+  - `Pod B = +5.34 USD`
+  - `Pod C = 0 USD`
+  - `Pod B` reste plus selectif que `Pod A`, mais n'est plus structurellement destructeur de valeur
 
 ### 2026-04-11
 
@@ -41,12 +58,31 @@
 
 - **Correction de cap Pod C / Tradfi**:
   - le premier passage "regime par cluster" a bien ouvert le transport et l'observabilite, mais ne repond pas encore correctement au probleme metier
-  - l'agregat unique `tradfi_regime` est juge trop grossier: il ne sait pas representer `gold fort / index faible`
+  - l'agregat unique `tradfi_regime` est juge trop grossier: il ne sait pas representer `gold fort / index faible / oil fort` en meme temps
   - la cible retenue devient une allocation Tradfi par cluster, pas un simple override global de `pod_c`
   - `pod_c.target_pct` devra devenir la somme des budgets Tradfi des clusters actifs
   - `cash` devra etre recalcule comme residuel global apres toutes les allocations reelles
   - les prochains changements doivent aussi unifier le fallback des clusters absents entre allocator, router et supervisor
   - l'Etape 12 est revue a `45%`: le plumbing cluster-aware est utile, mais le modele d'allocation doit etre refait
+
+- **Migration Pod C vers builder-dex HL**:
+  - `Pod C` ne repose plus sur un panier spot/xStock type `SPY` / `GLD` / `QQQ`
+  - le scope runtime courant est maintenant le top builder-dex `xyz` par liquidite validee localement:
+    - `XYZ:CL`
+    - `XYZ:BRENTOIL`
+    - `XYZ:SP500`
+    - `XYZ:XYZ100`
+    - `XYZ:SILVER`
+    - `XYZ:GOLD`
+    - `XYZ:JPY`
+    - `XYZ:TSLA`
+    - `XYZ:NVDA`
+    - `XYZ:CRCL`
+  - les symbols sont conserves en forme canonique uppercase dans la config, puis resolves dex-aware au runtime:
+    - websocket: `XYZ:SP500` -> `xyz:SP500`
+    - REST `allMids`: appel par dex
+    - REST `metaAndAssetCtxs`: appel par dex
+  - les caps de levier live et le funding de `Pod C` sont donc recuperes sur les vrais builder-dex markets, pas sur le perp global
 
 - **Decision produit Pod C**: la trajectoire `Squeeze Breakout` est abandonnee au profit d'un pod directionnel Tradfi HL dans le slot `Pod C`.
   - le systeme reste a 3 pods: pas de `Pod D`
@@ -55,7 +91,7 @@
   - prerequis de validation: snapshots minute TRIDENT `l2Book + trades`, eventuellement enrichis `assetCtx`
   - les candles HL seules restent exclues de la validation, comme pour les autres pods directionnels
 - **Regime par cluster implemente** (25 fichiers, +508/-200 lignes):
-  - chaque cluster leader (BTC→crypto, SPY→index, GLD→gold, SLV→silver) produit un `RegimeSnapshot` independant
+  - chaque cluster leader (BTC→crypto, `XYZ:SP500`→index, `XYZ:GOLD`→gold, `XYZ:SILVER`→silver, `XYZ:CL`→oil, `XYZ:JPY`→fx) produit un `RegimeSnapshot` independant
   - `crypto_regime` (issu de BTC) continue de piloter Pod A et Pod B
   - `tradfi_regime` (agregation conservative des regimes non-crypto) pilote Pod C
   - agregation conservative: en cas de divergence entre clusters tradfi, le regime le plus defensif est retenu (dead_zone > panic_squeeze > range_auction > cash > trend_expansion)
@@ -66,15 +102,9 @@
   - `SnapshotRecord` transporte les `cluster_regime_snapshots` pour les backtests
   - tous les runners (backtest, live, research, observability) sont branches
   - 142/142 tests passent (4 pre-existants corriges au passage)
-- **Pod B paper_live_runner reecrit**: le runner live Pod B utilise desormais le
-  superviseur partage (identique au full-bot backtest) au lieu d'une config fixe
-  `runtime/passivbot/live.json`.
-  - routing: via le superviseur (rotation dynamique ~3 coins vs 10 coins fixes)
-  - allocation: capital plan du superviseur par regime (plus de target_usd fixe)
-  - historique: skip les fichiers existants, ne traite que les nouveaux snapshots
-    (plus de replay complet au demarrage)
-  - config: `--config config/trident.toml` remplace `--config-path runtime/passivbot/live.json`
-  - fichier: `app/trident/pod_b/paper_live_runner.py`
+- **Transition historique du runtime Pod B**:
+  - a cette date, le runtime Pod B quittait deja sa config dediee et passait sous le superviseur partage
+  - cette etape a ensuite abouti au remplacement complet du moteur maker par le Pod B directionnel actuel
 - **docker-compose.trident.yml**: `--config-path` → `--config` pour pod-b-live
 - **deploy.sh**: build avec les profiles Docker (Pod B/C etaient pas rebuild
   quand leurs profiles etaient actives)
@@ -86,7 +116,7 @@
   parallele de Pod A/B → conflits d'ownership potentiels et PnL negatif constant
   (-6 USD en 3 jours, 223 trades perdants).
   - fix: le runner utilise desormais la config telle quelle, comme Pod A.
-    Le superviseur voit les 3 pods, l'allocateur donne 0% a Pod C → 0 trades.
+    A cette date, le superviseur voyait les 3 pods mais la config active donnait encore 0% a Pod C.
   - fichier: `app/live/pod_c_live_runner.py` (suppression du `replace()` qui
     desactivait Pod A/B)
 - **Journals reinitialises au demarrage**: `JsonlJournal` accepte `truncate=True`
@@ -103,7 +133,7 @@
 - full bot replay sur 6 jours (5-10 avril) avec config actuelle:
   - Pod A: +429 USD, 130 trades, 62.3% win, drawdown 43 USD
   - Pod B: -0.61 USD, 1349 fills (Avellaneda-Stoikov engine)
-  - Pod C: 0 USD, 0 trades (allocations a 0%, comme prevu)
+  - Pod C: 0 USD, 0 trades (historique, avant la migration builder-dex et l'activation de son scope actuel)
   - total: +428.46 USD
 - **Versioning automatique**: version git (hash + date) affichee dans le dashboard
   et exposee dans `/health`. Module `app/version.py`, suffixe `-dirty` si non committe.
@@ -140,7 +170,7 @@
   - `Pod C` detruit de la valeur sur la fenetre validee
 - profil principal bascule sur:
   - `Pod A + Pod B`
-  - `Pod C off`
+  - `Pod C` coupe a cette date
 - validation replay de la config active:
   - [full_bot_backtest_20260407T214946Z.json](/workspaces/trident/data/replay_reports/full_bot/full_bot_backtest_20260407T214946Z.json)
   - total realise `+27.0668 USD`
@@ -221,10 +251,10 @@
 
 ### Profil actif 2026-04-10
 
-- decision retenue:
+- decision retenue a cette date:
   - `Pod A` principal, max_leverage=10x (au lieu de 5x)
   - `Pod B` complement (engine Avellaneda-Stoikov), max_allocation_pct=0.40
-  - `Pod C` desactive (allocations a 0% dans tous les regimes)
+  - `Pod C` desactive dans la config serveur de ce moment-la
 - preuve actuelle:
   - replay valide sur `2026-04-05 -> 2026-04-10` (6 jours)
   - Pod A: `+429.07 USD`, 130 trades, 62.3% win rate
@@ -234,10 +264,9 @@
   - le live runner Pod C ignorait les allocations et tradait en parallele de Pod A/B
   - desormais il respecte le meme routing que le backtest full-bot
 - consequence:
-  - le prochain deploy doit utiliser la config actuelle
-  - `Pod C` ne prendra aucun trade tant que ses allocations restent a 0%
-  - pour reactiver Pod C, lui donner du capital dans un regime (ex: `panic_squeeze.pod_c = 0.15`)
-    et s'assurer que la strategie est profitable en replay d'abord
+  - ce constat est historique et ne decrit plus la config actuelle
+  - la version actuelle utilise un scope builder-dex Pod C actif et dex-aware
+  - tout changement futur de Pod C doit etre valide en replay sur son univers builder-dex avant redeploy
 
 ### Hydra
 
@@ -250,7 +279,7 @@
 1. constituer un dataset Tradfi exploitable pour replay via snapshots minute `l2Book + trades`
 2. valider le regime par cluster en replay sur donnees Tradfi reelles
 3. implementer la logique directionnelle Pod C (setups, filtres, exits adaptes Tradfi)
-4. lancer un dry-run serveur long avec la config active `Pod A + Pod B, Pod C off`
+4. lancer un dry-run serveur long avec la config active incluant le scope builder-dex de Pod C
 5. auditer `Pod B` comme couche complementaire avec les outils de review existants
 6. continuer la validation de `Pod A` complet sur une plage plus longue
 7. lancer un sweep Hydra offline et sortir un memo `go / park / kill`

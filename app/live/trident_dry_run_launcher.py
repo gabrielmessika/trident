@@ -9,13 +9,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.live.pod_a_live_runner import PodALiveRunner
+from app.live.pod_b_live_runner import PodBLiveRunner
 from app.live.pod_c_live_runner import PodCLiveRunner
 from app.live.runtime_status import write_runtime_status
 from app.settings import AppConfig, load_config
-from app.trident.pod_b import PassivbotManager
-from app.trident.pod_b.paper_live_runner import PodBPaperLiveRunner
-from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName
 
 
 @dataclass(slots=True)
@@ -23,7 +20,6 @@ class TridentDryRunResult:
     pod_a: dict[str, object]
     pod_b: dict[str, object]
     pod_c: dict[str, object]
-    pod_b_config_path: str
     pod_b_status_path: str
     status_path: str
 
@@ -32,14 +28,14 @@ class TridentDryRunResult:
 
 
 class TridentDryRunLauncher:
-    """Starts Pod A, Pod B paper, and Pod C together for a fast dry-run."""
+    """Starts Pod A, Pod B, and Pod C together for a fast directional dry-run."""
 
     def __init__(
         self,
         config: AppConfig,
         *,
         pod_a_runner_factory: Callable[..., Any] = PodALiveRunner,
-        pod_b_runner_factory: Callable[..., Any] = PodBPaperLiveRunner,
+        pod_b_runner_factory: Callable[..., Any] = PodBLiveRunner,
         pod_c_runner_factory: Callable[..., Any] = PodCLiveRunner,
         force_enable_all_pods: bool = True,
     ) -> None:
@@ -68,8 +64,6 @@ class TridentDryRunLauncher:
         max_messages: int | None = None,
         journal_dir: str | Path = "logs/dry_run_journals",
         report_dir: str | Path = "logs/dry_run_reports",
-        pod_b_poll_seconds: float = 1.0,
-        pod_b_max_idle_loops: int | None = None,
     ) -> TridentDryRunResult:
         journal_dir = Path(journal_dir)
         report_dir = Path(report_dir)
@@ -97,28 +91,14 @@ class TridentDryRunLauncher:
             ),
         )
 
-        supervisor = TridentSupervisor(
-            config=self.config,
-            profile="trident-dry-run-3pods",
-            mode="dry-run",
-        )
-        manager = PassivbotManager(self.config)
-        pod_b_allocation = supervisor.capital_plan.pod_allocations[PodName.POD_B]
-        pod_b_owned_symbols = supervisor.registry.symbols_for(PodName.POD_B)
-        pod_b_status = manager.sync(
-            allocation=pod_b_allocation,
-            owned_symbols=pod_b_owned_symbols,
-        )
-
         self._write_launcher_status(
             status_path,
             process_state="starting",
-            pod_b_config_path=self.config.pod_b.passivbot_config_path,
-            pod_b_status_path=str(manager.status_path()),
+            pod_b_status_path="logs/pod_b_live_status.json",
         )
 
         pod_a_runner = self._pod_a_runner_factory(pod_a_config)
-        pod_b_runner = self._pod_b_runner_factory(self.config.pod_b.passivbot_config_path)
+        pod_b_runner = self._pod_b_runner_factory(self.config)
         pod_c_runner = self._pod_c_runner_factory(pod_c_config)
 
         pod_a_task = asyncio.create_task(
@@ -135,14 +115,12 @@ class TridentDryRunLauncher:
                 journal_path=journal_dir / "pod_c_live.jsonl",
             )
         )
-        pod_b_task = asyncio.to_thread(
-            pod_b_runner.run_live,
-            input_path=pod_a_snapshot_dir,
-            poll_seconds=pod_b_poll_seconds,
-            max_runtime_seconds=max_runtime_seconds,
-            journal_output=journal_dir / "pod_b_live.jsonl",
-            report_output=report_dir / "pod_b_live_report.json",
-            max_idle_loops=pod_b_max_idle_loops,
+        pod_b_task = asyncio.create_task(
+            pod_b_runner.run(
+                max_runtime_seconds=max_runtime_seconds,
+                max_messages=max_messages,
+                journal_path=journal_dir / "pod_b_live.jsonl",
+            )
         )
 
         pod_a_result, pod_b_result, pod_c_result = await asyncio.gather(
@@ -155,14 +133,12 @@ class TridentDryRunLauncher:
             pod_a=self._to_dict(pod_a_result),
             pod_b=self._to_dict(pod_b_result),
             pod_c=self._to_dict(pod_c_result),
-            pod_b_config_path=self.config.pod_b.passivbot_config_path,
-            pod_b_status_path=str(pod_b_status.status_path),
+            pod_b_status_path="logs/pod_b_live_status.json",
             status_path=str(status_path),
         )
         self._write_launcher_status(
             status_path,
             process_state="completed",
-            pod_b_config_path=result.pod_b_config_path,
             pod_b_status_path=result.pod_b_status_path,
             result=result.to_dict(),
         )
@@ -186,7 +162,6 @@ class TridentDryRunLauncher:
         path: str | Path,
         *,
         process_state: str,
-        pod_b_config_path: str,
         pod_b_status_path: str,
         result: dict[str, object] | None = None,
     ) -> None:
@@ -194,7 +169,6 @@ class TridentDryRunLauncher:
             "pod": "trident_dry_run",
             "process_state": process_state,
             "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "pod_b_config_path": pod_b_config_path,
             "pod_b_status_path": pod_b_status_path,
         }
         if result is not None:
@@ -209,8 +183,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-messages", type=int)
     parser.add_argument("--journal-dir", default="logs/dry_run_journals")
     parser.add_argument("--report-dir", default="logs/dry_run_reports")
-    parser.add_argument("--pod-b-poll-seconds", type=float, default=1.0)
-    parser.add_argument("--pod-b-max-idle-loops", type=int)
     parser.add_argument(
         "--respect-config-enabled",
         action="store_true",
@@ -230,11 +202,8 @@ async def _run_from_args() -> None:
         max_messages=args.max_messages,
         journal_dir=args.journal_dir,
         report_dir=args.report_dir,
-        pod_b_poll_seconds=args.pod_b_poll_seconds,
-        pod_b_max_idle_loops=args.pod_b_max_idle_loops,
     )
     print(f"status_path={result.status_path}")
-    print(f"pod_b_config_path={result.pod_b_config_path}")
     print(f"pod_b_status_path={result.pod_b_status_path}")
     print(f"pod_a_records_processed={result.pod_a.get('records_processed')}")
     print(f"pod_b_records_processed={result.pod_b.get('records_processed')}")

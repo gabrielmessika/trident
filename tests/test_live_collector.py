@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 from app.live.collector import HyperliquidLiveCollector
 from app.live.errors import HyperliquidRateLimitError
@@ -62,6 +64,47 @@ class LiveCollectorTests(unittest.TestCase):
             collector._backoff_delay(),
             collector.config.hyperliquid.max_reconnect_delay_seconds,
         )
+
+    def test_collector_writes_pod_b_sidecar_rows_on_intraminute_roll(self) -> None:
+        config = load_config("config/trident.toml")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config.hyperliquid.snapshot_output_dir = str(Path(tmpdir) / "snapshots")
+            config.hyperliquid.pod_b_feature_output_dir = str(Path(tmpdir) / "features")
+            collector = HyperliquidLiveCollector(config, coins=["BTC"])
+
+            collector._handle_payload(
+                {
+                    "channel": "l2Book",
+                    "data": {
+                        "coin": "BTC",
+                        "time": 1_000,
+                        "levels": [
+                            [{"px": "68000", "sz": "2.0", "n": 1}],
+                            [{"px": "68002", "sz": "3.0", "n": 1}],
+                        ],
+                    },
+                }
+            )
+            collector._handle_payload(
+                {
+                    "channel": "l2Book",
+                    "data": {
+                        "coin": "BTC",
+                        "time": 11_000,
+                        "levels": [
+                            [{"px": "68010", "sz": "4.0", "n": 1}],
+                            [{"px": "68013", "sz": "1.0", "n": 1}],
+                        ],
+                    },
+                }
+            )
+
+            feature_path = Path(config.hyperliquid.pod_b_feature_output_dir) / "1970-01-01.jsonl"
+            self.assertTrue(feature_path.exists())
+            lines = feature_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertIn("\"symbol\": \"BTC\"", lines[0])
+            self.assertEqual(collector.stats.pod_b_feature_rows_written, 1)
 
 
 if __name__ == "__main__":

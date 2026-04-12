@@ -163,6 +163,29 @@ class SymbolMarketSnapshot:
     bucket_volume: float = 0.0
     bucket_trade_count: int = 0
     bucket_range_bps: float = 0.0
+    best_bid: float = 0.0
+    best_ask: float = 0.0
+    best_bid_size: float = 0.0
+    best_ask_size: float = 0.0
+    bid_depth_10bps: float = 0.0
+    ask_depth_10bps: float = 0.0
+    microprice: float = 0.0
+    microprice_dislocation_bps: float = 0.0
+    buy_count: int = 0
+    sell_count: int = 0
+    buy_volume: float = 0.0
+    sell_volume: float = 0.0
+    vwap: float | None = None
+    bucket_notional_usd: float = 0.0
+    signed_trade_delta: float = 0.0
+    delta_spread_bps: float = 0.0
+    delta_book_imbalance: float = 0.0
+    delta_trade_flow_bias: float = 0.0
+    volume_ratio: float = 1.0
+    trade_count_ratio: float = 1.0
+    realized_vol_short_bps: float = 0.0
+    realized_vol_long_bps: float = 0.0
+    compression_score: float = 0.0
     open_interest: float | None = None
     mark_px: float | None = None
     oracle_px: float | None = None
@@ -259,5 +282,6 @@ class SupervisorState:
     runtime_symbol_pod_overrides: dict[str, str] = field(default_factory=dict)
     runtime_symbol_pod_overrides_updated_at: str | None = None
     pod_a_signal_preview: list[SignalPreview] = field(default_factory=list)
+    pod_b_signal_preview: list[SignalPreview] = field(default_factory=list)
     pod_c_signal_preview: list[SignalPreview] = field(default_factory=list)
     pod_b_status: dict[str, object] = field(default_factory=dict)
