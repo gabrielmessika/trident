@@ -13,7 +13,7 @@ from typing import Callable
 
 from app.observability.metrics import MetricsRegistry
 from app.version import VERSION
-from app.reporting.multi_pod import build_runtime_report
+from app.reporting.multi_pod import build_runtime_report, _is_supervisor_fallback_runtime
 from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
 from app.live.runtime_status import (
     load_runtime_status,
@@ -119,6 +119,13 @@ def _recent_activity_rows(snapshot: dict[str, object]) -> list[dict[str, object]
 
 def _status_badge(status: str, label: str) -> str:
     return f'<span class="badge badge-{escape(status)}">{escape(label)}</span>'
+
+
+def _display_process_state(value: object) -> str:
+    process_state = str(value or "-")
+    if process_state == "supervisor_fallback":
+        return "Supervisor fallback"
+    return process_state
 
 
 def _table_header(label: str, tooltip: str) -> str:
@@ -602,13 +609,18 @@ def _merge_runtime_snapshot(
                 )
             elif pod_name == "pod_b" and snapshot["pods"]["pod_b"]["enabled"]:
                 pod_b_status = snapshot.get("pod_b_status", {})
-                merged["healthy"] = runtime_status_is_fresh(
-                    pod_b_status if isinstance(pod_b_status, dict) else None
+                merged["healthy"] = (
+                    runtime_status_is_fresh(
+                        pod_b_status if isinstance(pod_b_status, dict) else None
+                    )
+                    and not _is_supervisor_fallback_runtime(
+                        pod_b_status if isinstance(pod_b_status, dict) else None
+                    )
                 )
                 merged["message"] = (
                     "runtime status fresh"
                     if merged["healthy"]
-                    else "runtime status missing or stale"
+                    else "runtime status missing, stale, or replaced by supervisor fallback"
                 )
             elif pod_name == "pod_c" and snapshot["pods"]["pod_c"]["enabled"]:
                 merged["healthy"] = runtime_status_is_fresh(pod_c_runtime)
@@ -935,6 +947,10 @@ def _control_center_html(
                 pod_health.get("message")
                 or "Pod à vérifier."
             )
+        elif str(pod_report.get("process_state", "")) == "supervisor_fallback":
+            tone = "warn"
+            badge = "Check"
+            comment = "Pas de runtime Pod B frais; fallback superviseur affiché."
         else:
             tone = "bad"
             badge = "KO"
@@ -961,7 +977,7 @@ def _control_center_html(
             "target_pct": pod_report.get("target_pct", pod_cfg.get("target_pct", 0.0)),
             "target_usd": pod_report.get("target_usd", pod_cfg.get("target_usd", 0.0)),
             "preview_count": int(pod_report.get("preview_count", 0)),
-            "process_state": str(pod_report.get("process_state") or "-"),
+            "process_state": _display_process_state(pod_report.get("process_state")),
             "position_count": int(pod_report.get("position_count", 0)),
             "open_order_count": int(pod_report.get("open_order_count", 0)),
             "total_fill_count": int(pod_report.get("total_fill_count", 0)),

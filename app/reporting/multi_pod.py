@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
-from app.observability.metrics import MetricsRegistry
 from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName
+
+if TYPE_CHECKING:
+    from app.observability.metrics import MetricsRegistry
 
 
 @dataclass(slots=True)
@@ -67,6 +70,21 @@ class MultiPodRuntimeReport:
         payload["pods"] = [asdict(pod) for pod in self.pods]
         payload["services"] = [asdict(service) for service in self.services]
         return payload
+
+
+def _is_supervisor_fallback_runtime(payload: dict[str, object] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("last_sync_reason", "")) == "supervisor_planned_state"
+
+
+def _display_process_state(payload: dict[str, object] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    if _is_supervisor_fallback_runtime(payload):
+        return "supervisor_fallback"
+    value = payload.get("process_state")
+    return str(value) if value is not None else None
 
 
 def build_runtime_report(
@@ -194,12 +212,11 @@ def build_runtime_report(
             else:
                 report.preview_count = len(supervisor.state.pod_b_signal_preview)
             if pod.enabled:
-                report.healthy = runtime_status_is_fresh(runtime_payload)
-            report.process_state = (
-                str(runtime_payload.get("process_state", "running"))
-                if runtime_payload is not None
-                else None
-            )
+                report.healthy = (
+                    runtime_status_is_fresh(runtime_payload)
+                    and not _is_supervisor_fallback_runtime(runtime_payload)
+                )
+            report.process_state = _display_process_state(runtime_payload)
             report.position_count, report.total_unrealized_pnl_usd = _directional_open_position_metrics(
                 runtime_payload
             )

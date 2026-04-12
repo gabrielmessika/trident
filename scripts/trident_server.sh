@@ -117,10 +117,6 @@ default_services() {
 
 require_runtime_files() {
     mkdir -p logs data runtime
-    if [ -n "$ENABLE_POD_B" ] && [ ! -f runtime/passivbot/live.json ]; then
-        error "runtime/passivbot/live.json manquant pour Pod B"
-        exit 1
-    fi
 }
 
 case "$ACTION" in

@@ -213,7 +213,10 @@ class SymbolRouter:
                 symbol=decision.symbol,
                 owner=None,
                 mode="allocation_capacity",
-                reason=f"capacity_trim:{trimmed_pod.value}",
+                reason=self._deassignment_reason_after_capacity_trim(
+                    decision,
+                    trimmed_pod=trimmed_pod,
+                ),
                 previous_owner=decision.previous_owner,
                 candidate_pods=list(decision.candidate_pods),
                 pod_scores=dict(decision.pod_scores),
@@ -240,7 +243,10 @@ class SymbolRouter:
                 symbol=decision.symbol,
                 owner=None,
                 mode="allocation_capacity",
-                reason=f"capacity_trim:{trimmed_pod.value}",
+                reason=self._deassignment_reason_after_capacity_trim(
+                    decision,
+                    trimmed_pod=trimmed_pod,
+                ),
                 previous_owner=decision.previous_owner,
                 candidate_pods=list(decision.candidate_pods),
                 pod_scores=dict(decision.pod_scores),
@@ -272,6 +278,33 @@ class SymbolRouter:
             override_active=decision.override_active,
             override_owner=decision.override_owner,
         )
+
+    def _deassignment_reason_after_capacity_trim(
+        self,
+        decision: SymbolRoutingDecision,
+        *,
+        trimmed_pod: PodName,
+    ) -> str:
+        ranked_candidates = sorted(
+            decision.candidate_pods,
+            key=lambda pod: (
+                decision.pod_scores.get(pod, 0.0),
+                -self._priority_rank(pod),
+            ),
+            reverse=True,
+        )
+        best_owner = ranked_candidates[0] if ranked_candidates else None
+        best_score = decision.pod_scores.get(best_owner, 0.0) if best_owner is not None else 0.0
+        has_assignable_candidate = any(
+            decision.pod_scores.get(pod, 0.0) >= self.min_assign_score
+            for pod in decision.candidate_pods
+        )
+        if not has_assignable_candidate and best_owner is not None:
+            return (
+                "below_assign_threshold_all_candidates:"
+                f"best={best_owner.value} ({best_score:.2f})"
+            )
+        return f"capacity_trim:{trimmed_pod.value}"
 
     def _pod_has_capacity(
         self,

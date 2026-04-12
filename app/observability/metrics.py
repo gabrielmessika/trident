@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
 from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
+from app.reporting.multi_pod import _is_supervisor_fallback_runtime
 from app.trident.supervisor import TridentSupervisor
 
 
@@ -28,7 +29,10 @@ class MetricsRegistry:
 
         runtime_pod_a_healthy = runtime_status_is_fresh(pod_a_runtime)
         runtime_pod_c_healthy = runtime_status_is_fresh(pod_c_runtime)
-        runtime_pod_b_healthy = runtime_status_is_fresh(pod_b_status)
+        runtime_pod_b_healthy = (
+            runtime_status_is_fresh(pod_b_status)
+            and not _is_supervisor_fallback_runtime(pod_b_status)
+        )
         healthy_pod_count = 0
         for health in pod_health:
             if health.pod.value == "pod_a" and supervisor.pods[health.pod].enabled:

@@ -83,17 +83,11 @@ services:
     command:
       - python
       - -m
-      - app.trident.pod_b.paper_live_runner
+      - app.live.pod_b_live_runner
       - --config
       - config/trident.toml
-      - --input
-      - data/live_snapshots
       - --journal-output
       - logs/pod_b_live.jsonl
-      - --report-output
-      - logs/pod_b_live_report.json
-      - --poll-seconds
-      - "1.0"
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs

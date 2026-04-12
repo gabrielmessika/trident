@@ -175,7 +175,6 @@ targets = [
     "pod_a_live.jsonl",
     "pod_b_live.jsonl",
     "pod_c_live.jsonl",
-    "pod_b_live_report.json",
 ]
 lines = []
 for name in targets:
@@ -187,7 +186,7 @@ for name in targets:
 outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 PY
 
-    if [ -f "${runtime_dir}/pod_b_live_config.json" ]; then
+    if [ -f "${runtime_dir}/pod_b_live_status.json" ]; then
         printf 'present\n' > "${RAW_DIR}/pod_b_runtime_present.txt"
     else
         printf 'missing\n' > "${RAW_DIR}/pod_b_runtime_present.txt"
@@ -281,8 +280,8 @@ else
     capture_remote "metrics.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/metrics"
     capture_remote "report.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/report"
     capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && find data/live_snapshots -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
-    capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl logs/pod_b_live_report.json; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
-    capture_remote "pod_b_runtime_present.txt" "cd '${REMOTE_DIR}' && if [ -f runtime/passivbot/live.json ]; then echo present; else echo missing; fi"
+    capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
+    capture_remote "pod_b_runtime_present.txt" "cd '${REMOTE_DIR}' && if [ -f logs/pod_b_live_status.json ]; then echo present; else echo missing; fi"
     capture_remote "api_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} trident-api 2>&1"
     capture_remote "pod_a_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-a-live 2>&1"
     capture_remote "pod_b_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-b-live 2>&1"
