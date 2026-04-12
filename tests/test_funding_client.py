@@ -2,11 +2,27 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.hyperliquid.funding_client import HyperliquidFundingClient, extract_current_funding
 from app.live.funding_collector import FundingHistoryCollector
 from app.live.runtime_status import load_runtime_status
 from app.settings import load_config
+
+
+class _FakeResponse:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+        self.status = 200
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 class FundingClientTests(unittest.TestCase):
@@ -104,6 +120,36 @@ class FundingClientTests(unittest.TestCase):
             self.assertEqual(payload["process_state"], "completed")
             self.assertEqual(payload["symbol_count"], 1)
             self.assertEqual(payload["records_written"], 1)
+
+    def test_fetch_current_funding_merges_builder_dex_symbols(self) -> None:
+        config = load_config("config/trident.toml").hyperliquid
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config.rate_limit_state_path = str(Path(tmpdir) / "rate_limits.json")
+            client = HyperliquidFundingClient(config, sleep_fn=lambda _: None)
+
+            def fake_urlopen(req, *args, **kwargs):
+                body = json.loads(req.data.decode("utf-8"))
+                if body == {"type": "metaAndAssetCtxs"}:
+                    return _FakeResponse(
+                        [
+                            {"universe": [{"name": "ETH", "maxLeverage": 25}]},
+                            [{"funding": "-0.0001", "openInterest": "12", "markPx": "3100"}],
+                        ]
+                    )
+                if body == {"type": "metaAndAssetCtxs", "dex": "xyz"}:
+                    return _FakeResponse(
+                        [
+                            {"universe": [{"name": "xyz:SP500", "maxLeverage": 50}]},
+                            [{"funding": "0.0002", "openInterest": "7", "markPx": "6700"}],
+                        ]
+                    )
+                raise AssertionError(f"unexpected payload: {body}")
+
+            with patch("app.hyperliquid.info_client.request.urlopen", side_effect=fake_urlopen):
+                snapshots = client.fetch_current_funding(symbols=["ETH", "XYZ:SP500"])
+
+            self.assertEqual([item.symbol for item in snapshots], ["ETH", "XYZ:SP500"])
+            self.assertAlmostEqual(snapshots[1].funding_rate, 0.0002)
 
 
 if __name__ == "__main__":

@@ -267,7 +267,7 @@ Role de chaque pod:
 
 - `Pod A`: moteur directionnel principal, pour les phases de tendance crypto (filtre: cluster `crypto` uniquement)
 - `Pod B`: moteur de range / market making paper, pour les marches plus plats (filtre: cluster `crypto` uniquement)
-- `Pod C`: moteur directionnel Tradfi HL, scope actuel `SPX`, `PAXG`, `XYZ100`, `WTIOIL`, `GOLD`, `SILVER` (filtre: clusters `index`, `gold`, `silver`, `oil`)
+- `Pod C`: moteur directionnel Tradfi HL, scope actuel derive de `hyperliquid.observation_universe` et filtre par clusters `index`, `gold`, `silver`, `equity`, `oil`, `fx`; dans la config courante: `XYZ:CL`, `XYZ:BRENTOIL`, `XYZ:SP500`, `XYZ:XYZ100`, `XYZ:SILVER`, `XYZ:GOLD`, `XYZ:JPY`, `XYZ:TSLA`, `XYZ:NVDA`, `XYZ:CRCL`
 - sur les 3 pods, il faut maintenant distinguer:
   - "a le droit d'ouvrir" = scope d'entree courant decide par le routeur et le capital allocator
   - "a encore le droit de gerer" = scope elargi pour sortir proprement d'une position deja ouverte
@@ -349,7 +349,7 @@ python3.12 -m app.backtest.archive_replay --data-dir /workspaces/trident/data/se
 # les candles HL seules ont ete invalidees pour TRIDENT, qui depend de snapshots minute `l2Book + trades`.
 uv run python -m app.live.collector --coins BTC,ETH --max-runtime-seconds 8
 uv run python -m app.live.pod_a_live_runner --coins BTC,ETH --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_a_live_journal.jsonl
-uv run python -m app.live.pod_c_live_runner --coins SPX,PAXG,XYZ100,WTIOIL,GOLD,SILVER --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_c_live_journal.jsonl
+uv run python -m app.live.pod_c_live_runner --coins XYZ:CL,XYZ:BRENTOIL,XYZ:SP500,XYZ:XYZ100,XYZ:SILVER,XYZ:GOLD,XYZ:JPY,XYZ:TSLA,XYZ:NVDA,XYZ:CRCL --max-runtime-seconds 8 --journal-output /workspaces/trident/data/live_snapshots/pod_c_live_journal.jsonl
 uv run python -m app.live.tradfi_funding_collector --poll-seconds 60 --output /workspaces/trident/data/funding_history/pod_c_tradfi.jsonl
 python3.12 -m app.backtest.pod_c_runner --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --output /tmp/pod_c_journal.jsonl
 python3.12 -m app.research.pod_c_research_suite --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --leader-symbols BTC,ETH --follower-symbols SOL,HYPE,SUI --output-json /tmp/pod_c_research.json --output-md /tmp/pod_c_research.md

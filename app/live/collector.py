@@ -15,6 +15,7 @@ from app.live.errors import (
 from app.live.snapshot_builder import LiveSnapshotBuilder
 from app.live.snapshot_writer import LiveSnapshotWriter
 from app.settings import AppConfig, load_config
+from app.hyperliquid.symbols import normalize_hl_symbol, ws_subscription_symbol
 
 
 @dataclass(slots=True)
@@ -53,9 +54,10 @@ class HyperliquidLiveCollector:
         self._name_to_ws: dict[str, str] = {}
         self._ws_to_name: dict[str, str] = {}
         for coin in self.coins:
-            ws_coin = spot_ids.get(coin, coin)
+            ws_coin = spot_ids.get(coin, ws_subscription_symbol(coin))
             self._name_to_ws[coin] = ws_coin
             self._ws_to_name[ws_coin] = coin
+            self._ws_to_name[ws_coin.upper()] = coin
         ws_coins = [self._name_to_ws[coin] for coin in self.coins]
         max_per_connection = max(1, int(config.hyperliquid.max_coins_per_connection))
         self.coin_shards = [
@@ -368,7 +370,7 @@ class HyperliquidLiveCollector:
         normalized: list[str] = []
         seen: set[str] = set()
         for coin in coins:
-            symbol = coin.strip().upper()
+            symbol = normalize_hl_symbol(coin)
             if not symbol or symbol in seen:
                 continue
             normalized.append(symbol)

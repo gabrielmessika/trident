@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable
 
 from app.hyperliquid.info_client import HyperliquidInfoClient
+from app.hyperliquid.symbols import group_hl_symbols_by_dex, normalize_hl_symbol
 from app.settings import HyperliquidConfig
 
 
@@ -44,12 +45,12 @@ def extract_current_funding(
     if not isinstance(universe, list):
         return []
 
-    requested = None if symbols is None else {str(symbol).upper() for symbol in symbols}
+    requested = None if symbols is None else {normalize_hl_symbol(str(symbol)) for symbol in symbols}
     parsed: list[FundingMarketSnapshot] = []
     for asset, context in zip(universe, asset_contexts):
         if not isinstance(asset, dict) or not isinstance(context, dict):
             continue
-        symbol = str(asset.get("name", "")).upper()
+        symbol = normalize_hl_symbol(str(asset.get("name", "")))
         if not symbol:
             continue
         if requested is not None and symbol not in requested:
@@ -88,9 +89,25 @@ class HyperliquidFundingClient:
         symbols: list[str] | None = None,
         include_delisted: bool = False,
     ) -> list[FundingMarketSnapshot]:
-        payload = self.info_client.post_info({"type": "metaAndAssetCtxs"})
-        return extract_current_funding(
-            payload,
-            symbols=symbols,
-            include_delisted=include_delisted,
-        )
+        grouped_symbols = group_hl_symbols_by_dex(symbols)
+        if not grouped_symbols:
+            payload = self.info_client.post_info({"type": "metaAndAssetCtxs"})
+            return extract_current_funding(
+                payload,
+                symbols=symbols,
+                include_delisted=include_delisted,
+            )
+        snapshots: list[FundingMarketSnapshot] = []
+        for dex, requested_symbols in grouped_symbols.items():
+            payload_body: dict[str, object] = {"type": "metaAndAssetCtxs"}
+            if dex is not None:
+                payload_body["dex"] = dex
+            payload = self.info_client.post_info(payload_body)
+            snapshots.extend(
+                extract_current_funding(
+                    payload,
+                    symbols=requested_symbols,
+                    include_delisted=include_delisted,
+                )
+            )
+        return snapshots

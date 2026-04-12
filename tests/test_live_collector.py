@@ -46,6 +46,15 @@ class LiveCollectorTests(unittest.TestCase):
 
         self.assertEqual(collector.coins, [])
 
+    def test_collector_uses_lowercase_dex_prefix_for_builder_dex_ws_symbols(self) -> None:
+        collector = HyperliquidLiveCollector(
+            load_config("config/trident.toml"),
+            coins=["XYZ:SP500", "XYZ:GOLD"],
+        )
+
+        self.assertEqual(collector.coins, ["XYZ:SP500", "XYZ:GOLD"])
+        self.assertEqual(collector.coin_shards, [["xyz:SP500", "xyz:GOLD"]])
+
     def test_backoff_is_capped(self) -> None:
         collector = HyperliquidLiveCollector(load_config("config/trident.toml"), coins=["BTC"])
         collector.stats.consecutive_failures = 8

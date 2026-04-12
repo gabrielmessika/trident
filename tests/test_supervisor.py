@@ -638,6 +638,16 @@ class SupervisorTests(unittest.TestCase):
     def test_supervisor_routes_symbols_dynamically_by_market_context(self) -> None:
         self.config.pod_b.enabled = True
         self.config.pod_c.enabled = True
+        self.config.hyperliquid.observation_universe = [
+            "BTC",
+            "ETH",
+            "SOL",
+            "HYPE",
+            "SPY",
+            "DOGE",
+            "XRP",
+            "SUI",
+        ]
         self.config.trident.allocations.trend_expansion.pod_a = 0.75
         self.config.trident.allocations.trend_expansion.pod_b = 0.15
         self.config.trident.allocations.trend_expansion.pod_c = 0.10
@@ -909,6 +919,7 @@ class SupervisorTests(unittest.TestCase):
 
     def test_supervisor_filters_low_quality_live_symbols_out_of_tradable_pool(self) -> None:
         self.config.pod_b.enabled = True
+        self.config.hyperliquid.observation_universe = ["DOGE", "XRP", "ADA", "PAXG"]
         supervisor = TridentSupervisor(
             config=self.config,
             profile="trident",
@@ -1323,6 +1334,8 @@ class SupervisorTests(unittest.TestCase):
         self.config.pod_a.enabled = False
         self.config.pod_b.enabled = False
         self.config.pod_c.enabled = True
+        self.config.hyperliquid.observation_universe = ["GLD", "SPY"]
+        self.config.pod_c.allowed_market_clusters = ["gold", "index"]
         supervisor = TridentSupervisor(
             config=self.config,
             profile="trident",

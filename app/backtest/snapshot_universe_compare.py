@@ -191,7 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--universes",
         required=True,
-        help="Semicolon-separated scenarios like majors=BTC,ETH,SOL;mix=BTC,ETH,SOL,SPX,PAXG",
+        help="Semicolon-separated scenarios like majors=BTC,ETH,SOL;mix=BTC,ETH,SOL,XYZ:SP500,XYZ:GOLD",
     )
     parser.add_argument("--report-output")
     return parser

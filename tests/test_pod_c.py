@@ -102,8 +102,15 @@ class _FakeInfoClient:
     def __init__(self, mids: dict[str, float]) -> None:
         self._mids = mids
 
-    def fetch_all_mids(self) -> dict[str, float]:
-        return dict(self._mids)
+    def fetch_all_mids(self, *, symbols: list[str] | None = None) -> dict[str, float]:
+        if not symbols:
+            return dict(self._mids)
+        requested = {str(symbol).strip().upper() for symbol in symbols}
+        return {
+            symbol: price
+            for symbol, price in self._mids.items()
+            if str(symbol).strip().upper() in requested
+        }
 
 
 class PodCTests(unittest.TestCase):
@@ -402,18 +409,26 @@ class PodCTests(unittest.TestCase):
     def test_pod_c_live_runner_defaults_to_observation_universe_filtered_by_cluster(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.enabled = True
-        config.hyperliquid.observation_universe = ["BTC", "ETH", "PAXG", "SPY", "GLD", "SLV", "QQQ"]
-        config.pod_c.allowed_market_clusters = ["gold", "index"]
+        config.hyperliquid.observation_universe = [
+            "BTC",
+            "ETH",
+            "XYZ:GOLD",
+            "XYZ:SP500",
+            "XYZ:XYZ100",
+            "XYZ:TSLA",
+            "XYZ:JPY",
+        ]
+        config.pod_c.allowed_market_clusters = ["gold", "index", "fx"]
 
         runner = PodCLiveRunner(config)
 
         self.assertEqual(
             runner.coins,
-            ["PAXG", "SPY", "GLD", "QQQ"],
+            ["XYZ:GOLD", "XYZ:SP500", "XYZ:XYZ100", "XYZ:JPY"],
         )
         self.assertEqual(
             runner.config.hyperliquid.observation_universe,
-            ["PAXG", "SPY", "GLD", "QQQ"],
+            ["XYZ:GOLD", "XYZ:SP500", "XYZ:XYZ100", "XYZ:JPY"],
         )
 
     def test_pod_c_maintenance_refresh_updates_open_position_market_data_without_new_records(self) -> None:

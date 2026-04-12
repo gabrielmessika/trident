@@ -478,7 +478,7 @@ class PodCLiveRunner:
         if refresh_age < self.MARKET_DATA_FALLBACK_IDLE_SECONDS:
             return False
         try:
-            all_mids = self._info_client.fetch_all_mids()
+            all_mids = self._info_client.fetch_all_mids(symbols=open_symbols)
         except Exception:
             logger.warning("REST allMids maintenance fallback failed for symbols: %s", open_symbols)
             self._last_market_data_refresh_monotonic = current

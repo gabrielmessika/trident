@@ -16,7 +16,7 @@ from app.settings import load_config
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict[str, object], status: int = 200) -> None:
+    def __init__(self, payload: object, status: int = 200) -> None:
         self.payload = payload
         self.status = status
 
@@ -66,6 +66,46 @@ class HyperliquidHttpTests(unittest.TestCase):
         self.assertEqual(runtime.pod_c.max_leverage_by_symbol["ETH"], 17.0)
         self.assertEqual(runtime.pod_a.max_leverage_by_symbol["SPY"], 1.0)
         self.assertEqual(runtime.pod_c.max_leverage_by_symbol["SPY"], 1.0)
+
+    def test_fetch_all_mids_merges_default_and_builder_dex_symbols(self) -> None:
+        config = load_config("config/trident.toml").hyperliquid
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config.rate_limit_state_path = str(Path(tmpdir) / "rate_limits.json")
+            client = HyperliquidInfoClient(config, sleep_fn=lambda _: None)
+
+            def fake_urlopen(req, *args, **kwargs):
+                body = json.loads(req.data.decode("utf-8"))
+                if body == {"type": "allMids"}:
+                    return _FakeResponse({"ETH": "3100.0", "BTC": "60123.5"})
+                if body == {"type": "allMids", "dex": "xyz"}:
+                    return _FakeResponse({"xyz:SP500": "6700.0", "xyz:GOLD": "4700.0"})
+                raise AssertionError(f"unexpected payload: {body}")
+
+            with patch("app.hyperliquid.info_client.request.urlopen", side_effect=fake_urlopen):
+                result = client.fetch_all_mids(symbols=["ETH", "XYZ:SP500"])
+
+            self.assertEqual(result, {"ETH": 3100.0, "XYZ:SP500": 6700.0})
+
+    def test_fetch_max_leverage_by_symbol_merges_builder_dex_caps(self) -> None:
+        config = load_config("config/trident.toml").hyperliquid
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config.rate_limit_state_path = str(Path(tmpdir) / "rate_limits.json")
+            client = HyperliquidInfoClient(config, sleep_fn=lambda _: None)
+
+            def fake_urlopen(req, *args, **kwargs):
+                body = json.loads(req.data.decode("utf-8"))
+                if body == {"type": "metaAndAssetCtxs"}:
+                    return _FakeResponse([{"universe": [{"name": "ETH", "maxLeverage": 25}]}, []])
+                if body == {"type": "metaAndAssetCtxs", "dex": "xyz"}:
+                    return _FakeResponse(
+                        [{"universe": [{"name": "xyz:SP500", "maxLeverage": 50}]}, []]
+                    )
+                raise AssertionError(f"unexpected payload: {body}")
+
+            with patch("app.hyperliquid.info_client.request.urlopen", side_effect=fake_urlopen):
+                result = client.fetch_max_leverage_by_symbol(symbols=["ETH", "XYZ:SP500"])
+
+            self.assertEqual(result, {"ETH": 25.0, "XYZ:SP500": 50.0})
 
     def test_retries_rate_limit_then_succeeds(self) -> None:
         config = load_config("config/trident.toml").hyperliquid

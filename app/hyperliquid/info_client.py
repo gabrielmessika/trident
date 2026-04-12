@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib import error, request
 
+from app.hyperliquid.symbols import group_hl_symbols_by_dex, normalize_hl_symbol
 from app.live.errors import HyperliquidAPIError, HyperliquidRateLimitError, is_rate_limit_message
 from app.hyperliquid.rate_limiter import SharedRateLimiter, jitter_seconds
 from app.settings import AppConfig, HyperliquidConfig, override_app_config
@@ -108,17 +109,48 @@ class HyperliquidInfoClient:
 
         raise HyperliquidAPIError("Exhausted Hyperliquid info retries")
 
-    def fetch_all_mids(self) -> dict[str, float]:
-        """Fetch current mid prices for all symbols via the REST ``allMids`` endpoint."""
-        payload = self.post_info({"type": "allMids"})
+    def fetch_all_mids(
+        self,
+        *,
+        symbols: list[str] | None = None,
+    ) -> dict[str, float]:
+        """Fetch current mid prices for the requested symbols via ``allMids``."""
+        grouped_symbols = group_hl_symbols_by_dex(symbols)
+        if not grouped_symbols:
+            payload = self.post_info({"type": "allMids"})
+            return self._parse_all_mids_payload(payload)
+        result: dict[str, float] = {}
+        for dex, requested_symbols in grouped_symbols.items():
+            payload_body: dict[str, object] = {"type": "allMids"}
+            if dex is not None:
+                payload_body["dex"] = dex
+            payload = self.post_info(payload_body)
+            result.update(
+                self._parse_all_mids_payload(
+                    payload,
+                    symbols=requested_symbols,
+                )
+            )
+        return result
+
+    def _parse_all_mids_payload(
+        self,
+        payload: object,
+        *,
+        symbols: list[str] | None = None,
+    ) -> dict[str, float]:
         if not isinstance(payload, dict):
             return {}
+        requested = None if symbols is None else {normalize_hl_symbol(symbol) for symbol in symbols}
         result: dict[str, float] = {}
         for symbol, price_str in payload.items():
+            normalized = normalize_hl_symbol(str(symbol))
+            if requested is not None and normalized not in requested:
+                continue
             try:
                 price = float(price_str)
                 if price > 0:
-                    result[str(symbol).upper()] = price
+                    result[normalized] = price
             except (TypeError, ValueError):
                 continue
         return result
@@ -129,12 +161,28 @@ class HyperliquidInfoClient:
         symbols: list[str] | None = None,
         include_delisted: bool = False,
     ) -> dict[str, float]:
-        payload = self.post_info({"type": "metaAndAssetCtxs"})
-        return extract_max_leverage_by_symbol(
-            payload,
-            symbols=symbols,
-            include_delisted=include_delisted,
-        )
+        grouped_symbols = group_hl_symbols_by_dex(symbols)
+        if not grouped_symbols:
+            payload = self.post_info({"type": "metaAndAssetCtxs"})
+            return extract_max_leverage_by_symbol(
+                payload,
+                symbols=symbols,
+                include_delisted=include_delisted,
+            )
+        result: dict[str, float] = {}
+        for dex, requested_symbols in grouped_symbols.items():
+            payload_body: dict[str, object] = {"type": "metaAndAssetCtxs"}
+            if dex is not None:
+                payload_body["dex"] = dex
+            payload = self.post_info(payload_body)
+            result.update(
+                extract_max_leverage_by_symbol(
+                    payload,
+                    symbols=requested_symbols,
+                    include_delisted=include_delisted,
+                )
+            )
+        return result
 
     def _register_retry(
         self,
@@ -178,12 +226,12 @@ def extract_max_leverage_by_symbol(
     universe = meta.get("universe", [])
     if not isinstance(universe, list):
         return {}
-    requested = None if symbols is None else {str(symbol).upper() for symbol in symbols}
+    requested = None if symbols is None else {normalize_hl_symbol(str(symbol)) for symbol in symbols}
     parsed: dict[str, float] = {}
     for item in universe:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name", "")).upper()
+        name = normalize_hl_symbol(str(item.get("name", "")))
         if not name:
             continue
         if requested is not None and name not in requested:

@@ -152,8 +152,8 @@
   - les tests actuels ne verrouillent pas encore les invariants d'allocation cluster-aware
 - univers cible:
   - phase 1: indices et commodities / macro proxies
-  - ordre de validation: `SPX`, `PAXG`, puis symbols HIP-3 broad macro (`XYZ100`, `WTIOIL`, `GOLD`, `SILVER`) une fois le format symbole et la collecte valides
-  - hors scope initial: single stocks (`TSLA`, `CRCL`, `SNDK`) et FX tant qu'on n'a pas de donnees et d'edge dedies
+  - ordre de validation courant: `XYZ:CL`, `XYZ:BRENTOIL`, `XYZ:SP500`, `XYZ:XYZ100`, `XYZ:SILVER`, `XYZ:GOLD`, `XYZ:JPY`, `XYZ:TSLA`, `XYZ:NVDA`, `XYZ:CRCL`
+  - les builder-dex Tradfi HL sont maintenant prioritaires par rapport au panier spot/xStock legacy
 - principe:
   - reprendre les familles de setups de `Pod A` qui survivent au Tradfi:
     - continuation
@@ -163,6 +163,8 @@
     - `index`
     - `gold`
     - `silver`
+    - `oil`
+    - `fx`
     - `equity`
   - durcir les filtres de qualite:
     - spread
@@ -182,7 +184,7 @@
   - `app/trident/pod_c/*`: remplacer la logique breakout squeeze par une logique directionnelle type `Pod A` avec filtres / exits specifiques Tradfi
   - optionnel phase 2: enrichir les snapshots avec `mark/oracle/openInterest` si ces champs s'averent discriminants
 - changements faits:
-  - `app/trident/market_clusters.py`: familles / leaders etendus (BTC→crypto, SPY→index, GLD→gold, SLV→silver)
+  - `app/trident/market_clusters.py`: familles / leaders etendus (BTC→crypto, `XYZ:SP500`→index, `XYZ:GOLD`→gold, `XYZ:SILVER`→silver, `XYZ:CL`→oil, `XYZ:JPY`→fx)
   - `app/trident/symbol_router.py`: `_score_pod_c` peut utiliser le regime du cluster du symbol
   - `app/trident/supervisor.py`: `_apply_cluster_regime_snapshots` et exposition des regimes de cluster
   - `app/trident/regime_allocator.py`: resolution des regimes par cluster

@@ -48,8 +48,15 @@ class _FakeInfoClient:
     def __init__(self, mids: dict[str, float]) -> None:
         self._mids = mids
 
-    def fetch_all_mids(self) -> dict[str, float]:
-        return dict(self._mids)
+    def fetch_all_mids(self, *, symbols: list[str] | None = None) -> dict[str, float]:
+        if not symbols:
+            return dict(self._mids)
+        requested = {str(symbol).strip().upper() for symbol in symbols}
+        return {
+            symbol: price
+            for symbol, price in self._mids.items()
+            if str(symbol).strip().upper() in requested
+        }
 
 
 class PodALiveRunnerTests(unittest.TestCase):

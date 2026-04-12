@@ -33,8 +33,9 @@ observation_universe = [
   "AVAX", "LINK", "ARB",
   "ADA", "BNB", "LTC",
   "AAVE", "NEAR", "ZRO",
-  "SPX", "PAXG",
-  "SPY", "GLD", "SLV", "QQQ",
+  "XYZ:CL", "XYZ:BRENTOIL", "XYZ:SP500",
+  "XYZ:XYZ100", "XYZ:SILVER", "XYZ:GOLD",
+  "XYZ:JPY", "XYZ:TSLA", "XYZ:NVDA", "XYZ:CRCL",
 ]
 max_coins_per_connection = 10
 subscription_pacing_ms = 250
@@ -55,6 +56,9 @@ AMZN = "@280"
 GOOGL = "@266"
 META = "@287"
 MSFT = "@289"
+HOOD = "@271"
+USPYX = "@189"
+CRCL = "@263"
 
 [hyperliquid.market_cluster_overrides]
 PAXG = "gold"
@@ -62,16 +66,32 @@ SPY = "index"
 GLD = "gold"
 SLV = "silver"
 QQQ = "index"
+USPYX = "index"
 TSLA = "equity"
+GOOGL = "equity"
+HOOD = "equity"
+META = "equity"
 CRCL = "equity"
 SNDK = "equity"
+"XYZ:CL" = "oil"
+"XYZ:BRENTOIL" = "oil"
+"XYZ:SP500" = "index"
+"XYZ:XYZ100" = "index"
+"XYZ:SILVER" = "silver"
+"XYZ:GOLD" = "gold"
+"XYZ:JPY" = "fx"
+"XYZ:TSLA" = "equity"
+"XYZ:NVDA" = "equity"
+"XYZ:CRCL" = "equity"
 
 [hyperliquid.cluster_leaders]
 crypto = ["BTC", "ETH"]
-index = ["SPY"]
-gold = ["GLD", "PAXG"]
-silver = ["SLV"]
-equity = ["TSLA"]
+index = ["XYZ:SP500", "XYZ:XYZ100"]
+gold = ["XYZ:GOLD"]
+silver = ["XYZ:SILVER"]
+oil = ["XYZ:CL", "XYZ:BRENTOIL"]
+fx = ["XYZ:JPY"]
+equity = ["XYZ:TSLA", "XYZ:NVDA", "XYZ:CRCL"]
 
 [trident]
 enabled = true
@@ -214,12 +234,48 @@ target_pct = 0.02
 [trident.allocations_cluster.silver.dead_zone]
 target_pct = 0.00
 
+[trident.allocations_cluster.oil.trend_expansion]
+target_pct = 0.15
+
+[trident.allocations_cluster.oil.range_auction]
+target_pct = 0.06
+
+[trident.allocations_cluster.oil.panic_squeeze]
+target_pct = 0.02
+
+[trident.allocations_cluster.oil.dead_zone]
+target_pct = 0.00
+
+[trident.allocations_cluster.fx.trend_expansion]
+target_pct = 0.03
+
+[trident.allocations_cluster.fx.range_auction]
+target_pct = 0.02
+
+[trident.allocations_cluster.fx.panic_squeeze]
+target_pct = 0.01
+
+[trident.allocations_cluster.fx.dead_zone]
+target_pct = 0.00
+
+[trident.allocations_cluster.equity.trend_expansion]
+target_pct = 0.07
+
+[trident.allocations_cluster.equity.range_auction]
+target_pct = 0.05
+
+[trident.allocations_cluster.equity.panic_squeeze]
+target_pct = 0.01
+
+[trident.allocations_cluster.equity.dead_zone]
+target_pct = 0.00
+
 [pod_a]
 enabled = true
 allowed_market_clusters = ["crypto"]
 max_allocation_pct = 0.85
 default_leverage = 2.0
-max_leverage = 10.0
+max_leverage = 30.0
 prefer_isolated = true
 sizing_mode = "risk_based"
 risk_per_trade_pct = 0.0125
@@ -305,10 +361,10 @@ XRP = 0.65
 enabled = true
 # Pod C derive son scope du `hyperliquid.observation_universe`
 # filtre par cluster autorise.
-allowed_market_clusters = ["index", "gold", "silver", "equity"]
+allowed_market_clusters = ["index", "gold", "silver", "equity", "oil", "fx"]
 max_allocation_pct = 0.90
 default_leverage = 2.0
-max_leverage = 10.0
+max_leverage = 30.0
 max_spread_bps = 8.0
 max_abs_funding_rate = 0.015
 min_confidence = 0.62
@@ -329,3 +385,13 @@ min_activity_ratio = 0.75
 activity_lookback = 20
 
 [pod_c.max_leverage_by_symbol]
+"XYZ:CL" = 20.0
+"XYZ:BRENTOIL" = 20.0
+"XYZ:SP500" = 50.0
+"XYZ:XYZ100" = 30.0
+"XYZ:SILVER" = 25.0
+"XYZ:GOLD" = 25.0
+"XYZ:JPY" = 50.0
+"XYZ:TSLA" = 10.0
+"XYZ:NVDA" = 20.0
+"XYZ:CRCL" = 10.0
