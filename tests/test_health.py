@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from app.observability.api import (
     _humanize_close_reason,
+    _open_position_rows,
     _humanize_setup_reason,
     dashboard_html,
     health_payload,
@@ -220,6 +221,38 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["trident_bootstrap_ready"], 1)
         self.assertGreaterEqual(payload["enabled_pod_count"], 1)
         self.assertEqual(payload["owned_symbol_count"], 0)
+
+    def test_open_position_rows_preserve_runtime_market_data_and_trailing_fields(self) -> None:
+        rows = _open_position_rows(
+            {
+                "pod_a_runtime": {
+                    "open_positions": [
+                        {
+                            "symbol": "ETH",
+                            "side": "long",
+                            "setup": "trend_pullback_long",
+                            "entry_price": 3100.0,
+                            "current_price": 3150.0,
+                            "target_notional_usd": 120.0,
+                            "current_notional_usd": 121.94,
+                            "unrealized_pnl_usd": 1.94,
+                            "take_profit_bps": 120.0,
+                            "break_even_trigger_bps": 45.0,
+                            "trailing_activation_bps": 80.0,
+                            "trailing_distance_bps": 30.0,
+                            "best_price_seen": 3162.0,
+                        }
+                    ]
+                }
+            }
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["current_price"], 3150.0)
+        self.assertEqual(rows[0]["unrealized_pnl_usd"], 1.94)
+        self.assertEqual(rows[0]["break_even_trigger_bps"], 45.0)
+        self.assertEqual(rows[0]["trailing_activation_bps"], 80.0)
+        self.assertEqual(rows[0]["trailing_distance_bps"], 30.0)
+        self.assertEqual(rows[0]["best_price_seen"], 3162.0)
 
     def test_metrics_payload_uses_runtime_status_when_present(self) -> None:
         pod_a_runtime = {

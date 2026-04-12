@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.backtest.pod_report import PodABacktestReport
 from app.execution.directional_executor import DirectionalExecutor
+from app.hyperliquid.info_client import HyperliquidInfoClient
 from app.live.collector import HyperliquidLiveCollector
 from app.live.runtime_status import write_runtime_status
 from app.persistence.journal import JsonlJournal, build_signal_journal_record, build_trade_journal_record
@@ -27,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 class PodCLiveRunner:
     """Runs Pod C on the native Hyperliquid collector using shared dry-run rules."""
+
+    STATUS_HEARTBEAT_SECONDS = 60.0
+    MARKET_DATA_FALLBACK_IDLE_SECONDS = 15.0
+    MAINTENANCE_POLL_SECONDS = 5.0
 
     def __init__(self, config: AppConfig, coins: list[str] | None = None) -> None:
         selected_coins = (
@@ -55,8 +61,9 @@ class PodCLiveRunner:
         self.executor = DirectionalExecutor(self.config)
         self.report = PodABacktestReport()
         self._latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
-
-    STATUS_HEARTBEAT_SECONDS = 60.0
+        self._info_client = HyperliquidInfoClient(self.config.hyperliquid)
+        self._last_record_monotonic = time.monotonic()
+        self._last_market_data_refresh_monotonic = 0.0
 
     async def run(
         self,
@@ -69,8 +76,8 @@ class PodCLiveRunner:
         status_path = Path("logs/pod_c_live_status.json")
         self._write_runtime_status(status_path)
 
-        heartbeat_task = asyncio.create_task(
-            self._status_heartbeat_loop(status_path)
+        maintenance_task = asyncio.create_task(
+            self._maintenance_loop(status_path, journal=journal)
         )
         try:
             async for record in self.collector.iter_records(
@@ -81,9 +88,9 @@ class PodCLiveRunner:
                 self._process_record(record, journal=journal)
                 self._write_runtime_status(status_path)
         finally:
-            heartbeat_task.cancel()
+            maintenance_task.cancel()
             try:
-                await heartbeat_task
+                await maintenance_task
             except asyncio.CancelledError:
                 pass
 
@@ -118,6 +125,7 @@ class PodCLiveRunner:
         journal: JsonlJournal | None,
     ) -> None:
         timestamp = str(record.get("timestamp"))
+        self._last_record_monotonic = time.monotonic()
         date_key = timestamp[:10]
         regime_snapshot = record.get("regime_snapshot", {})
         cluster_regime_snapshots_raw = record.get("cluster_regime_snapshots", {})
@@ -257,35 +265,12 @@ class PodCLiveRunner:
             if decision is not None:
                 self.report.add_skipped_open_setup(decision.trade_plan.setup)
         for trade in execution.closed_trades:
-            if journal is not None:
-                journal.append(
-                    build_trade_journal_record(
-                        timestamp=trade.closed_at.isoformat() if trade.closed_at else timestamp,
-                        record_index=self.report.records_processed,
-                        trade=self._trade_to_record(trade),
-                        source="pod_c_live_trade",
-                    )
-                )
-            self.report.add_closed_trade(
-                date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else "unknown"),
-                symbol=trade.symbol,
-                side=trade.side,
-                setup=getattr(trade, "setup", None),
-                confidence=getattr(trade, "confidence", None),
-                market_cluster=cluster_for_symbol(self.config, trade.symbol),
-                close_regime=current_regime,
-                entry_price=getattr(trade, "entry_price", None),
-                exit_price=getattr(trade, "exit_price", None),
-                target_notional_usd=getattr(trade, "target_notional_usd", None),
-                stop_bps=getattr(trade, "stop_bps", None),
-                time_stop_hours=getattr(trade, "time_stop_hours", None),
-                pnl_usd=trade.pnl_usd,
-                gross_pnl_usd=trade.gross_pnl_usd,
-                fees_usd=trade.fees_usd,
-                close_reason=trade.close_reason,
-                hold_hours=self._hold_hours(trade),
-                opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
-                closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+            self._record_closed_trade(
+                trade,
+                current_regime=current_regime,
+                date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else date_key),
+                journal=journal,
+                timestamp=trade.closed_at.isoformat() if trade.closed_at else timestamp,
             )
         self._emit_review_summary(
             timestamp=timestamp,
@@ -375,10 +360,69 @@ class PodCLiveRunner:
             "closed_at": getattr(trade, "closed_at").isoformat() if getattr(trade, "closed_at") else None,
         }
 
-    async def _status_heartbeat_loop(self, path: str | Path) -> None:
+    def _record_closed_trade(
+        self,
+        trade: object,
+        *,
+        current_regime: str,
+        date_key: str,
+        journal: JsonlJournal | None,
+        timestamp: str | None,
+    ) -> None:
+        if journal is not None:
+            journal.append(
+                build_trade_journal_record(
+                    timestamp=timestamp,
+                    record_index=self.report.records_processed,
+                    trade=self._trade_to_record(trade),
+                    source="pod_c_live_trade",
+                )
+            )
+        self.report.add_closed_trade(
+            date_key=date_key,
+            symbol=trade.symbol,
+            side=trade.side,
+            setup=getattr(trade, "setup", None),
+            confidence=getattr(trade, "confidence", None),
+            market_cluster=cluster_for_symbol(self.config, trade.symbol),
+            close_regime=current_regime,
+            entry_price=getattr(trade, "entry_price", None),
+            exit_price=getattr(trade, "exit_price", None),
+            target_notional_usd=getattr(trade, "target_notional_usd", None),
+            margin_usd=getattr(trade, "margin_usd", None),
+            effective_leverage=getattr(trade, "effective_leverage", None),
+            risk_budget_usd=getattr(trade, "risk_budget_usd", None),
+            expected_loss_usd=getattr(trade, "expected_loss_usd", None),
+            invalidation_price=getattr(trade, "invalidation_price", None),
+            stop_bps=getattr(trade, "stop_bps", None),
+            time_stop_hours=getattr(trade, "time_stop_hours", None),
+            take_profit_bps=getattr(trade, "take_profit_bps", None),
+            break_even_trigger_bps=getattr(trade, "break_even_trigger_bps", None),
+            trailing_activation_bps=getattr(trade, "trailing_activation_bps", None),
+            trailing_distance_bps=getattr(trade, "trailing_distance_bps", None),
+            pnl_usd=trade.pnl_usd,
+            gross_pnl_usd=trade.gross_pnl_usd,
+            fees_usd=trade.fees_usd,
+            close_reason=trade.close_reason,
+            hold_hours=self._hold_hours(trade),
+            opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
+            closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+        )
+
+    async def _maintenance_loop(
+        self,
+        path: str | Path,
+        *,
+        journal: JsonlJournal | None,
+    ) -> None:
+        last_status_write = time.monotonic()
         while True:
-            await asyncio.sleep(self.STATUS_HEARTBEAT_SECONDS)
-            self._write_runtime_status(path)
+            await asyncio.sleep(self.MAINTENANCE_POLL_SECONDS)
+            now = time.monotonic()
+            refreshed = self._refresh_open_positions_without_stream(journal=journal, now=now)
+            if refreshed or (now - last_status_write) >= self.STATUS_HEARTBEAT_SECONDS:
+                self._write_runtime_status(path)
+                last_status_write = now
 
     def _write_runtime_status(self, path: str | Path) -> None:
         write_runtime_status(
@@ -404,6 +448,107 @@ class PodCLiveRunner:
                 "supervisor": self.supervisor.snapshot(),
             },
         )
+
+    def _refresh_open_positions_without_stream(
+        self,
+        *,
+        journal: JsonlJournal | None,
+        now: float | None = None,
+    ) -> bool:
+        open_symbols = sorted(self.executor.portfolio.open_positions)
+        if not open_symbols:
+            return False
+        current = now if now is not None else time.monotonic()
+        idle_seconds = current - self._last_record_monotonic
+        refresh_age = current - self._last_market_data_refresh_monotonic
+        if idle_seconds < self.MARKET_DATA_FALLBACK_IDLE_SECONDS:
+            return False
+        if refresh_age < self.MARKET_DATA_FALLBACK_IDLE_SECONDS:
+            return False
+        try:
+            all_mids = self._info_client.fetch_all_mids()
+        except Exception:
+            logger.warning("REST allMids maintenance fallback failed for symbols: %s", open_symbols)
+            self._last_market_data_refresh_monotonic = current
+            return False
+        self._last_market_data_refresh_monotonic = current
+        snapshots = [
+            fallback
+            for symbol in open_symbols
+            if (fallback := self._rest_fallback_snapshot(symbol, all_mids)) is not None
+        ]
+        if not snapshots:
+            return False
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        managed_symbols = self.supervisor.managed_symbols_for(
+            PodName.POD_C,
+            set(open_symbols),
+        )
+        execution = self.executor.process_record(
+            snapshots=snapshots,
+            risk_decisions=[],
+            signal_sides_by_symbol={},
+            timestamp=timestamp,
+            entry_allowed_symbols=self.supervisor.opening_symbols_for(PodName.POD_C),
+            managed_symbols=managed_symbols,
+        )
+        current_regime = self.supervisor.state.regime.value
+        for trade in execution.closed_trades:
+            self._record_closed_trade(
+                trade,
+                current_regime=current_regime,
+                date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else timestamp[:10]),
+                journal=journal,
+                timestamp=timestamp,
+            )
+        logger.info(
+            "Pod C maintenance refresh; idle_seconds=%.1f refreshed_symbols=%s closed=%s",
+            idle_seconds,
+            [snapshot.symbol for snapshot in snapshots],
+            len(execution.closed_trades),
+        )
+        return True
+
+    def _rest_fallback_snapshot(
+        self,
+        symbol: str,
+        all_mids: dict[str, float],
+    ) -> SymbolMarketSnapshot | None:
+        mid = all_mids.get(symbol)
+        if mid is None or mid <= 0:
+            return None
+        latest = self._latest_snapshots_by_symbol.get(symbol)
+        fallback = SymbolMarketSnapshot(
+            symbol=symbol,
+            price=mid,
+            ema_fast=latest.ema_fast if latest is not None else mid,
+            ema_slow=latest.ema_slow if latest is not None else mid,
+            vwap_distance_bps=latest.vwap_distance_bps if latest is not None else 0.0,
+            structure_score=latest.structure_score if latest is not None else 0.0,
+            funding_rate=latest.funding_rate if latest is not None else 0.0,
+            spread_bps=latest.spread_bps if latest is not None else 0.0,
+            btc_aligned=latest.btc_aligned if latest is not None else True,
+            market_cluster=latest.market_cluster if latest is not None else cluster_for_symbol(self.config, symbol),
+            cluster_aligned=latest.cluster_aligned if latest is not None else True,
+            cluster_leader=latest.cluster_leader if latest is not None else symbol,
+            book_imbalance=latest.book_imbalance if latest is not None else 0.0,
+            trade_flow_bias=latest.trade_flow_bias if latest is not None else 0.0,
+            bucket_volume=latest.bucket_volume if latest is not None else 0.0,
+            bucket_trade_count=latest.bucket_trade_count if latest is not None else 0,
+            bucket_range_bps=latest.bucket_range_bps if latest is not None else 0.0,
+            open_interest=latest.open_interest if latest is not None else None,
+            mark_px=latest.mark_px if latest is not None else None,
+            oracle_px=latest.oracle_px if latest is not None else None,
+            premium=latest.premium if latest is not None else None,
+            day_ntl_vlm=latest.day_ntl_vlm if latest is not None else None,
+            day_base_vlm=latest.day_base_vlm if latest is not None else None,
+            asset_ctx_observation_age_seconds=(
+                latest.asset_ctx_observation_age_seconds if latest is not None else None
+            ),
+            source="rest_fallback",
+        )
+        self._latest_snapshots_by_symbol[symbol] = fallback
+        return fallback
 
     def _build_open_positions_payload(self) -> list[dict[str, object]]:
         positions: list[dict[str, object]] = []

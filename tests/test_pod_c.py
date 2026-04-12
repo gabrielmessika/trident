@@ -98,6 +98,14 @@ class _FakeCollector:
         }
 
 
+class _FakeInfoClient:
+    def __init__(self, mids: dict[str, float]) -> None:
+        self._mids = mids
+
+    def fetch_all_mids(self) -> dict[str, float]:
+        return dict(self._mids)
+
+
 class PodCTests(unittest.TestCase):
     def test_tradfi_service_builds_activity_history(self) -> None:
         config = load_config("config/trident.toml")
@@ -375,6 +383,47 @@ class PodCTests(unittest.TestCase):
             runner.config.hyperliquid.observation_universe,
             ["PAXG", "SPY", "GLD", "QQQ"],
         )
+
+    def test_pod_c_maintenance_refresh_updates_open_position_market_data_without_new_records(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c.enabled = True
+        runner = PodCLiveRunner(config, coins=["SPY"])
+        plan = TradePlan(
+            symbol="SPY",
+            side="long",
+            setup="tradfi_continuation_long",
+            confidence=0.78,
+            target_notional_usd=150.0,
+            stop_bps=40.0,
+            time_stop_hours=999999,
+            take_profit_bps=500.0,
+            break_even_trigger_bps=35.0,
+            trailing_activation_bps=70.0,
+            trailing_distance_bps=25.0,
+        )
+        opened = runner.executor.portfolio.open_from_plan(
+            plan,
+            price=5100.0,
+            entry_fee_usd=0.1,
+            timestamp="2026-04-12T10:00:00Z",
+        )
+        self.assertTrue(opened)
+        runner._info_client = _FakeInfoClient({"SPY": 5140.0})  # type: ignore[assignment]
+        runner._last_record_monotonic = 0.0
+
+        refreshed = runner._refresh_open_positions_without_stream(
+            journal=None,
+            now=runner.MARKET_DATA_FALLBACK_IDLE_SECONDS + 1.0,
+        )
+
+        self.assertTrue(refreshed)
+        open_positions = runner._build_open_positions_payload()
+        self.assertEqual(len(open_positions), 1)
+        self.assertEqual(open_positions[0]["current_price"], 5140.0)
+        self.assertGreater(open_positions[0]["unrealized_pnl_usd"], 0.0)
+        self.assertEqual(open_positions[0]["break_even_trigger_bps"], 35.0)
+        self.assertEqual(open_positions[0]["trailing_activation_bps"], 70.0)
+        self.assertEqual(open_positions[0]["trailing_distance_bps"], 25.0)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.live.pod_a_live_runner import PodALiveRunner
 from app.settings import load_config
+from app.trident.types import TradePlan
 
 
 class _FakeCollector:
@@ -41,6 +42,14 @@ class _FakeCollector:
                 "append_many": lambda self, records: list(records),
             },
         )()
+
+
+class _FakeInfoClient:
+    def __init__(self, mids: dict[str, float]) -> None:
+        self._mids = mids
+
+    def fetch_all_mids(self) -> dict[str, float]:
+        return dict(self._mids)
 
 
 class PodALiveRunnerTests(unittest.TestCase):
@@ -129,6 +138,46 @@ class PodALiveRunnerTests(unittest.TestCase):
             self.assertIn("trailing_activation_bps", eth_position)
             self.assertIn("trailing_distance_bps", eth_position)
             self.assertIn("best_price_seen", eth_position)
+
+    def test_maintenance_refresh_updates_open_position_market_data_without_new_records(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = PodALiveRunner(config, coins=["ETH"])
+        plan = TradePlan(
+            symbol="ETH",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.8,
+            target_notional_usd=120.0,
+            stop_bps=45.0,
+            time_stop_hours=999999,
+            take_profit_bps=500.0,
+            break_even_trigger_bps=40.0,
+            trailing_activation_bps=80.0,
+            trailing_distance_bps=30.0,
+        )
+        opened = runner.executor.portfolio.open_from_plan(
+            plan,
+            price=3100.0,
+            entry_fee_usd=0.1,
+            timestamp="2026-04-12T09:00:00Z",
+        )
+        self.assertTrue(opened)
+        runner._info_client = _FakeInfoClient({"ETH": 3150.0})  # type: ignore[assignment]
+        runner._last_record_monotonic = 0.0
+
+        refreshed = runner._refresh_open_positions_without_stream(
+            journal=None,
+            now=runner.MARKET_DATA_FALLBACK_IDLE_SECONDS + 1.0,
+        )
+
+        self.assertTrue(refreshed)
+        open_positions = runner._build_open_positions_payload()
+        self.assertEqual(len(open_positions), 1)
+        self.assertEqual(open_positions[0]["current_price"], 3150.0)
+        self.assertGreater(open_positions[0]["unrealized_pnl_usd"], 0.0)
+        self.assertEqual(open_positions[0]["break_even_trigger_bps"], 40.0)
+        self.assertEqual(open_positions[0]["trailing_activation_bps"], 80.0)
+        self.assertEqual(open_positions[0]["trailing_distance_bps"], 30.0)
 
 
 if __name__ == "__main__":
