@@ -35,6 +35,7 @@ observation_universe = [
   "AVAX", "LINK", "ARB",
   "ADA", "BNB", "LTC",
   "AAVE", "NEAR", "ZRO",
+  "ZEC", "TAO", "ENA", "TON", "BCH",
   "XYZ:CL", "XYZ:BRENTOIL", "XYZ:SP500",
   "XYZ:XYZ100", "XYZ:SILVER", "XYZ:GOLD",
   "XYZ:JPY", "XYZ:TSLA", "XYZ:NVDA", "XYZ:CRCL",

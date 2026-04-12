@@ -31,13 +31,69 @@
   - live runner: `app/live/pod_b_live_runner.py`
   - replay standalone: `app/backtest/pod_b_runner.py`
   - UI Pod B alignee sur le contrat directionnel de Pod A / Pod C
-- **Resultat replay fetched retenu avec le nouveau Pod B**:
+- **Resultat replay fetched retenu apres integration propre du nouveau Pod B**:
   - fenetre `2026-04-05 -> 2026-04-12`
-  - total bot `+326.19 USD`
-  - `Pod A = +320.85 USD`
-  - `Pod B = +5.34 USD`
+  - total bot `+221.68 USD`
+  - `Pod A = +202.68 USD`
+  - `Pod B = +19.00 USD`
   - `Pod C = 0 USD`
-  - `Pod B` reste plus selectif que `Pod A`, mais n'est plus structurellement destructeur de valeur
+  - version retenue: moins agressive que certaines variantes experimentales, mais plus propre sur le routing, l'observabilite et le deploiement
+- **Fix de deploiement / fetch Pod B**:
+  - le serveur lancait encore l'ancien module supprime `app.trident.pod_b.paper_live_runner`
+  - `docker-compose.trident.yml` lance maintenant `app.live.pod_b_live_runner`
+  - `scripts/trident_server.sh` ne depend plus du vieux runtime `runtime/passivbot/live.json`
+  - `scripts/fetch_trident_data.sh` rapatrie maintenant le vrai runtime Pod B depuis `logs/pod_b_live_status.json`
+- **Observabilite Pod B clarifiee**:
+  - le libelle `planned` etait trompeur quand seul le fallback superviseur etait visible
+  - l'UI affiche maintenant `Supervisor fallback`
+  - dans ce cas, Pod B n'est plus compte comme healthy
+  - cela a permis de distinguer un vrai probleme runtime d'un simple etat planifie
+- **Régimes par cluster visibles sur la page principale**:
+  - le dashboard `Status` affiche maintenant `Crypto` + une carte par cluster Tradfi
+  - chaque carte montre le regime courant, le budget cible et le nombre de symbols observes / tradables
+  - on voit donc directement un cas du type `crypto DeadZone / index TrendExpansion`
+- **Fix de lisibilite du routing**:
+  - un symbole laisse a `none` n'affiche plus un faux `capacity_trim:pod_a` quand aucun pod n'atteint en realite le seuil d'assignation
+  - le routeur expose maintenant explicitement un motif du type `below_assign_threshold_all_candidates:*`
+- **Extension prudente de l'univers crypto observe**:
+  - ajout de la vague 1 de coins crypto liquides:
+    - `ZEC`
+    - `TAO`
+    - `ENA`
+    - `TON`
+    - `BCH`
+  - objectif: elargir l'observation sans basculer d'un coup sur des coins plus narratifs / plus bruyants
+- **Waves d'extension actuellement retenues**:
+  - crypto wave 1 active:
+    - `ZEC`
+    - `TAO`
+    - `ENA`
+    - `TON`
+    - `BCH`
+  - crypto wave 2 candidate:
+    - `WLD`
+    - `XMR`
+    - `CRV`
+    - `UNI`
+    - `DOT`
+  - non-crypto wave 1 deja couverte par le scope builder-dex courant:
+    - `XYZ:CL`
+    - `XYZ:BRENTOIL`
+    - `XYZ:SP500`
+    - `XYZ:XYZ100`
+    - `XYZ:SILVER`
+    - `XYZ:GOLD`
+  - non-crypto wave 2 candidate:
+    - `XYZ:JPY`
+    - `XYZ:CRCL`
+    - `XYZ:TSLA`
+    - `XYZ:NVDA`
+  - non-crypto wave 3 candidate:
+    - `XYZ:EWY`
+    - `XYZ:EUR`
+    - `XYZ:NATGAS`
+    - `XYZ:INTC`
+    - `XYZ:HOOD`
 
 ### 2026-04-11
 
@@ -240,13 +296,13 @@
 
 ### Pod B
 
-- statut: reecrit avec modele Avellaneda-Stoikov
+- statut: remplace completement par le Pod B breakout directionnel actuel
 - lecture actuelle:
-  - engine refonde: fair value EMA + inventory skew + vol-adaptive spread + trend guard
-  - ne detruit plus de valeur de maniere systematique
-  - contribution marginale mais stable sur les jours calmes
-  - jour directionnel (ADX > 20) reste le principal risque → regime guard coupe le quoting
-  - `max_allocation_pct` reduit a 0.40 pour ne pas monopoliser les coins
+  - moteur directionnel crypto, complementaire de Pod A
+  - runtime / replay / UI / fetch sont maintenant homogenes avec Pod A et Pod C
+  - peut recevoir des symbols en `DeadZone` pour surveillance, sans forcement ouvrir de trade
+  - contribution retenue sur le replay fetched integre: `+19.00 USD`
+  - le point de vigilance restant est surtout le churn de routing sur un univers crypto plus large
   - prochaine validation: run long serveur avec profil actif `Pod A + Pod B`
 
 ### Profil actif 2026-04-10

@@ -21,7 +21,7 @@ Ici, un `pod`, c'est simplement un **spécialiste**.
 Chaque pod a sa propre façon de chercher des opportunités :
 
 - `Pod A` aime les mouvements déjà bien lancés ;
-- `Pod B` préfère les marchés plus calmes, qui tournent un peu sur place ;
+- `Pod B` préfère les impulsions fraîches et les breakouts crypto sélectifs ;
 - `Pod C` cherche des tendances Tradfi HL sur un panier builder-dex dédié.
 
 On peut imaginer `Trident` comme une petite équipe :
@@ -56,17 +56,17 @@ En pratique :
 
 Autrement dit, `Pod A` ne cherche pas à deviner un retournement. Il préfère **monter dans un train déjà en marche**.
 
-#### Pod B : le pod des petits allers-retours
+#### Pod B : le pod breakout directionnel
 
-`Pod B` est pensé pour les moments où le marché n'avance pas vraiment dans une direction claire.
+`Pod B` cherche surtout les expansions naissantes sur le sleeve crypto.
 
 En pratique :
 
-- il place des ordres un peu au-dessus et un peu en dessous du prix ;
-- il essaie de profiter des petits va-et-vient ;
-- il vise plutôt des petits gains répétés qu'un grand mouvement unique.
+- il attend une compression ou un contexte d'impulsion propre ;
+- il ne travaille que sur un sous-ensemble du panier crypto que le superviseur lui attribue ;
+- il peut recevoir des symbols en `DeadZone` pour les surveiller, puis ne rien faire tant qu'aucun setup propre n'apparaît.
 
-Autrement dit, `Pod B` travaille mieux quand le marché **tourne en rond** que lorsqu'il part très fort dans une direction.
+Autrement dit, `Pod B` ne fait plus du market making de range. C'est un pod **directionnel**, plus sélectif que `Pod A`, destiné aux breakouts et expansions fraîches.
 
 #### Pod C : le pod Tradfi directionnel
 
@@ -105,7 +105,7 @@ Pourquoi ?
 Ensuite, il adapte la répartition :
 
 - plus de place pour `Pod A` si le marché a une vraie direction ;
-- plus de place pour `Pod B` si le marché tourne sur place ;
+- plus de place pour `Pod B` si le marché peut offrir un sleeve crypto opportuniste, même avec peu de capital ;
 - plus de place pour `Pod C` si le marché devient très nerveux ;
 - parfois, une partie de l'argent reste simplement en cash si rien n'est propre.
 
@@ -263,8 +263,15 @@ BTC -> Pod A et Pod B en meme temps
 Role de chaque pod:
 
 - `Pod A`: moteur directionnel principal, pour les phases de tendance crypto (filtre: cluster `crypto` uniquement)
-- `Pod B`: moteur breakout/vol-expansion crypto, reserve aux phases impulsives et expansions naissantes (filtre: cluster `crypto` uniquement)
+- `Pod B`: moteur breakout/vol-expansion crypto, reserve aux phases impulsives et breakouts propres, avec allocation possible meme en `DeadZone` pour surveiller le sleeve crypto (filtre: cluster `crypto` uniquement)
 - `Pod C`: moteur directionnel Tradfi HL, scope actuel derive de `hyperliquid.observation_universe` et filtre par clusters `index`, `gold`, `silver`, `equity`, `oil`, `fx`; dans la config courante: `XYZ:CL`, `XYZ:BRENTOIL`, `XYZ:SP500`, `XYZ:XYZ100`, `XYZ:SILVER`, `XYZ:GOLD`, `XYZ:JPY`, `XYZ:TSLA`, `XYZ:NVDA`, `XYZ:CRCL`
+- univers crypto courant: `BTC`, `ETH`, `SOL`, `HYPE`, `DOGE`, `XRP`, `SUI`, `AVAX`, `LINK`, `ARB`, `ADA`, `BNB`, `LTC`, `AAVE`, `NEAR`, `ZRO`, `ZEC`, `TAO`, `ENA`, `TON`, `BCH`
+- waves d'extension actuellement retenues:
+  - crypto wave 1 active: `ZEC`, `TAO`, `ENA`, `TON`, `BCH`
+  - crypto wave 2 candidate: `WLD`, `XMR`, `CRV`, `UNI`, `DOT`
+  - non-crypto wave 1 deja couverte par le scope builder-dex actuel: `XYZ:CL`, `XYZ:BRENTOIL`, `XYZ:SP500`, `XYZ:XYZ100`, `XYZ:SILVER`, `XYZ:GOLD`
+  - non-crypto wave 2 candidate: `XYZ:JPY`, `XYZ:CRCL`, `XYZ:TSLA`, `XYZ:NVDA`
+  - non-crypto wave 3 candidate: `XYZ:EWY`, `XYZ:EUR`, `XYZ:NATGAS`, `XYZ:INTC`, `XYZ:HOOD`
 - les symbols builder-dex sont stockes en forme canonique `XYZ:SP500` / `XYZ:GOLD` / etc.
 - au runtime, le collector WS traduit automatiquement vers le format HL attendu (`xyz:SP500`, `xyz:GOLD`, ...)
 - les caps live et `allMids` sont aussi resolus par dex, donc `Pod C` recupere bien les `maxLeverage` / mids de ces marches et pas ceux du perp global
@@ -308,6 +315,14 @@ Reporting actuel:
   - ceux qui sont effectivement observes par la vue live
   - ceux qui passent les gates de tradabilite
   - ceux qui sont vraiment routes a `Pod C`
+- l'onglet `Status` affiche maintenant aussi `Régimes par cluster`:
+  - `Crypto` pour le régime global BTC/crypto
+  - une carte par cluster Tradfi actif (`index`, `gold`, `silver`, `oil`, `fx`, `equity`, ...)
+  - avec pour chaque cluster le régime courant, le budget cible et le nombre de symbols observés/tradables
+- si `Pod B` n'a pas de runtime frais, l'UI affiche explicitement `Supervisor fallback`:
+  - cela signifie que le superviseur a un plan pour `Pod B`
+  - mais qu'aucun runtime `logs/pod_b_live_status.json` frais n'a été vu
+  - ce n'est plus présenté comme un pod healthy
 - les replays de cohabitation ecrivent aussi un `summary` multi-pods dans leur JSON de sortie.
 - `Pod A` et `Pod C` ferment maintenant une position si le `supervisor` retire le symbol ou remet son allocation a zero (`routing_revoked`),
 - `Pod A` et `Pod C` n'utilisent plus exactement le meme scope pour ouvrir et pour fermer:
@@ -364,6 +379,7 @@ Rapatriement et analyse locale:
   - revue distante legere
   - recupere surtout l'etat courant, les tails de logs et genere les prompts LLM
 - `./scripts/fetch_trident_data.sh`
+- rapatrie maintenant le vrai runtime Pod B depuis `logs/pod_b_live_status.json` (plus les anciens artefacts `passivbot`)
   - rapatrie les snapshots live, logs runtime, statuses, snapshots API et logs Docker
   - peut ensuite relancer automatiquement `trident_dry_run_review.sh`
   - permet une vraie analyse locale plus complete sur plusieurs heures / jours
@@ -398,10 +414,11 @@ Validation recente:
   - `signal_count = 0`
 - replay fetched complet avec le Pod B directionnel actuel:
   - `2026-04-05 -> 2026-04-12`
-  - total bot `+326.19 USD`
-  - `Pod A = +320.85 USD`
-  - `Pod B = +5.34 USD`
+  - total bot `+221.68 USD`
+  - `Pod A = +202.68 USD`
+  - `Pod B = +19.00 USD`
   - `Pod C = 0 USD`
+  - version retenue: runtime/UI/deploiement/fetch alignes sur le nouveau Pod B officiel
 - ancienne suite research Pod C sur `data/live_snapshots/2026-04-05.jsonl`:
   - ce bloc correspond a l'ancien Pod C research/lead-lag
   - il ne decrit pas le Pod C builder-dex actuel

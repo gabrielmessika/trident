@@ -108,6 +108,8 @@
   - remplacement complet de l'ancien moteur maker par une strategie breakout/vol-expansion
   - live runner `app/live/pod_b_live_runner.py`, runtime status `logs/pod_b_live_status.json`
   - replay full-bot et standalone alignes sur le meme pipeline directionnel
+  - deploiement serveur/fetch aligns sur le nouveau contrat runtime (plus de dependance `passivbot`)
+  - UI clarifiee: `Supervisor fallback` remplace l'ancien `planned` trompeur
 - reste a faire:
   - validation dry-run live plus longue
   - raffinement du routing pour donner a Pod B un sous-univers encore plus selectif
@@ -145,6 +147,7 @@
   - `SupervisorState` expose `cluster_regimes`, `cluster_regime_snapshots`, `cluster_pending_regimes`, `cluster_pending_counts`
   - `SnapshotRecord` transporte les `cluster_regime_snapshots` pour les backtests
   - tous les runners (backtest, live, research, observability) sont branches sur ce transport
+  - la page principale `Status` affiche maintenant les regimes par cluster de facon compacte
 - constat d'implementation:
   - l'approche `tradfi_regime` agrege reste trop grossiere pour repondre au probleme SPY/GLD
   - le remplacement partiel de `pod_c` sans recomposition globale du `cash` est un design a corriger

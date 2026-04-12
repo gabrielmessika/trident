@@ -163,6 +163,7 @@ Pour démarrer tout sauf Pod B :
 Important :
 
 - Pod B est maintenant un pod directionnel breakout pilote par le superviseur et expose son runtime via `logs/pod_b_live_status.json`
+- le service Docker `pod-b-live` lance maintenant `app.live.pod_b_live_runner` directement
 - Pod C utilise maintenant un panier Tradfi builder-dex actif dans la config; le démarrer sans lui reste utile seulement si on veut un run minimal ou si on désactive explicitement son scope
 - `./deploy.sh --start` lance maintenant aussi le collecteur funding global `data/funding_history/current.jsonl`
 - `Pod C` lance en plus son collecteur Tradfi dédié `data/funding_history/pod_c_tradfi.jsonl`
@@ -173,6 +174,10 @@ Important :
 - l'UI `System` montre désormais explicitement:
   - `Data collectors` pour la santé des services funding
   - `Pod C scope visibility` pour voir quels symbols Tradfi sont configures, observes, tradables et routes
+- l'onglet `Status` montre aussi `Régimes par cluster`:
+  - régime crypto global
+  - régimes actifs des clusters Tradfi
+  - budget cible et couverture observée/tradable par cluster
 
 ---
 
@@ -440,6 +445,11 @@ Il rapatrie localement :
 - snapshots API courants
 - tails de logs Docker
 
+Point utile :
+
+- le fetch ne lit plus l'ancien runtime `runtime/passivbot/*`
+- si le dashboard affiche `Supervisor fallback` pour Pod B, le fetch te permet maintenant de verifier directement si `logs/pod_b_live_status.json` est frais ou non
+
 Puis il peut relancer automatiquement la revue locale avec suggestions de prompts.
 
 Exemples :
@@ -475,6 +485,11 @@ La revue générée par défaut est écrite dans :
 - Pod B est maintenant un pod directionnel breakout, avec runtime status dans `logs/pod_b_live_status.json`
 - Pod C ne doit pas être modifié par réflexe sans revérifier son univers builder-dex, ses caps live et son replay associé
 - le rate limiter partagé HL vit sur disque et doit rester persistant entre les runs
+- l'univers observe est plus large qu'au bootstrap, mais le coût live augmente vraiment avec chaque coin ajoute:
+  - plus de shards WS
+  - plus de messages
+  - plus de churn possible dans le superviseur
+  - elargir par petites vagues reste recommande
 
 ---
 
