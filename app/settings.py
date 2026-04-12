@@ -220,10 +220,16 @@ class PodCConfig:
     enabled: bool
     allowed_market_clusters: list[str]
     max_allocation_pct: float
+    default_leverage: float
+    max_leverage: float
+    max_leverage_by_symbol: dict[str, float]
     max_spread_bps: float
     max_abs_funding_rate: float
     min_confidence: float
     size_multiplier: float
+    risk_per_trade_pct: float
+    min_margin_usd: float
+    min_notional_usd: float
     reentry_cooldown_minutes: int
     time_stop_hours: int
     blocked_symbols: list[str]
@@ -705,10 +711,16 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 upper_values=False,
             ),
             max_allocation_pct=float(pod_c_data.get("max_allocation_pct", 0.90)),
+            default_leverage=float(pod_c_data.get("default_leverage", 1.0)),
+            max_leverage=float(pod_c_data.get("max_leverage", 1.0)),
+            max_leverage_by_symbol=_float_map(pod_c_data.get("max_leverage_by_symbol", {})),
             max_spread_bps=float(pod_c_data.get("max_spread_bps", 6.0)),
             max_abs_funding_rate=float(pod_c_data.get("max_abs_funding_rate", 0.01)),
             min_confidence=float(pod_c_data.get("min_confidence", 0.62)),
             size_multiplier=float(pod_c_data.get("size_multiplier", 0.55)),
+            risk_per_trade_pct=float(pod_c_data.get("risk_per_trade_pct", 0.01)),
+            min_margin_usd=float(pod_c_data.get("min_margin_usd", 25.0)),
+            min_notional_usd=float(pod_c_data.get("min_notional_usd", 50.0)),
             reentry_cooldown_minutes=int(pod_c_data.get("reentry_cooldown_minutes", 90)),
             time_stop_hours=int(pod_c_data.get("time_stop_hours", 3)),
             blocked_symbols=_str_list(
@@ -749,6 +761,12 @@ def override_app_config(
     pod_a_risk_per_trade_pct: float | None = None,
     pod_a_min_margin_usd: float | None = None,
     pod_a_min_notional_usd: float | None = None,
+    pod_c_default_leverage: float | None = None,
+    pod_c_max_leverage: float | None = None,
+    pod_c_max_leverage_by_symbol: dict[str, float] | None = None,
+    pod_c_risk_per_trade_pct: float | None = None,
+    pod_c_min_margin_usd: float | None = None,
+    pod_c_min_notional_usd: float | None = None,
 ) -> AppConfig:
     capital = replace(
         config.trident.capital,
@@ -792,4 +810,37 @@ def override_app_config(
             else float(pod_a_min_notional_usd)
         ),
     )
-    return replace(config, trident=trident, pod_a=pod_a)
+    pod_c = replace(
+        config.pod_c,
+        default_leverage=(
+            config.pod_c.default_leverage
+            if pod_c_default_leverage is None
+            else float(pod_c_default_leverage)
+        ),
+        max_leverage=(
+            config.pod_c.max_leverage
+            if pod_c_max_leverage is None
+            else float(pod_c_max_leverage)
+        ),
+        max_leverage_by_symbol=(
+            dict(config.pod_c.max_leverage_by_symbol)
+            if pod_c_max_leverage_by_symbol is None
+            else _float_map(pod_c_max_leverage_by_symbol)
+        ),
+        risk_per_trade_pct=(
+            config.pod_c.risk_per_trade_pct
+            if pod_c_risk_per_trade_pct is None
+            else float(pod_c_risk_per_trade_pct)
+        ),
+        min_margin_usd=(
+            config.pod_c.min_margin_usd
+            if pod_c_min_margin_usd is None
+            else float(pod_c_min_margin_usd)
+        ),
+        min_notional_usd=(
+            config.pod_c.min_notional_usd
+            if pod_c_min_notional_usd is None
+            else float(pod_c_min_notional_usd)
+        ),
+    )
+    return replace(config, trident=trident, pod_a=pod_a, pod_c=pod_c)

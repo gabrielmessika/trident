@@ -57,12 +57,15 @@ class HyperliquidHttpTests(unittest.TestCase):
         ):
             runtime = apply_live_asset_leverage_caps(
                 config,
-                symbols=["ETH"],
+                symbols=["ETH", "SPY"],
                 sleep_fn=lambda _: None,
             )
 
         self.assertEqual(runtime.pod_a.max_leverage_by_symbol["ETH"], 17.0)
         self.assertEqual(runtime.pod_a.max_leverage_by_symbol["BTC"], 40.0)
+        self.assertEqual(runtime.pod_c.max_leverage_by_symbol["ETH"], 17.0)
+        self.assertEqual(runtime.pod_a.max_leverage_by_symbol["SPY"], 1.0)
+        self.assertEqual(runtime.pod_c.max_leverage_by_symbol["SPY"], 1.0)
 
     def test_retries_rate_limit_then_succeeds(self) -> None:
         config = load_config("config/trident.toml").hyperliquid

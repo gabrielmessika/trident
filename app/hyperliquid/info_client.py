@@ -210,9 +210,20 @@ def apply_live_asset_leverage_caps(
         return config
     if not live_caps:
         return config
-    merged_caps = dict(config.pod_a.max_leverage_by_symbol)
-    merged_caps.update(live_caps)
+    requested_symbols = {
+        str(symbol).strip().upper()
+        for symbol in (symbols or [])
+        if str(symbol).strip()
+    }
+    resolved_caps = dict(live_caps)
+    for symbol in requested_symbols:
+        resolved_caps.setdefault(symbol, 1.0)
+    merged_pod_a_caps = dict(config.pod_a.max_leverage_by_symbol)
+    merged_pod_a_caps.update(resolved_caps)
+    merged_pod_c_caps = dict(config.pod_c.max_leverage_by_symbol)
+    merged_pod_c_caps.update(resolved_caps)
     return override_app_config(
         config,
-        pod_a_max_leverage_by_symbol=merged_caps,
+        pod_a_max_leverage_by_symbol=merged_pod_a_caps,
+        pod_c_max_leverage_by_symbol=merged_pod_c_caps,
     )

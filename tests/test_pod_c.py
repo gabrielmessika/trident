@@ -182,7 +182,7 @@ class PodCTests(unittest.TestCase):
         config = load_config("config/trident.toml")
         service = TradfiTrendService(config.pod_c)
         context_service = TradfiTrendContextService(config.pod_c, service)
-        planner = TradfiTrendPlanner(config.pod_c)
+        planner = TradfiTrendPlanner(config)
         for _ in range(10):
             context_service.build_contexts(
                 Regime.TREND_EXPANSION,
@@ -246,6 +246,11 @@ class PodCTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertEqual(plan.symbol, "SPX")
         self.assertGreater(plan.confidence, 0.5)
+        self.assertGreater(plan.effective_leverage, 1.0)
+        self.assertGreater(plan.margin_usd, 0.0)
+        self.assertGreater(plan.target_notional_usd, plan.margin_usd)
+        self.assertGreater(plan.risk_budget_usd, 0.0)
+        self.assertGreater(plan.expected_loss_usd, 0.0)
 
     def test_pod_c_risk_gate_blocks_low_confidence(self) -> None:
         config = load_config("config/trident.toml")
@@ -265,6 +270,33 @@ class PodCTests(unittest.TestCase):
         )[0]
         self.assertFalse(decision.accepted)
         self.assertEqual(decision.reason, "confidence_below_min")
+
+    def test_pod_c_risk_gate_rejects_trade_plan_when_asset_leverage_limit_is_exceeded(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c.max_leverage = 10.0
+        config.pod_c.max_leverage_by_symbol = {"SPX": 5.0}
+        gate = PodCRiskGate(config)
+
+        decision = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="SPX",
+                    side="long",
+                    setup="tradfi_continuation_long",
+                    confidence=0.8,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=75.0,
+                    effective_leverage=6.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                )
+            ]
+        )[0]
+
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, "leverage_above_asset_limit")
 
     def test_pod_c_reentry_cooldown_blocks_immediate_flip(self) -> None:
         config = load_config("config/trident.toml")

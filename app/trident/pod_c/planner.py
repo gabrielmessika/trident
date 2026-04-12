@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from app.settings import PodCConfig
+from app.settings import AppConfig, PodCConfig, load_config
 from app.trident.pod_c.exits import initial_stop_bps, smart_exit_policy, time_stop_hours_for_cluster
 from app.trident.pod_c.signals import TradfiTrendSignal
+from app.trident.pod_c.sizing import PositionSizer
 from app.trident.types import PodAllocation, TradePlan
 
 
 class TradfiTrendPlanner:
     """Builds executable Pod C trade plans for Tradfi directionals."""
 
-    def __init__(self, config: PodCConfig) -> None:
-        self.config = config
+    def __init__(self, config: PodCConfig | AppConfig) -> None:
+        if isinstance(config, AppConfig):
+            self._app_config = config
+            self.config = config.pod_c
+        else:
+            self.config = config
+            self._app_config = load_config("config/trident.toml")
+            self._app_config.pod_c = config
+        self._position_sizer = PositionSizer(self._app_config)
 
     def build_trade_plan(
         self,
@@ -26,11 +34,19 @@ class TradfiTrendPlanner:
         size_multiplier = max(self.config.size_multiplier, 0.0)
         if size_multiplier <= 0:
             return None
+        margin_cap_usd = symbol_allocation.target_usd * size_multiplier
         stop_bps = initial_stop_bps(
             signal.setup,
             signal.confidence,
             signal.market_cluster,
         )
+        sized_trade = self._position_sizer.size_from_stop(
+            symbol=signal.symbol,
+            margin_cap_usd=margin_cap_usd,
+            stop_bps=stop_bps,
+        )
+        if sized_trade is None:
+            return None
         exit_policy = smart_exit_policy(
             signal.setup,
             stop_bps,
@@ -43,7 +59,7 @@ class TradfiTrendPlanner:
             side=signal.side,
             setup=signal.setup,
             confidence=signal.confidence,
-            target_notional_usd=round(symbol_allocation.target_usd * size_multiplier, 4),
+            target_notional_usd=sized_trade.target_notional_usd,
             stop_bps=stop_bps,
             time_stop_hours=time_stop_hours_for_cluster(
                 self.config.time_stop_hours,
@@ -55,6 +71,11 @@ class TradfiTrendPlanner:
             trailing_distance_bps=exit_policy["trailing_distance_bps"],
             reentry_cooldown_minutes=self.config.reentry_cooldown_minutes,
             confidence_components=signal.confidence_components,
+            margin_usd=sized_trade.margin_usd,
+            requested_leverage=sized_trade.requested_leverage,
+            effective_leverage=sized_trade.effective_leverage,
+            risk_budget_usd=sized_trade.risk_budget_usd,
+            expected_loss_usd=sized_trade.expected_loss_usd,
             setup_details={
                 "market_cluster": signal.market_cluster,
                 "cluster_leader": signal.cluster_leader,

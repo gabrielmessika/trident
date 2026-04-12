@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.settings import PodAConfig
+from app.settings import PodAConfig, PodCConfig
 
 
 def clamp_leverage(value: float, limit: float) -> float:
@@ -10,7 +10,7 @@ def clamp_leverage(value: float, limit: float) -> float:
 class LeveragePolicy:
     """Small policy helper for bounded, non-aggressive leverage selection."""
 
-    def __init__(self, config: PodAConfig) -> None:
+    def __init__(self, config: PodAConfig | PodCConfig) -> None:
         self._config = config
 
     def default(self, symbol: str | None = None) -> float:

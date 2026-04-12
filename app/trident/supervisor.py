@@ -70,7 +70,7 @@ class TridentSupervisor:
         self.pod_a_planner = AnchorTrendPlanner(config)
         self.pod_c_service = TradfiTrendService(config.pod_c)
         self.pod_c_context_service = TradfiTrendContextService(config, self.pod_c_service)
-        self.pod_c_planner = TradfiTrendPlanner(config.pod_c)
+        self.pod_c_planner = TradfiTrendPlanner(config)
         self.pod_b_manager = PassivbotManager(config)
         self._latest_snapshots: list[SymbolMarketSnapshot] = []
         self.state = SupervisorState(

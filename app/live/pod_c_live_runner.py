@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app.backtest.pod_report import PodABacktestReport
 from app.execution.directional_executor import DirectionalExecutor
-from app.hyperliquid.info_client import HyperliquidInfoClient
+from app.hyperliquid.info_client import HyperliquidInfoClient, apply_live_asset_leverage_caps
 from app.live.collector import HyperliquidLiveCollector
 from app.live.runtime_status import write_runtime_status
 from app.persistence.journal import JsonlJournal, build_signal_journal_record, build_trade_journal_record
@@ -34,7 +34,13 @@ class PodCLiveRunner:
     MARKET_DATA_FALLBACK_IDLE_SECONDS = 15.0
     MAINTENANCE_POLL_SECONDS = 5.0
 
-    def __init__(self, config: AppConfig, coins: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        coins: list[str] | None = None,
+        *,
+        use_live_asset_caps: bool = False,
+    ) -> None:
         selected_coins = (
             coins
             or symbols_in_allowed_clusters(
@@ -44,10 +50,16 @@ class PodCLiveRunner:
             )
         )
         self.coins = [str(coin).strip().upper() for coin in selected_coins if str(coin).strip()]
+        runtime_config = config
+        if use_live_asset_caps:
+            runtime_config = apply_live_asset_leverage_caps(
+                config,
+                symbols=self.coins,
+            )
         self.config = replace(
-            config,
+            runtime_config,
             hyperliquid=replace(
-                config.hyperliquid,
+                runtime_config.hyperliquid,
                 observation_universe=list(self.coins),
             ),
         )
@@ -614,7 +626,7 @@ async def _run_from_args() -> None:
     coins = None
     if args.coins:
         coins = [coin.strip().upper() for coin in args.coins.split(",") if coin.strip()]
-    result = await PodCLiveRunner(config, coins=coins).run(
+    result = await PodCLiveRunner(config, coins=coins, use_live_asset_caps=True).run(
         max_runtime_seconds=args.max_runtime_seconds,
         max_messages=args.max_messages,
         journal_path=args.journal_output,
