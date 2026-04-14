@@ -17,6 +17,7 @@ from app.reporting.multi_pod import build_runtime_report, _is_supervisor_fallbac
 from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
 from app.live.runtime_status import (
     load_runtime_status,
+    sanitize_runtime_status_payload,
     runtime_status_age_seconds,
     runtime_status_is_fresh,
 )
@@ -606,7 +607,10 @@ def _merge_runtime_snapshot(
     snapshot["pod_b_runtime"] = pod_b_runtime
     snapshot["pod_c_runtime"] = pod_c_runtime
     if isinstance(pod_b_runtime, dict):
-        snapshot["pod_b_status"] = pod_b_runtime
+        snapshot["pod_b_status"] = sanitize_runtime_status_payload(
+            pod_b_runtime,
+            include_supervisor=False,
+        )
     if isinstance(snapshot.get("pod_health"), list):
         merged_health: list[dict[str, object]] = []
         for health in snapshot["pod_health"]:
@@ -705,7 +709,7 @@ def _pod_b_status_path_from_snapshot(snapshot: dict[str, object]) -> str:
 def _normalized_runtime_payload(payload: dict[str, object] | None) -> dict[str, object] | None:
     if not isinstance(payload, dict):
         return None
-    return copy.deepcopy(payload)
+    return sanitize_runtime_status_payload(payload)
 
 def _embedded_supervisor_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
     payload: dict[str, object] = {}

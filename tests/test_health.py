@@ -230,6 +230,94 @@ class HealthApiTests(unittest.TestCase):
         self.assertGreaterEqual(payload["enabled_pod_count"], 1)
         self.assertEqual(payload["owned_symbol_count"], 0)
 
+    def test_state_payload_sanitizes_nested_pod_b_supervisor(self) -> None:
+        pod_b_runtime = {
+            "pod": "pod_b",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "process_state": "running",
+            "managed_symbols": ["BTC"],
+            "opening_symbols": ["BTC"],
+            "open_positions": [],
+            "report": {"closed_trade_count": 1, "realized_pnl_usd": 12.5},
+            "supervisor": {
+                "regime": "TrendExpansion",
+                "raw_regime": "TrendExpansion",
+                "enabled_pods": ["pod_a", "pod_b"],
+                "ownership_conflicts": [],
+                "symbol_ownership": [],
+                "symbol_routing": [],
+                "pods": {
+                    "pod_b": {
+                        "enabled": True,
+                        "candidate_symbols": ["BTC"],
+                        "desired_symbols": ["BTC"],
+                        "owned_symbols": ["BTC"],
+                        "target_pct": 0.2,
+                        "target_usd": 200.0,
+                        "capped_by_pod_limit": False,
+                    }
+                },
+                "allocations": {"pod_a": 0.6, "pod_b": 0.2, "pod_c": 0.0, "cash": 0.2},
+                "capital_plan": {
+                    "regime": "TrendExpansion",
+                    "total_equity_usd": 1000.0,
+                    "cash_pct": 0.2,
+                    "cash_usd": 200.0,
+                    "pods": {
+                        "pod_b": {
+                            "target_pct": 0.2,
+                            "target_usd": 200.0,
+                        }
+                    },
+                },
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 30.0,
+                    "atr_ratio": 1.2,
+                    "range_width_bps": 150.0,
+                    "structure_score": 0.5,
+                    "btc_impulse": True,
+                },
+                "pending_regime": None,
+                "pending_regime_count": 0,
+                "regime_transition_count": 2,
+                "regime_evaluation_count": 5,
+                "regime_history": [],
+                "pod_a_signal_preview": [],
+                "pod_b_signal_preview": [{"symbol": "BTC"}],
+                "pod_c_signal_preview": [],
+                "pod_b_status": {
+                    "pod": "pod_b",
+                    "managed_symbols": ["BTC"],
+                    "supervisor": {
+                        "regime": "Range",
+                    },
+                },
+            },
+        }
+
+        def _runtime_loader(path):
+            path_str = str(path)
+            if "pod_b_live_status.json" in path_str:
+                return pod_b_runtime
+            return None
+
+        with patch(
+            "app.observability.api.load_runtime_status",
+            side_effect=_runtime_loader,
+        ), patch(
+            "app.observability.metrics.load_runtime_status",
+            side_effect=_runtime_loader,
+        ), patch(
+            "app.reporting.multi_pod.load_runtime_status",
+            side_effect=_runtime_loader,
+        ):
+            payload = state_payload(self.supervisor, self.metrics)
+
+        self.assertNotIn("supervisor", payload["pod_b_status"])
+        self.assertNotIn("pod_b_status", payload["pod_b_runtime"]["supervisor"])
+        json.dumps(payload)
+
     def test_open_position_rows_preserve_runtime_market_data_and_trailing_fields(self) -> None:
         rows = _open_position_rows(
             {

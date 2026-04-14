@@ -600,6 +600,34 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["pod_b_status"]["open_positions"], [])
         self.assertEqual(snapshot["pod_b_status"]["total_position_count"], 0)
 
+    def test_supervisor_snapshot_strips_embedded_pod_b_supervisor(self) -> None:
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        runtime_payload = {
+            "pod": "pod_b",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "process_state": "running",
+            "managed_symbols": ["BTC"],
+            "opening_symbols": ["BTC"],
+            "open_positions": [],
+            "report": {"closed_trade_count": 1},
+            "supervisor": {
+                "regime": "TrendExpansion",
+            },
+        }
+
+        with patch(
+            "app.trident.supervisor.load_runtime_status",
+            return_value=runtime_payload,
+        ):
+            snapshot = supervisor.snapshot()
+
+        self.assertEqual(snapshot["pod_b_status"]["managed_symbols"], ["BTC"])
+        self.assertNotIn("supervisor", snapshot["pod_b_status"])
+
     def test_supervisor_tracks_regime_history(self) -> None:
         supervisor = TridentSupervisor(
             config=self.config,

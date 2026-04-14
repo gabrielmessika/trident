@@ -4,7 +4,11 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
+from app.live.runtime_status import (
+    load_runtime_status,
+    runtime_status_is_fresh,
+    sanitize_runtime_status_payload,
+)
 from app.settings import AppConfig
 from app.trident.capital_allocator import CapitalAllocator
 from app.trident.kill_switch import KillSwitch
@@ -1030,7 +1034,7 @@ class TridentSupervisor:
         runtime_path = self._pod_b_runtime_status_path()
         payload = load_runtime_status(runtime_path)
         if runtime_status_is_fresh(payload):
-            merged = dict(payload)
+            merged = sanitize_runtime_status_payload(payload, include_supervisor=False)
             merged.setdefault("status_path", str(runtime_path))
             return merged
         return self._build_pod_b_fallback_status(previous_status)

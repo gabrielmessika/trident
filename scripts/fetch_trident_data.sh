@@ -123,6 +123,103 @@ SSH_ARGS+=(
     -o ControlPath="${SSH_CONTROL_PATH}"
 )
 SSH_TARGET="${SSH_USER}@${HOST}"
+RSYNC_BIN=()
+
+detect_sudo_prefix() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        return 0
+    fi
+
+    if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+        printf 'sudo -n'
+        return 0
+    fi
+
+    return 1
+}
+
+run_install_command() {
+    local requires_privilege="$1"
+    shift
+
+    if [[ "${requires_privilege}" == "true" ]]; then
+        local sudo_prefix=""
+        if ! sudo_prefix="$(detect_sudo_prefix)"; then
+            error "rsync est requis mais introuvable, et aucune elevation non interactive n'est disponible."
+            error "Installe rsync manuellement puis relance le script."
+            return 1
+        fi
+
+        if ! ${sudo_prefix} "$@"; then
+            return 1
+        fi
+        return 0
+    fi
+
+    "$@"
+}
+
+install_rsync_if_missing() {
+    if command -v rsync >/dev/null 2>&1; then
+        RSYNC_BIN=(rsync)
+        return 0
+    fi
+
+    warn "rsync absent localement. Tentative d'installation automatique..."
+
+    if command -v dnf >/dev/null 2>&1; then
+        info "Installation de rsync via dnf..."
+        if ! run_install_command true dnf install -y rsync; then
+            warn "La commande dnf a retourne un code non nul; verification de rsync apres tentative..."
+        fi
+    elif command -v yum >/dev/null 2>&1; then
+        info "Installation de rsync via yum..."
+        if ! run_install_command true yum install -y rsync; then
+            warn "La commande yum a retourne un code non nul; verification de rsync apres tentative..."
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        info "Installation de rsync via apt-get..."
+        if ! run_install_command true apt-get update -qq; then
+            warn "La mise a jour APT a retourne un code non nul; verification de rsync apres tentative..."
+        fi
+        if ! command -v rsync >/dev/null 2>&1; then
+            if ! run_install_command true apt-get install -y -qq rsync; then
+                warn "La commande apt-get install a retourne un code non nul; verification de rsync apres tentative..."
+            fi
+        fi
+    elif command -v apk >/dev/null 2>&1; then
+        info "Installation de rsync via apk..."
+        if ! run_install_command true apk add --no-cache rsync; then
+            warn "La commande apk a retourne un code non nul; verification de rsync apres tentative..."
+        fi
+    elif command -v pacman >/dev/null 2>&1; then
+        info "Installation de rsync via pacman..."
+        if ! run_install_command true pacman -Sy --noconfirm rsync; then
+            warn "La commande pacman a retourne un code non nul; verification de rsync apres tentative..."
+        fi
+    elif command -v zypper >/dev/null 2>&1; then
+        info "Installation de rsync via zypper..."
+        if ! run_install_command true zypper --non-interactive install rsync; then
+            warn "La commande zypper a retourne un code non nul; verification de rsync apres tentative..."
+        fi
+    elif command -v brew >/dev/null 2>&1; then
+        info "Installation de rsync via Homebrew..."
+        if ! run_install_command false brew install rsync; then
+            warn "La commande brew a retourne un code non nul; verification de rsync apres tentative..."
+        fi
+    else
+        error "rsync est requis mais aucun gestionnaire de paquets supporte n'a ete detecte."
+        return 1
+    fi
+
+    if ! command -v rsync >/dev/null 2>&1; then
+        error "rsync reste introuvable apres installation."
+        return 1
+    fi
+
+    RSYNC_BIN=(rsync)
+    ok "rsync installe automatiquement"
+}
 
 build_ssh_transport() {
     local parts=()
@@ -142,7 +239,7 @@ ssh_remote() {
 }
 
 rsync_remote() {
-    rsync "$@" -e "${RSYNC_SSH_CMD}"
+    "${RSYNC_BIN[@]}" "$@" -e "${RSYNC_SSH_CMD}"
 }
 
 retry_command() {
@@ -191,6 +288,10 @@ start_ssh_master() {
 }
 
 trap close_ssh_master EXIT
+
+if ! install_rsync_if_missing; then
+    exit 1
+fi
 
 if [[ "${REVIEW_ONLY}" != "true" ]]; then
     if ! retry_command 2 1 start_ssh_master; then
@@ -297,6 +398,30 @@ fetch_remote_file() {
     fi
 }
 
+fetch_optional_remote_file() {
+    local remote_path="$1"
+    local local_path="$2"
+    local label="$3"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        printf '  [dry-run] %s -> %s\n' "${remote_path}" "${local_path}"
+        return
+    fi
+
+    mkdir -p "$(dirname "${local_path}")"
+    if ssh_remote "test -f '${REMOTE_DIR}/${remote_path}'" 2>/dev/null; then
+        if retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}" "${local_path}"; then
+            ok "${label} rapatrie"
+        elif retry_command 2 1 copy_remote_file_via_ssh "${remote_path}" "${local_path}"; then
+            warn "${label} rapatrie via fallback SSH simple"
+        else
+            warn "Impossible de rapatrier ${label} (${remote_path})"
+        fi
+    else
+        info "${label} absent sur le serveur (${remote_path}, optionnel)"
+    fi
+}
+
 fetch_snapshots() {
     info "Rapatriement des snapshots live..."
     local remote_snapshot_dir="${REMOTE_DIR}/data/live_snapshots/"
@@ -386,10 +511,10 @@ fetch_logs_and_runtime() {
     fetch_remote_file "logs/pod_c_live_status.json" "${RUNTIME_DIR}/pod_c_live_status.json" "Runtime status Pod C"
     fetch_remote_file "logs/funding_collector_status.json" "${RUNTIME_DIR}/funding_collector_status.json" "Runtime status Funding Collector"
     fetch_remote_file "logs/tradfi_funding_collector_status.json" "${RUNTIME_DIR}/tradfi_funding_collector_status.json" "Runtime status Tradfi Funding Collector"
-    fetch_remote_file "docs/pod_funding_research_latest.json" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.json" "Research funding JSON"
-    fetch_remote_file "docs/pod_funding_research_latest.md" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.md" "Research funding Markdown"
-    fetch_remote_file "docs/pod_liq_research_latest.json" "${HYDRA_DOCS_DIR}/pod_liq_research_latest.json" "Research liq JSON"
-    fetch_remote_file "docs/pod_liq_research_latest.md" "${HYDRA_DOCS_DIR}/pod_liq_research_latest.md" "Research liq Markdown"
+    fetch_optional_remote_file "docs/pod_funding_research_latest.json" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.json" "Research funding JSON"
+    fetch_optional_remote_file "docs/pod_funding_research_latest.md" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.md" "Research funding Markdown"
+    fetch_optional_remote_file "docs/pod_liq_research_latest.json" "${HYDRA_DOCS_DIR}/pod_liq_research_latest.json" "Research liq JSON"
+    fetch_optional_remote_file "docs/pod_liq_research_latest.md" "${HYDRA_DOCS_DIR}/pod_liq_research_latest.md" "Research liq Markdown"
 }
 
 fetch_docker_logs() {
