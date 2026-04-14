@@ -704,9 +704,19 @@ else:
     pod_a_failures.append("Traceback recent detecte dans les logs Pod A")
 
 if pod_a_journal is not None:
-    pod_a_checks.append(f"Journal Pod A present ({pod_a_journal['line_count']} lignes)")
+    pod_a_journal_line_count = as_int(pod_a_journal.get("line_count"))
+    if pod_a_journal_line_count > 0:
+        pod_a_checks.append(f"Journal Pod A present ({pod_a_journal_line_count} lignes)")
+    elif pod_a_economics["signals"] == 0 and pod_a_economics["closed"] == 0:
+        pod_a_checks.append(
+            "Journal Pod A present mais vide (coherent: aucun signal ni trade depuis le demarrage)"
+        )
+    else:
+        pod_a_warnings.append(
+            "Journal Pod A present mais vide malgre une activite Pod A non nulle"
+        )
 else:
-    pod_a_checks.append("Journal Pod A absent ou encore vide")
+    pod_a_checks.append("Journal Pod A absent")
 
 pod_a_fees_share = pod_a_economics["fees_share_gross"]
 if pod_a_fees_share is not None and pod_a_fees_share >= 0.45:
