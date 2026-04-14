@@ -71,6 +71,20 @@ class TradfiFundingCollectorTests(unittest.TestCase):
             "tradfi_funding_collector",
         )
 
+    def test_runner_keeps_blocked_gold_in_funding_collection(self) -> None:
+        config = load_config("config/trident.toml")
+        config.hyperliquid.observation_universe = ["XYZ:GOLD", "XYZ:CL", "BTC"]
+        config.pod_c.allowed_market_clusters = ["gold", "oil"]
+        config.pod_c.blocked_symbols = ["XYZ:GOLD"]
+        fake = _FakeFundingCollector()
+
+        TradfiFundingCollectorRunner(
+            config,
+            collector=fake,  # type: ignore[arg-type]
+        ).run()
+
+        self.assertEqual(fake.calls[0]["symbols"], ["XYZ:GOLD", "XYZ:CL"])
+
 
 if __name__ == "__main__":
     unittest.main()

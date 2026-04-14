@@ -85,6 +85,15 @@ Dans la config dry-run actuelle, `Pod C` reste **actif**, mais avec un profil pl
 
 - `min_confidence = 0.66`
 - `blocked_symbols = ["XYZ:GOLD"]`
+- `cluster_aware_v2_enabled = true`
+
+La logique `v2` actuellement active en dry-run est volontairement selective :
+
+- `oil` : longs de pullback seulement ;
+- `silver` : breakout long seulement ;
+- `index` : breakout long seulement ;
+- `gold` : toujours observe et collecte, mais bloque en execution via la risk gate ;
+- pas de branche short dediee conservee pour l'instant.
 
 Le but n'est pas de le couper, mais de limiter le bruit d'observabilite sur les patterns les moins convaincants.
 
@@ -161,6 +170,7 @@ Etat actuel:
 - Pod A relie a un pipeline `snapshot -> signal -> trade plan -> risk -> dry-run execution`,
 - Pod B relie au meme pipeline directionnel partage, avec une strategie breakout/vol-expansion crypto,
 - Pod C relie au meme pipeline d'execution/risk que Pod A via un executor directionnel partage,
+- Pod C v2 dry-run active un filtre cluster-aware plus strict, inspire des replays post-execution sur les snapshots fetched,
 - convertisseur `gbot` capable de produire des snapshots enrichis a partir de `l2 + trades`,
 - research Pod C present dans `app/research/pod_c_leadlag.py` et `app/research/pod_c_research_suite.py`,
 - outillage Hydra research/shadow ajoute:

@@ -223,6 +223,7 @@ class PodBConfig:
 class PodCConfig:
     enabled: bool
     allowed_market_clusters: list[str]
+    cluster_aware_v2_enabled: bool
     max_allocation_pct: float
     default_leverage: float
     max_leverage: float
@@ -721,6 +722,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             allowed_market_clusters=_str_list(
                 pod_c_data.get("allowed_market_clusters", ["index", "gold", "silver", "equity"]),
                 upper_values=False,
+            ),
+            cluster_aware_v2_enabled=bool(
+                pod_c_data.get("cluster_aware_v2_enabled", False)
             ),
             max_allocation_pct=float(pod_c_data.get("max_allocation_pct", 0.90)),
             default_leverage=float(pod_c_data.get("default_leverage", 1.0)),

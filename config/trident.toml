@@ -357,6 +357,7 @@ enabled = true
 # Pod C derive son scope du `hyperliquid.observation_universe`
 # filtre par cluster autorise.
 allowed_market_clusters = ["index", "gold", "silver", "equity", "oil", "fx"]
+cluster_aware_v2_enabled = true
 max_allocation_pct = 0.90
 default_leverage = 2.0
 max_leverage = 30.0

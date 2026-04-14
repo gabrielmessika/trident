@@ -170,6 +170,11 @@ Important :
 - Pod B est maintenant un pod directionnel breakout pilote par le superviseur et expose son runtime via `logs/pod_b_live_status.json`
 - le service Docker `pod-b-live` lance maintenant `app.live.pod_b_live_runner` directement
 - Pod C utilise maintenant un panier Tradfi builder-dex actif dans la config; le démarrer sans lui reste utile seulement si on veut un run minimal ou si on désactive explicitement son scope
+- en dry-run courant, `Pod C` active aussi `cluster_aware_v2_enabled = true`:
+  - `oil` en longs de pullback
+  - `silver` en breakout long
+  - `index` en breakout long
+  - `GOLD` reste collecte pour les snapshots/funding/replays, meme s'il est bloque a l'execution par `pod_c.blocked_symbols`
 - `./deploy.sh --start` lance maintenant aussi le collecteur funding global `data/funding_history/current.jsonl`
 - `Pod C` lance en plus son collecteur Tradfi dédié `data/funding_history/pod_c_tradfi.jsonl`
 - le collecteur funding global écrit aussi `logs/funding_collector_status.json`

@@ -45,6 +45,27 @@
   - la config a seulement ete rendue plus conservative:
     - `min_confidence = 0.66`
     - `blocked_symbols = ["XYZ:GOLD"]`
+- **Pod C v2 cluster-aware integre en dry-run**:
+  - nouveau flag de config: `pod_c.cluster_aware_v2_enabled`
+  - config dry-run actuelle: activee
+  - logique retenue a ce stade:
+    - `oil` -> longs de pullback seulement
+    - `silver` -> breakout long seulement
+    - `index` -> breakout long seulement
+    - `gold` -> observe/collecte, mais bloque a l'execution
+    - shorts retires de la variante `v2`
+  - point operatoire important:
+    - `blocked_symbols` ne coupe pas la collecte
+    - `GOLD` continue d'etre present dans les snapshots live et dans `data/funding_history/pod_c_tradfi.jsonl`
+    - le blocage s'applique seulement dans la risk gate au moment de l'acceptation
+  - replay comparatif sur les snapshots fetched:
+    - `cluster_v2 = false`: `803` signaux, `25` trades, `-33.47 USD`, `39.5 USD` de max drawdown, `11.30 USD` de fees
+    - `cluster_v2 = true`: `54` signaux, `3` trades, `+5.69 USD`, `0.0 USD` de max drawdown, `1.64 USD` de fees
+  - delta mesure:
+    - `+39.16 USD` de PnL
+    - `-39.5 USD` de max drawdown
+    - `-9.67 USD` de fees
+  - artefact: `server-data/reviews/pod_c_cluster_v2_integration_20260414.json`
 
 ### 2026-04-12
 

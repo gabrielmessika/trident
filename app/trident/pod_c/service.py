@@ -65,6 +65,8 @@ class TradfiTrendService:
         if not candidates:
             return None
         best = max(candidates, key=lambda item: item.confidence)
+        if not self._passes_cluster_strategy(context, best):
+            return None
         if best.confidence < self.config.min_confidence:
             return None
         return best
@@ -163,6 +165,70 @@ class TradfiTrendService:
         if score <= -1:
             return "short"
         return None
+
+    def _passes_cluster_strategy(
+        self,
+        context: TradfiTrendContext,
+        signal: TradfiTrendSignal,
+    ) -> bool:
+        if not self.config.cluster_aware_v2_enabled:
+            return True
+        cluster = str(context.market_cluster).strip().lower()
+        if cluster == "oil":
+            return self._is_oil_long_pullback(context, signal)
+        if cluster == "silver":
+            return self._is_silver_breakout_long(context, signal)
+        if cluster == "index":
+            return self._is_index_breakout_long(context, signal)
+        return False
+
+    def _is_oil_long_pullback(
+        self,
+        context: TradfiTrendContext,
+        signal: TradfiTrendSignal,
+    ) -> bool:
+        return (
+            signal.setup == "tradfi_continuation_long"
+            and signal.side == "long"
+            and context.trend_bps >= 8.0
+            and context.structure_score >= 0.18
+            and context.trade_flow_bias >= 0.02
+            and -4.0 <= context.vwap_distance_bps <= -0.5
+            and context.bucket_range_bps >= 18.0
+            and context.spread_bps <= 3.0
+        )
+
+    def _is_silver_breakout_long(
+        self,
+        context: TradfiTrendContext,
+        signal: TradfiTrendSignal,
+    ) -> bool:
+        return (
+            signal.setup == "tradfi_continuation_long"
+            and signal.side == "long"
+            and context.trend_bps >= 10.0
+            and context.structure_score >= 0.20
+            and context.trade_flow_bias >= 0.03
+            and 1.0 <= context.vwap_distance_bps <= 6.0
+            and context.bucket_range_bps >= 18.0
+            and context.spread_bps <= 2.0
+        )
+
+    def _is_index_breakout_long(
+        self,
+        context: TradfiTrendContext,
+        signal: TradfiTrendSignal,
+    ) -> bool:
+        return (
+            signal.setup == "tradfi_continuation_long"
+            and signal.side == "long"
+            and context.trend_bps >= 8.0
+            and context.structure_score >= 0.18
+            and context.trade_flow_bias >= 0.02
+            and 1.0 <= context.vwap_distance_bps <= 6.0
+            and context.bucket_range_bps >= 16.0
+            and context.spread_bps <= 2.5
+        )
 
     def _confidence_components(
         self,

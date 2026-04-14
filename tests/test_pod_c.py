@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from app.backtest.pod_c_runner import PodCBacktestRunner
@@ -9,7 +10,12 @@ from app.execution.directional_executor import DirectionalExecutor
 from app.live.pod_c_live_runner import PodCLiveRunner
 from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import load_config
-from app.trident.pod_c import TradfiTrendContextService, TradfiTrendPlanner, TradfiTrendService
+from app.trident.pod_c import (
+    TradfiTrendContext,
+    TradfiTrendContextService,
+    TradfiTrendPlanner,
+    TradfiTrendService,
+)
 from app.trident.types import (
     PodAllocation,
     PodName,
@@ -116,6 +122,7 @@ class _FakeInfoClient:
 class PodCTests(unittest.TestCase):
     def test_tradfi_service_builds_activity_history(self) -> None:
         config = load_config("config/trident.toml")
+        config.pod_c = replace(config.pod_c, cluster_aware_v2_enabled=False)
         service = TradfiTrendService(config.pod_c)
         for _ in range(10):
             service.update_history("SPX", 1000.0, 4)
@@ -125,6 +132,7 @@ class PodCTests(unittest.TestCase):
 
     def test_tradfi_service_detects_continuation_signal(self) -> None:
         config = load_config("config/trident.toml")
+        config.pod_c = replace(config.pod_c, cluster_aware_v2_enabled=False)
         service = TradfiTrendService(config.pod_c)
         context_service = TradfiTrendContextService(config.pod_c, service)
         for _ in range(10):
@@ -185,8 +193,220 @@ class PodCTests(unittest.TestCase):
         self.assertEqual(signals[0].side, "long")
         self.assertEqual(signals[0].setup, "tradfi_continuation_long")
 
+    def test_tradfi_service_cluster_v2_accepts_oil_pullback_long(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c = replace(config.pod_c, cluster_aware_v2_enabled=True)
+        service = TradfiTrendService(config.pod_c)
+        context_service = TradfiTrendContextService(config.pod_c, service)
+        for _ in range(10):
+            context_service.build_contexts(
+                Regime.TREND_EXPANSION,
+                [
+                    SymbolMarketSnapshot(
+                        symbol="XYZ:CL",
+                        price=82.0,
+                        ema_fast=82.1,
+                        ema_slow=81.8,
+                        vwap_distance_bps=-1.0,
+                        structure_score=0.22,
+                        funding_rate=0.0,
+                        spread_bps=1.0,
+                        btc_aligned=True,
+                        book_imbalance=0.10,
+                        trade_flow_bias=0.05,
+                        bucket_volume=2.0,
+                        bucket_trade_count=8,
+                        bucket_range_bps=18.0,
+                        market_cluster="oil",
+                        cluster_aligned=True,
+                        cluster_leader="XYZ:CL",
+                    ),
+                ],
+                owned_symbols={"XYZ:CL"},
+            )
+        contexts = context_service.build_contexts(
+            Regime.TREND_EXPANSION,
+            [
+                SymbolMarketSnapshot(
+                    symbol="XYZ:CL",
+                    price=82.5,
+                    ema_fast=83.2,
+                    ema_slow=82.0,
+                    vwap_distance_bps=-2.5,
+                    structure_score=0.30,
+                    funding_rate=0.0,
+                    spread_bps=1.2,
+                    btc_aligned=True,
+                    book_imbalance=0.10,
+                    trade_flow_bias=0.07,
+                    bucket_volume=3.0,
+                    bucket_trade_count=10,
+                    bucket_range_bps=24.0,
+                    market_cluster="oil",
+                    cluster_aligned=True,
+                    cluster_leader="XYZ:CL",
+                ),
+            ],
+            owned_symbols={"XYZ:CL"},
+        )
+
+        signals = service.evaluate_many(contexts)
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0].symbol, "XYZ:CL")
+        self.assertEqual(signals[0].side, "long")
+
+    def test_tradfi_service_cluster_v2_rejects_oil_short_breakdown(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c = replace(config.pod_c, cluster_aware_v2_enabled=True)
+        service = TradfiTrendService(config.pod_c)
+        context_service = TradfiTrendContextService(config.pod_c, service)
+        for _ in range(10):
+            context_service.build_contexts(
+                Regime.TREND_EXPANSION,
+                [
+                    SymbolMarketSnapshot(
+                        symbol="XYZ:CL",
+                        price=82.0,
+                        ema_fast=81.9,
+                        ema_slow=82.2,
+                        vwap_distance_bps=-2.0,
+                        structure_score=-0.20,
+                        funding_rate=0.0,
+                        spread_bps=1.0,
+                        btc_aligned=True,
+                        book_imbalance=-0.10,
+                        trade_flow_bias=-0.08,
+                        bucket_volume=2.0,
+                        bucket_trade_count=8,
+                        bucket_range_bps=20.0,
+                        market_cluster="oil",
+                        cluster_aligned=True,
+                        cluster_leader="XYZ:CL",
+                    ),
+                ],
+                owned_symbols={"XYZ:CL"},
+            )
+        contexts = context_service.build_contexts(
+            Regime.TREND_EXPANSION,
+            [
+                SymbolMarketSnapshot(
+                    symbol="XYZ:CL",
+                    price=81.2,
+                    ema_fast=80.8,
+                    ema_slow=81.9,
+                    vwap_distance_bps=-3.0,
+                    structure_score=-0.34,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=-0.18,
+                    trade_flow_bias=-0.14,
+                    bucket_volume=3.5,
+                    bucket_trade_count=10,
+                    bucket_range_bps=28.0,
+                    market_cluster="oil",
+                    cluster_aligned=True,
+                    cluster_leader="XYZ:CL",
+                ),
+            ],
+            owned_symbols={"XYZ:CL"},
+        )
+
+        signals = service.evaluate_many(contexts)
+
+        self.assertEqual(signals, [])
+
+    def test_tradfi_service_cluster_v2_accepts_silver_and_index_breakouts_only(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c = replace(
+            config.pod_c,
+            cluster_aware_v2_enabled=True,
+            min_confidence=0.55,
+        )
+        service = TradfiTrendService(config.pod_c)
+        contexts = [
+            TradfiTrendContext(
+                symbol="XYZ:SILVER",
+                regime=Regime.TREND_EXPANSION.value,
+                price=30.0,
+                ema_fast=30.6,
+                ema_slow=29.8,
+                vwap_distance_bps=3.0,
+                spread_bps=1.5,
+                funding_rate=0.0,
+                structure_score=0.28,
+                book_imbalance=0.04,
+                trade_flow_bias=0.05,
+                bucket_range_bps=22.0,
+                bucket_trade_count=8,
+                bucket_volume=2.0,
+                bucket_notional_usd=300.0,
+                activity_ratio=1.2,
+                trade_count_ratio=1.1,
+                trend_bps=12.0,
+                btc_aligned=True,
+                market_cluster="silver",
+                cluster_aligned=True,
+                cluster_leader="XYZ:SILVER",
+            ),
+            TradfiTrendContext(
+                symbol="XYZ:SP500",
+                regime=Regime.TREND_EXPANSION.value,
+                price=5100.0,
+                ema_fast=5120.0,
+                ema_slow=5088.0,
+                vwap_distance_bps=2.0,
+                spread_bps=1.0,
+                funding_rate=0.0,
+                structure_score=0.26,
+                book_imbalance=0.05,
+                trade_flow_bias=0.04,
+                bucket_range_bps=18.0,
+                bucket_trade_count=9,
+                bucket_volume=1.0,
+                bucket_notional_usd=150.0,
+                activity_ratio=1.2,
+                trade_count_ratio=1.0,
+                trend_bps=9.0,
+                btc_aligned=True,
+                market_cluster="index",
+                cluster_aligned=True,
+                cluster_leader="XYZ:SP500",
+            ),
+            TradfiTrendContext(
+                symbol="XYZ:GOLD",
+                regime=Regime.TREND_EXPANSION.value,
+                price=3200.0,
+                ema_fast=3215.0,
+                ema_slow=3190.0,
+                vwap_distance_bps=2.0,
+                spread_bps=1.0,
+                funding_rate=0.0,
+                structure_score=0.26,
+                book_imbalance=0.05,
+                trade_flow_bias=0.04,
+                bucket_range_bps=18.0,
+                bucket_trade_count=9,
+                bucket_volume=1.0,
+                bucket_notional_usd=150.0,
+                activity_ratio=1.2,
+                trade_count_ratio=1.0,
+                trend_bps=9.0,
+                btc_aligned=True,
+                market_cluster="gold",
+                cluster_aligned=True,
+                cluster_leader="XYZ:GOLD",
+            ),
+        ]
+
+        signals = service.evaluate_many(contexts)
+
+        self.assertEqual([signal.symbol for signal in signals], ["XYZ:SILVER", "XYZ:SP500"])
+
     def test_tradfi_planner_builds_trade_plan(self) -> None:
         config = load_config("config/trident.toml")
+        config.pod_c = replace(config.pod_c, cluster_aware_v2_enabled=False)
         service = TradfiTrendService(config.pod_c)
         context_service = TradfiTrendContextService(config.pod_c, service)
         planner = TradfiTrendPlanner(config)
@@ -453,6 +673,17 @@ class PodCTests(unittest.TestCase):
             runner.config.hyperliquid.observation_universe,
             ["XYZ:GOLD", "XYZ:SP500", "XYZ:XYZ100", "XYZ:JPY"],
         )
+
+    def test_pod_c_live_runner_keeps_blocked_gold_in_collection_scope(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c.enabled = True
+        config.hyperliquid.observation_universe = ["XYZ:GOLD", "XYZ:CL", "BTC"]
+        config.pod_c.allowed_market_clusters = ["gold", "oil"]
+        config.pod_c.blocked_symbols = ["XYZ:GOLD"]
+
+        runner = PodCLiveRunner(config)
+
+        self.assertEqual(runner.coins, ["XYZ:GOLD", "XYZ:CL"])
 
     def test_pod_c_maintenance_refresh_updates_open_position_market_data_without_new_records(self) -> None:
         config = load_config("config/trident.toml")
