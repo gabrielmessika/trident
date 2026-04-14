@@ -230,6 +230,44 @@ class HealthApiTests(unittest.TestCase):
         self.assertGreaterEqual(payload["enabled_pod_count"], 1)
         self.assertEqual(payload["owned_symbol_count"], 0)
 
+    def test_metrics_payload_uses_nested_pod_b_runtime_report(self) -> None:
+        self.supervisor.config.pod_b.enabled = True
+        pod_b_runtime = {
+            "pod": "pod_b",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "process_state": "running",
+            "open_positions": [{"symbol": "BTC", "unrealized_pnl_usd": 1.25}],
+            "report": {
+                "closed_trade_count": 14,
+                "realized_pnl_usd": 12.12,
+            },
+            "supervisor": {
+                "pods": {
+                    "pod_b": {
+                        "owned_symbols": ["AAVE", "BTC", "XRP"],
+                    }
+                },
+                "pod_b_signal_preview": [],
+            },
+        }
+
+        def _metrics_runtime_loader(path):
+            path_str = str(path)
+            if "pod_b_live_status.json" in path_str:
+                return pod_b_runtime
+            return None
+
+        with patch(
+            "app.observability.metrics.load_runtime_status",
+            side_effect=_metrics_runtime_loader,
+        ):
+            payload = metrics_payload(self.supervisor, self.metrics)
+
+        self.assertEqual(payload["pod_b_managed_symbol_count"], 3)
+        self.assertEqual(payload["pod_b_total_position_count"], 1)
+        self.assertEqual(payload["pod_b_total_fill_count"], 14)
+        self.assertEqual(payload["pod_b_realized_pnl_usd"], 12.12)
+
     def test_state_payload_sanitizes_nested_pod_b_supervisor(self) -> None:
         pod_b_runtime = {
             "pod": "pod_b",

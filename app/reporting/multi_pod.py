@@ -268,10 +268,7 @@ def build_runtime_report(
 
 
 def _pod_b_runtime_status(supervisor: TridentSupervisor) -> dict[str, object]:
-    status_path = Path("logs/pod_b_live_status.json")
-    if not status_path.exists():
-        return supervisor.state.pod_b_status
-    payload = load_runtime_status(status_path)
+    payload = load_runtime_status(Path("logs/pod_b_live_status.json"))
     if runtime_status_is_fresh(payload):
         return payload
     return supervisor.state.pod_b_status

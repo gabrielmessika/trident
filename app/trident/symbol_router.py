@@ -27,6 +27,7 @@ class SymbolRouter:
     min_assign_score: float = 0.45
     min_hold_score: float = 0.35
     hysteresis_margin: float = 0.15
+    capacity_preserve_margin: float = 0.18
     reassignment_cooldown_seconds: int = 900
     reassignment_debounce_min_score: float = 0.15
     reassignment_debounce_seconds_by_symbol: dict[str, int] | None = None
@@ -37,6 +38,9 @@ class SymbolRouter:
         self.min_assign_score = float(routing.min_assign_score)
         self.min_hold_score = float(routing.min_hold_score)
         self.hysteresis_margin = float(routing.hysteresis_margin)
+        # Capacity trims are especially noisy; preserve the incumbent a bit longer
+        # than ordinary reassignment hysteresis to avoid minute-by-minute flips.
+        self.capacity_preserve_margin = max(self.hysteresis_margin, 0.18)
         self.reassignment_cooldown_seconds = int(routing.reassignment_cooldown_seconds)
         self.reassignment_debounce_min_score = float(routing.reassignment_debounce_min_score)
         self.reassignment_debounce_seconds_by_symbol = {
@@ -171,7 +175,10 @@ class SymbolRouter:
                         if (
                             item.previous_owner == overflowing_pod
                             and item.pod_scores.get(overflowing_pod, 0.0)
-                            >= max(self.min_hold_score, best_score - self.hysteresis_margin)
+                            >= max(
+                                self.min_hold_score,
+                                best_score - self.capacity_preserve_margin,
+                            )
                         )
                         else 0
                     ),

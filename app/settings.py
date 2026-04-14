@@ -213,6 +213,7 @@ class PodBConfig:
     bis_stop_ceiling_bps: float
     bis_enable_longs: bool
     bis_enable_shorts: bool
+    bis_strict_continuation_filter_enabled: bool
     bis_enabled_setups: list[str]
     bis_max_concurrent_positions: int
     bis_max_total_open_risk_pct: float
@@ -702,6 +703,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             bis_stop_ceiling_bps=float(pod_b_data.get("bis_stop_ceiling_bps", 80.0)),
             bis_enable_longs=bool(pod_b_data.get("bis_enable_longs", True)),
             bis_enable_shorts=bool(pod_b_data.get("bis_enable_shorts", False)),
+            bis_strict_continuation_filter_enabled=bool(
+                pod_b_data.get("bis_strict_continuation_filter_enabled", False)
+            ),
             bis_enabled_setups=_str_list(
                 pod_b_data.get("bis_enabled_setups", ["vol_expansion_long"])
             ),

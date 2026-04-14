@@ -51,6 +51,47 @@ class RoutingStabilityTests(unittest.TestCase):
         self.assertEqual(resolved["ETH"].mode, "allocation_capacity")
         self.assertEqual(resolved["ETH"].reason, "capacity_trim:pod_b")
 
+    def test_symbol_router_capacity_trim_uses_wider_preservation_margin_for_incumbent(self) -> None:
+        self.config.trident.capital.reference_equity_usd = 100.0
+        self.config.trident.capital.min_symbol_allocation_usd = 25.0
+        self.config.trident.allocations.dead_zone.pod_a = 0.0
+        self.config.trident.allocations.dead_zone.pod_b = 0.30
+        self.config.trident.allocations.dead_zone.pod_c = 0.0
+        self.config.trident.allocations.dead_zone.cash = 0.70
+        router = SymbolRouter(self.config)
+        decisions = [
+            SymbolRoutingDecision(
+                symbol="BTC",
+                owner=PodName.POD_B,
+                mode="dynamic_affinity",
+                reason="best_affinity:pod_b (0.40)",
+                previous_owner=PodName.POD_B,
+                candidate_pods=[PodName.POD_B],
+                pod_scores={PodName.POD_B: 0.40},
+            ),
+            SymbolRoutingDecision(
+                symbol="ETH",
+                owner=PodName.POD_B,
+                mode="dynamic_affinity",
+                reason="best_affinity:pod_b (0.55)",
+                previous_owner=None,
+                candidate_pods=[PodName.POD_B],
+                pod_scores={PodName.POD_B: 0.55},
+            ),
+        ]
+
+        resolved = {
+            item.symbol: item
+            for item in router._enforce_capacity_limits(
+                decisions,
+                regime=Regime.DEAD_ZONE,
+            )
+        }
+
+        self.assertEqual(resolved["BTC"].owner, PodName.POD_B)
+        self.assertIsNone(resolved["ETH"].owner)
+        self.assertEqual(resolved["ETH"].reason, "capacity_trim:pod_b")
+
     def test_symbol_router_reports_below_threshold_when_zero_capacity_fallback_is_trimmed(self) -> None:
         self.config.trident.capital.reference_equity_usd = 1000.0
         self.config.trident.capital.min_symbol_allocation_usd = 25.0

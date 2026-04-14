@@ -64,6 +64,7 @@ En pratique :
 
 - il attend une compression ou un contexte d'impulsion propre ;
 - il ne travaille que sur un sous-ensemble du panier crypto que le superviseur lui attribue ;
+- en dry-run courant, il applique un **strict continuation filter** sur les longs `vol_expansion_long` pour ne garder que les expansions deja propres et alignées (structure, VWAP, flow, spread, range) ;
 - il peut recevoir des symbols en `DeadZone` pour les surveiller, puis ne rien faire tant qu'aucun setup propre n'apparaît.
 
 Autrement dit, `Pod B` ne fait plus du market making de range. C'est un pod **directionnel**, plus sélectif que `Pod A`, destiné aux breakouts et expansions fraîches.
@@ -79,6 +80,13 @@ L'idée simple est la suivante :
 - son univers est volontairement séparé de `Pod A`/`Pod B`, qui restent focalisés sur `crypto`.
 
 Donc `Pod C` n'est plus un pod de lead-lag crypto opportuniste. C'est un pod **directionnel Tradfi HL**, cluster-aware (`index`, `gold`, `silver`, `oil`, `fx`, `equity`).
+
+Dans la config dry-run actuelle, `Pod C` reste **actif**, mais avec un profil plus conservateur :
+
+- `min_confidence = 0.66`
+- `blocked_symbols = ["XYZ:GOLD"]`
+
+Le but n'est pas de le couper, mais de limiter le bruit d'observabilite sur les patterns les moins convaincants.
 
 ### Qui décide quel pod gère quelle crypto ?
 
@@ -379,10 +387,14 @@ Rapatriement et analyse locale:
   - revue distante legere
   - recupere surtout l'etat courant, les tails de logs et genere les prompts LLM
 - `./scripts/fetch_trident_data.sh`
-- rapatrie maintenant le vrai runtime Pod B depuis `logs/pod_b_live_status.json` (plus les anciens artefacts `passivbot`)
   - rapatrie les snapshots live, logs runtime, statuses, snapshots API et logs Docker
+  - rapatrie le vrai runtime Pod B depuis `logs/pod_b_live_status.json` (plus les anciens artefacts `passivbot`)
+  - installe automatiquement `rsync` localement si le binaire est absent et qu'un gestionnaire de paquets supporte est disponible
+  - traite les artefacts Hydra research `docs/pod_*_research_latest.*` comme **optionnels**
   - peut ensuite relancer automatiquement `trident_dry_run_review.sh`
   - permet une vraie analyse locale plus complete sur plusieurs heures / jours
+- la review locale ne se limite plus a verifier "pas de crash"
+  - elle confronte aussi les collecteurs, les economics par pod, la fraicheur strategique et les incoherences d'observabilite
 
 Exemples:
 

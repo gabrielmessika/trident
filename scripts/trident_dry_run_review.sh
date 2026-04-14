@@ -196,6 +196,8 @@ PY
     copy_if_exists "${docker_dir}/pod-a-live.log" "${RAW_DIR}/pod_a_log_tail.txt" || : > "${RAW_DIR}/pod_a_log_tail.txt"
     copy_if_exists "${docker_dir}/pod-b-live.log" "${RAW_DIR}/pod_b_log_tail.txt" || : > "${RAW_DIR}/pod_b_log_tail.txt"
     copy_if_exists "${docker_dir}/pod-c-live.log" "${RAW_DIR}/pod_c_log_tail.txt" || : > "${RAW_DIR}/pod_c_log_tail.txt"
+    copy_if_exists "${docker_dir}/funding-collector.log" "${RAW_DIR}/funding_collector_log_tail.txt" || : > "${RAW_DIR}/funding_collector_log_tail.txt"
+    copy_if_exists "${docker_dir}/tradfi-funding-collector.log" "${RAW_DIR}/tradfi_funding_collector_log_tail.txt" || : > "${RAW_DIR}/tradfi_funding_collector_log_tail.txt"
 
     python3 - "${RAW_DIR}/health.json" "${RAW_DIR}/report.json" "${runtime_dir}" "${RAW_DIR}/docker_ps.txt" <<'PY'
 import json
@@ -286,6 +288,8 @@ else
     capture_remote "pod_a_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-a-live 2>&1"
     capture_remote "pod_b_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-b-live 2>&1"
     capture_remote "pod_c_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-c-live 2>&1"
+    capture_remote "funding_collector_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} funding-collector 2>&1"
+    capture_remote "tradfi_funding_collector_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} tradfi-funding-collector 2>&1"
 fi
 
 info "Analyse locale des artefacts..."
@@ -405,6 +409,26 @@ def count_log_patterns(text: str) -> dict[str, int]:
     }
 
 
+def as_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def as_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_ratio(numerator: float, denominator: float) -> float | None:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
 def pod_report(report: dict[str, object], pod_name: str) -> dict[str, object] | None:
     pods = report.get("pods", [])
     if not isinstance(pods, list):
@@ -421,6 +445,71 @@ def write_prompt(name: str, title: str, body: str) -> str:
     return str(path)
 
 
+def service_report(report: dict[str, object], service_name: str) -> dict[str, object] | None:
+    services = report.get("services", [])
+    if not isinstance(services, list):
+        return None
+    for service in services:
+        if isinstance(service, dict) and service.get("service") == service_name:
+            return service
+    return None
+
+
+def nested_report(payload: dict[str, object], key: str) -> dict[str, object]:
+    node = payload.get(key, {})
+    if not isinstance(node, dict):
+        return {}
+    report_node = node.get("report", {})
+    return report_node if isinstance(report_node, dict) else {}
+
+
+def summarize_pod_economics(payload: dict[str, object]) -> dict[str, float | int | None]:
+    signals = as_int(payload.get("signal_count"))
+    accepted = as_int(payload.get("accepted_count"))
+    opened = as_int(payload.get("opened_count"))
+    skipped = as_int(payload.get("skipped_open_count"))
+    closed = as_int(payload.get("closed_trade_count"))
+    wins = as_int(payload.get("win_count"))
+    realized = as_float(payload.get("realized_pnl_usd"))
+    gross = as_float(payload.get("gross_pnl_usd"))
+    fees = as_float(payload.get("fees_usd"))
+    drawdown = as_float(payload.get("max_drawdown_usd"))
+    return {
+        "signals": signals,
+        "accepted": accepted,
+        "opened": opened,
+        "skipped": skipped,
+        "closed": closed,
+        "wins": wins,
+        "realized_pnl_usd": realized,
+        "gross_pnl_usd": gross,
+        "fees_usd": fees,
+        "max_drawdown_usd": drawdown,
+        "accepted_rate": safe_ratio(accepted, signals),
+        "open_rate_given_accepted": safe_ratio(opened, accepted),
+        "skip_rate_given_accepted": safe_ratio(skipped, accepted),
+        "win_rate": safe_ratio(wins, closed),
+        "fees_share_gross": safe_ratio(fees, gross),
+    }
+
+
+def pod_day_metrics(payload: dict[str, object], day: str) -> dict[str, float | int]:
+    signals_by_date = payload.get("signals_by_date", {})
+    accepted_by_date = payload.get("accepted_by_date", {})
+    rejected_by_date = payload.get("rejected_by_date", {})
+    pnl_by_date = payload.get("pnl_by_date", {})
+    return {
+        "signals": as_int(signals_by_date.get(day)) if isinstance(signals_by_date, dict) else 0,
+        "accepted": (
+            as_int(accepted_by_date.get(day)) if isinstance(accepted_by_date, dict) else 0
+        ),
+        "rejected": (
+            as_int(rejected_by_date.get(day)) if isinstance(rejected_by_date, dict) else 0
+        ),
+        "pnl_usd": as_float(pnl_by_date.get(day)) if isinstance(pnl_by_date, dict) else 0.0,
+    }
+
+
 docker_ps = parse_docker_ps(read_text("docker_ps.txt"))
 state = load_json("state.json") or {}
 metrics = load_json("metrics.json") or {}
@@ -434,12 +523,42 @@ api_log_patterns = count_log_patterns(read_text("api_log_tail.txt"))
 pod_a_log_patterns = count_log_patterns(read_text("pod_a_log_tail.txt"))
 pod_b_log_patterns = count_log_patterns(read_text("pod_b_log_tail.txt"))
 pod_c_log_patterns = count_log_patterns(read_text("pod_c_log_tail.txt"))
+funding_collector_log_patterns = count_log_patterns(read_text("funding_collector_log_tail.txt"))
+tradfi_funding_collector_log_patterns = count_log_patterns(
+    read_text("tradfi_funding_collector_log_tail.txt")
+)
 
 ownership_conflicts = int(metrics.get("ownership_conflict_count", 0) or 0)
 pod_b_status = state.get("pod_b_status", {}) if isinstance(state.get("pod_b_status", {}), dict) else {}
 pod_a_report = pod_report(report, "pod_a") or {}
 pod_b_report = pod_report(report, "pod_b") or {}
 pod_c_report = pod_report(report, "pod_c") or {}
+pod_a_runtime_report = nested_report(state, "pod_a_runtime")
+pod_b_runtime_report = nested_report(state, "pod_b_status")
+pod_c_runtime_report = nested_report(state, "pod_c_runtime")
+funding_service_report = service_report(report, "funding_collector") or {}
+tradfi_funding_service_report = service_report(report, "tradfi_funding_collector") or {}
+pod_a_economics = summarize_pod_economics(pod_a_report)
+pod_b_economics = summarize_pod_economics(pod_b_report)
+pod_c_economics = summarize_pod_economics(pod_c_report)
+latest_business_date = (
+    str(latest_snapshot["timestamp"])[:10] if latest_snapshot is not None else ""
+)
+pod_a_today = (
+    pod_day_metrics(pod_a_runtime_report or pod_a_report, latest_business_date)
+    if latest_business_date
+    else {}
+)
+pod_b_today = (
+    pod_day_metrics(pod_b_runtime_report or pod_b_report, latest_business_date)
+    if latest_business_date
+    else {}
+)
+pod_c_today = (
+    pod_day_metrics(pod_c_runtime_report or pod_c_report, latest_business_date)
+    if latest_business_date
+    else {}
+)
 
 stages: list[StageResult] = []
 
@@ -472,6 +591,7 @@ def append_stage(
 # Etape 1: base infra + collector + snapshots
 infra_checks: list[str] = []
 infra_failures: list[str] = []
+infra_warnings: list[str] = []
 
 if health.get("status") == "ok":
     infra_checks.append("API /health repond ok")
@@ -508,13 +628,49 @@ else:
         "Logs API recentes contiennent des erreurs/tracebacks"
     )
 
+if bool(funding_service_report.get("healthy", False)):
+    infra_checks.append("Funding Collector remonte healthy dans /api/report")
+else:
+    infra_failures.append("Funding Collector non healthy dans /api/report")
+
+if tradfi_funding_service_report:
+    if bool(tradfi_funding_service_report.get("healthy", False)):
+        infra_checks.append("Tradfi Funding Collector remonte healthy dans /api/report")
+    else:
+        infra_failures.append("Tradfi Funding Collector non healthy dans /api/report")
+
+if funding_collector_log_patterns["traceback"] > 0 or funding_collector_log_patterns["connection"] > 0:
+    infra_warnings.append(
+        "Funding Collector a des erreurs reseau recentes dans les logs Docker"
+    )
+else:
+    infra_checks.append("Funding Collector sans traceback/timeout recent")
+
+if (
+    tradfi_funding_collector_log_patterns["traceback"] > 0
+    or tradfi_funding_collector_log_patterns["connection"] > 0
+):
+    infra_warnings.append(
+        "Tradfi Funding Collector a des erreurs reseau recentes dans les logs Docker"
+    )
+else:
+    infra_checks.append("Tradfi Funding Collector sans traceback/timeout recent")
+
 if infra_failures:
     append_stage(
         stage="etape_1_infra_et_collector",
         status="FAIL",
         summary="Le socle dry-run n'est pas sain; corriger l'infra avant d'analyser le trading.",
         deterministic=True,
-        checks=infra_checks + infra_failures,
+        checks=infra_checks + infra_warnings + infra_failures,
+    )
+elif infra_warnings:
+    append_stage(
+        stage="etape_1_infra_et_collector",
+        status="WARN",
+        summary="Le socle dry-run tient, mais les collecteurs montrent une fragilite operationnelle a surveiller.",
+        deterministic=True,
+        checks=infra_checks + infra_warnings,
     )
 else:
     append_stage(
@@ -529,6 +685,7 @@ else:
 # Etape 2: Pod A
 pod_a_checks: list[str] = []
 pod_a_failures: list[str] = []
+pod_a_warnings: list[str] = []
 pod_a_journal = journal_files.get("logs/pod_a_live.jsonl")
 
 if container_is_running("trident-pod-a-live"):
@@ -551,6 +708,33 @@ if pod_a_journal is not None:
 else:
     pod_a_checks.append("Journal Pod A absent ou encore vide")
 
+pod_a_fees_share = pod_a_economics["fees_share_gross"]
+if pod_a_fees_share is not None and pod_a_fees_share >= 0.45:
+    pod_a_warnings.append(
+        f"Fees Pod A lourdes par rapport au gross PnL ({pod_a_economics['fees_usd']:.2f} USD / {pod_a_economics['gross_pnl_usd']:.2f} USD)"
+    )
+if (
+    pod_a_economics["realized_pnl_usd"] > 0.0
+    and pod_a_economics["max_drawdown_usd"] > max(pod_a_economics["realized_pnl_usd"] * 1.5, 10.0)
+):
+    pod_a_warnings.append(
+        f"Max drawdown Pod A eleve vs PnL net ({pod_a_economics['max_drawdown_usd']:.2f} USD vs {pod_a_economics['realized_pnl_usd']:.2f} USD)"
+    )
+pod_a_signals_by_date = pod_a_report.get("signals_by_date", {})
+pod_a_accepted_by_date = pod_a_report.get("accepted_by_date", {})
+if isinstance(pod_a_signals_by_date, dict) and latest_snapshot is not None:
+    latest_date = str(latest_snapshot["timestamp"])[:10]
+    latest_signal_count = as_int(pod_a_signals_by_date.get(latest_date))
+    latest_accept_count = (
+        as_int(pod_a_accepted_by_date.get(latest_date))
+        if isinstance(pod_a_accepted_by_date, dict)
+        else 0
+    )
+    if latest_signal_count > 0 and latest_accept_count == 0:
+        pod_a_warnings.append(
+            f"Pod A a vu {latest_signal_count} signaux le {latest_date} sans aucune acceptation"
+        )
+
 pod_a_prompt = None
 if not pod_a_failures:
     pod_a_prompt = write_prompt(
@@ -567,6 +751,7 @@ if not pod_a_failures:
             f"- pod_a_healthy: {pod_a_report.get('healthy')}\n"
             f"- pod_a_target_usd: {pod_a_report.get('target_usd')}\n"
             f"- pod_a_preview_count: {pod_a_report.get('preview_count')}\n"
+            f"- pod_a_economics: {pod_a_economics}\n"
             f"- dernier snapshot: {latest_snapshot}\n"
             f"- journal Pod A: {pod_a_journal}\n"
             f"- log patterns Pod A: {pod_a_log_patterns}\n\n"
@@ -590,7 +775,16 @@ if pod_a_failures:
         status="FAIL",
         summary="Pod A n'est pas suffisamment sain pour une revue qualitative.",
         deterministic=True,
-        checks=pod_a_checks + pod_a_failures,
+        checks=pod_a_checks + pod_a_warnings + pod_a_failures,
+    )
+elif pod_a_warnings:
+    append_stage(
+        stage="etape_2_pod_a_dry_run",
+        status="WARN",
+        summary="Pod A tient mecaniquement, mais ses economics et sa fraicheur de signal ne sont pas encore convaincants.",
+        deterministic=False,
+        checks=pod_a_checks + pod_a_warnings,
+        prompt_file=pod_a_prompt,
     )
 else:
     append_stage(
@@ -606,6 +800,7 @@ else:
 # Etape 3: Pod A + Pod B
 pod_b_checks: list[str] = []
 pod_b_failures: list[str] = []
+pod_b_warnings: list[str] = []
 
 if container_is_running("trident-pod-b-live"):
     pod_b_checks.append("Pod B tourne")
@@ -631,6 +826,16 @@ if container_is_running("trident-pod-b-live"):
     else:
         pod_b_failures.append("Traceback recent detecte dans les logs Pod B")
 
+    if pod_b_log_patterns["rate_limit"] > 0:
+        pod_b_warnings.append(
+            f"Pod B montre {pod_b_log_patterns['rate_limit']} signalement(s) de rate limit recent(s)"
+        )
+    pod_b_fees_share = pod_b_economics["fees_share_gross"]
+    if pod_b_fees_share is not None and pod_b_fees_share >= 0.5:
+        pod_b_warnings.append(
+            f"Fees Pod B lourdes par rapport au gross PnL ({pod_b_economics['fees_usd']:.2f} USD / {pod_b_economics['gross_pnl_usd']:.2f} USD)"
+        )
+
     pod_b_prompt = None
     if not pod_b_failures:
         pod_b_prompt = write_prompt(
@@ -648,6 +853,7 @@ if container_is_running("trident-pod-b-live"):
                 f"- pod_b_realized_pnl_usd: {pod_b_report.get('realized_pnl_usd')}\n"
                 f"- pod_b_total_unrealized_pnl_usd: {pod_b_report.get('total_unrealized_pnl_usd')}\n"
                 f"- pod_b_runtime_config_present: {pod_b_runtime_present}\n"
+                f"- pod_b_economics: {pod_b_economics}\n"
                 f"- log patterns Pod B: {pod_b_log_patterns}\n\n"
                 "Artefacts a lire:\n"
                 f"- {raw_dir / 'state.json'}\n"
@@ -669,7 +875,16 @@ if container_is_running("trident-pod-b-live"):
             status="FAIL",
             summary="La cohabitation avec Pod B n'est pas saine sur les checks mecaniques.",
             deterministic=True,
-            checks=pod_b_checks + pod_b_failures,
+            checks=pod_b_checks + pod_b_warnings + pod_b_failures,
+        )
+    elif pod_b_warnings:
+        append_stage(
+            stage="etape_3_pod_a_plus_pod_b",
+            status="WARN",
+            summary="Pod B reste globalement defendable, mais quelques signaux operationnels meritent surveillance.",
+            deterministic=False,
+            checks=pod_b_checks + pod_b_warnings,
+            prompt_file=pod_b_prompt,
         )
     else:
         append_stage(
@@ -694,6 +909,7 @@ else:
 if container_is_running("trident-pod-c-live"):
     pod_c_checks: list[str] = []
     pod_c_failures: list[str] = []
+    pod_c_warnings: list[str] = []
     if bool(pod_c_report.get("healthy", False)):
         pod_c_checks.append("Supervisor considere Pod C healthy")
     else:
@@ -702,6 +918,44 @@ if container_is_running("trident-pod-c-live"):
         pod_c_checks.append("Pas de traceback recent dans les logs Pod C")
     else:
         pod_c_failures.append("Traceback recent detecte dans les logs Pod C")
+
+    pod_c_fees_share = pod_c_economics["fees_share_gross"]
+    if pod_c_economics["realized_pnl_usd"] < 0.0:
+        pod_c_warnings.append(
+            f"Pod C est negatif en net ({pod_c_economics['realized_pnl_usd']:.2f} USD)"
+        )
+    if pod_c_fees_share is not None and pod_c_fees_share > 1.0:
+        pod_c_warnings.append(
+            f"Fees Pod C superieures au gross PnL ({pod_c_economics['fees_usd']:.2f} USD / {pod_c_economics['gross_pnl_usd']:.2f} USD)"
+        )
+    if (
+        pod_c_economics["skip_rate_given_accepted"] is not None
+        and pod_c_economics["skip_rate_given_accepted"] >= 0.6
+    ):
+        pod_c_warnings.append(
+            f"Pod C convertit mal ses acceptations en ouvertures ({pod_c_economics['skipped']} skipped / {pod_c_economics['accepted']} acceptes)"
+        )
+    pod_c_rejections = (
+        pod_c_report.get("rejections_by_reason", {})
+        if isinstance(pod_c_report.get("rejections_by_reason", {}), dict)
+        else {}
+    )
+    margin_below_min_count = as_int(pod_c_rejections.get("margin_below_min"))
+    if margin_below_min_count >= 25:
+        pod_c_warnings.append(
+            f"Pod C est fortement contraint par margin_below_min ({margin_below_min_count} rejets)"
+        )
+    if (
+        pod_c_economics["realized_pnl_usd"] < 0.0
+        and pod_c_fees_share is not None
+        and pod_c_fees_share > 1.0
+        and margin_below_min_count >= 25
+        and pod_c_economics["skip_rate_given_accepted"] is not None
+        and pod_c_economics["skip_rate_given_accepted"] >= 0.6
+    ):
+        pod_c_failures.append(
+            "Pod C n'est pas defendable economiquement sur cette fenetre: PnL net negatif, fees dominantes et forte friction de gating."
+        )
 
     pod_c_prompt = None
     if not pod_c_failures:
@@ -715,6 +969,7 @@ if container_is_running("trident-pod-c-live"):
                 f"- pod_c_healthy: {pod_c_report.get('healthy')}\n"
                 f"- pod_c_target_usd: {pod_c_report.get('target_usd')}\n"
                 f"- pod_c_preview_count: {pod_c_report.get('preview_count')}\n"
+                f"- pod_c_economics: {pod_c_economics}\n"
                 f"- log patterns Pod C: {pod_c_log_patterns}\n\n"
                 "Artefacts a lire:\n"
                 f"- {raw_dir / 'state.json'}\n"
@@ -731,9 +986,18 @@ if container_is_running("trident-pod-c-live"):
         append_stage(
             stage="etape_4_pod_c_optionnel",
             status="FAIL",
-            summary="Pod C tourne mais les checks mecaniques ne sont pas satisfaisants.",
+            summary="Pod C tourne, mais son profil economique sur cette fenetre n'est pas defendable.",
             deterministic=True,
-            checks=pod_c_checks + pod_c_failures,
+            checks=pod_c_checks + pod_c_warnings + pod_c_failures,
+        )
+    elif pod_c_warnings:
+        append_stage(
+            stage="etape_4_pod_c_optionnel",
+            status="WARN",
+            summary="Pod C reste vivant, mais il ressemble davantage a un pod de recherche qu'a un pod live credible.",
+            deterministic=False,
+            checks=pod_c_checks + pod_c_warnings,
+            prompt_file=pod_c_prompt,
         )
     else:
         append_stage(
@@ -754,11 +1018,87 @@ else:
     )
 
 
+# Etape 5: fraicheur strategique
+strategic_checks: list[str] = []
+strategic_failures: list[str] = []
+strategic_warnings: list[str] = []
+
+if latest_business_date:
+    strategic_checks.append(f"Date strategique evaluee: {latest_business_date}")
+else:
+    strategic_failures.append("Impossible de determiner la date de fraicheur strategique")
+
+freshness_specs = [
+    ("Pod A", pod_a_report, pod_a_today),
+    ("Pod B", pod_b_report, pod_b_today),
+    ("Pod C", pod_c_report, pod_c_today),
+]
+fresh_active_pods = 0
+stale_active_pods = 0
+for label, payload, day_metrics in freshness_specs:
+    if not latest_business_date:
+        continue
+    target_usd = as_float(payload.get("target_usd"))
+    if target_usd <= 0.0:
+        strategic_checks.append(f"{label} hors cible aujourd'hui (target_usd={target_usd:.2f})")
+        continue
+    signals = as_int(day_metrics.get("signals"))
+    accepted = as_int(day_metrics.get("accepted"))
+    pnl_usd = as_float(day_metrics.get("pnl_usd"))
+    if signals == 0:
+        stale_active_pods += 1
+        strategic_warnings.append(
+            f"{label} a un target_usd actif ({target_usd:.2f}) mais aucun signal sur {latest_business_date}"
+        )
+        continue
+    if accepted == 0:
+        stale_active_pods += 1
+        strategic_warnings.append(
+            f"{label} a produit {signals} signaux sur {latest_business_date} sans aucune acceptation"
+        )
+        continue
+    fresh_active_pods += 1
+    strategic_checks.append(
+        f"{label} reste actif sur {latest_business_date} ({signals} signaux, {accepted} acceptes, pnl_jour={pnl_usd:.2f} USD)"
+    )
+
+if latest_business_date and fresh_active_pods == 0 and stale_active_pods > 0:
+    strategic_failures.append(
+        "Aucun pod cible ne montre encore une activite exploitable sur la journee courante"
+    )
+
+if strategic_failures:
+    append_stage(
+        stage="etape_5_fraicheur_strategique",
+        status="FAIL",
+        summary="Les artefacts sont frais, mais l'edge live n'est pas frais sur la tranche courante.",
+        deterministic=True,
+        checks=strategic_checks + strategic_warnings + strategic_failures,
+    )
+elif strategic_warnings:
+    append_stage(
+        stage="etape_5_fraicheur_strategique",
+        status="WARN",
+        summary="Les artefacts sont frais, mais au moins un pod cible ne prouve pas encore sa fraicheur strategique.",
+        deterministic=True,
+        checks=strategic_checks + strategic_warnings,
+    )
+else:
+    append_stage(
+        stage="etape_5_fraicheur_strategique",
+        status="PASS",
+        summary="Les pods cibles montrent encore une activite exploitable sur la journee courante.",
+        deterministic=True,
+        checks=strategic_checks,
+    )
+
+
 summary = {
     "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     "host": host,
     "ssh_user": ssh_user,
     "latest_snapshot": latest_snapshot,
+    "latest_business_date": latest_business_date,
     "ownership_conflict_count": ownership_conflicts,
     "stages": [asdict(stage) for stage in stages],
 }
@@ -774,6 +1114,7 @@ md_lines = [
     f"- user: `{ssh_user}`",
     f"- generated_at: `{summary['generated_at']}`",
     f"- latest_snapshot: `{latest_snapshot}`",
+    f"- latest_business_date: `{latest_business_date}`",
     f"- ownership_conflict_count: `{ownership_conflicts}`",
     "",
     "## Stages",

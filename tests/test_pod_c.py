@@ -278,6 +278,29 @@ class PodCTests(unittest.TestCase):
         self.assertFalse(decision.accepted)
         self.assertEqual(decision.reason, "confidence_below_min")
 
+    def test_pod_c_risk_gate_blocks_configured_symbols(self) -> None:
+        config = load_config("config/trident.toml")
+        gate = PodCRiskGate(config)
+        decision = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="XYZ:GOLD",
+                    side="long",
+                    setup="tradfi_continuation_long",
+                    confidence=max(config.pod_c.min_confidence, 0.8),
+                    target_notional_usd=100.0,
+                    stop_bps=45.0,
+                    time_stop_hours=config.pod_c.time_stop_hours,
+                    margin_usd=25.0,
+                    effective_leverage=4.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=2.0,
+                )
+            ]
+        )[0]
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, "symbol_blocked")
+
     def test_pod_c_risk_gate_rejects_trade_plan_when_asset_leverage_limit_is_exceeded(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.max_leverage = 10.0

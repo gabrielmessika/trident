@@ -22,6 +22,30 @@
 
 ## Journal condense
 
+### 2026-04-14
+
+- **Fetch local rendu plus robuste**:
+  - `scripts/fetch_trident_data.sh` tente maintenant d'installer `rsync` localement si le binaire est absent
+  - gestionnaires supportes: `dnf`, `yum`, `apt-get`, `apk`, `pacman`, `zypper`, `brew`
+  - les artefacts Hydra research `docs/pod_*_research_latest.*` sont maintenant traites comme optionnels au fetch
+- **Review dry-run durcie**:
+  - `scripts/trident_dry_run_review.sh` ne valide plus seulement l'absence de crash
+  - la review locale tient maintenant compte des erreurs collecteur, de la fraicheur strategique et des economics par pod
+  - une incoherence d'observabilite Pod B entre runtime/report et metrics a ete corrigee
+- **Pod B filtre strict de continuation integre**:
+  - un filtre strict a ete branche dans `app/trident/pod_b/service.py` pour les setups `vol_expansion_long`
+  - flag de config: `pod_b.bis_strict_continuation_filter_enabled`
+  - config dry-run actuelle: activee
+  - replay dedie sur les snapshots fetched:
+    - filtre `off`: `93` signaux, `65` trades, `-31.68 USD`, `66.05 USD` de max drawdown
+    - filtre `on`: `41` signaux, `36` trades, `+32.53 USD`, `47.79 USD` de max drawdown
+  - artefact: `server-data/reviews/pod_b_strict_filter_integration_20260414.json`
+- **Pod C garde sa place en dry-run, sans etre coupe**:
+  - `Pod C` n'a pas ete desactive
+  - la config a seulement ete rendue plus conservative:
+    - `min_confidence = 0.66`
+    - `blocked_symbols = ["XYZ:GOLD"]`
+
 ### 2026-04-12
 
 - **Remplacement complet de Pod B**:

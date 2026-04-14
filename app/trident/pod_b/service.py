@@ -134,6 +134,11 @@ class BreakoutService:
                 return None
             if context.delta_trade_flow_bias < 0.0 and context.microprice_dislocation_bps < 0.0:
                 return None
+            if (
+                self._config.pod_b.bis_strict_continuation_filter_enabled
+                and not self._matches_strict_continuation_pattern(context)
+            ):
+                return None
         if direction == "short":
             if context.structure_score >= 0:
                 return None
@@ -173,9 +178,25 @@ class BreakoutService:
                 "activity_score": round(activity_score, 4),
                 "breakout_score": round(breakout_score, 4),
                 "vol_ratio": round(vol_ratio, 4),
+                "strict_continuation_filter": bool(
+                    direction == "long"
+                    and self._config.pod_b.bis_strict_continuation_filter_enabled
+                ),
                 "regime": context.regime,
             },
             confidence_components=components,
+        )
+
+    def _matches_strict_continuation_pattern(self, context: BreakoutContext) -> bool:
+        return (
+            context.structure_score >= 0.20
+            and context.vwap_distance_bps >= 4.0
+            and context.trade_flow_bias >= 0.05
+            and context.book_imbalance >= 0.0
+            and context.delta_trade_flow_bias >= 0.05
+            and context.bucket_range_bps >= 30.0
+            and context.realized_vol_short_bps >= 2.2
+            and context.spread_bps <= 2.2
         )
 
     def _direction(self, context: BreakoutContext) -> str | None:

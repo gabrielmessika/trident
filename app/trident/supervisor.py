@@ -1545,14 +1545,20 @@ class TridentSupervisor:
             if previous_owner == PodName.POD_B and current_owner is None:
                 pod_b_to_none_count += 1
             decision = decision_by_symbol.get(symbol)
-            if decision is None or decision.reason == "unknown":
+            decision_mode = decision.mode if decision is not None else "routing_snapshot_missing"
+            if decision is None:
+                decision_reason = "routing_decision_missing_after_candidate_drop"
                 unknown_reason_count += 1
-            elif str(decision.reason).startswith("capacity_trim:"):
+            else:
+                decision_reason = str(decision.reason or "routing_reason_missing")
+                if decision_reason == "unknown":
+                    unknown_reason_count += 1
+            if str(decision_reason).startswith("capacity_trim:"):
                 capacity_trim_count += 1
             changes.append(
                 f"{symbol}:{previous_owner.value if previous_owner else 'none'}->{current_owner.value if current_owner else 'none'}"
-                f" mode={decision.mode if decision else 'unknown'}"
-                f" reason={decision.reason if decision else 'unknown'}"
+                f" mode={decision_mode}"
+                f" reason={decision_reason}"
             )
         conflict_count = len(self.state.ownership_conflicts)
         if not changes and conflict_count == previous_conflict_count:

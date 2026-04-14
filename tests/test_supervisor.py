@@ -212,6 +212,27 @@ class SupervisorTests(unittest.TestCase):
             any("Supervisor Pod B sync changed;" in message for message in messages)
         )
 
+    def test_supervisor_logs_explicit_reason_when_routing_decision_disappears(self) -> None:
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+
+        with patch("app.trident.supervisor.logger.info") as mock_info:
+            supervisor._log_symbol_routing_changes(
+                previous_owners={"BTC": PodName.POD_B},
+                decisions=[],
+                previous_conflict_count=0,
+            )
+
+        changes = mock_info.call_args.args[2]
+        self.assertIn(
+            "reason=routing_decision_missing_after_candidate_drop",
+            changes[0],
+        )
+        self.assertNotIn("reason=unknown", changes[0])
+
     def test_supervisor_claims_symbols_for_enabled_pods(self) -> None:
         supervisor = TridentSupervisor(
             config=self.config,

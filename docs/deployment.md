@@ -36,7 +36,7 @@ Sur la machine locale :
 
 - une clé SSH dédiée, par exemple `~/.ssh/trident_hetzner_ed25519`
 - un alias SSH fonctionnel ou l'IP du serveur
-- `rsync`
+- `rsync` ou un gestionnaire de paquets supporté (`dnf`, `yum`, `apt-get`, `apk`, `pacman`, `zypper`, `brew`)
 - `ssh`
 
 Exemple de `~/.ssh/config` :
@@ -113,6 +113,11 @@ Ce que fait `deploy.sh` :
 3. exclut les gros datasets et les répertoires runtime locaux
 4. build l'image Docker sur le serveur
 5. laisse les fichiers `runtime/`, `logs/` et `data/` côté serveur intacts
+
+Note opératoire :
+
+- `deploy.sh` continue de requérir `rsync` installé localement.
+- En revanche, `scripts/fetch_trident_data.sh` sait désormais tenter une installation automatique de `rsync` côté machine locale si le binaire a disparu après rebuild de l'environnement.
 
 Exclusions principales :
 

@@ -1,6 +1,7 @@
 import unittest
 import json
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from app.backtest.pod_b_runner import PodBBacktestRunner
@@ -34,7 +35,7 @@ class PodBTests(unittest.TestCase):
                 trade_flow_bias=0.28,
                 bucket_trade_count=24,
                 bucket_notional_usd=800.0,
-                bucket_range_bps=15.0,
+                bucket_range_bps=34.0,
                 delta_book_imbalance=0.22,
                 delta_trade_flow_bias=0.30,
                 volume_ratio=2.4,
@@ -88,7 +89,7 @@ class PodBTests(unittest.TestCase):
                 trade_flow_bias=0.28,
                 bucket_trade_count=24,
                 bucket_notional_usd=800.0,
-                bucket_range_bps=15.0,
+                bucket_range_bps=34.0,
                 delta_book_imbalance=0.22,
                 delta_trade_flow_bias=0.30,
                 volume_ratio=2.4,
@@ -101,6 +102,46 @@ class PodBTests(unittest.TestCase):
         )
 
         self.assertIsNone(signal)
+
+    def test_service_blocks_signal_when_strict_continuation_filter_fails(self) -> None:
+        config = load_config("config/trident.toml")
+        disabled_filter_config = replace(
+            config,
+            pod_b=replace(config.pod_b, bis_strict_continuation_filter_enabled=False),
+        )
+        baseline_service = BreakoutService(disabled_filter_config)
+        filtered_service = BreakoutService(config)
+
+        context = BreakoutContext(
+            symbol="BTC",
+            regime="TrendExpansion",
+            price=100.0,
+            ema_fast=100.8,
+            ema_slow=99.9,
+            vwap_distance_bps=9.0,
+            structure_score=0.42,
+            funding_rate=0.0,
+            spread_bps=1.1,
+            btc_aligned=True,
+            market_cluster="crypto",
+            cluster_leader="BTC",
+            book_imbalance=0.32,
+            trade_flow_bias=0.28,
+            bucket_trade_count=24,
+            bucket_notional_usd=800.0,
+            bucket_range_bps=15.0,
+            delta_book_imbalance=0.22,
+            delta_trade_flow_bias=0.30,
+            volume_ratio=2.4,
+            trade_count_ratio=1.9,
+            realized_vol_short_bps=7.0,
+            realized_vol_long_bps=4.0,
+            compression_score=0.70,
+            microprice_dislocation_bps=1.4,
+        )
+
+        self.assertIsNotNone(baseline_service.evaluate(context))
+        self.assertIsNone(filtered_service.evaluate(context))
 
     def test_runner_replays_strategy_on_routed_symbol_universe(self) -> None:
         config = load_config("config/trident.toml")
@@ -136,7 +177,7 @@ class PodBTests(unittest.TestCase):
                         "bucket_volume": 8.0,
                         "bucket_notional_usd": 800.0,
                         "bucket_trade_count": 24,
-                        "bucket_range_bps": 15.0,
+                        "bucket_range_bps": 34.0,
                         "delta_book_imbalance": 0.22,
                         "delta_trade_flow_bias": 0.30,
                         "volume_ratio": 2.4,
@@ -178,7 +219,7 @@ class PodBTests(unittest.TestCase):
                         "bucket_volume": 9.0,
                         "bucket_notional_usd": 909.0,
                         "bucket_trade_count": 26,
-                        "bucket_range_bps": 18.0,
+                        "bucket_range_bps": 36.0,
                         "delta_book_imbalance": 0.10,
                         "delta_trade_flow_bias": 0.12,
                         "volume_ratio": 1.8,
