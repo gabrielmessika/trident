@@ -66,6 +66,23 @@
     - `-39.5 USD` de max drawdown
     - `-9.67 USD` de fees
   - artefact: `server-data/reviews/pod_c_cluster_v2_integration_20260414.json`
+- **Pod A ajuste apres replay isole**:
+  - analyse large replay `2026-04-05 -> 2026-04-14`:
+    - baseline: `+272.99 USD`, `123` trades, `99.06 USD` de fees, `124.9 USD` de max drawdown
+    - setup faible identifie: `liquidity_sweep_reclaim_short` avec `-32.02 USD` sur `6` trades
+  - trois evolutions ont ete testees isolees:
+    - `disable_liquidity_sweep_reclaim_short_only`: `+308.04 USD`, `117` trades, `94.86 USD` de fees, `131.27 USD` de max drawdown
+    - `raise_global_min_confidence_to_0.60_only`: `+245.56 USD`, `108` trades, `83.68 USD` de fees, `117.31 USD` de max drawdown
+    - `trend_pullback_long_exit_retune_only`: `+217.60 USD`, `122` trades, `98.01 USD` de fees, `158.84 USD` de max drawdown
+  - conclusion retenue:
+    - seule l'evolution `disable_liquidity_sweep_reclaim_short_only` est gardeable en l'etat
+    - le seuil de confiance plus strict reduit le churn mais coupe trop de PnL
+    - le retuning d'exits teste degrade clairement `trend_pullback_long`
+  - config dry-run actuelle:
+    - `pod_a.disabled_setups` inclut maintenant `liquidity_sweep_reclaim_short`
+  - artefacts:
+    - `server-data/reviews/pod_a_baseline_analysis_20260414.json`
+    - `server-data/reviews/pod_a_isolated_evolutions_20260414.json`
 
 ### 2026-04-12
 

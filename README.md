@@ -54,6 +54,12 @@ En pratique :
 - si un prix baisse de manière assez propre, `Pod A` peut essayer de suivre la baisse ;
 - il préfère les mouvements nets au bruit et aux hésitations.
 
+Dans la config dry-run actuelle, `Pod A` reste le moteur directionnel principal du sleeve crypto, mais avec quelques branches déjà coupées pour rester plus propre :
+
+- `bos_retest_long` et `bos_retest_short` sont désactivés ;
+- `trend_pullback_short` est désactivé ;
+- `liquidity_sweep_reclaim_short` est maintenant désactivé après replay isolé positif.
+
 Autrement dit, `Pod A` ne cherche pas à deviner un retournement. Il préfère **monter dans un train déjà en marche**.
 
 #### Pod B : le pod breakout directionnel

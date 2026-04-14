@@ -190,6 +190,51 @@ class PodABacktestRunnerTests(unittest.TestCase):
             self.assertEqual(result.rejections_by_reason, {"setup_disabled": 1})
             self.assertEqual(result.rejected_by_setup, {"trend_pullback_short": 1})
 
+    def test_runner_rejects_disabled_liquidity_sweep_reclaim_short(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.jsonl"
+            records = [
+                {
+                    "timestamp": "2026-04-04T00:00:00Z",
+                    "regime_snapshot": {
+                        "ready": True,
+                        "adx": 34.0,
+                        "atr_ratio": 1.3,
+                        "range_width_bps": 190.0,
+                        "structure_score": -0.60,
+                        "btc_impulse": False,
+                    },
+                    "symbols": [
+                        {
+                            "symbol": "ETH",
+                            "price": 3050.0,
+                            "ema_fast": 3060.0,
+                            "ema_slow": 3095.0,
+                            "vwap_distance_bps": 4.0,
+                            "structure_score": -0.62,
+                            "funding_rate": -0.0001,
+                            "spread_bps": 1.2,
+                            "btc_aligned": True,
+                            "book_imbalance": -0.18,
+                            "trade_flow_bias": -0.16,
+                            "bucket_range_bps": 24.0,
+                        }
+                    ],
+                }
+            ]
+            with input_path.open("w", encoding="utf-8") as handle:
+                for record in records:
+                    handle.write(json.dumps(record) + "\n")
+
+            result = self.runner.run_jsonl(input_path)
+
+            self.assertEqual(result.signal_count, 1)
+            self.assertEqual(result.accepted_count, 0)
+            self.assertEqual(result.rejected_count, 1)
+            self.assertEqual(result.closed_trade_count, 0)
+            self.assertEqual(result.rejections_by_reason, {"setup_disabled": 1})
+            self.assertEqual(result.rejected_by_setup, {"liquidity_sweep_reclaim_short": 1})
+
     def test_runner_respects_small_wallet_override(self) -> None:
         config = override_app_config(
             self.config,

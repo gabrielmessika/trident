@@ -286,7 +286,7 @@ min_margin_usd = 20
 min_notional_usd = 10
 allow_partial_take_profit = false
 allow_break_even = true
-disabled_setups = ["bos_retest_short", "bos_retest_long", "trend_pullback_short"]
+disabled_setups = ["bos_retest_short", "bos_retest_long", "trend_pullback_short", "liquidity_sweep_reclaim_short"]
 blocked_regimes = ["DeadZone", "RangeAuction"]
 allowed_setups_in_blocked_regimes = ["liquidity_sweep_reclaim_long"]
 
