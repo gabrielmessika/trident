@@ -70,6 +70,11 @@ class TridentSupervisor:
         self.regime_allocator = RegimeAllocator(config)
         self.capital_allocator = CapitalAllocator(config)
         self.symbol_router = SymbolRouter(config)
+        self._tradable_blocked_symbols = {
+            symbol.strip().upper()
+            for symbol in config.hyperliquid.tradable_blocked_symbols
+            if symbol.strip()
+        }
         self.pod_a_context_service = MarketContextService(config)
         self.pod_a_service = AnchorTrendService()
         self.pod_a_planner = AnchorTrendPlanner(config)
@@ -472,6 +477,8 @@ class TridentSupervisor:
         return statuses
 
     def _tradability_reasons(self, snapshot: SymbolMarketSnapshot) -> list[str]:
+        if snapshot.symbol.upper() in self._tradable_blocked_symbols:
+            return ["symbol_blocked"]
         reasons: list[str] = []
         if snapshot.price <= 0:
             reasons.append("price_non_positive")

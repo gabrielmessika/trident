@@ -3,12 +3,13 @@ from __future__ import annotations
 from app.settings import AppConfig, load_config
 from app.trident.pod_a.exits import (
     initial_stop_bps,
-    smart_exit_policy,
     stop_bps_for_signal,
     time_stop_hours_for_cluster,
+    smart_exit_policy,
 )
 from app.trident.pod_a.sizing import PositionSizer
 from app.trident.pod_a.signals import AnchorTrendSignal
+from app.trident.pod_a.symbol_mode import active_symbol_mode, scale_exit_policy
 from app.trident.types import PodAllocation, TradePlan
 
 
@@ -37,6 +38,12 @@ class AnchorTrendPlanner:
             side=signal.side,
             fallback_bps=initial_stop_bps(signal.confidence),
         )
+        symbol_mode = active_symbol_mode(self._config.pod_a, signal.symbol)
+        if symbol_mode is not None:
+            stop_bps = max(
+                stop_bps * max(symbol_mode.stop_bps_multiplier, 0.0),
+                max(symbol_mode.stop_bps_floor, 0.0),
+            )
         sized_trade = self._position_sizer.size_from_stop(
             symbol=signal.symbol,
             margin_cap_usd=symbol_allocation.target_usd,
@@ -50,6 +57,8 @@ class AnchorTrendPlanner:
             signal.confidence,
             signal.market_cluster,
         )
+        if symbol_mode is not None:
+            exit_policy = scale_exit_policy(exit_policy, symbol_mode)
         return TradePlan(
             symbol=signal.symbol,
             side=signal.side,
@@ -57,7 +66,11 @@ class AnchorTrendPlanner:
             confidence=signal.confidence,
             target_notional_usd=sized_trade.target_notional_usd,
             stop_bps=stop_bps,
-            time_stop_hours=time_stop_hours_for_cluster(signal.market_cluster),
+            time_stop_hours=(
+                symbol_mode.time_stop_hours
+                if symbol_mode is not None
+                else time_stop_hours_for_cluster(signal.market_cluster)
+            ),
             take_profit_bps=exit_policy["take_profit_bps"],
             break_even_trigger_bps=exit_policy["break_even_trigger_bps"],
             trailing_activation_bps=exit_policy["trailing_activation_bps"],
@@ -74,5 +87,6 @@ class AnchorTrendPlanner:
                 **signal.setup_details,
                 "market_cluster": signal.market_cluster,
                 "cluster_leader": signal.cluster_leader,
+                "special_symbol_mode_active": symbol_mode is not None,
             },
         )

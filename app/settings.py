@@ -143,6 +143,7 @@ class HyperliquidConfig:
     tradable_min_bucket_notional_usd: float = 100.0
     tradable_min_bucket_trade_count: int = 3
     tradable_max_abs_funding_rate: float = 0.01
+    tradable_blocked_symbols: list[str] = field(default_factory=list)
     market_cluster_overrides: dict[str, str] = field(default_factory=dict)
     cluster_leaders: dict[str, list[str]] = field(default_factory=dict)
     spot_coin_ids: dict[str, str] = field(default_factory=dict)
@@ -179,6 +180,24 @@ class PodAConfig:
     disabled_setups: list[str]
     blocked_regimes: list[str]
     allowed_setups_in_blocked_regimes: list[str]
+    symbol_modes: dict[str, PodASymbolModeConfig] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class PodASymbolModeConfig:
+    enabled: bool = False
+    allowed_setups: list[str] = field(default_factory=list)
+    allowed_regimes: list[str] = field(default_factory=list)
+    min_confidence: float = 0.0
+    risk_per_trade_pct_multiplier: float = 1.0
+    stop_bps_multiplier: float = 1.0
+    stop_bps_floor: float = 0.0
+    time_stop_hours: int = 24
+    take_profit_multiplier: float = 1.0
+    break_even_multiplier: float = 1.0
+    trailing_activation_multiplier: float = 1.0
+    trailing_distance_multiplier: float = 1.0
+    max_leverage: float = 0.0
 
 
 @dataclass(slots=True)
@@ -381,6 +400,40 @@ def _str_list(raw: object, *, upper_values: bool = False) -> list[str]:
     return parsed
 
 
+def _pod_a_symbol_modes(raw: object) -> dict[str, PodASymbolModeConfig]:
+    if not isinstance(raw, dict):
+        return {}
+    parsed: dict[str, PodASymbolModeConfig] = {}
+    for symbol, payload in raw.items():
+        if not isinstance(payload, dict):
+            continue
+        normalized_symbol = str(symbol).strip().upper()
+        if not normalized_symbol:
+            continue
+        parsed[normalized_symbol] = PodASymbolModeConfig(
+            enabled=bool(payload.get("enabled", False)),
+            allowed_setups=_str_list(payload.get("allowed_setups", [])),
+            allowed_regimes=_str_list(payload.get("allowed_regimes", [])),
+            min_confidence=float(payload.get("min_confidence", 0.0)),
+            risk_per_trade_pct_multiplier=float(
+                payload.get("risk_per_trade_pct_multiplier", 1.0)
+            ),
+            stop_bps_multiplier=float(payload.get("stop_bps_multiplier", 1.0)),
+            stop_bps_floor=float(payload.get("stop_bps_floor", 0.0)),
+            time_stop_hours=int(payload.get("time_stop_hours", 24)),
+            take_profit_multiplier=float(payload.get("take_profit_multiplier", 1.0)),
+            break_even_multiplier=float(payload.get("break_even_multiplier", 1.0)),
+            trailing_activation_multiplier=float(
+                payload.get("trailing_activation_multiplier", 1.0)
+            ),
+            trailing_distance_multiplier=float(
+                payload.get("trailing_distance_multiplier", 1.0)
+            ),
+            max_leverage=float(payload.get("max_leverage", 0.0)),
+        )
+    return parsed
+
+
 def load_config(path: str | Path | None = None) -> AppConfig:
     config_path = Path(path or os.getenv("TRIDENT_CONFIG_PATH", "config/trident.toml"))
     with config_path.open("rb") as handle:
@@ -490,6 +543,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             tradable_max_abs_funding_rate=float(
                 hyperliquid_data.get("tradable_max_abs_funding_rate", 0.01)
+            ),
+            tradable_blocked_symbols=_str_list(
+                hyperliquid_data.get("tradable_blocked_symbols", []),
             ),
             market_cluster_overrides=_str_map(
                 hyperliquid_data.get("market_cluster_overrides", {}),
@@ -636,6 +692,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             allowed_setups_in_blocked_regimes=_str_list(
                 pod_a_data.get("allowed_setups_in_blocked_regimes", [])
             ),
+            symbol_modes=_pod_a_symbol_modes(pod_a_data.get("symbol_modes", {})),
         ),
         pod_b=PodBConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_B", bool(pod_b_data.get("enabled", False))),

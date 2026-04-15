@@ -1083,6 +1083,73 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("bucket_trade_count_below_min", quality_by_symbol["ADA"]["reasons"])
         self.assertIn("funding_outlier", quality_by_symbol["PAXG"]["reasons"])
 
+    def test_supervisor_keeps_globally_blocked_symbol_observed_but_not_tradable(self) -> None:
+        self.config.hyperliquid.observation_universe = ["BTC", "TAO"]
+        self.config.hyperliquid.tradable_blocked_symbols = ["TAO"]
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=28.0,
+                atr_ratio=1.1,
+                range_width_bps=160.0,
+                structure_score=0.45,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="BTC",
+                    price=68000.0,
+                    ema_fast=68100.0,
+                    ema_slow=67950.0,
+                    vwap_distance_bps=-3.0,
+                    structure_score=0.4,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.05,
+                    trade_flow_bias=0.04,
+                    bucket_volume=120.0,
+                    bucket_trade_count=100,
+                    bucket_range_bps=35.0,
+                    source="test_live",
+                ),
+                SymbolMarketSnapshot(
+                    symbol="TAO",
+                    price=245.0,
+                    ema_fast=246.0,
+                    ema_slow=244.0,
+                    vwap_distance_bps=-4.0,
+                    structure_score=0.52,
+                    funding_rate=0.0003,
+                    spread_bps=1.5,
+                    btc_aligned=True,
+                    book_imbalance=0.09,
+                    trade_flow_bias=0.08,
+                    bucket_volume=250.0,
+                    bucket_trade_count=30,
+                    bucket_range_bps=90.0,
+                    source="test_live",
+                ),
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+        quality_by_symbol = {
+            item["symbol"]: item for item in snapshot["observed_symbol_status"]
+        }
+
+        self.assertEqual(snapshot["observation_universe"], ["BTC", "TAO"])
+        self.assertEqual(snapshot["tradable_pool"], ["BTC"])
+        self.assertEqual(snapshot["pods"]["pod_a"]["candidate_symbols"], ["BTC"])
+        self.assertFalse(quality_by_symbol["TAO"]["tradable"])
+        self.assertEqual(quality_by_symbol["TAO"]["reasons"], ["symbol_blocked"])
+
     def test_supervisor_exposes_local_regime_by_symbol(self) -> None:
         self.config.pod_b.enabled = True
         self.config.pod_c.enabled = True

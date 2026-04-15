@@ -1,7 +1,8 @@
 import unittest
 from dataclasses import replace
 
-from app.settings import load_config
+from app.risk.pod_a_gate import PodARiskGate
+from app.settings import PodASymbolModeConfig, load_config
 from app.trident.capital_allocator import CapitalAllocator
 from app.trident.pod_a import (
     AnchorTrendContext,
@@ -9,7 +10,7 @@ from app.trident.pod_a import (
     AnchorTrendService,
     MarketContextService,
 )
-from app.trident.types import PodName, Regime, SymbolMarketSnapshot
+from app.trident.types import PodName, Regime, SymbolMarketSnapshot, TradePlan
 
 
 class AnchorTrendServiceTests(unittest.TestCase):
@@ -425,6 +426,106 @@ class AnchorTrendServiceTests(unittest.TestCase):
             trade_plan.margin_usd * trade_plan.effective_leverage,
             places=2,
         )
+
+    def test_trade_planner_applies_tao_symbol_mode_overrides(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                symbol_modes={
+                    "TAO": PodASymbolModeConfig(
+                        enabled=True,
+                        allowed_setups=["trend_pullback_long"],
+                        allowed_regimes=["TrendExpansion"],
+                        min_confidence=0.6,
+                        risk_per_trade_pct_multiplier=0.5,
+                        stop_bps_multiplier=2.0,
+                        stop_bps_floor=220.0,
+                        time_stop_hours=48,
+                        take_profit_multiplier=1.1,
+                        break_even_multiplier=1.25,
+                        trailing_activation_multiplier=1.3,
+                        trailing_distance_multiplier=1.15,
+                        max_leverage=4.0,
+                    )
+                },
+            ),
+        )
+        planner = AnchorTrendPlanner(config)
+        allocation = CapitalAllocator(config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["TAO"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="TAO",
+                regime="TrendExpansion",
+                price=300.0,
+                ema_fast=298.0,
+                ema_slow=292.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0,
+                spread_bps=1.2,
+                btc_aligned=True,
+            )
+        )
+
+        assert signal is not None
+        trade_plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertIsNotNone(trade_plan)
+        assert trade_plan is not None
+        self.assertGreaterEqual(trade_plan.stop_bps, 220.0)
+        self.assertEqual(trade_plan.time_stop_hours, 48)
+        self.assertLessEqual(trade_plan.effective_leverage, 4.0)
+        self.assertEqual(trade_plan.risk_budget_usd, 6.25)
+        self.assertTrue(bool(trade_plan.setup_details.get("special_symbol_mode_active")))
+
+    def test_symbol_mode_can_bypass_global_disabled_setup_for_tao(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                symbol_modes={
+                    "TAO": PodASymbolModeConfig(
+                        enabled=True,
+                        allowed_setups=["trend_pullback_short"],
+                        allowed_regimes=["TrendExpansion"],
+                        min_confidence=0.65,
+                    )
+                },
+            ),
+        )
+        gate = PodARiskGate(config)
+        accepted_plan = TradePlan(
+            symbol="TAO",
+            side="short",
+            setup="trend_pullback_short",
+            confidence=0.7,
+            target_notional_usd=200.0,
+            stop_bps=180.0,
+            time_stop_hours=48,
+            margin_usd=50.0,
+            requested_leverage=4.0,
+            effective_leverage=4.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.6,
+            setup_details={"regime": "TrendExpansion"},
+        )
+        rejected_plan = replace(accepted_plan, confidence=0.6)
+
+        accepted = gate.evaluate_many([accepted_plan])[0]
+        rejected = gate.evaluate_many([rejected_plan])[0]
+
+        self.assertTrue(accepted.accepted)
+        self.assertEqual(accepted.reason, "accepted")
+        self.assertFalse(rejected.accepted)
+        self.assertEqual(rejected.reason, "symbol_mode_confidence_below_min")
 
 
 if __name__ == "__main__":

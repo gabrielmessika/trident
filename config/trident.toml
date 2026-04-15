@@ -34,8 +34,8 @@ observation_universe = [
   "DOGE", "XRP", "SUI",
   "AVAX", "LINK", "ARB",
   "ADA", "BNB", "LTC",
-  "AAVE", "NEAR", "ZRO",
-  "ZEC", "TAO", "ENA", "TON", "BCH",
+  "AAVE", "NEAR", "ZRO", "TAO",
+  "ZEC", "ENA", "TON", "BCH",
   "XYZ:CL", "XYZ:BRENTOIL", "XYZ:SP500",
   "XYZ:XYZ100", "XYZ:SILVER", "XYZ:GOLD",
   "XYZ:JPY", "XYZ:TSLA", "XYZ:NVDA", "XYZ:CRCL",
@@ -46,6 +46,8 @@ tradable_max_spread_bps = 10.0
 tradable_min_bucket_notional_usd = 100.0
 tradable_min_bucket_trade_count = 3
 tradable_max_abs_funding_rate = 0.01
+# Observe le symbole mais l'exclut du pool tradable de tous les pods.
+tradable_blocked_symbols = ["TAO"]
 # Backward compat pour les anciennes commandes/tests.
 default_coins = ["BTC", "ETH", "SOL", "HYPE"]
 
@@ -140,6 +142,7 @@ SOL = 150
 HYPE = 150
 BTC = 60
 ETH = 60
+TAO = 240
 
 [trident.routing]
 min_assign_score = 0.40
@@ -158,6 +161,7 @@ SUI = 10800
 XRP = 9000
 SOL = 7200
 HYPE = 7200
+TAO = 21600
 
 [trident.routing.symbol_pod_overrides]
 # BTC = "pod_a"
@@ -301,6 +305,30 @@ SUI = 10
 AVAX = 10
 LINK = 10
 ARB = 10
+
+# Mode special TAO prepare, mais volontairement inactif tant que TAO
+# reste bloque globalement du pool tradable. Pour l'activer:
+# 1. retirer TAO de `hyperliquid.tradable_blocked_symbols`
+# 2. passer `enabled = true`
+[pod_a.symbol_modes.TAO]
+enabled = false
+allowed_setups = [
+  "bos_retest_long",
+  "bos_retest_short",
+  "trend_pullback_long",
+  "trend_pullback_short",
+]
+allowed_regimes = ["TrendExpansion", "PanicSqueeze"]
+min_confidence = 0.72
+risk_per_trade_pct_multiplier = 0.35
+stop_bps_multiplier = 2.6
+stop_bps_floor = 180.0
+time_stop_hours = 48
+take_profit_multiplier = 1.15
+break_even_multiplier = 1.35
+trailing_activation_multiplier = 1.4
+trailing_distance_multiplier = 1.2
+max_leverage = 4.0
 
 [pod_b]
 enabled = true

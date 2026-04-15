@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.risk.plan_gate import TradePlanRiskGate
 from app.trident.pod_a.leverage import LeveragePolicy
+from app.trident.pod_a.symbol_mode import active_symbol_mode
 from app.trident.types import RiskDecision, TradePlan
 
 
@@ -57,7 +58,13 @@ class PodARiskGate(TradePlanRiskGate):
         )
         if reason != "accepted":
             return reason
-        if plan.setup in self._disabled_setups:
+        symbol_mode = active_symbol_mode(self._config.pod_a, plan.symbol)
+        symbol_mode_allowed_setups = (
+            {item.strip() for item in symbol_mode.allowed_setups if item.strip()}
+            if symbol_mode is not None
+            else set()
+        )
+        if plan.setup in self._disabled_setups and plan.setup not in symbol_mode_allowed_setups:
             return "setup_disabled"
 
         current_regime = str(plan.setup_details.get("regime", "")).strip().lower()
@@ -66,6 +73,16 @@ class PodARiskGate(TradePlanRiskGate):
             and plan.setup not in self._allowed_setups_in_blocked_regimes
         ):
             return "regime_filtered"
+        if symbol_mode is not None:
+            if symbol_mode_allowed_setups and plan.setup not in symbol_mode_allowed_setups:
+                return "symbol_mode_setup_filtered"
+            allowed_regimes = {
+                item.strip().lower() for item in symbol_mode.allowed_regimes if item.strip()
+            }
+            if allowed_regimes and current_regime not in allowed_regimes:
+                return "symbol_mode_regime_filtered"
+            if plan.confidence < max(symbol_mode.min_confidence, 0.0):
+                return "symbol_mode_confidence_below_min"
 
         limits = self._config.trident.risk
         min_notional = max(
