@@ -96,6 +96,15 @@ class RegimeSnapshot:
     range_width_bps: float = 0.0
     structure_score: float = 0.0
     btc_impulse: bool = False
+    leader_symbol: str = ""
+    symbol_count: int = 0
+    active_symbol_count: int = 0
+    aligned_symbol_count: int = 0
+    breadth_pct: float = 0.0
+    alt_participation_pct: float = 0.0
+    dispersion_pct: float = 0.0
+    leader_trend_score: float = 0.0
+    coherence_score: float = 0.0
 
 
 @dataclass(slots=True)

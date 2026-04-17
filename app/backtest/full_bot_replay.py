@@ -183,6 +183,7 @@ class FullBotBacktestRunner:
             executor=self.pod_a_executor,
             latest_snapshots=list(latest_snapshots_by_symbol.values()),
             last_timestamp=last_timestamp,
+            closed_trade_recorder=self._record_pod_a_closed_trade,
         )
         self._finalize_directional_report(
             supervisor=supervisor,
@@ -284,6 +285,12 @@ class FullBotBacktestRunner:
         )
         previews = supervisor.preview_pod_a_signals(snapshots, timestamp=timestamp)
         trade_plans = supervisor.build_pod_a_trade_plans(snapshots, timestamp=timestamp)
+        date_key = self._date_key(timestamp, source_file)
+        for plan in trade_plans:
+            plan.setup_details = {
+                **dict(plan.setup_details or {}),
+                "current_date_key": date_key,
+            }
         risk_decisions = self.pod_a_risk_gate.evaluate_many(trade_plans)
         execution = self.pod_a_executor.process_record(
             snapshots=snapshots,
@@ -302,6 +309,7 @@ class FullBotBacktestRunner:
             risk_decisions=risk_decisions,
             execution=execution,
             executor=self.pod_a_executor,
+            closed_trade_recorder=self._record_pod_a_closed_trade,
         )
 
     def _process_pod_c(
@@ -588,6 +596,7 @@ class FullBotBacktestRunner:
                 hold_hours=self._hold_hours(trade),
                 opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
                 closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+                setup_details=getattr(trade, "setup_details", None),
             )
 
     def _finalize_directional_report(
@@ -639,6 +648,7 @@ class FullBotBacktestRunner:
                 hold_hours=self._hold_hours(trade),
                 opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
                 closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+                setup_details=getattr(trade, "setup_details", None),
             )
 
     def _record_pod_b_closed_trade(self, trade: object) -> None:
@@ -646,6 +656,15 @@ class FullBotBacktestRunner:
             symbol=str(getattr(trade, "symbol", "")),
             setup=getattr(trade, "setup", None),
             pnl_usd=getattr(trade, "pnl_usd", None),
+        )
+
+    def _record_pod_a_closed_trade(self, trade: object) -> None:
+        closed_at = getattr(trade, "closed_at", None)
+        self.pod_a_risk_gate.record_closed_trade(
+            symbol=str(getattr(trade, "symbol", "")),
+            setup=getattr(trade, "setup", None),
+            pnl_usd=getattr(trade, "pnl_usd", None),
+            date_key=(closed_at.isoformat()[:10] if closed_at is not None else None),
         )
 
     def _date_key(self, timestamp: str | None, fallback_source_file: str) -> str:

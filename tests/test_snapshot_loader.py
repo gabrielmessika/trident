@@ -44,6 +44,8 @@ class SnapshotLoaderTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0].source_file, "input.jsonl")
             self.assertEqual(records[0].symbols[0]["symbol"], "ETH")
+            self.assertIn("breadth_pct", records[0].regime_snapshot)
+            self.assertIn("leader_trend_score", records[0].regime_snapshot)
 
     def test_loader_rejects_missing_symbol_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -154,6 +156,7 @@ class SnapshotLoaderTests(unittest.TestCase):
                 ["BTC", "PAXG"],
             )
             self.assertEqual(records[0].regime_snapshot["adx"], 28.0)
+            self.assertIn("breadth_pct", records[0].regime_snapshot)
             self.assertIn("crypto", records[0].cluster_regime_snapshots)
             self.assertIn("gold", records[0].cluster_regime_snapshots)
 

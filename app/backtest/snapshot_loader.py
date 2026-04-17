@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from app.trident.regime_snapshot_v2 import enrich_cluster_regime_snapshots, enrich_regime_snapshot
+
 
 class SnapshotFormatError(ValueError):
     """Raised when a snapshot JSONL record does not match the expected schema."""
@@ -155,14 +157,15 @@ class SnapshotLoader:
                         continue
                     payload = json.loads(line)
                     self._validate_payload(payload, file_path=file_path)
+                    enriched_payload = self._enrich_payload(payload)
                     record_index += 1
-                    cluster_raw = payload.get("cluster_regime_snapshots")
+                    cluster_raw = enriched_payload.get("cluster_regime_snapshots")
                     yield SnapshotRecord(
                         record_index=record_index,
                         source_file=file_path.name,
-                        timestamp=payload.get("timestamp"),
-                        regime_snapshot=payload["regime_snapshot"],
-                        symbols=payload.get("symbols", []),
+                        timestamp=enriched_payload.get("timestamp"),
+                        regime_snapshot=enriched_payload["regime_snapshot"],
+                        symbols=enriched_payload.get("symbols", []),
                         cluster_regime_snapshots=(
                             cluster_raw if isinstance(cluster_raw, dict) else None
                         ),
@@ -215,3 +218,17 @@ class SnapshotLoader:
                 raise SnapshotFormatError(
                     f"{file_path.name}: symbols[{index}] missing fields {sorted(missing_symbol)}"
                 )
+
+    def _enrich_payload(self, payload: dict[str, object]) -> dict[str, object]:
+        enriched = dict(payload)
+        symbols = payload.get("symbols", [])
+        regime_snapshot = payload.get("regime_snapshot")
+        if isinstance(regime_snapshot, dict) and isinstance(symbols, list):
+            enriched["regime_snapshot"] = enrich_regime_snapshot(regime_snapshot, symbols)
+        cluster_snapshots = payload.get("cluster_regime_snapshots")
+        if isinstance(cluster_snapshots, dict) and isinstance(symbols, list):
+            enriched["cluster_regime_snapshots"] = enrich_cluster_regime_snapshots(
+                cluster_snapshots,
+                symbols,
+            )
+        return enriched

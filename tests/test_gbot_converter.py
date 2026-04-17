@@ -69,6 +69,8 @@ class GbotConverterTests(unittest.TestCase):
             self.assertEqual(len(lines), 2)
             first = json.loads(lines[0])
             self.assertIn("regime_snapshot", first)
+            self.assertIn("breadth_pct", first["regime_snapshot"])
+            self.assertEqual(first["regime_snapshot"]["leader_symbol"], "BTC")
             self.assertEqual(first["symbols"][0]["symbol"], "BTC")
             self.assertIn("book_imbalance", first["symbols"][0])
             self.assertIn("trade_flow_bias", first["symbols"][0])

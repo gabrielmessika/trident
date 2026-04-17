@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--without-pod-b] [--without-pod-c] [--without-funding] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--fresh-start] [service]
 
 Actions:
   start     démarre l'API + Pod A + Pod B + Pod C + funding par défaut
@@ -47,6 +47,8 @@ shift
 ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
+FRESH_START=""
+CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
 SERVICE_ARG=""
 
 while [ $# -gt 0 ]; do
@@ -63,6 +65,10 @@ while [ $# -gt 0 ]; do
             ENABLE_FUNDING="true"
             shift
             ;;
+        --config)
+            CONFIG_PATH="$2"
+            shift 2
+            ;;
         --without-pod-b)
             ENABLE_POD_B=""
             shift
@@ -73,6 +79,10 @@ while [ $# -gt 0 ]; do
             ;;
         --without-funding)
             ENABLE_FUNDING=""
+            shift
+            ;;
+        --fresh-start)
+            FRESH_START="true"
             shift
             ;;
         -h|--help)
@@ -98,7 +108,12 @@ compose() {
     TRIDENT_ENABLE_POD_A="true" \
     TRIDENT_ENABLE_POD_B="${ENABLE_POD_B:+true}" \
     TRIDENT_ENABLE_POD_C="${ENABLE_POD_C:+true}" \
+    TRIDENT_CONFIG_PATH="${CONFIG_PATH}" \
     docker compose -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"
+}
+
+compose_all() {
+    docker compose -f docker-compose.trident.yml "$@"
 }
 
 default_services() {
@@ -115,6 +130,55 @@ default_services() {
     printf '%s\n' "${services[@]}"
 }
 
+all_managed_services() {
+    printf '%s\n' \
+        trident-api \
+        pod-a-live \
+        pod-b-live \
+        pod-c-live \
+        tradfi-funding-collector \
+        funding-collector
+}
+
+stop_unmanaged_services() {
+    local selected=("$@")
+    mapfile -t ALL_SERVICES < <(all_managed_services)
+    local stop_services=()
+    local service
+    local keep
+    for service in "${ALL_SERVICES[@]}"; do
+        keep=""
+        for selected_service in "${selected[@]}"; do
+            if [ "$service" = "$selected_service" ]; then
+                keep="true"
+                break
+            fi
+        done
+        [ -z "$keep" ] && stop_services+=("$service")
+    done
+    if [ ${#stop_services[@]} -gt 0 ]; then
+        info "Arrêt des services hors profil: ${stop_services[*]}"
+        compose_all stop "${stop_services[@]}" >/dev/null 2>&1 || true
+    fi
+}
+
+fresh_start_cleanup() {
+    info "Fresh start: arrêt complet et purge des artefacts live..."
+    mapfile -t ALL_SERVICES < <(all_managed_services)
+    compose_all stop "${ALL_SERVICES[@]}" >/dev/null 2>&1 || true
+    rm -f \
+        logs/pod_a_live.jsonl \
+        logs/pod_b_live.jsonl \
+        logs/pod_c_live.jsonl \
+        logs/pod_a_live_status.json \
+        logs/pod_b_live_status.json \
+        logs/pod_c_live_status.json \
+        logs/pod_a_live_report.json \
+        logs/pod_b_live_report.json \
+        logs/pod_c_live_report.json
+    ok "Artefacts live réinitialisés"
+}
+
 require_runtime_files() {
     mkdir -p logs data runtime
 }
@@ -123,7 +187,13 @@ case "$ACTION" in
     start)
         require_runtime_files
         mapfile -t SERVICES < <(default_services)
+        if [ -n "$FRESH_START" ]; then
+            fresh_start_cleanup
+        else
+            stop_unmanaged_services "${SERVICES[@]}"
+        fi
         info "Démarrage: ${SERVICES[*]}"
+        info "Config: ${CONFIG_PATH}"
         compose up -d --force-recreate "${SERVICES[@]}"
         ok "Services démarrés"
         ;;
@@ -143,6 +213,7 @@ case "$ACTION" in
         require_runtime_files
         mapfile -t SERVICES < <(default_services)
         info "Rebuild + redémarrage: ${SERVICES[*]}"
+        info "Config: ${CONFIG_PATH}"
         compose build
         compose up -d "${SERVICES[@]}"
         ok "Update terminé"

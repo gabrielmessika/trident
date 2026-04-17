@@ -76,7 +76,7 @@ class TridentSupervisor:
             if symbol.strip()
         }
         self.pod_a_context_service = MarketContextService(config)
-        self.pod_a_service = AnchorTrendService()
+        self.pod_a_service = AnchorTrendService(config)
         self.pod_a_planner = AnchorTrendPlanner(config)
         self.pod_b_service = BreakoutService(config)
         self.pod_b_planner = BreakoutPlanner(config)
@@ -1234,6 +1234,15 @@ class TridentSupervisor:
                     "range_width_bps": snap.range_width_bps,
                     "structure_score": snap.structure_score,
                     "btc_impulse": snap.btc_impulse,
+                    "leader_symbol": snap.leader_symbol,
+                    "symbol_count": snap.symbol_count,
+                    "active_symbol_count": snap.active_symbol_count,
+                    "aligned_symbol_count": snap.aligned_symbol_count,
+                    "breadth_pct": snap.breadth_pct,
+                    "alt_participation_pct": snap.alt_participation_pct,
+                    "dispersion_pct": snap.dispersion_pct,
+                    "leader_trend_score": snap.leader_trend_score,
+                    "coherence_score": snap.coherence_score,
                 }
                 for cluster, snap in self.state.cluster_regime_snapshots.items()
             },
@@ -1363,6 +1372,15 @@ class TridentSupervisor:
                 "range_width_bps": self.state.regime_snapshot.range_width_bps,
                 "structure_score": self.state.regime_snapshot.structure_score,
                 "btc_impulse": self.state.regime_snapshot.btc_impulse,
+                "leader_symbol": self.state.regime_snapshot.leader_symbol,
+                "symbol_count": self.state.regime_snapshot.symbol_count,
+                "active_symbol_count": self.state.regime_snapshot.active_symbol_count,
+                "aligned_symbol_count": self.state.regime_snapshot.aligned_symbol_count,
+                "breadth_pct": self.state.regime_snapshot.breadth_pct,
+                "alt_participation_pct": self.state.regime_snapshot.alt_participation_pct,
+                "dispersion_pct": self.state.regime_snapshot.dispersion_pct,
+                "leader_trend_score": self.state.regime_snapshot.leader_trend_score,
+                "coherence_score": self.state.regime_snapshot.coherence_score,
             },
             "pending_regime": (
                 self.state.pending_regime.value if self.state.pending_regime is not None else None
@@ -1382,6 +1400,15 @@ class TridentSupervisor:
                         "range_width_bps": transition.snapshot.range_width_bps,
                         "structure_score": transition.snapshot.structure_score,
                         "btc_impulse": transition.snapshot.btc_impulse,
+                        "leader_symbol": transition.snapshot.leader_symbol,
+                        "symbol_count": transition.snapshot.symbol_count,
+                        "active_symbol_count": transition.snapshot.active_symbol_count,
+                        "aligned_symbol_count": transition.snapshot.aligned_symbol_count,
+                        "breadth_pct": transition.snapshot.breadth_pct,
+                        "alt_participation_pct": transition.snapshot.alt_participation_pct,
+                        "dispersion_pct": transition.snapshot.dispersion_pct,
+                        "leader_trend_score": transition.snapshot.leader_trend_score,
+                        "coherence_score": transition.snapshot.coherence_score,
                     },
                 }
                 for transition in self.state.regime_history

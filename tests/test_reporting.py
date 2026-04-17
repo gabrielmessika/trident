@@ -75,8 +75,10 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(report["profile"], "trident-reporting")
         self.assertEqual(report["enabled_pod_count"], 3)
         self.assertEqual(len(report["pods"]), 3)
+        pod_a = next(item for item in report["pods"] if item["pod"] == "pod_a")
         pod_b = next(item for item in report["pods"] if item["pod"] == "pod_b")
-        self.assertEqual(pod_b["owned_symbols"], ["DOGE", "XRP"])
+        self.assertEqual(pod_a["owned_symbols"], ["DOGE", "XRP"])
+        self.assertEqual(pod_b["owned_symbols"], [])
         self.assertEqual(pod_b["position_count"], 0)
         self.assertEqual(report["active_open_order_count"], 0)
 
@@ -89,6 +91,7 @@ class ReportingTests(unittest.TestCase):
             mode="observation",
         )
         pod_a_runtime = {
+            "updated_at": "2999-01-01T00:00:00Z",
             "process_state": "running",
             "open_positions": [
                 {"symbol": "ETH", "unrealized_pnl_usd": 1.25},
@@ -112,6 +115,56 @@ class ReportingTests(unittest.TestCase):
         self.assertAlmostEqual(pod_a["total_unrealized_pnl_usd"], 0.75)
         self.assertEqual(report["active_position_count"], 2)
         self.assertAlmostEqual(report["total_unrealized_pnl_usd"], 0.75)
+
+    def test_build_runtime_report_ignores_disabled_pod_runtime_artifacts(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_b.enabled = False
+        config.pod_c.enabled = False
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-reporting-disabled-runtime",
+            mode="observation",
+        )
+        stale_pod_b_runtime = {
+            "updated_at": "2999-01-01T00:00:00Z",
+            "process_state": "running",
+            "report": {
+                "closed_trade_count": 7,
+                "realized_pnl_usd": -13.61,
+            },
+        }
+        stale_pod_c_runtime = {
+            "updated_at": "2999-01-01T00:00:01Z",
+            "process_state": "running",
+            "report": {
+                "closed_trade_count": 8,
+                "realized_pnl_usd": 9.32,
+            },
+        }
+
+        with patch(
+            "app.reporting.multi_pod.load_runtime_status",
+            side_effect=[
+                None,
+                stale_pod_b_runtime,
+                stale_pod_c_runtime,
+                stale_pod_b_runtime,
+                None,
+                None,
+            ],
+        ):
+            report = build_runtime_report(supervisor).to_dict()
+
+        pod_b = next(item for item in report["pods"] if item["pod"] == "pod_b")
+        pod_c = next(item for item in report["pods"] if item["pod"] == "pod_c")
+        self.assertEqual(pod_b["process_state"], "disabled")
+        self.assertEqual(pod_c["process_state"], "disabled")
+        self.assertEqual(pod_b["total_fill_count"], 0)
+        self.assertEqual(pod_c["total_fill_count"], 0)
+        self.assertEqual(pod_b["realized_pnl_usd"], 0.0)
+        self.assertEqual(pod_c["realized_pnl_usd"], 0.0)
+        self.assertEqual(report["total_fill_count"], 0)
+        self.assertEqual(report["realized_pnl_usd"], 0.0)
 
     def test_build_runtime_report_merges_pod_a_and_pod_c_runtime_supervisors(self) -> None:
         config = load_config("config/trident.toml")
@@ -294,15 +347,23 @@ class ReportingTests(unittest.TestCase):
             "symbol_count": 5,
         }
 
+        def runtime_status_for(path: object) -> dict[str, object] | None:
+            path_value = str(path)
+            if path_value.endswith("pod_a_live_status.json"):
+                return pod_a_runtime
+            if path_value.endswith("pod_b_live_status.json"):
+                return None
+            if path_value.endswith("pod_c_live_status.json"):
+                return pod_c_runtime
+            if path_value.endswith("funding_collector_status.json"):
+                return funding_runtime
+            if path_value.endswith("tradfi_funding_collector_status.json"):
+                return tradfi_runtime
+            return None
+
         with patch(
             "app.reporting.multi_pod.load_runtime_status",
-            side_effect=[
-                pod_a_runtime,
-                pod_c_runtime,
-                None,
-                funding_runtime,
-                tradfi_runtime,
-            ],
+            side_effect=runtime_status_for,
         ), patch("app.live.runtime_status.datetime") as mock_datetime:
             mock_datetime.now.return_value = datetime(
                 2026, 4, 11, 14, 48, 0, tzinfo=timezone.utc

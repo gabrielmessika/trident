@@ -50,6 +50,27 @@ class RegimeAllocatorTests(unittest.TestCase):
         )
         self.assertEqual(regime, Regime.TREND_EXPANSION)
 
+    def test_rejects_trend_expansion_when_breadth_is_weak(self) -> None:
+        self.config.trident.regime.crypto_v2_enabled = True
+        regime = self.allocator.classify(
+            RegimeSnapshot(
+                ready=True,
+                adx=34.0,
+                atr_ratio=1.3,
+                range_width_bps=190.0,
+                structure_score=0.62,
+                symbol_count=6,
+                active_symbol_count=6,
+                aligned_symbol_count=2,
+                breadth_pct=0.3333,
+                alt_participation_pct=0.2,
+                dispersion_pct=0.6667,
+                leader_trend_score=0.74,
+                coherence_score=0.42,
+            )
+        )
+        self.assertEqual(regime, Regime.RANGE_AUCTION)
+
     def test_classifies_panic_squeeze(self) -> None:
         regime = self.allocator.classify(
             RegimeSnapshot(

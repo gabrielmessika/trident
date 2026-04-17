@@ -231,6 +231,7 @@ class PodBBacktestRunner:
                     hold_hours=self._hold_hours(trade),
                     opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
                     closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+                    setup_details=getattr(trade, "setup_details", None),
                 )
 
             last_snapshot_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
@@ -279,6 +280,7 @@ class PodBBacktestRunner:
                 hold_hours=self._hold_hours(trade),
                 opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
                 closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+                setup_details=getattr(trade, "setup_details", None),
             )
 
         payload = report.to_dict()

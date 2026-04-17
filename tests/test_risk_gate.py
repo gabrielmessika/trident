@@ -2,7 +2,7 @@ import unittest
 from dataclasses import replace
 
 from app.risk.pod_a_gate import PodARiskGate
-from app.settings import load_config
+from app.settings import PodAPatternVetoConfig, load_config
 from app.trident.types import TradePlan
 
 
@@ -33,6 +33,17 @@ class PodARiskGateTests(unittest.TestCase):
         self.assertEqual(len(decisions), 1)
         self.assertTrue(decisions[0].accepted)
         self.assertEqual(decisions[0].reason, "accepted")
+
+    def test_launch_fast_crypto_config_loads_pattern_watchers(self) -> None:
+        config = load_config("config/trident_crypto_launch_fast_crypto_only.toml")
+        self.assertEqual(
+            [rule.name for rule in config.pod_a.pattern_watchers],
+            [
+                "vwap_weak_trend4h_positive",
+                "vwap_weak",
+                "trend4h_flat",
+            ],
+        )
 
     def test_rejects_low_confidence_trade_plan(self) -> None:
         decisions = self.gate.evaluate_many(
@@ -201,3 +212,359 @@ class PodARiskGateTests(unittest.TestCase):
 
         self.assertFalse(decisions[0].accepted)
         self.assertEqual(decisions[0].reason, "setup_disabled")
+
+    def test_rejects_setup_not_in_allowlist(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                allowed_setups=["trend_pullback_long"],
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="liquidity_sweep_reclaim_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={"regime": "TrendExpansion"},
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "setup_not_allowed")
+
+    def test_rejects_pattern_veto_for_negative_trend_1h(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                pattern_vetoes=[
+                    PodAPatternVetoConfig(
+                        name="trend1h_negative",
+                        setups=["trend_pullback_long"],
+                        max_trend_1h_bps=-5.0,
+                    )
+                ],
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={
+                        "regime": "TrendExpansion",
+                        "trend_1h_bps": -12.0,
+                    },
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "pattern_veto_trend1h_negative")
+
+    def test_accepts_trade_when_pattern_veto_does_not_match(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                pattern_vetoes=[
+                    PodAPatternVetoConfig(
+                        name="trend4h_positive_cci_mid",
+                        setups=["trend_pullback_long"],
+                        min_trend_4h_bps=10.0,
+                        min_cci20=-100.0,
+                        max_cci20=100.0,
+                    )
+                ],
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={
+                        "regime": "TrendExpansion",
+                        "trend_4h_bps": 18.0,
+                        "cci20": 120.0,
+                    },
+                )
+            ]
+        )
+
+        self.assertTrue(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "accepted")
+
+    def test_tags_trade_with_pattern_watch_hit_without_rejecting(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                pattern_watchers=[
+                    PodAPatternVetoConfig(
+                        name="vwap_weak",
+                        setups=["trend_pullback_long"],
+                        max_vwap_reclaim_score=0.45,
+                    )
+                ],
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={
+                        "regime": "TrendExpansion",
+                        "vwap_reclaim_score": 0.21,
+                    },
+                )
+            ]
+        )
+
+        self.assertTrue(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "accepted")
+        self.assertEqual(
+            decisions[0].trade_plan.setup_details.get("pattern_watch_hits"),
+            "vwap_weak",
+        )
+        self.assertEqual(
+            decisions[0].trade_plan.setup_details.get("pattern_watch_count"),
+            1,
+        )
+
+    def test_applies_symbol_setup_guardrail(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                guardrail_enabled=True,
+                guardrail_lookback_trades=2,
+                guardrail_min_closed_trades=2,
+                guardrail_max_cumulative_loss_usd=-5.0,
+            ),
+        )
+        gate = PodARiskGate(config)
+        plan = TradePlan(
+            symbol="ETH",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.82,
+            target_notional_usd=450.0,
+            stop_bps=80.0,
+            time_stop_hours=24,
+            margin_usd=150.0,
+            effective_leverage=3.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.6,
+            setup_details={"regime": "TrendExpansion"},
+        )
+
+        gate.record_closed_trade(symbol="ETH", setup="trend_pullback_long", pnl_usd=-2.6)
+        first_pass = gate.evaluate_many([plan])
+        self.assertTrue(first_pass[0].accepted)
+
+        gate.record_closed_trade(symbol="ETH", setup="trend_pullback_long", pnl_usd=-2.5)
+        blocked = gate.evaluate_many([plan])
+        self.assertFalse(blocked[0].accepted)
+        self.assertEqual(blocked[0].reason, "rolling_guardrail_symbol_setup")
+
+        gate.record_closed_trade(symbol="ETH", setup="trend_pullback_long", pnl_usd=8.0)
+        recovered = gate.evaluate_many([plan])
+        self.assertTrue(recovered[0].accepted)
+
+    def test_applies_setup_guardrail_across_symbols(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                setup_guardrail_enabled=True,
+                setup_guardrail_lookback_trades=3,
+                setup_guardrail_min_closed_trades=3,
+                setup_guardrail_max_cumulative_loss_usd=-6.0,
+            ),
+        )
+        gate = PodARiskGate(config)
+        plan = TradePlan(
+            symbol="ETH",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.82,
+            target_notional_usd=450.0,
+            stop_bps=80.0,
+            time_stop_hours=24,
+            margin_usd=150.0,
+            effective_leverage=3.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.6,
+            setup_details={"regime": "TrendExpansion"},
+        )
+
+        gate.record_closed_trade(symbol="BTC", setup="trend_pullback_long", pnl_usd=-2.5)
+        gate.record_closed_trade(symbol="SOL", setup="trend_pullback_long", pnl_usd=-2.1)
+        first_pass = gate.evaluate_many([plan])
+        self.assertTrue(first_pass[0].accepted)
+
+        gate.record_closed_trade(symbol="DOGE", setup="trend_pullback_long", pnl_usd=-1.9)
+        blocked = gate.evaluate_many([plan])
+        self.assertFalse(blocked[0].accepted)
+        self.assertEqual(blocked[0].reason, "rolling_guardrail_setup")
+
+        gate.record_closed_trade(symbol="XRP", setup="trend_pullback_long", pnl_usd=9.0)
+        recovered = gate.evaluate_many([plan])
+        self.assertTrue(recovered[0].accepted)
+
+    def test_applies_intraday_setup_guardrail_for_current_date(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                intraday_setup_guardrail_enabled=True,
+                intraday_setup_guardrail_lookback_trades=3,
+                intraday_setup_guardrail_min_closed_trades=3,
+                intraday_setup_guardrail_max_cumulative_loss_usd=-6.0,
+                intraday_setup_guardrail_max_average_pnl_usd=-1.5,
+            ),
+        )
+        gate = PodARiskGate(config)
+        plan = TradePlan(
+            symbol="ETH",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.82,
+            target_notional_usd=450.0,
+            stop_bps=80.0,
+            time_stop_hours=24,
+            margin_usd=150.0,
+            effective_leverage=3.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.6,
+            setup_details={
+                "regime": "TrendExpansion",
+                "current_date_key": "2026-04-17",
+            },
+        )
+
+        gate.record_closed_trade(
+            symbol="BTC",
+            setup="trend_pullback_long",
+            pnl_usd=-2.5,
+            date_key="2026-04-17",
+        )
+        gate.record_closed_trade(
+            symbol="SOL",
+            setup="trend_pullback_long",
+            pnl_usd=-2.1,
+            date_key="2026-04-17",
+        )
+        first_pass = gate.evaluate_many([plan])
+        self.assertTrue(first_pass[0].accepted)
+
+        gate.record_closed_trade(
+            symbol="DOGE",
+            setup="trend_pullback_long",
+            pnl_usd=-1.9,
+            date_key="2026-04-17",
+        )
+        blocked = gate.evaluate_many([plan])
+        self.assertFalse(blocked[0].accepted)
+        self.assertEqual(blocked[0].reason, "rolling_guardrail_intraday_setup")
+
+    def test_intraday_setup_guardrail_resets_next_day(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                intraday_setup_guardrail_enabled=True,
+                intraday_setup_guardrail_lookback_trades=3,
+                intraday_setup_guardrail_min_closed_trades=3,
+                intraday_setup_guardrail_max_cumulative_loss_usd=-6.0,
+                intraday_setup_guardrail_max_average_pnl_usd=-1.5,
+            ),
+        )
+        gate = PodARiskGate(config)
+        gate.record_closed_trade(
+            symbol="BTC",
+            setup="trend_pullback_long",
+            pnl_usd=-2.5,
+            date_key="2026-04-17",
+        )
+        gate.record_closed_trade(
+            symbol="SOL",
+            setup="trend_pullback_long",
+            pnl_usd=-2.1,
+            date_key="2026-04-17",
+        )
+        gate.record_closed_trade(
+            symbol="DOGE",
+            setup="trend_pullback_long",
+            pnl_usd=-1.9,
+            date_key="2026-04-17",
+        )
+
+        next_day_plan = TradePlan(
+            symbol="ETH",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.82,
+            target_notional_usd=450.0,
+            stop_bps=80.0,
+            time_stop_hours=24,
+            margin_usd=150.0,
+            effective_leverage=3.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.6,
+            setup_details={
+                "regime": "TrendExpansion",
+                "current_date_key": "2026-04-18",
+            },
+        )
+
+        accepted = gate.evaluate_many([next_day_plan])[0]
+        self.assertTrue(accepted.accepted)

@@ -126,6 +126,11 @@ class PodABacktestRunner:
             snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
             previews = supervisor.preview_pod_a_signals(snapshots, timestamp=record.timestamp)
             trade_plans = supervisor.build_pod_a_trade_plans(snapshots, timestamp=record.timestamp)
+            for plan in trade_plans:
+                plan.setup_details = {
+                    **dict(plan.setup_details or {}),
+                    "current_date_key": date_key,
+                }
             risk_decisions = self.risk_gate.evaluate_many(trade_plans)
             execution = self.executor.process_record(
                 snapshots=snapshots,
@@ -310,6 +315,15 @@ class PodABacktestRunner:
                 list(self.executor.portfolio.open_positions.values())
             )
             for trade in execution.closed_trades:
+                self.risk_gate.record_closed_trade(
+                    symbol=trade.symbol,
+                    setup=getattr(trade, "setup", None),
+                    pnl_usd=trade.pnl_usd,
+                    date_key=self._date_key(
+                        trade.closed_at.isoformat() if trade.closed_at is not None else record.timestamp,
+                        record.source_file,
+                    ),
+                )
                 if output_journal is not None:
                     output_journal.append(
                         build_trade_journal_record(
@@ -350,6 +364,7 @@ class PodABacktestRunner:
                     hold_hours=self._hold_hours(trade),
                     opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
                     closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+                    setup_details=getattr(trade, "setup_details", None),
                 )
 
             last_snapshot_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
@@ -361,6 +376,15 @@ class PodABacktestRunner:
         )
         supervisor.flush_compact_logs()
         for trade in final_trades:
+            self.risk_gate.record_closed_trade(
+                symbol=trade.symbol,
+                setup=getattr(trade, "setup", None),
+                pnl_usd=trade.pnl_usd,
+                date_key=self._date_key(
+                    trade.closed_at.isoformat() if trade.closed_at is not None else last_timestamp,
+                    "finalize",
+                ),
+            )
             if output_journal is not None:
                 output_journal.append(
                     build_trade_journal_record(
@@ -401,6 +425,7 @@ class PodABacktestRunner:
                 hold_hours=self._hold_hours(trade),
                 opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
                 closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+                setup_details=getattr(trade, "setup_details", None),
             )
 
         return PodABacktestResult(
@@ -483,6 +508,7 @@ class PodABacktestRunner:
             "hold_hours": self._hold_hours(trade),
             "opened_at": trade.opened_at.isoformat() if trade.opened_at else None,
             "closed_at": trade.closed_at.isoformat() if trade.closed_at else None,
+            "setup_details": dict(getattr(trade, "setup_details", {}) or {}),
         }
 
     def _date_key(self, timestamp: str | None, fallback_source_file: str) -> str:

@@ -224,6 +224,150 @@ class PodAExecutorTests(unittest.TestCase):
         self.assertEqual(len(batch.fills), 2)
         self.assertEqual(executor.portfolio.open_positions["ETH"].setup, "liquidity_sweep_reclaim_long")
 
+    def test_scales_into_campaign_position_once_when_repeated_signal_confirms(self) -> None:
+        executor = PodAExecutor(load_config("config/trident.toml"))
+        initial = RiskDecision(
+            accepted=True,
+            reason="accepted",
+            trade_plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.74,
+                target_notional_usd=280.0,
+                stop_bps=160.0,
+                time_stop_hours=36,
+                take_profit_bps=0.0,
+                break_even_trigger_bps=232.0,
+                trailing_activation_bps=304.0,
+                trailing_distance_bps=184.0,
+                margin_usd=80.0,
+                effective_leverage=3.5,
+                risk_budget_usd=8.75,
+                expected_loss_usd=4.48,
+                setup_details={
+                    "campaign_mode_active": True,
+                    "routing_revoke_exempt": True,
+                    "campaign_add_on_enabled": True,
+                    "campaign_add_on_fraction": 0.3,
+                    "campaign_add_on_trigger_bps": 20.0,
+                    "campaign_add_on_min_confidence": 0.72,
+                    "campaign_max_add_ons": 1,
+                    "campaign_add_on_count": 0,
+                    "campaign_base_target_notional_usd": 400.0,
+                    "campaign_base_margin_usd": 114.285714,
+                    "campaign_base_risk_budget_usd": 12.5,
+                    "campaign_base_expected_loss_usd": 6.4,
+                },
+            ),
+        )
+        repeated = RiskDecision(
+            accepted=True,
+            reason="accepted",
+            trade_plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.78,
+                target_notional_usd=280.0,
+                stop_bps=160.0,
+                time_stop_hours=36,
+                take_profit_bps=0.0,
+                break_even_trigger_bps=232.0,
+                trailing_activation_bps=304.0,
+                trailing_distance_bps=184.0,
+                margin_usd=80.0,
+                effective_leverage=3.5,
+                risk_budget_usd=8.75,
+                expected_loss_usd=4.48,
+                setup_details={
+                    "campaign_mode_active": True,
+                    "routing_revoke_exempt": True,
+                    "campaign_add_on_enabled": True,
+                    "campaign_add_on_fraction": 0.3,
+                    "campaign_add_on_trigger_bps": 20.0,
+                    "campaign_add_on_min_confidence": 0.72,
+                    "campaign_max_add_ons": 1,
+                    "campaign_add_on_count": 0,
+                    "campaign_base_target_notional_usd": 400.0,
+                    "campaign_base_margin_usd": 114.285714,
+                    "campaign_base_risk_budget_usd": 12.5,
+                    "campaign_base_expected_loss_usd": 6.4,
+                },
+            ),
+        )
+
+        executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=100.0,
+                    ema_fast=99.0,
+                    ema_slow=98.0,
+                    vwap_distance_bps=-6.0,
+                    structure_score=0.6,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[initial],
+            signal_sides_by_symbol={"ETH": "long"},
+            timestamp="2026-04-04T00:00:00Z",
+        )
+
+        batch = executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=101.0,
+                    ema_fast=100.5,
+                    ema_slow=99.0,
+                    vwap_distance_bps=-3.0,
+                    structure_score=0.72,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[repeated],
+            signal_sides_by_symbol={"ETH": "long"},
+            timestamp="2026-04-04T00:15:00Z",
+        )
+
+        self.assertEqual(batch.opened_symbols, ["ETH"])
+        self.assertEqual(len(batch.closed_trades), 0)
+        position = executor.portfolio.open_positions["ETH"]
+        self.assertAlmostEqual(position.target_notional_usd, 400.0, places=4)
+        self.assertEqual(int(position.setup_details.get("campaign_add_on_count", 0)), 1)
+
+        second_repeat = executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=101.5,
+                    ema_fast=101.0,
+                    ema_slow=99.5,
+                    vwap_distance_bps=-2.0,
+                    structure_score=0.74,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[repeated],
+            signal_sides_by_symbol={"ETH": "long"},
+            timestamp="2026-04-04T00:30:00Z",
+        )
+
+        self.assertEqual(second_repeat.opened_symbols, [])
+        self.assertEqual(second_repeat.skipped_open_symbols, ["ETH"])
+        self.assertAlmostEqual(
+            executor.portfolio.open_positions["ETH"].target_notional_usd,
+            400.0,
+            places=4,
+        )
+
     def test_closes_position_when_symbol_is_no_longer_allowed(self) -> None:
         config = load_config("config/trident.toml")
         config = replace(
@@ -350,6 +494,74 @@ class PodAExecutorTests(unittest.TestCase):
                     ema_slow=2958.0,
                     vwap_distance_bps=-2.0,
                     structure_score=0.4,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[],
+            signal_sides_by_symbol={},
+            timestamp="2026-04-04T00:15:00Z",
+            allowed_symbols=set(),
+        )
+
+        self.assertEqual(len(batch.closed_trades), 0)
+        self.assertTrue(batch.had_open_position_before["ETH"])
+        self.assertTrue(batch.has_open_position_after["ETH"])
+
+    def test_keeps_campaign_position_when_routing_is_revoked(self) -> None:
+        executor = PodAExecutor(load_config("config/trident.toml"))
+        decision = RiskDecision(
+            accepted=True,
+            reason="accepted",
+            trade_plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.7,
+                target_notional_usd=450.0,
+                stop_bps=80.0,
+                time_stop_hours=36,
+                margin_usd=150.0,
+                effective_leverage=3.0,
+                risk_budget_usd=7.5,
+                expected_loss_usd=3.6,
+                setup_details={
+                    "campaign_mode_active": True,
+                    "routing_revoke_exempt": True,
+                },
+            ),
+        )
+
+        executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3000.0,
+                    ema_fast=2990.0,
+                    ema_slow=2950.0,
+                    vwap_distance_bps=-5.0,
+                    structure_score=0.6,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+            risk_decisions=[decision],
+            signal_sides_by_symbol={"ETH": "long"},
+            timestamp="2026-04-04T00:00:00Z",
+            allowed_symbols={"ETH"},
+        )
+
+        batch = executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=3008.0,
+                    ema_fast=2998.0,
+                    ema_slow=2958.0,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.45,
                     funding_rate=0.0,
                     spread_bps=1.0,
                     btc_aligned=True,

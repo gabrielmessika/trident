@@ -87,6 +87,39 @@ def _display_process_state(payload: dict[str, object] | None) -> str | None:
     return str(value) if value is not None else None
 
 
+def _authoritative_runtime_payload(
+    payload: dict[str, object] | None,
+    *,
+    enabled: bool,
+    allow_supervisor_fallback: bool = True,
+) -> dict[str, object] | None:
+    if not enabled or not isinstance(payload, dict):
+        return None
+    if not runtime_status_is_fresh(payload):
+        return None
+    if not allow_supervisor_fallback and _is_supervisor_fallback_runtime(payload):
+        return None
+    return payload
+
+
+def _report_process_state(
+    payload: dict[str, object] | None,
+    *,
+    enabled: bool,
+    allow_supervisor_fallback: bool = True,
+) -> str:
+    if not enabled:
+        return "disabled"
+    if not isinstance(payload, dict):
+        return "missing"
+    if not runtime_status_is_fresh(payload):
+        return "stale"
+    if not allow_supervisor_fallback and _is_supervisor_fallback_runtime(payload):
+        return "supervisor_fallback"
+    value = payload.get("process_state")
+    return str(value) if value is not None else "running"
+
+
 def build_runtime_report(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry | None = None,
@@ -168,57 +201,78 @@ def build_runtime_report(
         )
         if pod_name.value == "pod_a":
             runtime_payload = pod_a_runtime if isinstance(pod_a_runtime, dict) else None
-            runtime_report = runtime_payload.get("report", {}) if runtime_payload else {}
+            authoritative_payload = _authoritative_runtime_payload(
+                runtime_payload,
+                enabled=pod.enabled,
+            )
+            runtime_report = (
+                authoritative_payload.get("report", {})
+                if authoritative_payload is not None
+                else {}
+            )
             if isinstance(runtime_supervisor, dict):
                 report.preview_count = len(runtime_supervisor.get("pod_a_signal_preview", []))
             else:
                 report.preview_count = len(supervisor.state.pod_a_signal_preview)
-            if pod.enabled:
-                report.healthy = runtime_status_is_fresh(runtime_payload)
-            report.process_state = (
-                str(runtime_payload.get("process_state", "running"))
-                if runtime_payload is not None
-                else None
+            report.healthy = authoritative_payload is not None
+            report.process_state = _report_process_state(
+                runtime_payload,
+                enabled=pod.enabled,
             )
             report.position_count, report.total_unrealized_pnl_usd = _directional_open_position_metrics(
-                runtime_payload
+                authoritative_payload
             )
             report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
         if pod_name.value == "pod_c":
             runtime_payload = pod_c_runtime if isinstance(pod_c_runtime, dict) else None
-            runtime_report = runtime_payload.get("report", {}) if runtime_payload else {}
+            authoritative_payload = _authoritative_runtime_payload(
+                runtime_payload,
+                enabled=pod.enabled,
+            )
+            runtime_report = (
+                authoritative_payload.get("report", {})
+                if authoritative_payload is not None
+                else {}
+            )
             if isinstance(runtime_supervisor, dict):
                 report.preview_count = len(runtime_supervisor.get("pod_c_signal_preview", []))
             else:
                 report.preview_count = len(supervisor.state.pod_c_signal_preview)
-            if pod.enabled:
-                report.healthy = runtime_status_is_fresh(runtime_payload)
-            report.process_state = (
-                str(runtime_payload.get("process_state", "running"))
-                if runtime_payload is not None
-                else None
+            report.healthy = authoritative_payload is not None
+            report.process_state = _report_process_state(
+                runtime_payload,
+                enabled=pod.enabled,
             )
             report.position_count, report.total_unrealized_pnl_usd = _directional_open_position_metrics(
-                runtime_payload
+                authoritative_payload
             )
             report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
         if pod_name.value == "pod_b":
             runtime_payload = pod_b_status if isinstance(pod_b_status, dict) else None
-            runtime_report = runtime_payload.get("report", {}) if runtime_payload else {}
+            authoritative_payload = _authoritative_runtime_payload(
+                runtime_payload,
+                enabled=pod.enabled,
+                allow_supervisor_fallback=False,
+            )
+            runtime_report = (
+                authoritative_payload.get("report", {})
+                if authoritative_payload is not None
+                else {}
+            )
             if isinstance(runtime_supervisor, dict):
                 report.preview_count = len(runtime_supervisor.get("pod_b_signal_preview", []))
             else:
                 report.preview_count = len(supervisor.state.pod_b_signal_preview)
-            if pod.enabled:
-                report.healthy = (
-                    runtime_status_is_fresh(runtime_payload)
-                    and not _is_supervisor_fallback_runtime(runtime_payload)
-                )
-            report.process_state = _display_process_state(runtime_payload)
+            report.healthy = authoritative_payload is not None
+            report.process_state = _report_process_state(
+                runtime_payload,
+                enabled=pod.enabled,
+                allow_supervisor_fallback=False,
+            )
             report.position_count, report.total_unrealized_pnl_usd = _directional_open_position_metrics(
-                runtime_payload
+                authoritative_payload
             )
             report.open_order_count = 0
             report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))

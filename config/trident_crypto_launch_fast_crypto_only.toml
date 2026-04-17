@@ -133,16 +133,26 @@ dry_run_spread_multiplier = 0.5
 routing_revoke_grace_minutes = 60
 
 [trident.execution.routing_revoke_grace_minutes_by_symbol]
-DOGE = 180
-LINK = 180
-ARB = 180
-AVAX = 180
-SUI = 180
-XRP = 180
-SOL = 150
-HYPE = 150
-BTC = 60
-ETH = 60
+AAVE = 1440
+ADA = 1440
+ARB = 1440
+AVAX = 1440
+BCH = 1440
+BNB = 1440
+BTC = 1440
+DOGE = 1440
+ENA = 1440
+ETH = 1440
+HYPE = 1440
+LINK = 1440
+LTC = 1440
+NEAR = 1440
+SOL = 1440
+SUI = 1440
+TON = 1440
+XRP = 1440
+ZEC = 1440
+ZRO = 1440
 TAO = 240
 
 [trident.routing]
@@ -169,16 +179,16 @@ TAO = 21600
 # ETH = "pod_b"
 
 [trident.allocations.trend_expansion]
-pod_a = 0.70
-pod_b = 0.10
+pod_a = 0.80
+pod_b = 0.00
 pod_c = 0.20
 cash = 0.00
 
 [trident.allocations.range_auction]
 pod_a = 0.10
-pod_b = 0.75
+pod_b = 0.00
 pod_c = 0.15
-cash = 0.00
+cash = 0.75
 
 [trident.allocations.panic_squeeze]
 pod_a = 0.10
@@ -291,9 +301,102 @@ min_margin_usd = 20
 min_notional_usd = 10
 allow_partial_take_profit = false
 allow_break_even = true
-disabled_setups = ["bos_retest_short", "bos_retest_long", "trend_pullback_short", "liquidity_sweep_reclaim_short", "vwap_reclaim_long"]
+allowed_setups = ["trend_pullback_long"]
+disabled_setups = ["bos_retest_short", "bos_retest_long", "trend_pullback_short", "liquidity_sweep_reclaim_short", "liquidity_sweep_reclaim_long", "vwap_reclaim_long"]
 blocked_regimes = ["DeadZone", "RangeAuction"]
-allowed_setups_in_blocked_regimes = ["liquidity_sweep_reclaim_long"]
+allowed_setups_in_blocked_regimes = []
+guardrail_enabled = false
+guardrail_lookback_trades = 3
+guardrail_min_closed_trades = 2
+guardrail_max_cumulative_loss_usd = -8.0
+setup_guardrail_enabled = false
+setup_guardrail_lookback_trades = 4
+setup_guardrail_min_closed_trades = 3
+setup_guardrail_max_cumulative_loss_usd = -12.0
+intraday_setup_guardrail_enabled = false
+intraday_setup_guardrail_lookback_trades = 4
+intraday_setup_guardrail_min_closed_trades = 3
+intraday_setup_guardrail_max_cumulative_loss_usd = -10.0
+intraday_setup_guardrail_max_average_pnl_usd = -1.0
+
+[pod_a.campaign]
+enabled = true
+setups = ["trend_pullback_long"]
+allowed_regimes = ["TrendExpansion", "PanicSqueeze"]
+require_candles_ready = true
+min_confidence = 0.66
+min_structure_score = 0.55
+min_ichimoku_bias_score = 0.2
+max_stoch_rsi_k = 0.82
+max_cci20 = 120.0
+stop_bps_multiplier = 1.4
+stop_bps_floor = 160.0
+time_stop_hours = 36
+take_profit_multiplier = 0.0
+break_even_multiplier = 1.45
+trailing_activation_multiplier = 1.9
+trailing_distance_multiplier = 1.15
+reentry_cooldown_minutes = 45
+initial_entry_fraction = 1.0
+add_on_enabled = false
+add_on_fraction = 0.0
+add_on_trigger_bps = 0.0
+add_on_min_confidence = 0.0
+max_add_ons_per_position = 0
+
+[pod_a.structural_targets]
+enabled = false
+setups = ["trend_pullback_long"]
+require_structure_ready = true
+target_buffer_bps = 6.0
+min_target_bps = 35.0
+max_target_bps = 220.0
+
+[pod_a.reversal_fade]
+enabled = false
+allowed_regimes = ["TrendExpansion", "PanicSqueeze"]
+max_distance_from_resistance_bps = 18.0
+min_target_to_support_bps = 35.0
+min_trend_1h_bps = 8.0
+min_trend_4h_bps = 12.0
+min_rejection_flow = 0.10
+min_stoch_rsi_k = 0.72
+min_cci20 = 90.0
+max_vwap_reclaim_score = -0.05
+
+[[pod_a.pattern_vetoes]]
+name = "trend1h_negative"
+enabled = true
+setups = ["trend_pullback_long"]
+max_trend_1h_bps = -5.0
+
+[[pod_a.pattern_vetoes]]
+name = "trend4h_positive_cci_mid"
+enabled = true
+setups = ["trend_pullback_long"]
+min_trend_4h_bps = 10.0
+min_cci20 = -100.0
+max_cci20 = 100.0
+
+[[pod_a.pattern_watchers]]
+name = "vwap_weak_trend4h_positive"
+enabled = true
+setups = ["trend_pullback_long"]
+max_vwap_reclaim_score = 0.45
+min_trend_4h_bps = 10.0
+
+[[pod_a.pattern_watchers]]
+name = "vwap_weak"
+enabled = true
+setups = ["trend_pullback_long"]
+max_vwap_reclaim_score = 0.45
+
+[[pod_a.pattern_watchers]]
+name = "trend4h_flat"
+enabled = true
+setups = ["trend_pullback_long"]
+min_trend_4h_bps = -10.0
+max_trend_4h_bps = 10.0
 
 [pod_a.max_leverage_by_symbol]
 BTC = 40
@@ -332,7 +435,7 @@ trailing_distance_multiplier = 1.2
 max_leverage = 4.0
 
 [pod_b]
-enabled = true
+enabled = false
 allowed_market_clusters = ["crypto"]
 max_allocation_pct = 0.40
 # --- Pod B breakout directional parameters ---
@@ -386,7 +489,7 @@ LINK = 10.0
 ARB = 10.0
 
 [pod_c]
-enabled = true
+enabled = false
 # Pod C derive son scope du `hyperliquid.observation_universe`
 # filtre par cluster autorise.
 allowed_market_clusters = ["index", "gold", "silver", "equity", "oil", "fx"]

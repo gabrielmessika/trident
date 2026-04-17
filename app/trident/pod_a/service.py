@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.settings import AppConfig, load_config
 from app.trident.pod_a.filters import (
     max_abs_funding_rate_for_cluster,
     max_spread_bps_for_cluster,
@@ -7,12 +8,15 @@ from app.trident.pod_a.filters import (
 )
 from app.trident.pod_a.setups import (
     ema_separation_bps,
+    flow_alignment_short,
     is_bos_retest_long,
     is_bos_retest_short,
     is_liquidity_sweep_reclaim_long,
     is_liquidity_sweep_reclaim_short,
     is_vwap_reclaim_long,
     is_vwap_reclaim_short,
+    nearest_resistance_level,
+    nearest_support_level,
 )
 from app.trident.pod_a.structure import long_invalidation_price, short_invalidation_price
 from app.trident.pod_a.signals import AnchorTrendContext, AnchorTrendSignal
@@ -30,6 +34,13 @@ def _with_regime(context: AnchorTrendContext, details: dict[str, float | str | b
     return {
         **details,
         "regime": context.regime,
+        "structure_ready": context.structure_ready,
+        "range_high_1h": round(context.range_high_1h, 8),
+        "range_low_1h": round(context.range_low_1h, 8),
+        "swing_high_1h": round(context.swing_high_1h, 8),
+        "swing_low_1h": round(context.swing_low_1h, 8),
+        "bos_long_confirmed": context.bos_long_confirmed,
+        "bos_short_confirmed": context.bos_short_confirmed,
         "ichimoku_bias_score": round(context.ichimoku_bias_score, 4),
         "supertrend_direction": context.supertrend_direction,
         "stoch_rsi_k": round(context.stoch_rsi_k, 4),
@@ -40,6 +51,9 @@ def _with_regime(context: AnchorTrendContext, details: dict[str, float | str | b
 
 class AnchorTrendService:
     """Minimal Pod A signal generator for trend-following setups."""
+
+    def __init__(self, config: AppConfig | None = None) -> None:
+        self._config = config or load_config("config/trident.toml")
 
     def evaluate(self, context: AnchorTrendContext) -> AnchorTrendSignal | None:
         if not passes_anchor_filters(context):
@@ -299,6 +313,40 @@ class AnchorTrendService:
                 confidence_components=components,
             )
 
+        if self._is_reversal_fade_short(context):
+            components = self._confidence_components(context, "short")
+            components["setup_bonus"] = 0.09
+            resistance_level = nearest_resistance_level(context) or 0.0
+            support_level = nearest_support_level(context) or 0.0
+            return AnchorTrendSignal(
+                symbol=context.symbol,
+                side="short",
+                setup="reversal_fade_short",
+                confidence=round(self._aggregate_confidence(components), 3),
+                entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
+                invalidation_price=short_invalidation_price(
+                    price=max(context.price, resistance_level or context.price),
+                    ema_slow=max(context.ema_fast, context.ema_slow),
+                    bucket_range_bps=max(context.bucket_range_bps, 24.0),
+                ),
+                setup_details=_with_regime(
+                    context,
+                    {
+                        "family": "reversal_fade",
+                        "structure_score": round(context.structure_score, 4),
+                        "candles_ready": context.candles_ready,
+                        "trend_1h_bps": round(context.trend_1h_bps, 4),
+                        "trend_4h_bps": round(context.trend_4h_bps, 4),
+                        "rejection_flow": round(flow_alignment_short(context), 4),
+                        "resistance_level_1h": round(resistance_level, 8),
+                        "support_level_1h": round(support_level, 8),
+                    },
+                ),
+                confidence_components=components,
+            )
+
         if self._is_long_setup(context):
             components = self._confidence_components(context, "long")
             return AnchorTrendSignal(
@@ -314,7 +362,16 @@ class AnchorTrendService:
                     ema_slow=context.ema_slow,
                     bucket_range_bps=max(context.bucket_range_bps, 18.0),
                 ),
-                setup_details=_with_regime(context, {"family": "trend_pullback"}),
+                setup_details=_with_regime(
+                    context,
+                    {
+                        "family": "trend_pullback",
+                        "structure_score": round(context.structure_score, 4),
+                        "candles_ready": context.candles_ready,
+                        "trend_1h_bps": round(context.trend_1h_bps, 4),
+                        "trend_4h_bps": round(context.trend_4h_bps, 4),
+                    },
+                ),
                 confidence_components=components,
             )
 
@@ -333,7 +390,16 @@ class AnchorTrendService:
                     ema_slow=context.ema_slow,
                     bucket_range_bps=max(context.bucket_range_bps, 18.0),
                 ),
-                setup_details=_with_regime(context, {"family": "trend_pullback"}),
+                setup_details=_with_regime(
+                    context,
+                    {
+                        "family": "trend_pullback",
+                        "structure_score": round(context.structure_score, 4),
+                        "candles_ready": context.candles_ready,
+                        "trend_1h_bps": round(context.trend_1h_bps, 4),
+                        "trend_4h_bps": round(context.trend_4h_bps, 4),
+                    },
+                ),
                 confidence_components=components,
             )
 
@@ -365,6 +431,7 @@ class AnchorTrendService:
             "liquidity_sweep_reclaim_short": is_liquidity_sweep_reclaim_short(context),
             "vwap_reclaim_long": is_vwap_reclaim_long(context),
             "vwap_reclaim_short": is_vwap_reclaim_short(context),
+            "reversal_fade_short": self._is_reversal_fade_short(context),
             "trend_pullback_long": self._is_long_setup(context),
             "trend_pullback_short": self._is_short_setup(context),
         }
@@ -411,6 +478,39 @@ class AnchorTrendService:
             and context.price <= context.ema_fast <= context.ema_slow
             and context.vwap_distance_bps <= MAX_PULLBACK_DISTANCE_BPS
             and self._passes_indicator_vetoes(context, "short")
+        )
+
+    def _is_reversal_fade_short(self, context: AnchorTrendContext) -> bool:
+        config = self._config.pod_a.reversal_fade
+        if not config.enabled:
+            return False
+        if context.market_cluster != "crypto":
+            return False
+        if config.allowed_regimes and context.regime not in config.allowed_regimes:
+            return False
+        if not context.structure_ready:
+            return False
+        resistance_level = nearest_resistance_level(context)
+        support_level = nearest_support_level(context)
+        if resistance_level is None or support_level is None:
+            return False
+        resistance_distance_bps = abs((context.price - resistance_level) / context.price * 10_000.0)
+        support_distance_bps = (context.price - support_level) / context.price * 10_000.0
+        overextended = (
+            context.stoch_rsi_k >= config.min_stoch_rsi_k
+            or context.cci20 >= config.min_cci20
+        )
+        return (
+            context.trend_1h_bps >= config.min_trend_1h_bps
+            and context.trend_4h_bps >= config.min_trend_4h_bps
+            and context.price <= context.ema_fast
+            and context.ema_fast >= context.ema_slow
+            and resistance_distance_bps <= config.max_distance_from_resistance_bps
+            and support_distance_bps >= config.min_target_to_support_bps
+            and flow_alignment_short(context) >= config.min_rejection_flow
+            and context.supertrend_direction <= 0
+            and context.vwap_reclaim_score <= config.max_vwap_reclaim_score
+            and overextended
         )
 
     def _passes_indicator_vetoes(self, context: AnchorTrendContext, side: str) -> bool:

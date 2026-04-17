@@ -14,12 +14,14 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--without-pod-b] [--without-pod-c] [--without-funding]
+Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--fresh-start]
 
 Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
 - build Docker sur le serveur
 - optionnellement démarre les services
+- permet de choisir explicitement le fichier de config live/dry-run
+- `--fresh-start` purge les journaux/statuts live avant démarrage
 
 Par défaut :
 - host SSH : trident-hetzner
@@ -39,9 +41,11 @@ SSH_USER="${TRIDENT_DEPLOY_USER:-trident-deploy}"
 IDENTITY_FILE="${TRIDENT_DEPLOY_IDENTITY:-${HOME}/.ssh/trident_hetzner_ed25519}"
 DEPLOY_DIR="/opt/trident"
 START=""
+CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
 ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
+FRESH_START=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 selected_pods_label() {
@@ -63,9 +67,13 @@ selected_pods_label() {
 
 selected_server_flags() {
     local flags=""
+    local quoted_config
+    quoted_config="$(printf '%q' "$CONFIG_PATH")"
+    flags="${flags} --config ${quoted_config}"
     [ -z "$ENABLE_POD_B" ] && flags="${flags} --without-pod-b"
     [ -z "$ENABLE_POD_C" ] && flags="${flags} --without-pod-c"
     [ -z "$ENABLE_FUNDING" ] && flags="${flags} --without-funding"
+    [ -n "$FRESH_START" ] && flags="${flags} --fresh-start"
     printf '%s' "$flags"
 }
 
@@ -86,6 +94,10 @@ while [ $# -gt 0 ]; do
         --start)
             START="true"
             shift
+            ;;
+        --config)
+            CONFIG_PATH="$2"
+            shift 2
             ;;
         --with-pod-b)
             ENABLE_POD_B="true"
@@ -109,6 +121,10 @@ while [ $# -gt 0 ]; do
             ;;
         --without-funding)
             ENABLE_FUNDING=""
+            shift
+            ;;
+        --fresh-start)
+            FRESH_START="true"
             shift
             ;;
         -h|--help)
@@ -208,6 +224,7 @@ start_remote() {
     local extra_args
     extra_args="$(selected_server_flags)"
     info "Services demandés: $(selected_pods_label)"
+    info "Config demandée: ${CONFIG_PATH}"
     ssh_remote "cd ${DEPLOY_DIR} && ./scripts/trident_server.sh start${extra_args}"
     ok "Services démarrés"
 }
@@ -234,6 +251,7 @@ echo "========================================="
 echo ""
 if [ -n "$START" ]; then
     echo "Services actifs sur ${HOST}: $(selected_pods_label)"
+    echo "  Config active : ${CONFIG_PATH}"
     echo "  SSH : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST}"
     echo "  Dashboard public : http://<server-ip-or-dns>:3000/dashboard"
     echo "  API health : http://<server-ip-or-dns>:3000/health"
@@ -243,6 +261,8 @@ if [ -n "$START" ]; then
 else
     echo "Pour démarrer après déploiement :"
     echo "  ./deploy.sh --start"
+    echo "  ./deploy.sh --start --config config/trident_crypto_launch_fast_crypto_only.toml"
+    echo "  ./deploy.sh --start --config config/trident_crypto_launch_fast_crypto_only.toml --fresh-start"
     echo "  ./deploy.sh --start --without-pod-c"
     echo "  ./deploy.sh --start --without-funding"
 fi

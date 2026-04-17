@@ -186,6 +186,11 @@ class PodALiveRunner:
         snapshots = self._backfill_missing_position_snapshots(snapshots)
         previews = self.supervisor.preview_pod_a_signals(snapshots, timestamp=timestamp)
         trade_plans = self.supervisor.build_pod_a_trade_plans(snapshots, timestamp=timestamp)
+        for plan in trade_plans:
+            plan.setup_details = {
+                **dict(plan.setup_details or {}),
+                "current_date_key": date_key,
+            }
         risk_decisions = self.risk_gate.evaluate_many(trade_plans)
         entry_allowed_symbols = self.supervisor.opening_symbols_for(PodName.POD_A)
         managed_symbols = self.supervisor.managed_symbols_for(
@@ -481,6 +486,7 @@ class PodALiveRunner:
             "hold_hours": self._hold_hours(trade),
             "opened_at": trade.opened_at.isoformat() if trade.opened_at else None,
             "closed_at": trade.closed_at.isoformat() if trade.closed_at else None,
+            "setup_details": dict(getattr(trade, "setup_details", {}) or {}),
         }
 
     def _record_closed_trade(
@@ -492,6 +498,12 @@ class PodALiveRunner:
         journal: JsonlJournal | None,
         timestamp: str | None,
     ) -> None:
+        self.risk_gate.record_closed_trade(
+            symbol=str(getattr(trade, "symbol", "")),
+            setup=getattr(trade, "setup", None),
+            pnl_usd=getattr(trade, "pnl_usd", None),
+            date_key=date_key,
+        )
         if journal is not None:
             journal.append(
                 build_trade_journal_record(
@@ -530,6 +542,7 @@ class PodALiveRunner:
             hold_hours=self._hold_hours(trade),
             opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
             closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+            setup_details=getattr(trade, "setup_details", None),
         )
 
     async def _maintenance_loop(
@@ -740,6 +753,12 @@ class PodALiveRunner:
                     "trailing_activation_bps": position.trailing_activation_bps,
                     "trailing_distance_bps": position.trailing_distance_bps,
                     "best_price_seen": position.best_price_seen,
+                    "campaign_mode_active": bool(
+                        getattr(position, "setup_details", {}).get("campaign_mode_active")
+                    ),
+                    "routing_revoke_exempt": bool(
+                        getattr(position, "setup_details", {}).get("routing_revoke_exempt")
+                    ),
                     "opened_at": position.opened_at.isoformat() if position.opened_at else None,
                 }
             )

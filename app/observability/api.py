@@ -397,6 +397,8 @@ def _open_position_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
                     "trailing_distance_bps": item.get("trailing_distance_bps"),
                     "best_price_seen": item.get("best_price_seen"),
                     "confidence": item.get("confidence"),
+                    "campaign_mode_active": item.get("campaign_mode_active"),
+                    "routing_revoke_exempt": item.get("routing_revoke_exempt"),
                 }
             )
 

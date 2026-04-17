@@ -77,6 +77,7 @@ class DirectionalExecutor:
                 close_reason is None
                 and managed_symbols is not None
                 and snapshot.symbol not in managed_symbols
+                and not self._routing_revoke_exempt(existing)
                 and not self._routing_revoke_grace_active(existing, timestamp)
             ):
                 close_reason = "routing_revoked"
@@ -130,6 +131,40 @@ class DirectionalExecutor:
                 skipped_open_symbols.append(decision.trade_plan.symbol)
                 continue
             existing = self.portfolio.open_positions.get(decision.trade_plan.symbol)
+            if existing is not None and self._should_scale_in(existing, decision.trade_plan, snapshot):
+                add_on_values = self._campaign_add_on_values(decision.trade_plan)
+                if add_on_values is not None:
+                    (
+                        additional_notional_usd,
+                        additional_margin_usd,
+                        additional_risk_budget_usd,
+                        additional_expected_loss_usd,
+                    ) = add_on_values
+                    fill = self.venue.open_fill(
+                        symbol=decision.trade_plan.symbol,
+                        side=decision.trade_plan.side,
+                        mid_price=snapshot.price,
+                        spread_bps=snapshot.spread_bps,
+                        notional_usd=additional_notional_usd,
+                        timestamp=timestamp,
+                    )
+                    if self.portfolio.scale_into_position(
+                        decision.trade_plan.symbol,
+                        additional_notional_usd=additional_notional_usd,
+                        additional_margin_usd=additional_margin_usd,
+                        additional_risk_budget_usd=additional_risk_budget_usd,
+                        additional_expected_loss_usd=additional_expected_loss_usd,
+                        price=fill.price,
+                        entry_fee_usd=fill.fee_usd,
+                        plan=decision.trade_plan,
+                    ):
+                        opened_symbols.append(decision.trade_plan.symbol)
+                        fills.append(asdict(fill))
+                    else:
+                        skipped_open_symbols.append(decision.trade_plan.symbol)
+                else:
+                    skipped_open_symbols.append(decision.trade_plan.symbol)
+                continue
             if existing is not None and self._should_upgrade(existing, decision.trade_plan):
                 close_fill = self.venue.close_fill(
                     symbol=decision.trade_plan.symbol,
@@ -198,6 +233,15 @@ class DirectionalExecutor:
         age_seconds = (current - opened_at).total_seconds()
         return age_seconds < grace_minutes * 60
 
+    def _routing_revoke_exempt(self, existing: object) -> bool:
+        setup_details = getattr(existing, "setup_details", None)
+        if not isinstance(setup_details, dict):
+            return False
+        return bool(
+            setup_details.get("campaign_mode_active")
+            or setup_details.get("routing_revoke_exempt")
+        )
+
     def _parse_timestamp(self, value: str | None) -> datetime | None:
         if value is None:
             return None
@@ -224,6 +268,92 @@ class DirectionalExecutor:
         if setup.startswith("trend_pullback"):
             return 1
         return 0
+
+    def _should_scale_in(
+        self,
+        existing: object,
+        plan: object,
+        snapshot: SymbolMarketSnapshot,
+    ) -> bool:
+        if getattr(existing, "side", "") != getattr(plan, "side", ""):
+            return False
+        if getattr(existing, "setup", "") != getattr(plan, "setup", ""):
+            return False
+        setup_details = getattr(existing, "setup_details", None)
+        plan_details = getattr(plan, "setup_details", None)
+        if not isinstance(setup_details, dict) or not isinstance(plan_details, dict):
+            return False
+        if not bool(setup_details.get("campaign_mode_active")):
+            return False
+        if not bool(plan_details.get("campaign_add_on_enabled")):
+            return False
+        max_add_ons = max(int(plan_details.get("campaign_max_add_ons", 0) or 0), 0)
+        if max_add_ons <= 0:
+            return False
+        current_add_ons = max(int(setup_details.get("campaign_add_on_count", 0) or 0), 0)
+        if current_add_ons >= max_add_ons:
+            return False
+        if float(getattr(plan, "confidence", 0.0)) < float(
+            plan_details.get("campaign_add_on_min_confidence", 0.0) or 0.0
+        ):
+            return False
+        trigger_bps = float(plan_details.get("campaign_add_on_trigger_bps", 0.0) or 0.0)
+        favorable_move_bps = self._favorable_move_bps(existing, snapshot.price)
+        if favorable_move_bps < trigger_bps:
+            return False
+        add_on_values = self._campaign_add_on_values(plan)
+        if add_on_values is None:
+            return False
+        additional_notional_usd, *_ = add_on_values
+        return additional_notional_usd > 0.0
+
+    def _campaign_add_on_values(
+        self,
+        plan: object,
+    ) -> tuple[float, float, float, float] | None:
+        plan_details = getattr(plan, "setup_details", None)
+        if not isinstance(plan_details, dict):
+            return None
+        add_on_fraction = float(plan_details.get("campaign_add_on_fraction", 0.0) or 0.0)
+        if add_on_fraction <= 0.0:
+            return None
+        base_target = float(
+            plan_details.get("campaign_base_target_notional_usd", getattr(plan, "target_notional_usd", 0.0))
+            or 0.0
+        )
+        base_margin = float(
+            plan_details.get("campaign_base_margin_usd", getattr(plan, "margin_usd", 0.0))
+            or 0.0
+        )
+        base_risk_budget = float(
+            plan_details.get("campaign_base_risk_budget_usd", getattr(plan, "risk_budget_usd", 0.0))
+            or 0.0
+        )
+        base_expected_loss = float(
+            plan_details.get("campaign_base_expected_loss_usd", getattr(plan, "expected_loss_usd", 0.0))
+            or 0.0
+        )
+        additional_notional_usd = round(base_target * add_on_fraction, 6)
+        additional_margin_usd = round(base_margin * add_on_fraction, 6)
+        additional_risk_budget_usd = round(base_risk_budget * add_on_fraction, 6)
+        additional_expected_loss_usd = round(base_expected_loss * add_on_fraction, 6)
+        if additional_notional_usd <= 0.0:
+            return None
+        return (
+            additional_notional_usd,
+            additional_margin_usd,
+            additional_risk_budget_usd,
+            additional_expected_loss_usd,
+        )
+
+    def _favorable_move_bps(self, position: object, price: float) -> float:
+        entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
+        side = str(getattr(position, "side", ""))
+        if entry_price <= 0.0:
+            return 0.0
+        if side == "long":
+            return ((price - entry_price) / entry_price) * 10_000.0
+        return ((entry_price - price) / entry_price) * 10_000.0
 
     def finalize(
         self,

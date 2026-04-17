@@ -55,6 +55,9 @@ class LiveSnapshotBuilderTests(unittest.TestCase):
         payload = records[0]
         self.assertEqual(payload["timestamp"], "1970-01-01T00:00:00Z")
         self.assertEqual(payload["regime_snapshot"]["ready"], True)
+        self.assertEqual(payload["regime_snapshot"]["leader_symbol"], "BTC")
+        self.assertIn("breadth_pct", payload["regime_snapshot"])
+        self.assertIn("coherence_score", payload["regime_snapshot"])
         self.assertEqual(len(payload["symbols"]), 2)
         btc = next(item for item in payload["symbols"] if item["symbol"] == "BTC")
         self.assertEqual(btc["bucket_trade_count"], 1)

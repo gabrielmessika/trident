@@ -8,6 +8,7 @@ services:
       TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
       TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
       TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
+      TRIDENT_CONFIG_PATH: ${TRIDENT_CONFIG_PATH:-config/trident.toml}
     command:
       - python
       - -m
@@ -16,6 +17,8 @@ services:
       - observation
       - --profile
       - trident-docker
+      - --config
+      - ${TRIDENT_CONFIG_PATH:-config/trident.toml}
       - --host
       - 0.0.0.0
       - --port
@@ -49,12 +52,13 @@ services:
       TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
       TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
       TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
+      TRIDENT_CONFIG_PATH: ${TRIDENT_CONFIG_PATH:-config/trident.toml}
     command:
       - python
       - -m
       - app.live.pod_a_live_runner
       - --config
-      - config/trident.toml
+      - ${TRIDENT_CONFIG_PATH:-config/trident.toml}
       - --journal-output
       - logs/pod_a_live.jsonl
     volumes:
@@ -80,12 +84,13 @@ services:
       TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
       TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
       TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
+      TRIDENT_CONFIG_PATH: ${TRIDENT_CONFIG_PATH:-config/trident.toml}
     command:
       - python
       - -m
       - app.live.pod_b_live_runner
       - --config
-      - config/trident.toml
+      - ${TRIDENT_CONFIG_PATH:-config/trident.toml}
       - --journal-output
       - logs/pod_b_live.jsonl
     volumes:
@@ -113,12 +118,13 @@ services:
       TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
       TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
       TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
+      TRIDENT_CONFIG_PATH: ${TRIDENT_CONFIG_PATH:-config/trident.toml}
     command:
       - python
       - -m
       - app.live.pod_c_live_runner
       - --config
-      - config/trident.toml
+      - ${TRIDENT_CONFIG_PATH:-config/trident.toml}
       - --journal-output
       - logs/pod_c_live.jsonl
     volumes:
@@ -145,7 +151,7 @@ services:
       - -m
       - app.live.tradfi_funding_collector
       - --config
-      - config/trident.toml
+      - ${TRIDENT_CONFIG_PATH:-config/trident.toml}
       - --output
       - data/funding_history/pod_c_tradfi.jsonl
       - --poll-seconds
@@ -172,7 +178,7 @@ services:
       - -m
       - app.live.funding_collector
       - --config
-      - config/trident.toml
+      - ${TRIDENT_CONFIG_PATH:-config/trident.toml}
       - --output
       - data/funding_history/current.jsonl
       - --poll-seconds

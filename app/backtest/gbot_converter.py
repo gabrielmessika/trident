@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.trident.regime_snapshot_v2 import enrich_regime_snapshot
+
 
 @dataclass(slots=True)
 class BucketRow:
@@ -150,21 +152,24 @@ class GbotL2ToTridentConverter:
 
                 leader = next((s for s in symbols if s["symbol"] == "BTC"), symbols[0])
                 leader_range = float(leader.get("bucket_range_bps", 10.0))
-                regime_snapshot = {
-                    "ready": True,
-                    "adx": round(
-                        min(
-                            55.0,
-                            abs(float(leader["structure_score"])) * 70
-                            + abs(momentum_by_symbol.get(leader["symbol"], 0.0)) / 3.0,
+                regime_snapshot = enrich_regime_snapshot(
+                    {
+                        "ready": True,
+                        "adx": round(
+                            min(
+                                55.0,
+                                abs(float(leader["structure_score"])) * 70
+                                + abs(momentum_by_symbol.get(leader["symbol"], 0.0)) / 3.0,
+                            ),
+                            2,
                         ),
-                        2,
-                    ),
-                    "atr_ratio": round(max(leader_range / 30.0, 0.1), 4),
-                    "range_width_bps": round(max(leader_range, 10.0), 4),
-                    "structure_score": leader["structure_score"],
-                    "btc_impulse": abs(momentum_by_symbol.get("BTC", 0.0)) >= 10.0,
-                }
+                        "atr_ratio": round(max(leader_range / 30.0, 0.1), 4),
+                        "range_width_bps": round(max(leader_range, 10.0), 4),
+                        "structure_score": leader["structure_score"],
+                        "btc_impulse": abs(momentum_by_symbol.get("BTC", 0.0)) >= 10.0,
+                    },
+                    symbols,
+                )
 
                 payload = {
                     "timestamp": self._timestamp_to_iso(bucket * self.bucket_ms),

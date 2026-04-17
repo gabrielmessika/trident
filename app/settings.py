@@ -24,6 +24,7 @@ class RegimeThresholds:
     switch_confirmation_bars: int = 3
     trend_confirmation_bars: int = 2
     panic_confirmation_bars: int = 1
+    crypto_v2_enabled: bool = False
 
 
 @dataclass(slots=True)
@@ -179,9 +180,32 @@ class PodAConfig:
     min_notional_usd: float
     allow_partial_take_profit: bool
     allow_break_even: bool
+    allowed_setups: list[str]
     disabled_setups: list[str]
     blocked_regimes: list[str]
     allowed_setups_in_blocked_regimes: list[str]
+    guardrail_enabled: bool = False
+    guardrail_lookback_trades: int = 3
+    guardrail_min_closed_trades: int = 2
+    guardrail_max_cumulative_loss_usd: float = -8.0
+    setup_guardrail_enabled: bool = False
+    setup_guardrail_lookback_trades: int = 4
+    setup_guardrail_min_closed_trades: int = 3
+    setup_guardrail_max_cumulative_loss_usd: float = -12.0
+    intraday_setup_guardrail_enabled: bool = False
+    intraday_setup_guardrail_lookback_trades: int = 4
+    intraday_setup_guardrail_min_closed_trades: int = 3
+    intraday_setup_guardrail_max_cumulative_loss_usd: float = -10.0
+    intraday_setup_guardrail_max_average_pnl_usd: float = -1.0
+    campaign: PodACampaignConfig = field(default_factory=lambda: PodACampaignConfig())
+    structural_targets: PodAStructuralTargetConfig = field(
+        default_factory=lambda: PodAStructuralTargetConfig()
+    )
+    reversal_fade: PodAReversalFadeConfig = field(
+        default_factory=lambda: PodAReversalFadeConfig()
+    )
+    pattern_vetoes: list[PodAPatternVetoConfig] = field(default_factory=list)
+    pattern_watchers: list[PodAPatternVetoConfig] = field(default_factory=list)
     symbol_modes: dict[str, PodASymbolModeConfig] = field(default_factory=dict)
 
 
@@ -200,6 +224,83 @@ class PodASymbolModeConfig:
     trailing_activation_multiplier: float = 1.0
     trailing_distance_multiplier: float = 1.0
     max_leverage: float = 0.0
+
+
+@dataclass(slots=True)
+class PodACampaignConfig:
+    enabled: bool = False
+    setups: list[str] = field(default_factory=list)
+    allowed_regimes: list[str] = field(default_factory=list)
+    symbol_allowlist: list[str] = field(default_factory=list)
+    only_cluster_leaders: bool = False
+    require_candles_ready: bool = False
+    min_confidence: float = 0.0
+    min_structure_score: float = 0.0
+    min_ichimoku_bias_score: float = 0.0
+    max_stoch_rsi_k: float = 1.0
+    max_cci20: float = 9999.0
+    stop_bps_multiplier: float = 1.0
+    stop_bps_floor: float = 0.0
+    time_stop_hours: int = 24
+    take_profit_multiplier: float = 1.0
+    break_even_multiplier: float = 1.0
+    trailing_activation_multiplier: float = 1.0
+    trailing_distance_multiplier: float = 1.0
+    reentry_cooldown_minutes: int = 0
+    initial_entry_fraction: float = 1.0
+    add_on_enabled: bool = False
+    add_on_fraction: float = 0.0
+    add_on_trigger_bps: float = 0.0
+    add_on_min_confidence: float = 0.0
+    max_add_ons_per_position: int = 0
+
+
+@dataclass(slots=True)
+class PodAStructuralTargetConfig:
+    enabled: bool = False
+    setups: list[str] = field(default_factory=list)
+    require_structure_ready: bool = True
+    target_buffer_bps: float = 6.0
+    min_target_bps: float = 25.0
+    max_target_bps: float = 220.0
+
+
+@dataclass(slots=True)
+class PodAReversalFadeConfig:
+    enabled: bool = False
+    allowed_regimes: list[str] = field(default_factory=list)
+    max_distance_from_resistance_bps: float = 18.0
+    min_target_to_support_bps: float = 35.0
+    min_trend_1h_bps: float = 8.0
+    min_trend_4h_bps: float = 12.0
+    min_rejection_flow: float = 0.10
+    min_stoch_rsi_k: float = 0.72
+    min_cci20: float = 90.0
+    max_vwap_reclaim_score: float = -0.05
+
+
+@dataclass(slots=True)
+class PodAPatternVetoConfig:
+    name: str
+    enabled: bool = True
+    setups: list[str] = field(default_factory=list)
+    regimes: list[str] = field(default_factory=list)
+    require_candles_ready: bool | None = None
+    require_supertrend_direction: int | None = None
+    min_trend_1h_bps: float | None = None
+    max_trend_1h_bps: float | None = None
+    min_trend_4h_bps: float | None = None
+    max_trend_4h_bps: float | None = None
+    min_ichimoku_bias_score: float | None = None
+    max_ichimoku_bias_score: float | None = None
+    min_stoch_rsi_k: float | None = None
+    max_stoch_rsi_k: float | None = None
+    min_cci20: float | None = None
+    max_cci20: float | None = None
+    min_vwap_reclaim_score: float | None = None
+    max_vwap_reclaim_score: float | None = None
+    min_structure_score: float | None = None
+    max_structure_score: float | None = None
 
 
 @dataclass(slots=True)
@@ -441,6 +542,148 @@ def _pod_a_symbol_modes(raw: object) -> dict[str, PodASymbolModeConfig]:
     return parsed
 
 
+def _pod_a_campaign(raw: object) -> PodACampaignConfig:
+    if not isinstance(raw, dict):
+        return PodACampaignConfig()
+    return PodACampaignConfig(
+        enabled=bool(raw.get("enabled", False)),
+        setups=_str_list(raw.get("setups", [])),
+        allowed_regimes=_str_list(raw.get("allowed_regimes", [])),
+        symbol_allowlist=_str_list(raw.get("symbol_allowlist", []), upper_values=True),
+        only_cluster_leaders=bool(raw.get("only_cluster_leaders", False)),
+        require_candles_ready=bool(raw.get("require_candles_ready", False)),
+        min_confidence=float(raw.get("min_confidence", 0.0)),
+        min_structure_score=float(raw.get("min_structure_score", 0.0)),
+        min_ichimoku_bias_score=float(raw.get("min_ichimoku_bias_score", 0.0)),
+        max_stoch_rsi_k=float(raw.get("max_stoch_rsi_k", 1.0)),
+        max_cci20=float(raw.get("max_cci20", 9999.0)),
+        stop_bps_multiplier=float(raw.get("stop_bps_multiplier", 1.0)),
+        stop_bps_floor=float(raw.get("stop_bps_floor", 0.0)),
+        time_stop_hours=int(raw.get("time_stop_hours", 24)),
+        take_profit_multiplier=float(raw.get("take_profit_multiplier", 1.0)),
+        break_even_multiplier=float(raw.get("break_even_multiplier", 1.0)),
+        trailing_activation_multiplier=float(
+            raw.get("trailing_activation_multiplier", 1.0)
+        ),
+        trailing_distance_multiplier=float(
+            raw.get("trailing_distance_multiplier", 1.0)
+        ),
+        reentry_cooldown_minutes=int(raw.get("reentry_cooldown_minutes", 0)),
+        initial_entry_fraction=float(raw.get("initial_entry_fraction", 1.0)),
+        add_on_enabled=bool(raw.get("add_on_enabled", False)),
+        add_on_fraction=float(raw.get("add_on_fraction", 0.0)),
+        add_on_trigger_bps=float(raw.get("add_on_trigger_bps", 0.0)),
+        add_on_min_confidence=float(raw.get("add_on_min_confidence", 0.0)),
+        max_add_ons_per_position=int(raw.get("max_add_ons_per_position", 0)),
+    )
+
+
+def _pod_a_structural_targets(raw: object) -> PodAStructuralTargetConfig:
+    if not isinstance(raw, dict):
+        return PodAStructuralTargetConfig()
+    return PodAStructuralTargetConfig(
+        enabled=bool(raw.get("enabled", False)),
+        setups=_str_list(raw.get("setups", [])),
+        require_structure_ready=bool(raw.get("require_structure_ready", True)),
+        target_buffer_bps=float(raw.get("target_buffer_bps", 6.0)),
+        min_target_bps=float(raw.get("min_target_bps", 25.0)),
+        max_target_bps=float(raw.get("max_target_bps", 220.0)),
+    )
+
+
+def _pod_a_reversal_fade(raw: object) -> PodAReversalFadeConfig:
+    if not isinstance(raw, dict):
+        return PodAReversalFadeConfig()
+    return PodAReversalFadeConfig(
+        enabled=bool(raw.get("enabled", False)),
+        allowed_regimes=_str_list(raw.get("allowed_regimes", [])),
+        max_distance_from_resistance_bps=float(
+            raw.get("max_distance_from_resistance_bps", 18.0)
+        ),
+        min_target_to_support_bps=float(raw.get("min_target_to_support_bps", 35.0)),
+        min_trend_1h_bps=float(raw.get("min_trend_1h_bps", 8.0)),
+        min_trend_4h_bps=float(raw.get("min_trend_4h_bps", 12.0)),
+        min_rejection_flow=float(raw.get("min_rejection_flow", 0.10)),
+        min_stoch_rsi_k=float(raw.get("min_stoch_rsi_k", 0.72)),
+        min_cci20=float(raw.get("min_cci20", 90.0)),
+        max_vwap_reclaim_score=float(raw.get("max_vwap_reclaim_score", -0.05)),
+    )
+
+
+def _optional_bool(raw: object) -> bool | None:
+    if raw is None:
+        return None
+    return bool(raw)
+
+
+def _optional_float(raw: object) -> float | None:
+    if raw is None:
+        return None
+    return float(raw)
+
+
+def _optional_int(raw: object) -> int | None:
+    if raw is None:
+        return None
+    return int(raw)
+
+
+def _pod_a_pattern_rules(raw: object) -> list[PodAPatternVetoConfig]:
+    if not isinstance(raw, list):
+        return []
+    parsed: list[PodAPatternVetoConfig] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        parsed.append(
+            PodAPatternVetoConfig(
+                name=name,
+                enabled=bool(item.get("enabled", True)),
+                setups=_str_list(item.get("setups", [])),
+                regimes=_str_list(item.get("regimes", [])),
+                require_candles_ready=_optional_bool(item.get("require_candles_ready")),
+                require_supertrend_direction=_optional_int(
+                    item.get("require_supertrend_direction")
+                ),
+                min_trend_1h_bps=_optional_float(item.get("min_trend_1h_bps")),
+                max_trend_1h_bps=_optional_float(item.get("max_trend_1h_bps")),
+                min_trend_4h_bps=_optional_float(item.get("min_trend_4h_bps")),
+                max_trend_4h_bps=_optional_float(item.get("max_trend_4h_bps")),
+                min_ichimoku_bias_score=_optional_float(
+                    item.get("min_ichimoku_bias_score")
+                ),
+                max_ichimoku_bias_score=_optional_float(
+                    item.get("max_ichimoku_bias_score")
+                ),
+                min_stoch_rsi_k=_optional_float(item.get("min_stoch_rsi_k")),
+                max_stoch_rsi_k=_optional_float(item.get("max_stoch_rsi_k")),
+                min_cci20=_optional_float(item.get("min_cci20")),
+                max_cci20=_optional_float(item.get("max_cci20")),
+                min_vwap_reclaim_score=_optional_float(
+                    item.get("min_vwap_reclaim_score")
+                ),
+                max_vwap_reclaim_score=_optional_float(
+                    item.get("max_vwap_reclaim_score")
+                ),
+                min_structure_score=_optional_float(item.get("min_structure_score")),
+                max_structure_score=_optional_float(item.get("max_structure_score")),
+            )
+        )
+    return parsed
+
+
+def _pod_a_pattern_vetoes(raw: object) -> list[PodAPatternVetoConfig]:
+    return _pod_a_pattern_rules(raw)
+
+
+def _pod_a_pattern_watchers(raw: object) -> list[PodAPatternVetoConfig]:
+    return _pod_a_pattern_rules(raw)
+    return parsed
+
+
 def load_config(path: str | Path | None = None) -> AppConfig:
     config_path = Path(path or os.getenv("TRIDENT_CONFIG_PATH", "config/trident.toml"))
     with config_path.open("rb") as handle:
@@ -595,6 +838,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 panic_confirmation_bars=int(
                     regime_data.get("panic_confirmation_bars", 1)
                 ),
+                crypto_v2_enabled=bool(regime_data.get("crypto_v2_enabled", False)),
             ),
             capital=CapitalLimits(
                 reference_equity_usd=float(capital_data.get("reference_equity_usd", 1000.0)),
@@ -700,10 +944,62 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 pod_a_data.get("allow_partial_take_profit", False)
             ),
             allow_break_even=bool(pod_a_data.get("allow_break_even", False)),
+            allowed_setups=_str_list(pod_a_data.get("allowed_setups", [])),
             disabled_setups=_str_list(pod_a_data.get("disabled_setups", [])),
             blocked_regimes=_str_list(pod_a_data.get("blocked_regimes", [])),
             allowed_setups_in_blocked_regimes=_str_list(
                 pod_a_data.get("allowed_setups_in_blocked_regimes", [])
+            ),
+            guardrail_enabled=bool(pod_a_data.get("guardrail_enabled", False)),
+            guardrail_lookback_trades=int(
+                pod_a_data.get("guardrail_lookback_trades", 3)
+            ),
+            guardrail_min_closed_trades=int(
+                pod_a_data.get("guardrail_min_closed_trades", 2)
+            ),
+            guardrail_max_cumulative_loss_usd=float(
+                pod_a_data.get("guardrail_max_cumulative_loss_usd", -8.0)
+            ),
+            setup_guardrail_enabled=bool(
+                pod_a_data.get("setup_guardrail_enabled", False)
+            ),
+            setup_guardrail_lookback_trades=int(
+                pod_a_data.get("setup_guardrail_lookback_trades", 4)
+            ),
+            setup_guardrail_min_closed_trades=int(
+                pod_a_data.get("setup_guardrail_min_closed_trades", 3)
+            ),
+            setup_guardrail_max_cumulative_loss_usd=float(
+                pod_a_data.get("setup_guardrail_max_cumulative_loss_usd", -12.0)
+            ),
+            intraday_setup_guardrail_enabled=bool(
+                pod_a_data.get("intraday_setup_guardrail_enabled", False)
+            ),
+            intraday_setup_guardrail_lookback_trades=int(
+                pod_a_data.get("intraday_setup_guardrail_lookback_trades", 4)
+            ),
+            intraday_setup_guardrail_min_closed_trades=int(
+                pod_a_data.get("intraday_setup_guardrail_min_closed_trades", 3)
+            ),
+            intraday_setup_guardrail_max_cumulative_loss_usd=float(
+                pod_a_data.get(
+                    "intraday_setup_guardrail_max_cumulative_loss_usd",
+                    -10.0,
+                )
+            ),
+            intraday_setup_guardrail_max_average_pnl_usd=float(
+                pod_a_data.get("intraday_setup_guardrail_max_average_pnl_usd", -1.0)
+            ),
+            campaign=_pod_a_campaign(pod_a_data.get("campaign", {})),
+            structural_targets=_pod_a_structural_targets(
+                pod_a_data.get("structural_targets", {})
+            ),
+            reversal_fade=_pod_a_reversal_fade(
+                pod_a_data.get("reversal_fade", {})
+            ),
+            pattern_vetoes=_pod_a_pattern_vetoes(pod_a_data.get("pattern_vetoes", [])),
+            pattern_watchers=_pod_a_pattern_watchers(
+                pod_a_data.get("pattern_watchers", [])
             ),
             symbol_modes=_pod_a_symbol_modes(pod_a_data.get("symbol_modes", {})),
         ),

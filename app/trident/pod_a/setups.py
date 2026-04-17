@@ -34,6 +34,28 @@ def distance_to_level_bps(price: float, level: float) -> float:
     return ((price - level) / price) * 10_000.0
 
 
+def nearest_resistance_level(context: AnchorTrendContext) -> float | None:
+    candidates = [
+        level
+        for level in (context.swing_high_1h, context.range_high_1h)
+        if level > context.price > 0
+    ]
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+def nearest_support_level(context: AnchorTrendContext) -> float | None:
+    candidates = [
+        level
+        for level in (context.swing_low_1h, context.range_low_1h)
+        if context.price > level > 0
+    ]
+    if not candidates:
+        return None
+    return max(candidates)
+
+
 def allows_long_mtf(context: AnchorTrendContext) -> bool:
     if not context.candles_ready:
         return True

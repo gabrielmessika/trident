@@ -37,6 +37,7 @@ class OpenPosition:
     invalidation_price: float | None = None
     isolated: bool = True
     best_price_seen: float = 0.0
+    setup_details: dict[str, float | str | bool] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -66,6 +67,7 @@ class ClosedTrade:
     expected_loss_usd: float = 0.0
     invalidation_price: float | None = None
     isolated: bool = True
+    setup_details: dict[str, float | str | bool] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -111,6 +113,7 @@ class DirectionalPortfolioState:
             invalidation_price=plan.invalidation_price,
             isolated=plan.isolated,
             best_price_seen=price,
+            setup_details=dict(plan.setup_details),
         )
         return True
 
@@ -155,12 +158,73 @@ class DirectionalPortfolioState:
             expected_loss_usd=position.expected_loss_usd,
             invalidation_price=position.invalidation_price,
             isolated=position.isolated,
+            setup_details=dict(position.setup_details),
         )
         self.closed_trades.append(trade)
         self.realized_pnl_usd = round(self.realized_pnl_usd + pnl_usd, 2)
         self.last_closed_at_by_symbol[symbol] = trade.closed_at
         self.last_close_reason_by_symbol[symbol] = reason
         return trade
+
+    def scale_into_position(
+        self,
+        symbol: str,
+        *,
+        additional_notional_usd: float,
+        additional_margin_usd: float,
+        additional_risk_budget_usd: float,
+        additional_expected_loss_usd: float,
+        price: float,
+        entry_fee_usd: float,
+        plan: TradePlan,
+    ) -> bool:
+        position = self.open_positions.get(symbol)
+        if position is None or additional_notional_usd <= 0:
+            return False
+        current_notional = max(float(position.target_notional_usd), 0.0)
+        new_total_notional = current_notional + float(additional_notional_usd)
+        if new_total_notional <= 0:
+            return False
+        weighted_entry = (
+            (position.entry_price * current_notional) + (price * float(additional_notional_usd))
+        ) / new_total_notional
+        position.entry_price = round(weighted_entry, 8)
+        position.entry_fee_usd = round(position.entry_fee_usd + entry_fee_usd, 6)
+        position.target_notional_usd = round(new_total_notional, 6)
+        position.margin_usd = round(position.margin_usd + float(additional_margin_usd), 6)
+        position.risk_budget_usd = round(
+            position.risk_budget_usd + float(additional_risk_budget_usd),
+            6,
+        )
+        position.expected_loss_usd = round(
+            position.expected_loss_usd + float(additional_expected_loss_usd),
+            6,
+        )
+        position.confidence = round(max(position.confidence, float(plan.confidence)), 3)
+        position.stop_bps = max(position.stop_bps, float(plan.stop_bps))
+        position.time_stop_hours = max(position.time_stop_hours, int(plan.time_stop_hours))
+        position.take_profit_bps = max(position.take_profit_bps, float(plan.take_profit_bps))
+        position.break_even_trigger_bps = max(
+            position.break_even_trigger_bps,
+            float(plan.break_even_trigger_bps),
+        )
+        position.trailing_activation_bps = max(
+            position.trailing_activation_bps,
+            float(plan.trailing_activation_bps),
+        )
+        position.trailing_distance_bps = max(
+            position.trailing_distance_bps,
+            float(plan.trailing_distance_bps),
+        )
+        details = dict(position.setup_details)
+        details.update(dict(plan.setup_details))
+        current_add_ons = int(details.get("campaign_add_on_count", 0) or 0)
+        details["campaign_add_on_count"] = current_add_ons + 1
+        details["campaign_add_on_applied"] = True
+        position.setup_details = details
+        if position.best_price_seen <= 0:
+            position.best_price_seen = price
+        return True
 
     def _stop_hit(self, position: OpenPosition, price: float) -> bool:
         threshold = position.stop_bps / 10_000.0

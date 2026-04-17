@@ -111,6 +111,21 @@ class RoutingReplayRunner:
                 first_timestamp = timestamp
             last_timestamp = timestamp
 
+            replay_symbols = {
+                str(item.get("symbol", "")).strip().upper()
+                for item in record.symbols
+                if isinstance(item, dict) and str(item.get("symbol", "")).strip()
+            }
+            if replay_symbols:
+                current_universe = {
+                    str(symbol).strip().upper()
+                    for symbol in (supervisor.config.hyperliquid.observation_universe or [])
+                    if str(symbol).strip()
+                }
+                supervisor.config.hyperliquid.observation_universe = sorted(
+                    current_universe | replay_symbols
+                )
+
             supervisor.apply_regime_snapshot(
                 RegimeSnapshot(**record.regime_snapshot),
                 cluster_regime_snapshots={

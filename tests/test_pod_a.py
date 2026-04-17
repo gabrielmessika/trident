@@ -2,7 +2,13 @@ import unittest
 from dataclasses import replace
 
 from app.risk.pod_a_gate import PodARiskGate
-from app.settings import PodASymbolModeConfig, load_config
+from app.settings import (
+    PodACampaignConfig,
+    PodAReversalFadeConfig,
+    PodAStructuralTargetConfig,
+    PodASymbolModeConfig,
+    load_config,
+)
 from app.trident.capital_allocator import CapitalAllocator
 from app.trident.pod_a import (
     AnchorTrendContext,
@@ -224,6 +230,65 @@ class AnchorTrendServiceTests(unittest.TestCase):
         assert signal is not None
         self.assertEqual(signal.side, "short")
         self.assertEqual(signal.setup, "trend_pullback_short")
+
+    def test_generates_reversal_fade_short_when_rejection_is_confirmed(self) -> None:
+        service = AnchorTrendService(
+            replace(
+                self.config,
+                pod_a=replace(
+                    self.config.pod_a,
+                    reversal_fade=PodAReversalFadeConfig(
+                        enabled=True,
+                        allowed_regimes=["TrendExpansion", "PanicSqueeze"],
+                        max_distance_from_resistance_bps=18.0,
+                        min_target_to_support_bps=35.0,
+                        min_trend_1h_bps=8.0,
+                        min_trend_4h_bps=12.0,
+                        min_rejection_flow=0.10,
+                        min_stoch_rsi_k=0.72,
+                        min_cci20=90.0,
+                        max_vwap_reclaim_score=-0.05,
+                    ),
+                ),
+            )
+        )
+        signal = service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=101.4,
+                ema_fast=101.6,
+                ema_slow=100.8,
+                vwap_distance_bps=4.0,
+                structure_score=0.18,
+                funding_rate=0.0,
+                spread_bps=1.2,
+                btc_aligned=True,
+                book_imbalance=-0.22,
+                trade_flow_bias=-0.18,
+                bucket_range_bps=24.0,
+                trend_1h_bps=18.0,
+                trend_4h_bps=34.0,
+                mtf_bias_score=24.0,
+                candles_ready=True,
+                structure_ready=True,
+                range_high_1h=101.6,
+                range_low_1h=100.5,
+                swing_high_1h=101.5,
+                swing_low_1h=100.8,
+                ichimoku_bias_score=0.12,
+                supertrend_direction=-1,
+                stoch_rsi_k=0.84,
+                cci20=122.0,
+                vwap_reclaim_score=-0.11,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.side, "short")
+        self.assertEqual(signal.setup, "reversal_fade_short")
+        self.assertEqual(signal.setup_details.get("family"), "reversal_fade")
 
     def test_generates_signal_for_index_cluster_without_btc_dependency(self) -> None:
         contexts = self.context_service.build_contexts(
@@ -553,6 +618,427 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertLessEqual(trade_plan.effective_leverage, 4.0)
         self.assertEqual(trade_plan.risk_budget_usd, 6.25)
         self.assertTrue(bool(trade_plan.setup_details.get("special_symbol_mode_active")))
+
+    def test_trade_planner_applies_campaign_mode_for_crypto_trend_pullback(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                campaign=PodACampaignConfig(
+                    enabled=True,
+                    setups=["trend_pullback_long"],
+                    allowed_regimes=["TrendExpansion", "PanicSqueeze"],
+                    require_candles_ready=True,
+                    min_confidence=0.6,
+                    min_structure_score=0.5,
+                    min_ichimoku_bias_score=0.2,
+                    max_stoch_rsi_k=0.82,
+                    max_cci20=120.0,
+                    stop_bps_multiplier=1.5,
+                    stop_bps_floor=220.0,
+                    time_stop_hours=36,
+                    take_profit_multiplier=0.0,
+                    break_even_multiplier=1.4,
+                    trailing_activation_multiplier=1.8,
+                    trailing_distance_multiplier=1.1,
+                    reentry_cooldown_minutes=45,
+                ),
+            ),
+        )
+        planner = AnchorTrendPlanner(config)
+        allocation = CapitalAllocator(config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+                candles_ready=True,
+                trend_1h_bps=22.0,
+                trend_4h_bps=48.0,
+                ichimoku_bias_score=0.35,
+                stoch_rsi_k=0.58,
+                cci20=48.0,
+            )
+        )
+
+        assert signal is not None
+        trade_plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertIsNotNone(trade_plan)
+        assert trade_plan is not None
+        self.assertEqual(trade_plan.time_stop_hours, 36)
+        self.assertEqual(trade_plan.take_profit_bps, 0.0)
+        self.assertEqual(trade_plan.reentry_cooldown_minutes, 45)
+        self.assertGreaterEqual(trade_plan.stop_bps, 220.0)
+        self.assertTrue(bool(trade_plan.setup_details.get("campaign_mode_active")))
+        self.assertTrue(bool(trade_plan.setup_details.get("routing_revoke_exempt")))
+        self.assertGreater(trade_plan.trailing_activation_bps, trade_plan.stop_bps)
+
+    def test_trade_planner_reserves_capacity_for_campaign_add_on(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                campaign=PodACampaignConfig(
+                    enabled=True,
+                    setups=["trend_pullback_long"],
+                    allowed_regimes=["TrendExpansion", "PanicSqueeze"],
+                    require_candles_ready=True,
+                    min_confidence=0.6,
+                    min_structure_score=0.5,
+                    min_ichimoku_bias_score=0.2,
+                    max_stoch_rsi_k=0.82,
+                    max_cci20=120.0,
+                    stop_bps_multiplier=1.5,
+                    stop_bps_floor=220.0,
+                    time_stop_hours=36,
+                    take_profit_multiplier=0.0,
+                    break_even_multiplier=1.4,
+                    trailing_activation_multiplier=1.8,
+                    trailing_distance_multiplier=1.1,
+                    reentry_cooldown_minutes=45,
+                    initial_entry_fraction=0.7,
+                    add_on_enabled=True,
+                    add_on_fraction=0.3,
+                    add_on_trigger_bps=35.0,
+                    add_on_min_confidence=0.72,
+                    max_add_ons_per_position=1,
+                ),
+            ),
+        )
+        planner = AnchorTrendPlanner(config)
+        allocation = CapitalAllocator(config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+                candles_ready=True,
+                trend_1h_bps=22.0,
+                trend_4h_bps=48.0,
+                ichimoku_bias_score=0.35,
+                stoch_rsi_k=0.58,
+                cci20=48.0,
+            )
+        )
+
+        assert signal is not None
+        trade_plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertIsNotNone(trade_plan)
+        assert trade_plan is not None
+        self.assertAlmostEqual(
+            trade_plan.target_notional_usd,
+            float(trade_plan.setup_details["campaign_base_target_notional_usd"]) * 0.7,
+            places=4,
+        )
+        self.assertTrue(bool(trade_plan.setup_details.get("campaign_add_on_enabled")))
+        self.assertAlmostEqual(
+            float(trade_plan.setup_details.get("campaign_add_on_fraction", 0.0)),
+            0.3,
+            places=4,
+        )
+        self.assertEqual(int(trade_plan.setup_details.get("campaign_max_add_ons", 0)), 1)
+
+    def test_trade_planner_skips_campaign_mode_when_mtf_confirmation_is_not_ready(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                campaign=PodACampaignConfig(
+                    enabled=True,
+                    setups=["trend_pullback_long"],
+                    allowed_regimes=["TrendExpansion", "PanicSqueeze"],
+                    require_candles_ready=True,
+                    min_confidence=0.6,
+                    min_structure_score=0.5,
+                    min_ichimoku_bias_score=0.2,
+                    max_stoch_rsi_k=0.82,
+                    max_cci20=120.0,
+                    stop_bps_multiplier=1.5,
+                    stop_bps_floor=220.0,
+                    time_stop_hours=36,
+                    take_profit_multiplier=0.0,
+                    break_even_multiplier=1.4,
+                    trailing_activation_multiplier=1.8,
+                    trailing_distance_multiplier=1.1,
+                    reentry_cooldown_minutes=45,
+                ),
+            ),
+        )
+        planner = AnchorTrendPlanner(config)
+        allocation = CapitalAllocator(config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+            )
+        )
+
+        assert signal is not None
+        trade_plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertIsNotNone(trade_plan)
+        assert trade_plan is not None
+        self.assertFalse(bool(trade_plan.setup_details.get("campaign_mode_active")))
+        self.assertEqual(trade_plan.time_stop_hours, 24)
+
+    def test_trade_planner_applies_structural_take_profit_from_nearest_resistance(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                campaign=PodACampaignConfig(
+                    enabled=True,
+                    setups=["trend_pullback_long"],
+                    allowed_regimes=["TrendExpansion"],
+                    require_candles_ready=True,
+                    min_confidence=0.6,
+                    min_structure_score=0.5,
+                    min_ichimoku_bias_score=0.2,
+                    max_stoch_rsi_k=0.82,
+                    max_cci20=120.0,
+                    stop_bps_multiplier=1.5,
+                    stop_bps_floor=220.0,
+                    time_stop_hours=36,
+                    take_profit_multiplier=0.0,
+                    break_even_multiplier=1.4,
+                    trailing_activation_multiplier=1.8,
+                    trailing_distance_multiplier=1.1,
+                    reentry_cooldown_minutes=45,
+                ),
+                structural_targets=PodAStructuralTargetConfig(
+                    enabled=True,
+                    setups=["trend_pullback_long"],
+                    require_structure_ready=True,
+                    target_buffer_bps=6.0,
+                    min_target_bps=25.0,
+                    max_target_bps=220.0,
+                ),
+            ),
+        )
+        planner = AnchorTrendPlanner(config)
+        allocation = CapitalAllocator(config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=100.0,
+                ema_fast=99.4,
+                ema_slow=98.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+                candles_ready=True,
+                structure_ready=True,
+                swing_high_1h=101.50,
+                range_high_1h=102.40,
+                swing_low_1h=98.50,
+                range_low_1h=97.80,
+                trend_1h_bps=22.0,
+                trend_4h_bps=48.0,
+                ichimoku_bias_score=0.35,
+                stoch_rsi_k=0.58,
+                cci20=48.0,
+            )
+        )
+
+        assert signal is not None
+        trade_plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertIsNotNone(trade_plan)
+        assert trade_plan is not None
+        self.assertAlmostEqual(trade_plan.take_profit_bps, 144.0, places=4)
+        self.assertTrue(bool(trade_plan.setup_details.get("structural_target_active")))
+        self.assertEqual(
+            trade_plan.setup_details.get("structural_target_source"),
+            "swing_high_1h",
+        )
+        self.assertAlmostEqual(
+            float(trade_plan.setup_details.get("structural_target_level", 0.0)),
+            101.5,
+            places=8,
+        )
+
+    def test_trade_planner_skips_structural_take_profit_without_structure(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                structural_targets=PodAStructuralTargetConfig(
+                    enabled=True,
+                    setups=["trend_pullback_long"],
+                    require_structure_ready=True,
+                    target_buffer_bps=6.0,
+                    min_target_bps=25.0,
+                    max_target_bps=220.0,
+                ),
+            ),
+        )
+        planner = AnchorTrendPlanner(config)
+        allocation = CapitalAllocator(config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=100.0,
+                ema_fast=99.4,
+                ema_slow=98.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+            )
+        )
+
+        assert signal is not None
+        trade_plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertIsNotNone(trade_plan)
+        assert trade_plan is not None
+        self.assertFalse(bool(trade_plan.setup_details.get("structural_target_active")))
+
+    def test_trade_planner_applies_structural_target_to_reversal_fade_short(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                reversal_fade=PodAReversalFadeConfig(
+                    enabled=True,
+                    allowed_regimes=["TrendExpansion"],
+                    max_distance_from_resistance_bps=18.0,
+                    min_target_to_support_bps=25.0,
+                    min_trend_1h_bps=8.0,
+                    min_trend_4h_bps=12.0,
+                    min_rejection_flow=0.10,
+                    min_stoch_rsi_k=0.72,
+                    min_cci20=90.0,
+                    max_vwap_reclaim_score=-0.05,
+                ),
+                structural_targets=PodAStructuralTargetConfig(
+                    enabled=True,
+                    setups=["reversal_fade_short"],
+                    require_structure_ready=True,
+                    target_buffer_bps=6.0,
+                    min_target_bps=25.0,
+                    max_target_bps=220.0,
+                ),
+            ),
+        )
+        service = AnchorTrendService(config)
+        planner = AnchorTrendPlanner(config)
+        allocation = CapitalAllocator(config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        signal = service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=101.4,
+                ema_fast=101.6,
+                ema_slow=100.8,
+                vwap_distance_bps=4.0,
+                structure_score=0.18,
+                funding_rate=0.0,
+                spread_bps=1.2,
+                btc_aligned=True,
+                book_imbalance=-0.22,
+                trade_flow_bias=-0.18,
+                bucket_range_bps=24.0,
+                trend_1h_bps=18.0,
+                trend_4h_bps=34.0,
+                mtf_bias_score=24.0,
+                candles_ready=True,
+                structure_ready=True,
+                range_high_1h=101.6,
+                range_low_1h=100.3,
+                swing_high_1h=101.5,
+                swing_low_1h=101.06,
+                ichimoku_bias_score=0.12,
+                supertrend_direction=-1,
+                stoch_rsi_k=0.84,
+                cci20=122.0,
+                vwap_reclaim_score=-0.11,
+            )
+        )
+
+        assert signal is not None
+        trade_plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertIsNotNone(trade_plan)
+        assert trade_plan is not None
+        self.assertEqual(trade_plan.setup, "reversal_fade_short")
+        self.assertTrue(bool(trade_plan.setup_details.get("structural_target_active")))
+        self.assertEqual(
+            trade_plan.setup_details.get("structural_target_source"),
+            "swing_low_1h",
+        )
+        self.assertAlmostEqual(trade_plan.take_profit_bps, 27.5306, places=3)
 
     def test_symbol_mode_can_bypass_global_disabled_setup_for_tao(self) -> None:
         config = replace(

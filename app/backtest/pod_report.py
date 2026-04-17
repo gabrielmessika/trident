@@ -193,6 +193,7 @@ class PodABacktestReport:
         hold_hours: float | None,
         opened_at: str | None,
         closed_at: str | None,
+        setup_details: dict[str, float | str | bool] | None = None,
     ) -> None:
         self.closed_trade_count += 1
         self.realized_pnl_usd = round(self.realized_pnl_usd + pnl_usd, 2)
@@ -260,6 +261,7 @@ class PodABacktestReport:
                 "hold_hours": hold_hours,
                 "opened_at": opened_at,
                 "closed_at": closed_at,
+                "setup_details": dict(setup_details or {}),
             }
         )
 

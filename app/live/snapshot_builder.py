@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from app.trident.regime_snapshot_v2 import (
+    enrich_cluster_regime_snapshots,
+    enrich_regime_snapshot,
+)
+
 
 @dataclass(slots=True)
 class TradeBucket:
@@ -320,9 +325,14 @@ class LiveSnapshotBuilder:
                 symbol["btc_aligned"] = sym_mom == 0 or btc_mom == 0 or (sym_mom > 0) == (btc_mom > 0)
 
         leader = next((s for s in symbols if s["symbol"] == "BTC"), symbols[0])
-        regime_snapshot = self._regime_snapshot_from_leader(leader, momentum_by_symbol)
+        regime_snapshot = enrich_regime_snapshot(
+            self._regime_snapshot_from_leader(leader, momentum_by_symbol),
+            symbols,
+            cluster_by_symbol=self._cluster_by_symbol,
+        )
         cluster_regime_snapshots = self._build_cluster_regime_snapshots(
-            symbols, momentum_by_symbol,
+            symbols,
+            momentum_by_symbol,
         )
         return [
             {
@@ -365,7 +375,7 @@ class LiveSnapshotBuilder:
         if not self._cluster_leaders:
             return {}
         symbol_by_name = {str(s["symbol"]): s for s in symbols}
-        result: dict[str, dict[str, object]] = {}
+        base_snapshots: dict[str, dict[str, object]] = {}
         for cluster, leaders in self._cluster_leaders.items():
             leader = None
             for candidate in leaders:
@@ -374,8 +384,13 @@ class LiveSnapshotBuilder:
                     break
             if leader is None:
                 continue
-            result[cluster] = self._regime_snapshot_from_leader(leader, momentum_by_symbol)
-        return result
+            base_snapshots[cluster] = self._regime_snapshot_from_leader(leader, momentum_by_symbol)
+        return enrich_cluster_regime_snapshots(
+            base_snapshots,
+            symbols,
+            cluster_by_symbol=self._cluster_by_symbol,
+            cluster_leaders=self._cluster_leaders,
+        )
 
     def _depth_within_bps(
         self,
