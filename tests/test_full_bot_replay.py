@@ -246,7 +246,7 @@ class FullBotReplayTests(unittest.TestCase):
                         "bucket_volume": 8.0,
                         "bucket_notional_usd": 800.0,
                         "bucket_trade_count": 24,
-                        "bucket_range_bps": 15.0,
+                        "bucket_range_bps": 34.0,
                         "delta_book_imbalance": 0.22,
                         "delta_trade_flow_bias": 0.30,
                         "volume_ratio": 2.4,

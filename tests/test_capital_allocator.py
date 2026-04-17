@@ -125,6 +125,31 @@ class CapitalAllocatorTests(unittest.TestCase):
             1.0,
         )
 
+    def test_correlated_crypto_groups_scale_uniform_allocations_and_return_cash(self) -> None:
+        plan = self.allocator.build_plan(
+            regime=Regime.RANGE_AUCTION,
+            owned_symbols_by_pod={
+                PodName.POD_A: ["BTC"],
+                PodName.POD_B: ["ETH", "LINK", "AVAX", "ADA"],
+                PodName.POD_C: [],
+            },
+        )
+
+        pod_b = plan.pod_allocations[PodName.POD_B]
+        self.assertEqual(round(pod_b.target_pct, 6), 0.228572)
+        self.assertEqual(
+            [(item.symbol, round(item.target_pct, 6)) for item in pod_b.symbols],
+            [
+                ("ETH", 0.057143),
+                ("LINK", 0.057143),
+                ("AVAX", 0.057143),
+                ("ADA", 0.057143),
+            ],
+        )
+        self.assertTrue(all(item.capped_by_correlation for item in pod_b.symbols))
+        self.assertEqual({item.correlation_group for item in pod_b.symbols}, {"core_beta"})
+        self.assertEqual(round(plan.cash_pct, 6), 0.671428)
+
 
 if __name__ == "__main__":
     unittest.main()

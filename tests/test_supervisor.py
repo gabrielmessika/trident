@@ -12,6 +12,7 @@ from app.trident.types import (
     Regime,
     RegimeSnapshot,
     SignalPreview,
+    SymbolAllocation,
     SymbolMarketSnapshot,
     SymbolRoutingDecision,
 )
@@ -434,6 +435,9 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(len(previews), 1)
         self.assertEqual(previews[0].symbol, "ETH")
         self.assertEqual(supervisor.snapshot()["pod_a_signal_preview"][0]["symbol"], "ETH")
+        self.assertTrue(supervisor.snapshot()["pod_a_signal_preview"][0]["reason_summary"])
+        self.assertIn("setup_details", supervisor.snapshot()["pod_a_signal_preview"][0])
+        self.assertTrue(supervisor.snapshot()["pod_a_signal_review"])
 
     def test_supervisor_builds_pod_a_trade_plans(self) -> None:
         supervisor = TridentSupervisor(
@@ -648,6 +652,80 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(snapshot["pod_b_status"]["managed_symbols"], ["BTC"])
         self.assertNotIn("supervisor", snapshot["pod_b_status"])
+
+    def test_supervisor_tracks_shadow_blocked_pod_b_signals(self) -> None:
+        self.config.pod_b.enabled = True
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=28.0,
+                atr_ratio=1.0,
+                range_width_bps=120.0,
+                structure_score=0.35,
+                btc_impulse=True,
+            )
+        )
+
+        snapshot = SymbolMarketSnapshot(
+            symbol="AVAX",
+            price=100.0,
+            ema_fast=100.9,
+            ema_slow=100.0,
+            vwap_distance_bps=7.0,
+            structure_score=0.36,
+            funding_rate=0.0,
+            spread_bps=1.2,
+            btc_aligned=True,
+            market_cluster="crypto",
+            cluster_aligned=True,
+            cluster_leader="BTC",
+            book_imbalance=0.20,
+            trade_flow_bias=0.22,
+            bucket_trade_count=22,
+            bucket_notional_usd=780.0,
+            bucket_range_bps=34.0,
+            delta_book_imbalance=0.15,
+            delta_trade_flow_bias=0.24,
+            volume_ratio=2.0,
+            trade_count_ratio=1.8,
+            realized_vol_short_bps=7.2,
+            realized_vol_long_bps=4.1,
+            compression_score=0.76,
+            microprice_dislocation_bps=1.1,
+        )
+
+        with (
+            patch.object(supervisor, "refresh_symbol_routing", return_value=None),
+            patch.object(supervisor, "opening_symbols_for", return_value=set()),
+            patch.object(supervisor, "owner_for_symbol", return_value=PodName.POD_A),
+            patch.object(
+                supervisor,
+                "allocation_for_symbol",
+                return_value=SymbolAllocation(
+                    symbol="AVAX",
+                    target_pct=0.05,
+                    target_usd=500.0,
+                    reason_summary="uniform_allocation",
+                ),
+            ),
+        ):
+            previews = supervisor.preview_pod_b_signals([snapshot])
+
+        self.assertEqual(previews, [])
+        reviews = supervisor.snapshot()["pod_b_signal_review"]
+        self.assertEqual(len(reviews), 1)
+        review = reviews[0]
+        self.assertEqual(review["symbol"], "AVAX")
+        self.assertEqual(review["status"], "shadow_blocked_by_routing")
+        self.assertEqual(review["owner"], "pod_a")
+        self.assertTrue(review["blocked_by_routing"])
+        self.assertEqual(review["owner_allocation_target_usd"], 500.0)
+        self.assertIn("shadow blocked by routing", review["reason_summary"])
 
     def test_supervisor_tracks_regime_history(self) -> None:
         supervisor = TridentSupervisor(

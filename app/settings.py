@@ -59,6 +59,8 @@ class RoutingConfig:
     reassignment_cooldown_seconds: int = 900
     reassignment_debounce_min_score: float = 0.15
     reassignment_debounce_seconds_by_symbol: dict[str, int] = field(default_factory=dict)
+    pod_b_shadow_signal_bonus: float = 0.0
+    pod_b_shadow_signal_min_confidence: float = 0.0
     runtime_override_path: str = "./runtime/trident/symbol_routing_overrides.json"
     symbol_pod_overrides: dict[str, str] = field(default_factory=dict)
 
@@ -205,6 +207,11 @@ class PodBConfig:
     enabled: bool
     allowed_market_clusters: list[str]
     max_allocation_pct: float
+    bis_blocked_symbols: list[str]
+    bis_guardrail_enabled: bool
+    bis_guardrail_lookback_trades: int
+    bis_guardrail_min_closed_trades: int
+    bis_guardrail_max_cumulative_loss_usd: float
     bis_min_confidence: float
     bis_default_leverage: float
     bis_max_leverage: float
@@ -647,6 +654,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                         routing_data.get("reassignment_debounce_seconds_by_symbol", {})
                     ).items()
                 },
+                pod_b_shadow_signal_bonus=float(
+                    routing_data.get("pod_b_shadow_signal_bonus", 0.0)
+                ),
+                pod_b_shadow_signal_min_confidence=float(
+                    routing_data.get("pod_b_shadow_signal_min_confidence", 0.0)
+                ),
                 runtime_override_path=str(
                     routing_data.get(
                         "runtime_override_path",
@@ -701,6 +714,21 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 upper_values=False,
             ),
             max_allocation_pct=float(pod_b_data.get("max_allocation_pct", 1.0)),
+            bis_blocked_symbols=_str_list(
+                pod_b_data.get("bis_blocked_symbols", [])
+            ),
+            bis_guardrail_enabled=bool(
+                pod_b_data.get("bis_guardrail_enabled", False)
+            ),
+            bis_guardrail_lookback_trades=int(
+                pod_b_data.get("bis_guardrail_lookback_trades", 3)
+            ),
+            bis_guardrail_min_closed_trades=int(
+                pod_b_data.get("bis_guardrail_min_closed_trades", 2)
+            ),
+            bis_guardrail_max_cumulative_loss_usd=float(
+                pod_b_data.get("bis_guardrail_max_cumulative_loss_usd", -6.0)
+            ),
             bis_min_confidence=float(pod_b_data.get("bis_min_confidence", 0.58)),
             bis_default_leverage=float(pod_b_data.get("bis_default_leverage", 2.0)),
             bis_max_leverage=float(pod_b_data.get("bis_max_leverage", 20.0)),
@@ -765,7 +793,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 pod_b_data.get("bis_strict_continuation_filter_enabled", False)
             ),
             bis_enabled_setups=_str_list(
-                pod_b_data.get("bis_enabled_setups", ["vol_expansion_long"])
+                pod_b_data.get(
+                    "bis_enabled_setups",
+                    ["vol_expansion_long", "ttm_squeeze_release_long"],
+                )
             ),
             bis_max_concurrent_positions=int(
                 pod_b_data.get("bis_max_concurrent_positions", 4)

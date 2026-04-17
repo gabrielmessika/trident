@@ -290,7 +290,7 @@ min_margin_usd = 20
 min_notional_usd = 10
 allow_partial_take_profit = false
 allow_break_even = true
-disabled_setups = ["bos_retest_short", "bos_retest_long", "trend_pullback_short", "liquidity_sweep_reclaim_short"]
+disabled_setups = ["bos_retest_short", "bos_retest_long", "trend_pullback_short", "liquidity_sweep_reclaim_short", "vwap_reclaim_long"]
 blocked_regimes = ["DeadZone", "RangeAuction"]
 allowed_setups_in_blocked_regimes = ["liquidity_sweep_reclaim_long"]
 
@@ -335,6 +335,10 @@ enabled = true
 allowed_market_clusters = ["crypto"]
 max_allocation_pct = 0.40
 # --- Pod B breakout directional parameters ---
+bis_guardrail_enabled = false
+bis_guardrail_lookback_trades = 3
+bis_guardrail_min_closed_trades = 2
+bis_guardrail_max_cumulative_loss_usd = -6.0
 bis_min_confidence = 0.58
 bis_default_leverage = 2.0
 bis_max_leverage = 10.0
@@ -362,7 +366,7 @@ bis_stop_ceiling_bps = 80.0
 bis_enable_longs = true
 bis_enable_shorts = false
 bis_strict_continuation_filter_enabled = true
-bis_enabled_setups = ["vol_expansion_long"]
+bis_enabled_setups = ["vol_expansion_long", "ttm_squeeze_release_long"]
 bis_max_concurrent_positions = 3
 bis_max_total_open_risk_pct = 0.015
 

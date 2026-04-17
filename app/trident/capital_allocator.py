@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from app.settings import AppConfig
+from app.trident.market_clusters import correlation_group_for_symbol
 from app.trident.types import CapitalPlan, PodAllocation, PodName, Regime, SymbolAllocation
+
+CORRELATION_DENSITY_PENALTY = 0.25
 
 
 class CapitalAllocator:
@@ -173,6 +176,7 @@ class CapitalAllocator:
                         total_equity=total_equity,
                         max_symbol_pct=max_symbol_pct,
                         min_symbol_usd=min_symbol_usd,
+                        apply_correlation_cap=pod_name == PodName.POD_B,
                     )
                 allocated_symbol_pct = sum(item.target_pct for item in symbol_allocations)
                 if allocated_symbol_pct < target_pct:
@@ -203,22 +207,62 @@ class CapitalAllocator:
         total_equity: float,
         max_symbol_pct: float,
         min_symbol_usd: float,
+        apply_correlation_cap: bool = False,
     ) -> list[SymbolAllocation]:
         allocations: list[SymbolAllocation] = []
         per_symbol_pct = target_pct / len(owned_symbols)
+        group_sizes = self._correlation_group_sizes(owned_symbols)
         for symbol in owned_symbols:
-            symbol_pct = min(per_symbol_pct, max_symbol_pct)
+            density_factor = 1.0
+            correlation_group = ""
+            if apply_correlation_cap and per_symbol_pct * total_equity > (min_symbol_usd * 1.5):
+                correlation_group = correlation_group_for_symbol(self._config, symbol) or ""
+                density_factor = self._correlation_density_factor(symbol, group_sizes)
+            symbol_pct = min(per_symbol_pct * density_factor, max_symbol_pct)
             symbol_usd = round(symbol_pct * total_equity, 2)
             if symbol_usd < min_symbol_usd:
                 continue
+            capped_by_correlation = density_factor < 0.9999
+            reason_summary = "uniform_allocation"
+            if capped_by_correlation:
+                reason_summary = (
+                    f"correlation_cap:{correlation_group or 'crypto'} "
+                    f"x{density_factor:.3f}"
+                )
             allocations.append(
                 SymbolAllocation(
                     symbol=symbol,
                     target_pct=round(symbol_pct, 6),
                     target_usd=symbol_usd,
+                    reason_summary=reason_summary,
+                    correlation_group=correlation_group,
+                    correlation_density_factor=round(density_factor, 6),
+                    capped_by_correlation=capped_by_correlation,
                 )
             )
         return allocations
+
+    def _correlation_group_sizes(self, symbols: list[str]) -> dict[str, int]:
+        sizes: dict[str, int] = {}
+        for symbol in symbols:
+            group = correlation_group_for_symbol(self._config, symbol)
+            if group is None:
+                continue
+            sizes[group] = sizes.get(group, 0) + 1
+        return sizes
+
+    def _correlation_density_factor(
+        self,
+        symbol: str,
+        group_sizes: dict[str, int],
+    ) -> float:
+        group = correlation_group_for_symbol(self._config, symbol)
+        if group is None:
+            return 1.0
+        size = group_sizes.get(group, 0)
+        if size <= 1:
+            return 1.0
+        return 1.0 / (1.0 + CORRELATION_DENSITY_PENALTY * (size - 1))
 
     def _build_pod_c_symbol_allocations(
         self,
@@ -253,6 +297,7 @@ class CapitalAllocator:
                         symbol=symbol,
                         target_pct=round(symbol_pct, 6),
                         target_usd=symbol_usd,
+                        reason_summary=f"cluster_budget:{cluster}",
                     )
                 )
         return allocations

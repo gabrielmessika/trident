@@ -644,14 +644,15 @@ class TridentSupervisor:
             timestamp=timestamp,
         )
         signals = self.pod_a_service.evaluate_many(contexts)
-        previews = [
-            SignalPreview(
-                symbol=signal.symbol,
-                side=signal.side,
-                setup=signal.setup,
-                confidence=signal.confidence,
+        previews = [self._build_signal_preview(signal) for signal in signals]
+        signal_by_symbol = {signal.symbol: signal for signal in signals}
+        self.state.pod_a_signal_review = [
+            self._build_signal_review(
+                self._build_signal_preview(signal_by_symbol[context.symbol])
+                if context.symbol in signal_by_symbol
+                else self.pod_a_service.review_context(context)
             )
-            for signal in signals
+            for context in contexts
         ]
         self.state.pod_a_signal_preview = previews
         return previews
@@ -727,16 +728,24 @@ class TridentSupervisor:
     ) -> list[SignalPreview]:
         snapshots = self._prepare_snapshots(snapshots)
         self.refresh_symbol_routing(snapshots)
-        signals = self.pod_b_service.evaluate_many(self._pod_b_contexts(snapshots))
-        previews = [
-            SignalPreview(
-                symbol=signal.symbol,
-                side=signal.side,
-                setup=signal.setup,
-                confidence=signal.confidence,
+        opening_symbols = self.opening_symbols_for(PodName.POD_B)
+        contexts = self._pod_b_contexts(snapshots, allowed_symbols=opening_symbols)
+        signals = self.pod_b_service.evaluate_many(contexts)
+        previews = [self._build_signal_preview(signal) for signal in signals]
+        signal_by_symbol = {signal.symbol: signal for signal in signals}
+        routed_reviews = [
+            self._build_signal_review(
+                self._build_signal_preview(signal_by_symbol[context.symbol])
+                if context.symbol in signal_by_symbol
+                else self.pod_b_service.review_context(context)
             )
-            for signal in signals
+            for context in contexts
         ]
+        shadow_reviews = self._pod_b_shadow_signal_reviews(
+            snapshots=snapshots,
+            opening_symbols=opening_symbols,
+        )
+        self.state.pod_b_signal_review = shadow_reviews + routed_reviews
         self.state.pod_b_signal_preview = previews
         return previews
 
@@ -758,8 +767,10 @@ class TridentSupervisor:
     def _pod_b_contexts(
         self,
         snapshots: list[SymbolMarketSnapshot],
+        *,
+        allowed_symbols: set[str] | None = None,
+        excluded_symbols: set[str] | None = None,
     ) -> list[BreakoutContext]:
-        opening_symbols = self.opening_symbols_for(PodName.POD_B)
         return [
             BreakoutContext(
                 symbol=snapshot.symbol,
@@ -793,8 +804,74 @@ class TridentSupervisor:
                 microprice_dislocation_bps=snapshot.microprice_dislocation_bps,
             )
             for snapshot in snapshots
-            if snapshot.symbol in opening_symbols
+            if (allowed_symbols is None or snapshot.symbol in allowed_symbols)
+            and (excluded_symbols is None or snapshot.symbol not in excluded_symbols)
         ]
+
+    def _pod_b_shadow_signal_reviews(
+        self,
+        *,
+        snapshots: list[SymbolMarketSnapshot],
+        opening_symbols: set[str],
+    ) -> list[dict[str, object]]:
+        blocked_contexts = self._pod_b_contexts(
+            snapshots,
+            excluded_symbols=opening_symbols,
+        )
+        blocked_signals = self.pod_b_service.evaluate_many(blocked_contexts)
+        reviews: list[dict[str, object]] = []
+        for signal in blocked_signals:
+            preview = self._build_signal_preview(signal)
+            review = self._build_signal_review(preview)
+            owner = self.owner_for_symbol(signal.symbol)
+            routing = self._routing_decision_for_symbol(signal.symbol)
+            owner_allocation = (
+                self.allocation_for_symbol(owner, signal.symbol)
+                if owner is not None
+                else None
+            )
+            owner_label = owner.value if owner is not None else "unassigned"
+            routing_mode = routing.mode if routing is not None else "unassigned"
+            routing_reason = routing.reason if routing is not None else ""
+            allocation_reason = owner_allocation.reason_summary if owner_allocation is not None else ""
+            reason_parts = [
+                f"shadow blocked by routing",
+                f"owner {owner_label}",
+                f"mode {routing_mode}",
+                preview.reason_summary,
+            ]
+            if allocation_reason:
+                reason_parts.append(allocation_reason)
+            review["status"] = "shadow_blocked_by_routing"
+            review["reason_summary"] = " · ".join(part for part in reason_parts if part)
+            review["blocked_by_routing"] = True
+            review["owner"] = owner_label
+            review["routing_mode"] = routing_mode
+            review["routing_reason"] = routing_reason
+            review["owner_allocation_target_usd"] = (
+                owner_allocation.target_usd if owner_allocation is not None else 0.0
+            )
+            review["owner_allocation_reason"] = allocation_reason
+            review["setup_details"] = {
+                **dict(review.get("setup_details", {})),
+                "blocked_by_routing": True,
+                "routing_owner": owner_label,
+                "routing_mode": routing_mode,
+                "routing_reason": routing_reason,
+                "owner_allocation_target_usd": (
+                    owner_allocation.target_usd if owner_allocation is not None else 0.0
+                ),
+                "owner_allocation_reason": allocation_reason,
+            }
+            reviews.append(review)
+        return reviews
+
+    def _routing_decision_for_symbol(self, symbol: str) -> SymbolRoutingDecision | None:
+        normalized = str(symbol).strip().upper()
+        for decision in self.state.symbol_routing:
+            if decision.symbol.upper() == normalized:
+                return decision
+        return None
 
     def _pod_b_planning_allocation(self, signals: list[object]) -> PodAllocation:
         base = self.capital_plan.pod_allocations[PodName.POD_B]
@@ -841,17 +918,79 @@ class TridentSupervisor:
             cluster_regimes=self.state.cluster_regimes or None,
         )
         signals = self.pod_c_service.evaluate_many(contexts)
-        previews = [
-            SignalPreview(
-                symbol=signal.symbol,
-                side=signal.side,
-                setup=signal.setup,
-                confidence=signal.confidence,
-            )
-            for signal in signals
-        ]
+        previews = [self._build_signal_preview(signal) for signal in signals]
         self.state.pod_c_signal_preview = previews
         return previews
+
+    def _build_signal_preview(self, signal: object) -> SignalPreview:
+        return SignalPreview(
+            symbol=str(getattr(signal, "symbol")),
+            side=str(getattr(signal, "side")),
+            setup=str(getattr(signal, "setup")),
+            confidence=float(getattr(signal, "confidence")),
+            reason_summary=self._signal_reason_summary(signal),
+            setup_details=dict(getattr(signal, "setup_details", {}) or {}),
+            confidence_components=dict(getattr(signal, "confidence_components", {}) or {}),
+        )
+
+    def _build_signal_review(self, payload: SignalPreview | dict[str, object]) -> dict[str, object]:
+        if isinstance(payload, SignalPreview):
+            return {
+                "symbol": payload.symbol,
+                "status": "signaled",
+                "side": payload.side,
+                "setup": payload.setup,
+                "confidence": payload.confidence,
+                "reason_summary": payload.reason_summary,
+                "setup_details": dict(payload.setup_details),
+                "confidence_components": dict(payload.confidence_components),
+            }
+        return dict(payload)
+
+    def _signal_reason_summary(self, signal: object) -> str:
+        setup = str(getattr(signal, "setup", "")).replace("_", " ").strip()
+        components = dict(getattr(signal, "confidence_components", {}) or {})
+        detail_parts: list[str] = []
+        for key, label in (
+            ("confirmation_quality", "confirm"),
+            ("extension_quality", "extension"),
+            ("squeeze_release_quality", "squeeze"),
+            ("flow_support_quality", "flow"),
+            ("money_flow_quality", "money"),
+            ("mtf_quality", "mtf"),
+        ):
+            if key in components:
+                detail_parts.append(f"{label} {float(components[key]):.2f}")
+        if not detail_parts:
+            ranked = sorted(
+                (
+                    (name, float(value))
+                    for name, value in components.items()
+                    if name != "setup_bonus"
+                ),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            detail_parts = [
+                f"{name.replace('_', ' ')} {value:.2f}"
+                for name, value in ranked[:2]
+            ]
+        if setup and detail_parts:
+            return f"{setup}; {', '.join(detail_parts[:2])}"
+        if setup:
+            return setup
+        return ", ".join(detail_parts[:2])
+
+    def _serialize_signal_preview(self, signal: SignalPreview) -> dict[str, object]:
+        return {
+            "symbol": signal.symbol,
+            "side": signal.side,
+            "setup": signal.setup,
+            "confidence": signal.confidence,
+            "reason_summary": signal.reason_summary,
+            "setup_details": dict(signal.setup_details),
+            "confidence_components": dict(signal.confidence_components),
+        }
 
     def build_pod_c_trade_plans(
         self,
@@ -952,6 +1091,18 @@ class TridentSupervisor:
             if symbol.target_usd > 0
         }
 
+    def allocation_for_symbol(
+        self,
+        pod_name: PodName,
+        symbol: str,
+    ) -> SymbolAllocation | None:
+        normalized = str(symbol).strip().upper()
+        allocation = self.capital_plan.pod_allocations[pod_name]
+        for item in allocation.symbols:
+            if item.symbol.upper() == normalized:
+                return item
+        return None
+
     def allowed_symbols_for(self, pod_name: PodName) -> set[str]:
         return self.opening_symbols_for(pod_name)
 
@@ -1025,6 +1176,18 @@ class TridentSupervisor:
             "total_open_order_count": 0,
             "total_fill_count": int(previous_report.get("closed_trade_count", 0)),
             "realized_pnl_usd": float(previous_report.get("realized_pnl_usd", 0.0)),
+            "allocation_symbols": [
+                {
+                    "symbol": item.symbol,
+                    "target_pct": item.target_pct,
+                    "target_usd": item.target_usd,
+                    "reason_summary": item.reason_summary,
+                    "correlation_group": item.correlation_group,
+                    "correlation_density_factor": item.correlation_density_factor,
+                    "capped_by_correlation": item.capped_by_correlation,
+                }
+                for item in allocation.symbols
+            ],
             "total_unrealized_pnl_usd": round(
                 sum(float(item.get("unrealized_pnl_usd", 0.0)) for item in open_positions if isinstance(item, dict)),
                 4,
@@ -1182,6 +1345,10 @@ class TridentSupervisor:
                                 "symbol": symbol.symbol,
                                 "target_pct": symbol.target_pct,
                                 "target_usd": symbol.target_usd,
+                                "reason_summary": symbol.reason_summary,
+                                "correlation_group": symbol.correlation_group,
+                                "correlation_density_factor": symbol.correlation_density_factor,
+                                "capped_by_correlation": symbol.capped_by_correlation,
                             }
                             for symbol in allocation.symbols
                         ],
@@ -1272,32 +1439,19 @@ class TridentSupervisor:
                 "runtime_path": str(self.runtime_routing_override_path()),
             },
             "pod_a_signal_preview": [
-                {
-                    "symbol": signal.symbol,
-                    "side": signal.side,
-                    "setup": signal.setup,
-                    "confidence": signal.confidence,
-                }
+                self._serialize_signal_preview(signal)
                 for signal in self.state.pod_a_signal_preview
             ],
             "pod_b_signal_preview": [
-                {
-                    "symbol": signal.symbol,
-                    "side": signal.side,
-                    "setup": signal.setup,
-                    "confidence": signal.confidence,
-                }
+                self._serialize_signal_preview(signal)
                 for signal in self.state.pod_b_signal_preview
             ],
             "pod_c_signal_preview": [
-                {
-                    "symbol": signal.symbol,
-                    "side": signal.side,
-                    "setup": signal.setup,
-                    "confidence": signal.confidence,
-                }
+                self._serialize_signal_preview(signal)
                 for signal in self.state.pod_c_signal_preview
             ],
+            "pod_a_signal_review": [dict(item) for item in self.state.pod_a_signal_review],
+            "pod_b_signal_review": [dict(item) for item in self.state.pod_b_signal_review],
             "symbol_routing": [
                 {
                     "symbol": decision.symbol,

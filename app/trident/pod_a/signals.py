@@ -35,6 +35,11 @@ class AnchorTrendContext:
     swing_low_1h: float = 0.0
     bos_long_confirmed: bool = False
     bos_short_confirmed: bool = False
+    ichimoku_bias_score: float = 0.0
+    supertrend_direction: int = 0
+    stoch_rsi_k: float = 0.5
+    cci20: float = 0.0
+    vwap_reclaim_score: float = 0.0
 
 
 @dataclass(slots=True)

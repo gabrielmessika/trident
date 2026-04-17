@@ -114,6 +114,7 @@ class HealthApiTests(unittest.TestCase):
                 "regime_evaluation_count": 5,
                 "regime_history": [],
                 "pod_a_signal_preview": [{"symbol": "ETH"}],
+                "pod_a_signal_review": [{"symbol": "ETH", "status": "filtered"}],
                 "pod_c_signal_preview": [],
             },
         }
@@ -181,6 +182,7 @@ class HealthApiTests(unittest.TestCase):
                 "regime_history": [],
                 "pod_a_signal_preview": [],
                 "pod_c_signal_preview": [{"symbol": "SPX"}],
+                "pod_b_signal_review": [],
             },
         }
         def _api_runtime_loader(path):
@@ -203,6 +205,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["capital_plan"]["regime"], "TrendExpansion")
         self.assertEqual(payload["regime_evaluation_count"], 6)
         self.assertEqual(payload["pod_a_signal_preview"][0]["symbol"], "ETH")
+        self.assertEqual(payload["pod_a_signal_review"][0]["symbol"], "ETH")
         self.assertEqual(payload["pod_c_signal_preview"][0]["symbol"], "SPX")
         self.assertEqual(payload["runtime_report"]["regime"], "TrendExpansion")
         self.assertEqual(payload["runtime_report"]["cash_usd"], 200.0)

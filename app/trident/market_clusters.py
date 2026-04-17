@@ -24,6 +24,21 @@ DEFAULT_CLUSTER_OVERRIDES: dict[str, str] = {
     "CRCL": "equity",
     "SNDK": "equity",
 }
+DEFAULT_CRYPTO_CORRELATION_GROUPS: dict[str, str] = {
+    "BTC": "core_beta",
+    "ETH": "core_beta",
+    "SOL": "core_beta",
+    "LINK": "core_beta",
+    "AVAX": "core_beta",
+    "ADA": "core_beta",
+    "DOGE": "core_beta",
+    "PNUT": "meme_beta",
+    "FARTCOIN": "meme_beta",
+    "PUMP": "meme_beta",
+    "KPEPE": "meme_beta",
+    "PEPE": "meme_beta",
+    "XPL": "meme_beta",
+}
 
 
 def normalize_symbols(symbols: list[str] | None) -> list[str]:
@@ -80,6 +95,15 @@ def cluster_for_symbol(config: AppConfig, symbol: str) -> str:
         **config.hyperliquid.market_cluster_overrides,
     }
     return overrides.get(normalized, DEFAULT_CLUSTER)
+
+
+def correlation_group_for_symbol(config: AppConfig, symbol: str) -> str | None:
+    normalized = str(symbol).strip().upper()
+    if not normalized:
+        return None
+    if cluster_for_symbol(config, normalized) != DEFAULT_CLUSTER:
+        return None
+    return DEFAULT_CRYPTO_CORRELATION_GROUPS.get(normalized)
 
 
 def leaders_for_cluster(config: AppConfig, cluster: str) -> list[str]:
@@ -161,6 +185,8 @@ def _select_cluster_leader(
         return symbol
     if candidates:
         return max(candidates, key=lambda item: abs(impulse_by_symbol.get(item, 0.0)))
+    if cluster != DEFAULT_CLUSTER and symbol in snapshot_by_symbol and snapshot_by_symbol[symbol].price > 0:
+        return symbol
     return symbol if symbol in all_cluster_leaders(config) else ""
 
 

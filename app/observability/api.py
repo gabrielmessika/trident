@@ -683,6 +683,8 @@ def _merge_runtime_snapshot(
         "pod_a_signal_preview",
         "pod_b_signal_preview",
         "pod_c_signal_preview",
+        "pod_a_signal_review",
+        "pod_b_signal_review",
     ):
         if key in runtime_supervisor:
             snapshot[key] = runtime_supervisor[key]
@@ -740,6 +742,8 @@ def _embedded_supervisor_snapshot(snapshot: dict[str, object]) -> dict[str, obje
         "pod_a_signal_preview",
         "pod_b_signal_preview",
         "pod_c_signal_preview",
+        "pod_a_signal_review",
+        "pod_b_signal_review",
     ):
         if key in snapshot:
             payload[key] = copy.deepcopy(snapshot[key])
@@ -964,9 +968,50 @@ def _control_center_html(
                 parts.append(setup)
             if confidence != "-":
                 parts.append(f"conf {confidence}")
-            rows.append(f"<li>{' · '.join(parts)}</li>")
+            reason_summary = str(item.get("reason_summary", "")).strip()
+            if reason_summary:
+                rows.append(
+                    f"<li>{' · '.join(parts)}<br><span class='soft-note'>{escape(reason_summary)}</span></li>"
+                )
+            else:
+                rows.append(f"<li>{' · '.join(parts)}</li>")
         if not rows:
             return "<p class='soft-note'>Aucun signal en attente pour le moment.</p>"
+        return f"<ul class='simple-list'>{''.join(rows)}</ul>"
+
+    def render_review_list(items: object) -> str:
+        if not isinstance(items, list):
+            return "<p class='soft-note'>Aucun filtre notable pour le moment.</p>"
+        filtered = [
+            item for item in items
+            if isinstance(item, dict)
+            and str(item.get("status", "")) in {"filtered", "shadow_blocked_by_routing"}
+        ]
+        if not filtered:
+            return "<p class='soft-note'>Aucun filtre notable pour le moment.</p>"
+        rows = []
+        for item in filtered[:6]:
+            symbol = escape(str(item.get("symbol", "-")))
+            status = str(item.get("status", "")).strip()
+            side_value = str(item.get("preferred_side", "")).strip()
+            if not side_value:
+                side_value = str(item.get("side", "")).strip()
+            side = escape(side_value).upper()
+            summary = escape(str(item.get("reason_summary", "")))
+            parts = [symbol]
+            if side and side != "NEUTRAL":
+                parts.append(side)
+            if status == "shadow_blocked_by_routing":
+                setup = escape(str(item.get("setup", "")))
+                if setup:
+                    parts.append(setup)
+                confidence = item.get("confidence")
+                if confidence not in (None, ""):
+                    parts.append(f"conf {float(confidence):.2f}")
+                parts.append("shadow")
+            rows.append(
+                f"<li>{' · '.join(parts)}<br><span class='soft-note'>{summary}</span></li>"
+            )
         return f"<ul class='simple-list'>{''.join(rows)}</ul>"
 
     def pod_summary(pod_name: str) -> dict[str, object]:
@@ -2241,6 +2286,11 @@ def _control_center_html(
               <p>Signaux vus par le superviseur mais pas encore forcément convertis en position.</p>
             </div>
             {render_preview_list(snapshot.get("pod_a_signal_preview"))}
+            <div class="panel-header" style="margin-top:16px">
+              <h3>Pourquoi filtré</h3>
+              <p>Derniers symboles vus mais bloqués avant émission de signal.</p>
+            </div>
+            {render_review_list(snapshot.get("pod_a_signal_review"))}
           </div>
         </div>
 
@@ -2300,6 +2350,11 @@ def _control_center_html(
               <p>Signaux breakout vus par le superviseur mais pas encore transformés en position.</p>
             </div>
             {render_preview_list(snapshot.get("pod_b_signal_preview"))}
+            <div class="panel-header" style="margin-top:16px">
+              <h3>Pourquoi filtré</h3>
+              <p>Derniers breakouts vus puis rejetés par les filtres de qualité.</p>
+            </div>
+            {render_review_list(snapshot.get("pod_b_signal_review"))}
           </div>
         </div>
 

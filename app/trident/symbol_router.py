@@ -6,6 +6,7 @@ import math
 
 from app.settings import AppConfig
 from app.trident.capital_allocator import CapitalAllocator
+from app.trident.pod_b import BreakoutContext, BreakoutService
 from app.trident.types import (
     PodName,
     Regime,
@@ -869,7 +870,60 @@ class SymbolRouter:
             + activity_quality * 0.10
             + impulse_quality * 0.18
             + spread_quality * 0.02
+            + self._pod_b_shadow_signal_bonus(
+                regime=regime,
+                snapshot=snapshot,
+            )
         )
+
+    def _pod_b_shadow_signal_bonus(
+        self,
+        *,
+        regime: Regime,
+        snapshot: SymbolMarketSnapshot,
+    ) -> float:
+        bonus = max(self.config.trident.routing.pod_b_shadow_signal_bonus, 0.0)
+        if bonus <= 0:
+            return 0.0
+        min_confidence = max(self.config.trident.routing.pod_b_shadow_signal_min_confidence, 0.0)
+        signal = BreakoutService(self.config).evaluate(
+            BreakoutContext(
+                symbol=snapshot.symbol,
+                regime=regime.value,
+                price=snapshot.price,
+                ema_fast=snapshot.ema_fast,
+                ema_slow=snapshot.ema_slow,
+                vwap_distance_bps=snapshot.vwap_distance_bps,
+                structure_score=snapshot.structure_score,
+                funding_rate=snapshot.funding_rate,
+                spread_bps=snapshot.spread_bps,
+                btc_aligned=snapshot.btc_aligned,
+                market_cluster=snapshot.market_cluster,
+                cluster_leader=snapshot.cluster_leader,
+                book_imbalance=snapshot.book_imbalance,
+                trade_flow_bias=snapshot.trade_flow_bias,
+                bucket_trade_count=snapshot.bucket_trade_count,
+                bucket_notional_usd=(
+                    snapshot.bucket_notional_usd
+                    if snapshot.bucket_notional_usd > 0
+                    else snapshot.bucket_volume * snapshot.price
+                ),
+                bucket_range_bps=snapshot.bucket_range_bps,
+                delta_book_imbalance=snapshot.delta_book_imbalance,
+                delta_trade_flow_bias=snapshot.delta_trade_flow_bias,
+                volume_ratio=snapshot.volume_ratio,
+                trade_count_ratio=snapshot.trade_count_ratio,
+                realized_vol_short_bps=snapshot.realized_vol_short_bps,
+                realized_vol_long_bps=snapshot.realized_vol_long_bps,
+                compression_score=snapshot.compression_score,
+                microprice_dislocation_bps=snapshot.microprice_dislocation_bps,
+            )
+        )
+        if signal is None:
+            return 0.0
+        if signal.confidence < min_confidence:
+            return 0.0
+        return bonus
 
     def _score_pod_c(
         self,

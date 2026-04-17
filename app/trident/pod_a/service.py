@@ -30,6 +30,11 @@ def _with_regime(context: AnchorTrendContext, details: dict[str, float | str | b
     return {
         **details,
         "regime": context.regime,
+        "ichimoku_bias_score": round(context.ichimoku_bias_score, 4),
+        "supertrend_direction": context.supertrend_direction,
+        "stoch_rsi_k": round(context.stoch_rsi_k, 4),
+        "cci20": round(context.cci20, 4),
+        "vwap_reclaim_score": round(context.vwap_reclaim_score, 4),
     }
 
 
@@ -41,7 +46,7 @@ class AnchorTrendService:
             return None
 
         if is_bos_retest_long(context) and context.bos_long_confirmed:
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "long")
             components["setup_bonus"] = 0.08
             return AnchorTrendSignal(
                 symbol=context.symbol,
@@ -72,7 +77,7 @@ class AnchorTrendService:
             )
 
         if is_bos_retest_short(context) and context.bos_short_confirmed:
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "short")
             components["setup_bonus"] = 0.08
             return AnchorTrendSignal(
                 symbol=context.symbol,
@@ -103,7 +108,7 @@ class AnchorTrendService:
             )
 
         if is_liquidity_sweep_reclaim_long(context):
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "long")
             components["setup_bonus"] = 0.06
             return AnchorTrendSignal(
                 symbol=context.symbol,
@@ -136,7 +141,7 @@ class AnchorTrendService:
             )
 
         if is_liquidity_sweep_reclaim_short(context):
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "short")
             components["setup_bonus"] = 0.06
             return AnchorTrendSignal(
                 symbol=context.symbol,
@@ -169,7 +174,7 @@ class AnchorTrendService:
             )
 
         if is_vwap_reclaim_long(context):
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "long")
             components["setup_bonus"] = 0.04
             return AnchorTrendSignal(
                 symbol=context.symbol,
@@ -201,7 +206,7 @@ class AnchorTrendService:
             )
 
         if is_vwap_reclaim_short(context):
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "short")
             components["setup_bonus"] = 0.04
             return AnchorTrendSignal(
                 symbol=context.symbol,
@@ -233,7 +238,7 @@ class AnchorTrendService:
             )
 
         if is_bos_retest_long(context):
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "long")
             components["setup_bonus"] = 0.08
             return AnchorTrendSignal(
                 symbol=context.symbol,
@@ -264,7 +269,7 @@ class AnchorTrendService:
             )
 
         if is_bos_retest_short(context):
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "short")
             components["setup_bonus"] = 0.08
             return AnchorTrendSignal(
                 symbol=context.symbol,
@@ -295,7 +300,7 @@ class AnchorTrendService:
             )
 
         if self._is_long_setup(context):
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "long")
             return AnchorTrendSignal(
                 symbol=context.symbol,
                 side="long",
@@ -314,7 +319,7 @@ class AnchorTrendService:
             )
 
         if self._is_short_setup(context):
-            components = self._confidence_components(context)
+            components = self._confidence_components(context, "short")
             return AnchorTrendSignal(
                 symbol=context.symbol,
                 side="short",
@@ -352,12 +357,51 @@ class AnchorTrendService:
         signals = self.evaluate_many(contexts)
         return signals[0] if signals else None
 
+    def review_context(self, context: AnchorTrendContext) -> dict[str, object]:
+        candidates = {
+            "bos_retest_long": is_bos_retest_long(context),
+            "bos_retest_short": is_bos_retest_short(context),
+            "liquidity_sweep_reclaim_long": is_liquidity_sweep_reclaim_long(context),
+            "liquidity_sweep_reclaim_short": is_liquidity_sweep_reclaim_short(context),
+            "vwap_reclaim_long": is_vwap_reclaim_long(context),
+            "vwap_reclaim_short": is_vwap_reclaim_short(context),
+            "trend_pullback_long": self._is_long_setup(context),
+            "trend_pullback_short": self._is_short_setup(context),
+        }
+        ready_setups = [name for name, is_ready in candidates.items() if is_ready]
+        preferred_side = "long" if context.structure_score >= 0 else "short"
+        failure_reasons = self._failure_reasons(context, preferred_side)
+        reason_summary = (
+            ", ".join(name.replace("_", " ") for name in ready_setups[:2])
+            if ready_setups
+            else ", ".join(self._humanize_reason(name) for name in failure_reasons[:3])
+        )
+        return {
+            "symbol": context.symbol,
+            "status": "signaled" if ready_setups else "filtered",
+            "preferred_side": preferred_side,
+            "candidate_setups": ready_setups,
+            "failure_reasons": failure_reasons,
+            "reason_summary": reason_summary,
+            "context": {
+                "regime": context.regime,
+                "structure_score": round(context.structure_score, 4),
+                "vwap_distance_bps": round(context.vwap_distance_bps, 4),
+                "ichimoku_bias_score": round(context.ichimoku_bias_score, 4),
+                "supertrend_direction": context.supertrend_direction,
+                "stoch_rsi_k": round(context.stoch_rsi_k, 4),
+                "cci20": round(context.cci20, 4),
+                "vwap_reclaim_score": round(context.vwap_reclaim_score, 4),
+            },
+        }
+
     def _is_long_setup(self, context: AnchorTrendContext) -> bool:
         return (
             context.regime == "TrendExpansion"
             and context.structure_score >= MIN_SETUP_STRUCTURE_SCORE
             and context.price >= context.ema_fast >= context.ema_slow
             and context.vwap_distance_bps >= -MAX_PULLBACK_DISTANCE_BPS
+            and self._passes_indicator_vetoes(context, "long")
         )
 
     def _is_short_setup(self, context: AnchorTrendContext) -> bool:
@@ -366,9 +410,108 @@ class AnchorTrendService:
             and context.structure_score <= -MIN_SETUP_STRUCTURE_SCORE
             and context.price <= context.ema_fast <= context.ema_slow
             and context.vwap_distance_bps <= MAX_PULLBACK_DISTANCE_BPS
+            and self._passes_indicator_vetoes(context, "short")
         )
 
-    def _confidence_components(self, context: AnchorTrendContext) -> dict[str, float]:
+    def _passes_indicator_vetoes(self, context: AnchorTrendContext, side: str) -> bool:
+        if context.market_cluster != "crypto":
+            return True
+        if side == "long":
+            return (
+                context.supertrend_direction >= 0
+                and context.ichimoku_bias_score >= -0.15
+                and context.vwap_reclaim_score >= -0.10
+                and not (context.stoch_rsi_k >= 0.94 and context.cci20 >= 180.0)
+            )
+        return (
+            context.supertrend_direction <= 0
+            and context.ichimoku_bias_score <= 0.15
+            and context.vwap_reclaim_score <= 0.10
+            and not (context.stoch_rsi_k <= 0.06 and context.cci20 <= -180.0)
+        )
+
+    def _failure_reasons(self, context: AnchorTrendContext, side: str) -> list[str]:
+        reasons: list[str] = []
+        if not context.cluster_aligned:
+            reasons.append("cluster_not_aligned")
+        if context.spread_bps > max_spread_bps_for_cluster(context.market_cluster):
+            reasons.append("spread_too_wide")
+        if abs(context.funding_rate) > max_abs_funding_rate_for_cluster(context.market_cluster):
+            reasons.append("funding_too_extreme")
+        if side == "long":
+            if context.regime != "TrendExpansion":
+                reasons.append("regime_not_trend_expansion")
+            if context.structure_score < MIN_SETUP_STRUCTURE_SCORE:
+                reasons.append("structure_too_weak_for_long")
+            if not (context.price >= context.ema_fast >= context.ema_slow):
+                reasons.append("ema_stack_not_bullish")
+            if context.vwap_distance_bps < -MAX_PULLBACK_DISTANCE_BPS:
+                reasons.append("pullback_too_deep")
+            if context.market_cluster == "crypto":
+                if context.supertrend_direction < 0:
+                    reasons.append("supertrend_against")
+                if context.ichimoku_bias_score < -0.15:
+                    reasons.append("ichimoku_against")
+                if context.vwap_reclaim_score < -0.10:
+                    reasons.append("vwap_reclaim_weak")
+                if context.stoch_rsi_k >= 0.94 and context.cci20 >= 180.0:
+                    reasons.append("market_overextended")
+        else:
+            if context.regime != "TrendExpansion":
+                reasons.append("regime_not_trend_expansion")
+            if context.structure_score > -MIN_SETUP_STRUCTURE_SCORE:
+                reasons.append("structure_too_weak_for_short")
+            if not (context.price <= context.ema_fast <= context.ema_slow):
+                reasons.append("ema_stack_not_bearish")
+            if context.vwap_distance_bps > MAX_PULLBACK_DISTANCE_BPS:
+                reasons.append("pullback_too_deep")
+            if context.market_cluster == "crypto":
+                if context.supertrend_direction > 0:
+                    reasons.append("supertrend_against")
+                if context.ichimoku_bias_score > 0.15:
+                    reasons.append("ichimoku_against")
+                if context.vwap_reclaim_score > 0.10:
+                    reasons.append("vwap_reclaim_weak")
+                if context.stoch_rsi_k <= 0.06 and context.cci20 <= -180.0:
+                    reasons.append("market_overextended")
+        if not reasons:
+            reasons.append("no_setup_family_match")
+        return reasons
+
+    def _humanize_reason(self, reason: str) -> str:
+        return reason.replace("_", " ")
+
+    def _directional_confirmation_quality(self, context: AnchorTrendContext, side: str) -> float:
+        direction = 1.0 if side == "long" else -1.0
+        ichimoku_quality = _clamp(0.5 + context.ichimoku_bias_score * direction * 0.5)
+        if context.supertrend_direction == 0:
+            supertrend_quality = 0.5
+        else:
+            supertrend_quality = 1.0 if context.supertrend_direction == int(direction) else 0.0
+        reclaim_quality = _clamp(0.5 + context.vwap_reclaim_score * direction * 0.5)
+        return round(
+            ichimoku_quality * 0.40 + supertrend_quality * 0.35 + reclaim_quality * 0.25,
+            4,
+        )
+
+    def _extension_quality(self, context: AnchorTrendContext, side: str) -> float:
+        if side == "long":
+            stoch_quality = (
+                1.0
+                if context.stoch_rsi_k <= 0.82
+                else _clamp(1.0 - (context.stoch_rsi_k - 0.82) / 0.18)
+            )
+            cci_quality = (
+                1.0
+                if context.cci20 <= 120.0
+                else _clamp(1.0 - (context.cci20 - 120.0) / 120.0)
+            )
+        else:
+            stoch_quality = 1.0 if context.stoch_rsi_k >= 0.18 else _clamp(context.stoch_rsi_k / 0.18)
+            cci_quality = 1.0 if context.cci20 >= -120.0 else _clamp((context.cci20 + 240.0) / 120.0)
+        return round(stoch_quality * 0.55 + cci_quality * 0.45, 4)
+
+    def _confidence_components(self, context: AnchorTrendContext, side: str) -> dict[str, float]:
         separation_bps = ema_separation_bps(context)
         structure_quality = _clamp((abs(context.structure_score) - 0.30) / 0.35)
         trend_quality = _clamp((separation_bps - 5.0) / 25.0)
@@ -392,6 +535,8 @@ class AnchorTrendService:
                 structure_break_quality = 1.0
             elif context.swing_high_1h > 0 or context.swing_low_1h > 0:
                 structure_break_quality = 0.7
+        confirmation_quality = self._directional_confirmation_quality(context, side)
+        extension_quality = self._extension_quality(context, side)
         return {
             "structure_quality": round(structure_quality, 4),
             "trend_quality": round(trend_quality, 4),
@@ -400,17 +545,21 @@ class AnchorTrendService:
             "funding_quality": round(funding_quality, 4),
             "mtf_quality": round(mtf_quality, 4),
             "structure_break_quality": round(structure_break_quality, 4),
+            "confirmation_quality": confirmation_quality,
+            "extension_quality": extension_quality,
             "setup_bonus": 0.0,
         }
 
     def _aggregate_confidence(self, components: dict[str, float]) -> float:
         return (
-            components["structure_quality"] * 0.31
-            + components["trend_quality"] * 0.20
-            + components["pullback_quality"] * 0.15
-            + components["spread_quality"] * 0.10
+            components["structure_quality"] * 0.28
+            + components["trend_quality"] * 0.18
+            + components["pullback_quality"] * 0.14
+            + components["spread_quality"] * 0.08
             + components["funding_quality"] * 0.05
-            + components["mtf_quality"] * 0.10
-            + components["structure_break_quality"] * 0.09
+            + components["mtf_quality"] * 0.08
+            + components["structure_break_quality"] * 0.08
+            + components.get("confirmation_quality", 0.5) * 0.07
+            + components.get("extension_quality", 0.5) * 0.04
             + components.get("setup_bonus", 0.0)
         )

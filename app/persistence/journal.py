@@ -66,3 +66,29 @@ def build_trade_journal_record(
     if timestamp is not None:
         record["timestamp"] = timestamp
     return record
+
+
+def build_signal_review_journal_record(
+    *,
+    record_index: int,
+    regime: str,
+    review: dict[str, object],
+    symbol_snapshot: dict[str, object] | None = None,
+    regime_snapshot: dict[str, object] | None = None,
+    source: str = "pod_a_signal_review",
+    timestamp: str | None = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "event_type": "signal_review",
+        "source": source,
+        "record_index": record_index,
+        "regime": regime,
+        "review": review,
+    }
+    if timestamp is not None:
+        record["timestamp"] = timestamp
+    if symbol_snapshot is not None:
+        record["symbol_snapshot"] = symbol_snapshot
+    if regime_snapshot is not None:
+        record["regime_snapshot"] = regime_snapshot
+    return record

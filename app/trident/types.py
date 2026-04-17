@@ -142,6 +142,10 @@ class SymbolAllocation:
     symbol: str
     target_pct: float
     target_usd: float
+    reason_summary: str = ""
+    correlation_group: str = ""
+    correlation_density_factor: float = 1.0
+    capped_by_correlation: bool = False
 
 
 @dataclass(slots=True)
@@ -202,6 +206,9 @@ class SignalPreview:
     side: str
     setup: str
     confidence: float
+    reason_summary: str = ""
+    setup_details: dict[str, float | str | bool] = field(default_factory=dict)
+    confidence_components: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -284,4 +291,6 @@ class SupervisorState:
     pod_a_signal_preview: list[SignalPreview] = field(default_factory=list)
     pod_b_signal_preview: list[SignalPreview] = field(default_factory=list)
     pod_c_signal_preview: list[SignalPreview] = field(default_factory=list)
+    pod_a_signal_review: list[dict[str, object]] = field(default_factory=list)
+    pod_b_signal_review: list[dict[str, object]] = field(default_factory=list)
     pod_b_status: dict[str, object] = field(default_factory=dict)

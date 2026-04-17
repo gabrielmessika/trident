@@ -194,6 +194,11 @@ class PodBBacktestRunner:
                     report.add_skipped_open_setup(decision.trade_plan.setup)
             report.observe_open_exposure(list(self.executor.portfolio.open_positions.values()))
             for trade in execution.closed_trades:
+                self.risk_gate.record_closed_trade(
+                    symbol=trade.symbol,
+                    setup=getattr(trade, "setup", None),
+                    pnl_usd=trade.pnl_usd,
+                )
                 report.add_closed_trade(
                     date_key=self._date_key(
                         trade.closed_at.isoformat() if trade.closed_at is not None else record.timestamp,
@@ -237,6 +242,11 @@ class PodBBacktestRunner:
         )
         supervisor.flush_compact_logs()
         for trade in final_trades:
+            self.risk_gate.record_closed_trade(
+                symbol=trade.symbol,
+                setup=getattr(trade, "setup", None),
+                pnl_usd=trade.pnl_usd,
+            )
             report.add_closed_trade(
                 date_key=self._date_key(
                     trade.closed_at.isoformat() if trade.closed_at is not None else last_timestamp,

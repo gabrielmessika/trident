@@ -178,3 +178,26 @@ class PodARiskGateTests(unittest.TestCase):
 
         self.assertTrue(decisions[0].accepted)
         self.assertEqual(decisions[0].reason, "accepted")
+
+    def test_rejects_vwap_reclaim_long_from_default_config(self) -> None:
+        decisions = self.gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="vwap_reclaim_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={"regime": "TrendExpansion"},
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "setup_disabled")

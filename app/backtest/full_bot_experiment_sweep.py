@@ -25,8 +25,11 @@ class FullBotExperimentScenario:
     pod_a_blocked_regimes: list[str] | None = None
     pod_a_allowed_setups_in_blocked_regimes: list[str] | None = None
     pod_b_max_allocation_pct: float | None = None
+    pod_b_blocked_symbols: list[str] | None = None
     pod_c_size_multiplier: float | None = None
     pod_c_blocked_symbols: list[str] | None = None
+    routing_pod_b_shadow_signal_bonus: float | None = None
+    routing_pod_b_shadow_signal_min_confidence: float | None = None
     routing_reassignment_debounce_seconds_by_symbol: dict[str, int] | None = None
     routing_revoke_grace_minutes_by_symbol: dict[str, int] | None = None
     allocations: dict[str, dict[str, float]] | None = None
@@ -150,6 +153,11 @@ class FullBotExperimentSweepRunner:
                 if scenario.pod_b_max_allocation_pct is not None
                 else config.pod_b.max_allocation_pct
             ),
+            bis_blocked_symbols=(
+                list(scenario.pod_b_blocked_symbols)
+                if scenario.pod_b_blocked_symbols is not None
+                else list(config.pod_b.bis_blocked_symbols)
+            ),
         )
         pod_c = replace(
             config.pod_c,
@@ -175,6 +183,16 @@ class FullBotExperimentSweepRunner:
         )
         routing = replace(
             config.trident.routing,
+            pod_b_shadow_signal_bonus=(
+                float(scenario.routing_pod_b_shadow_signal_bonus)
+                if scenario.routing_pod_b_shadow_signal_bonus is not None
+                else config.trident.routing.pod_b_shadow_signal_bonus
+            ),
+            pod_b_shadow_signal_min_confidence=(
+                float(scenario.routing_pod_b_shadow_signal_min_confidence)
+                if scenario.routing_pod_b_shadow_signal_min_confidence is not None
+                else config.trident.routing.pod_b_shadow_signal_min_confidence
+            ),
             reassignment_debounce_seconds_by_symbol=(
                 dict(scenario.routing_reassignment_debounce_seconds_by_symbol)
                 if scenario.routing_reassignment_debounce_seconds_by_symbol is not None
@@ -310,6 +328,47 @@ def default_radical_scenarios() -> list[FullBotExperimentScenario]:
     ]
 
 
+def default_profitability_validation_scenarios() -> list[FullBotExperimentScenario]:
+    return [
+        FullBotExperimentScenario(
+            name="baseline_current",
+            description="Reference actuelle sur server-data.",
+        ),
+        FullBotExperimentScenario(
+            name="routing_shadow_bonus",
+            description="Bonus de routing Pod B quand un breakout shadow fort est detecte.",
+            routing_pod_b_shadow_signal_bonus=0.12,
+            routing_pod_b_shadow_signal_min_confidence=0.68,
+        ),
+        FullBotExperimentScenario(
+            name="pod_b_negative_symbol_cut",
+            description="Proxy de coupe-circuit Pod B: blocage des symboles les plus negatifs sur le run courant.",
+            pod_b_blocked_symbols=["AAVE", "BTC", "DOGE", "LINK", "SUI", "XRP"],
+        ),
+        FullBotExperimentScenario(
+            name="pod_a_disable_vwap_reclaim_long",
+            description="Reduction du churn Pod A en retirant le setup negatif vwap_reclaim_long.",
+            pod_a_disabled_setups=[
+                "bos_retest_short",
+                "bos_retest_long",
+                "trend_pullback_short",
+                "liquidity_sweep_reclaim_short",
+                "vwap_reclaim_long",
+            ],
+        ),
+        FullBotExperimentScenario(
+            name="adaptive_alloc_shift_to_pod_a",
+            description="Proxy d'allocation adaptative: Pod B plus leger, Pod A plus charge en trend.",
+            allocations={
+                "trend_expansion": {"pod_a": 0.75, "pod_b": 0.05, "pod_c": 0.20, "cash": 0.00},
+                "range_auction": {"pod_a": 0.15, "pod_b": 0.60, "pod_c": 0.15, "cash": 0.10},
+                "panic_squeeze": {"pod_a": 0.10, "pod_b": 0.00, "pod_c": 0.05, "cash": 0.85},
+                "dead_zone": {"pod_a": 0.00, "pod_b": 0.10, "pod_c": 0.05, "cash": 0.85},
+            },
+        ),
+    ]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run radical full-bot scenarios on one shared snapshot stream",
@@ -318,14 +377,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True)
     parser.add_argument("--report-output")
     parser.add_argument("--report-dir")
+    parser.add_argument(
+        "--preset",
+        choices=["radical", "profitability_validation"],
+        default="radical",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    scenarios = (
+        default_profitability_validation_scenarios()
+        if args.preset == "profitability_validation"
+        else default_radical_scenarios()
+    )
     result = FullBotExperimentSweepRunner(load_config(args.config)).run(
         input_path=args.input,
-        scenarios=default_radical_scenarios(),
+        scenarios=scenarios,
         report_output=args.report_output,
         report_dir=args.report_dir,
     )

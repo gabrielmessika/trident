@@ -7,6 +7,28 @@ from app.trident.pod_a.signals import AnchorTrendContext
 from app.trident.types import Regime, SymbolMarketSnapshot
 
 
+def _clamp(value: float, lower: float = -1.0, upper: float = 1.0) -> float:
+    return max(lower, min(value, upper))
+
+
+def _vwap_reclaim_score(
+    snapshot: SymbolMarketSnapshot,
+    mtf_bias_score: float,
+    *,
+    candles_ready: bool,
+) -> float:
+    flow_alignment = (snapshot.trade_flow_bias + snapshot.book_imbalance) / 2.0
+    if not candles_ready and abs(flow_alignment) < 0.05:
+        return 0.0
+    directional_vwap_score = _clamp(snapshot.vwap_distance_bps / 12.0)
+    flow_score = _clamp(flow_alignment * 2.0)
+    mtf_score = _clamp(mtf_bias_score / 80.0)
+    return round(
+        directional_vwap_score * 0.45 + flow_score * 0.35 + mtf_score * 0.20,
+        4,
+    )
+
+
 class MarketContextService:
     """Builds Pod A evaluation contexts from generic market snapshots."""
 
@@ -65,4 +87,13 @@ class MarketContextService:
             swing_low_1h=float(features["swing_low_1h"]),
             bos_long_confirmed=bool(features["bos_long_confirmed"]),
             bos_short_confirmed=bool(features["bos_short_confirmed"]),
+            ichimoku_bias_score=float(features["ichimoku_bias_score"]),
+            supertrend_direction=int(features["supertrend_direction"]),
+            stoch_rsi_k=float(features["stoch_rsi_k"]),
+            cci20=float(features["cci20"]),
+            vwap_reclaim_score=_vwap_reclaim_score(
+                snapshot,
+                float(features["mtf_bias_score"]),
+                candles_ready=bool(features["candles_ready"]),
+            ),
         )

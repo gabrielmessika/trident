@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from app.backtest.pod_report import PodABacktestReport
 from app.backtest.routing_replay import RoutingReplayRunner
@@ -196,6 +197,7 @@ class FullBotBacktestRunner:
             executor=self.pod_b_executor,
             latest_snapshots=list(latest_snapshots_by_symbol.values()),
             last_timestamp=last_timestamp,
+            closed_trade_recorder=self._record_pod_b_closed_trade,
         )
 
         routing = RoutingReplayRunner(self.config).run_jsonl(
@@ -448,6 +450,7 @@ class FullBotBacktestRunner:
             risk_decisions=risk_decisions,
             execution=execution,
             executor=self.pod_b_executor,
+            closed_trade_recorder=self._record_pod_b_closed_trade,
         )
 
     def _pod_b_planning_allocation(
@@ -516,6 +519,7 @@ class FullBotBacktestRunner:
         risk_decisions: list[RiskDecision],
         execution: object,
         executor: DirectionalExecutor,
+        closed_trade_recorder: Callable[[object], None] | None = None,
     ) -> None:
         date_key = self._date_key(timestamp, source_file)
         decisions_by_symbol = {decision.trade_plan.symbol: decision for decision in risk_decisions}
@@ -550,6 +554,8 @@ class FullBotBacktestRunner:
                 report.add_skipped_open_setup(decision.trade_plan.setup)
         report.observe_open_exposure(list(executor.portfolio.open_positions.values()))
         for trade in execution.closed_trades:
+            if closed_trade_recorder is not None:
+                closed_trade_recorder(trade)
             report.add_closed_trade(
                 date_key=self._date_key(
                     trade.closed_at.isoformat() if trade.closed_at is not None else timestamp,
@@ -592,12 +598,15 @@ class FullBotBacktestRunner:
         executor: DirectionalExecutor,
         latest_snapshots: list[SymbolMarketSnapshot],
         last_timestamp: str | None,
+        closed_trade_recorder: Callable[[object], None] | None = None,
     ) -> None:
         final_trades, _ = executor.finalize(
             snapshots=latest_snapshots,
             timestamp=last_timestamp,
         )
         for trade in final_trades:
+            if closed_trade_recorder is not None:
+                closed_trade_recorder(trade)
             report.add_closed_trade(
                 date_key=self._date_key(
                     trade.closed_at.isoformat() if trade.closed_at is not None else last_timestamp,
@@ -631,6 +640,13 @@ class FullBotBacktestRunner:
                 opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
                 closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
             )
+
+    def _record_pod_b_closed_trade(self, trade: object) -> None:
+        self.pod_b_risk_gate.record_closed_trade(
+            symbol=str(getattr(trade, "symbol", "")),
+            setup=getattr(trade, "setup", None),
+            pnl_usd=getattr(trade, "pnl_usd", None),
+        )
 
     def _date_key(self, timestamp: str | None, fallback_source_file: str) -> str:
         if timestamp:

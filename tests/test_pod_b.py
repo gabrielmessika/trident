@@ -7,7 +7,7 @@ from pathlib import Path
 from app.backtest.pod_b_runner import PodBBacktestRunner
 from app.settings import load_config
 from app.trident.pod_b import BreakoutContext, BreakoutPlanner, BreakoutService, PodBRiskGate
-from app.trident.types import PodAllocation, PodName, SymbolAllocation
+from app.trident.types import PodAllocation, PodName, SymbolAllocation, TradePlan
 
 
 class PodBTests(unittest.TestCase):
@@ -103,6 +103,46 @@ class PodBTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_risk_gate_applies_rolling_symbol_setup_guardrail(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_b=replace(
+                config.pod_b,
+                bis_guardrail_enabled=True,
+                bis_guardrail_lookback_trades=2,
+                bis_guardrail_min_closed_trades=2,
+                bis_guardrail_max_cumulative_loss_usd=-5.0,
+            ),
+        )
+        risk_gate = PodBRiskGate(config)
+        plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="vol_expansion_long",
+            confidence=0.72,
+            target_notional_usd=100.0,
+            stop_bps=40.0,
+            time_stop_hours=2,
+            margin_usd=25.0,
+            effective_leverage=2.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.0,
+        )
+
+        risk_gate.record_closed_trade(symbol="BTC", setup="vol_expansion_long", pnl_usd=-3.0)
+        first_pass = risk_gate.evaluate_many([plan])
+        self.assertTrue(first_pass[0].accepted)
+
+        risk_gate.record_closed_trade(symbol="BTC", setup="vol_expansion_long", pnl_usd=-2.5)
+        blocked = risk_gate.evaluate_many([plan])
+        self.assertFalse(blocked[0].accepted)
+        self.assertEqual(blocked[0].reason, "rolling_guardrail_symbol_setup")
+
+        risk_gate.record_closed_trade(symbol="BTC", setup="vol_expansion_long", pnl_usd=7.0)
+        recovered = risk_gate.evaluate_many([plan])
+        self.assertTrue(recovered[0].accepted)
+
     def test_service_blocks_signal_when_strict_continuation_filter_fails(self) -> None:
         config = load_config("config/trident.toml")
         disabled_filter_config = replace(
@@ -142,6 +182,53 @@ class PodBTests(unittest.TestCase):
 
         self.assertIsNotNone(baseline_service.evaluate(context))
         self.assertIsNone(filtered_service.evaluate(context))
+
+    def test_service_can_emit_ttm_squeeze_release_setup(self) -> None:
+        config = load_config("config/trident.toml")
+        squeeze_only_config = replace(
+            config,
+            pod_b=replace(
+                config.pod_b,
+                bis_enabled_setups=["ttm_squeeze_release_long"],
+                bis_strict_continuation_filter_enabled=False,
+            ),
+        )
+        service = BreakoutService(squeeze_only_config)
+
+        signal = service.evaluate(
+            BreakoutContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=100.0,
+                ema_fast=100.9,
+                ema_slow=100.0,
+                vwap_distance_bps=7.0,
+                structure_score=0.36,
+                funding_rate=0.0,
+                spread_bps=1.2,
+                btc_aligned=True,
+                market_cluster="crypto",
+                cluster_leader="BTC",
+                book_imbalance=0.20,
+                trade_flow_bias=0.22,
+                bucket_trade_count=22,
+                bucket_notional_usd=780.0,
+                bucket_range_bps=34.0,
+                delta_book_imbalance=0.15,
+                delta_trade_flow_bias=0.24,
+                volume_ratio=2.0,
+                trade_count_ratio=1.8,
+                realized_vol_short_bps=7.2,
+                realized_vol_long_bps=4.1,
+                compression_score=0.76,
+                microprice_dislocation_bps=1.1,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "ttm_squeeze_release_long")
+        self.assertIn("squeeze_release_quality", signal.confidence_components)
 
     def test_runner_replays_strategy_on_routed_symbol_universe(self) -> None:
         config = load_config("config/trident.toml")

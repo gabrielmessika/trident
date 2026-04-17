@@ -136,6 +136,74 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertEqual(signal.side, "long")
         self.assertEqual(signal.setup, "trend_pullback_long")
 
+    def test_trend_pullback_respects_indicator_vetoes(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+                ichimoku_bias_score=-0.35,
+                supertrend_direction=-1,
+                vwap_reclaim_score=-0.25,
+            )
+        )
+
+        self.assertIsNone(signal)
+
+    def test_indicator_confirmation_boosts_confidence(self) -> None:
+        supportive = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+                ichimoku_bias_score=0.42,
+                supertrend_direction=1,
+                stoch_rsi_k=0.56,
+                cci20=42.0,
+                vwap_reclaim_score=0.28,
+            )
+        )
+        cautious = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+                ichimoku_bias_score=-0.05,
+                supertrend_direction=0,
+                stoch_rsi_k=0.90,
+                cci20=140.0,
+                vwap_reclaim_score=0.02,
+            )
+        )
+
+        self.assertIsNotNone(supportive)
+        self.assertIsNotNone(cautious)
+        assert supportive is not None
+        assert cautious is not None
+        self.assertGreater(supportive.confidence, cautious.confidence)
+        self.assertIn("confirmation_quality", supportive.confidence_components)
+
     def test_generates_short_signal_in_trend_expansion(self) -> None:
         signal = self.service.evaluate(
             AnchorTrendContext(

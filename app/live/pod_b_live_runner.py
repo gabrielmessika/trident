@@ -13,7 +13,12 @@ from app.execution.directional_executor import DirectionalExecutor
 from app.hyperliquid.info_client import HyperliquidInfoClient, apply_live_asset_leverage_caps
 from app.live.collector import HyperliquidLiveCollector
 from app.live.runtime_status import write_runtime_status
-from app.persistence.journal import JsonlJournal, build_signal_journal_record, build_trade_journal_record
+from app.persistence.journal import (
+    JsonlJournal,
+    build_signal_journal_record,
+    build_signal_review_journal_record,
+    build_trade_journal_record,
+)
 from app.trident.pod_b import PodBRiskGate
 from app.settings import AppConfig, load_config
 from app.trident.market_clusters import (
@@ -191,6 +196,11 @@ class PodBLiveRunner:
         decisions_by_symbol: dict[str, RiskDecision] = {
             decision.trade_plan.symbol: decision for decision in risk_decisions
         }
+        pod_allocation = self.supervisor.capital_plan.pod_allocations[PodName.POD_B]
+        allocation_by_symbol = {
+            item.symbol: item
+            for item in pod_allocation.symbols
+        }
         snapshot_by_symbol = {
             item["symbol"]: item for item in symbols if isinstance(item, dict) and "symbol" in item
         }
@@ -222,11 +232,35 @@ class PodBLiveRunner:
                             "side": preview.side,
                             "setup": preview.setup,
                             "confidence": preview.confidence,
+                            "reason_summary": preview.reason_summary,
+                            "setup_details": dict(preview.setup_details),
                             "confidence_components": (
                                 decisions_by_symbol[preview.symbol].trade_plan.confidence_components
                                 if preview.symbol in decisions_by_symbol
                                 else {}
                             ),
+                            "allocation": {
+                                "pod_target_pct": pod_allocation.target_pct,
+                                "pod_target_usd": pod_allocation.target_usd,
+                                "symbol_target_pct": allocation_by_symbol.get(preview.symbol).target_pct
+                                if preview.symbol in allocation_by_symbol
+                                else 0.0,
+                                "symbol_target_usd": allocation_by_symbol.get(preview.symbol).target_usd
+                                if preview.symbol in allocation_by_symbol
+                                else 0.0,
+                                "reason_summary": allocation_by_symbol.get(preview.symbol).reason_summary
+                                if preview.symbol in allocation_by_symbol
+                                else "",
+                                "correlation_group": allocation_by_symbol.get(preview.symbol).correlation_group
+                                if preview.symbol in allocation_by_symbol
+                                else "",
+                                "correlation_density_factor": allocation_by_symbol.get(preview.symbol).correlation_density_factor
+                                if preview.symbol in allocation_by_symbol
+                                else 1.0,
+                                "capped_by_correlation": allocation_by_symbol.get(preview.symbol).capped_by_correlation
+                                if preview.symbol in allocation_by_symbol
+                                else False,
+                            },
                             "risk": {
                                 "accepted": decisions_by_symbol.get(preview.symbol).accepted
                                 if preview.symbol in decisions_by_symbol
@@ -253,6 +287,27 @@ class PodBLiveRunner:
                                 ],
                             },
                         },
+                    )
+                )
+        if journal is not None:
+            for review in self.supervisor.state.pod_b_signal_review:
+                status = str(review.get("status"))
+                if status not in {"filtered", "shadow_blocked_by_routing"}:
+                    continue
+                source = (
+                    "pod_b_live_shadow_blocked"
+                    if status == "shadow_blocked_by_routing"
+                    else "pod_b_live_filtered"
+                )
+                journal.append(
+                    build_signal_review_journal_record(
+                        timestamp=timestamp,
+                        record_index=self.report.records_processed,
+                        regime=current_regime,
+                        regime_snapshot=regime_snapshot,
+                        symbol_snapshot=snapshot_by_symbol.get(str(review.get("symbol", ""))),
+                        source=source,
+                        review=review,
                     )
                 )
 
@@ -381,6 +436,11 @@ class PodBLiveRunner:
         journal: JsonlJournal | None,
         timestamp: str | None,
     ) -> None:
+        self.risk_gate.record_closed_trade(
+            symbol=str(getattr(trade, "symbol", "")),
+            setup=getattr(trade, "setup", None),
+            pnl_usd=getattr(trade, "pnl_usd", None),
+        )
         if journal is not None:
             journal.append(
                 build_trade_journal_record(

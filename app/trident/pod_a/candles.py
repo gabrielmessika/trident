@@ -128,6 +128,178 @@ class TimeframeBuffer:
         return self._current.close
 
 
+def _clamp(value: float, lower: float = -1.0, upper: float = 1.0) -> float:
+    return max(lower, min(value, upper))
+
+
+def _highest_high(candles: list[Candle], *, window: int) -> float | None:
+    if len(candles) < window:
+        return None
+    sample = candles[-window:]
+    return max(candle.high for candle in sample)
+
+
+def _lowest_low(candles: list[Candle], *, window: int) -> float | None:
+    if len(candles) < window:
+        return None
+    sample = candles[-window:]
+    return min(candle.low for candle in sample)
+
+
+def _rsi_series(closes: list[float], *, period: int = 14) -> list[float]:
+    if len(closes) <= period:
+        return []
+    gains: list[float] = []
+    losses: list[float] = []
+    for previous, current in zip(closes, closes[1:]):
+        change = current - previous
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    def _to_rsi(gain: float, loss: float) -> float:
+        if loss <= 1e-9:
+            return 100.0 if gain > 0 else 50.0
+        rs = gain / loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    values = [_to_rsi(avg_gain, avg_loss)]
+    for index in range(period, len(gains)):
+        avg_gain = ((avg_gain * (period - 1)) + gains[index]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[index]) / period
+        values.append(_to_rsi(avg_gain, avg_loss))
+    return values
+
+
+def _stoch_rsi(candles: list[Candle], *, rsi_period: int = 14, stoch_period: int = 14) -> float | None:
+    closes = [candle.close for candle in candles if candle.close > 0]
+    rsi_values = _rsi_series(closes, period=rsi_period)
+    if len(rsi_values) < stoch_period:
+        return None
+    sample = rsi_values[-stoch_period:]
+    highest = max(sample)
+    lowest = min(sample)
+    if highest - lowest <= 1e-9:
+        return 0.5
+    return (rsi_values[-1] - lowest) / (highest - lowest)
+
+
+def _cci(candles: list[Candle], *, period: int = 20) -> float | None:
+    if len(candles) < period:
+        return None
+    sample = candles[-period:]
+    typical_prices = [
+        (candle.high + candle.low + candle.close) / 3.0
+        for candle in sample
+    ]
+    sma = sum(typical_prices) / len(typical_prices)
+    mean_deviation = sum(abs(value - sma) for value in typical_prices) / len(typical_prices)
+    if mean_deviation <= 1e-9:
+        return 0.0
+    return (typical_prices[-1] - sma) / (0.015 * mean_deviation)
+
+
+def _ichimoku_bias(candles: list[Candle]) -> float | None:
+    if len(candles) < 26:
+        return None
+    high_9 = _highest_high(candles, window=9)
+    low_9 = _lowest_low(candles, window=9)
+    high_26 = _highest_high(candles, window=26)
+    low_26 = _lowest_low(candles, window=26)
+    if None in {high_9, low_9, high_26, low_26}:
+        return None
+    tenkan = (float(high_9) + float(low_9)) / 2.0
+    kijun = (float(high_26) + float(low_26)) / 2.0
+    span_a = (tenkan + kijun) / 2.0
+    if len(candles) >= 52:
+        high_52 = _highest_high(candles, window=52)
+        low_52 = _lowest_low(candles, window=52)
+        span_b = (
+            (float(high_52) + float(low_52)) / 2.0
+            if high_52 is not None and low_52 is not None
+            else kijun
+        )
+    else:
+        span_b = kijun
+    price = candles[-1].close
+    cloud_top = max(span_a, span_b)
+    cloud_bottom = min(span_a, span_b)
+    score = 0.0
+    if price > cloud_top:
+        score += 0.45
+    elif price < cloud_bottom:
+        score -= 0.45
+    if tenkan > kijun:
+        score += 0.25
+    elif tenkan < kijun:
+        score -= 0.25
+    if price > kijun:
+        score += 0.20
+    elif price < kijun:
+        score -= 0.20
+    if price > (span_a + span_b) / 2.0 and span_a >= span_b:
+        score += 0.10
+    elif price < (span_a + span_b) / 2.0 and span_a <= span_b:
+        score -= 0.10
+    return _clamp(score)
+
+
+def _supertrend_direction(
+    candles: list[Candle],
+    *,
+    period: int = 10,
+    multiplier: float = 2.0,
+) -> int:
+    if len(candles) < period + 1:
+        return 0
+    true_ranges: list[float] = []
+    for index, candle in enumerate(candles):
+        prev_close = candles[index - 1].close if index > 0 else candle.close
+        true_ranges.append(
+            max(
+                candle.high - candle.low,
+                abs(candle.high - prev_close),
+                abs(candle.low - prev_close),
+            )
+        )
+
+    final_upper = 0.0
+    final_lower = 0.0
+    direction = 0
+    for index, candle in enumerate(candles):
+        if index < period - 1:
+            continue
+        atr_sample = true_ranges[index - period + 1 : index + 1]
+        atr = sum(atr_sample) / len(atr_sample)
+        hl2 = (candle.high + candle.low) / 2.0
+        basic_upper = hl2 + multiplier * atr
+        basic_lower = hl2 - multiplier * atr
+        if direction == 0:
+            final_upper = basic_upper
+            final_lower = basic_lower
+            direction = 1 if candle.close >= hl2 else -1
+            continue
+        prev_close = candles[index - 1].close
+        prev_final_upper = final_upper
+        prev_final_lower = final_lower
+        final_upper = (
+            basic_upper
+            if basic_upper < prev_final_upper or prev_close > prev_final_upper
+            else prev_final_upper
+        )
+        final_lower = (
+            basic_lower
+            if basic_lower > prev_final_lower or prev_close < prev_final_lower
+            else prev_final_lower
+        )
+        if candle.close > prev_final_upper:
+            direction = 1
+        elif candle.close < prev_final_lower:
+            direction = -1
+    return direction
+
+
 class CandleService:
     """Maintains lightweight multi-timeframe state from timestamped snapshots."""
 
@@ -176,8 +348,14 @@ class CandleService:
                 "swing_low_1h": 0.0,
                 "bos_long_confirmed": False,
                 "bos_short_confirmed": False,
+                "ichimoku_bias_score": 0.0,
+                "supertrend_direction": 0,
+                "stoch_rsi_k": 0.5,
+                "cci20": 0.0,
             }
 
+        candles_15m = buffers["15m"].candles()
+        candles_1h = buffers["1h"].candles()
         trend_15m_bps = buffers["15m"].trend_bps(window=4)
         trend_1h_bps = buffers["1h"].trend_bps(window=4)
         trend_4h_bps = buffers["4h"].trend_bps(window=3)
@@ -214,6 +392,10 @@ class CandleService:
             trend_15m_bps * 0.20 + trend_1h_bps * 0.35 + trend_4h_bps * 0.45,
             4,
         )
+        ichimoku_bias_score = _ichimoku_bias(candles_1h) or 0.0
+        supertrend_direction = _supertrend_direction(candles_15m)
+        stoch_rsi_k = _stoch_rsi(candles_15m) or 0.5
+        cci20 = _cci(candles_15m) or 0.0
         return {
             "trend_15m_bps": trend_15m_bps,
             "trend_1h_bps": trend_1h_bps,
@@ -227,4 +409,8 @@ class CandleService:
             "swing_low_1h": float(swing_low_1h or 0.0),
             "bos_long_confirmed": bos_long_confirmed,
             "bos_short_confirmed": bos_short_confirmed,
+            "ichimoku_bias_score": round(float(ichimoku_bias_score), 4),
+            "supertrend_direction": int(supertrend_direction),
+            "stoch_rsi_k": round(float(stoch_rsi_k), 4),
+            "cci20": round(float(cci20), 4),
         }

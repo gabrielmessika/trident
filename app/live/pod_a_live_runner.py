@@ -15,6 +15,7 @@ from app.live.runtime_status import write_runtime_status
 from app.persistence.journal import (
     JsonlJournal,
     build_signal_journal_record,
+    build_signal_review_journal_record,
     build_trade_journal_record,
 )
 from app.risk.pod_a_gate import PodARiskGate
@@ -209,6 +210,7 @@ class PodALiveRunner:
         decisions_by_symbol: dict[str, RiskDecision] = {
             decision.trade_plan.symbol: decision for decision in risk_decisions
         }
+        pod_allocation = self.supervisor.capital_plan.pod_allocations[PodName.POD_A]
         fills_by_symbol: dict[str, list[dict[str, object]]] = {}
         for fill in execution.fills:
             fills_by_symbol.setdefault(str(fill["symbol"]), []).append(fill)
@@ -237,11 +239,47 @@ class PodALiveRunner:
                             "side": preview.side,
                             "setup": preview.setup,
                             "confidence": preview.confidence,
+                            "reason_summary": preview.reason_summary,
+                            "setup_details": dict(preview.setup_details),
                             "confidence_components": (
                                 decisions_by_symbol[preview.symbol].trade_plan.confidence_components
                                 if preview.symbol in decisions_by_symbol
                                 else {}
                             ),
+                            "allocation": {
+                                "pod_target_pct": pod_allocation.target_pct,
+                                "pod_target_usd": pod_allocation.target_usd,
+                                "symbol_target_pct": (
+                                    self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol).target_pct
+                                    if self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol) is not None
+                                    else 0.0
+                                ),
+                                "symbol_target_usd": (
+                                    self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol).target_usd
+                                    if self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol) is not None
+                                    else 0.0
+                                ),
+                                "reason_summary": (
+                                    self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol).reason_summary
+                                    if self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol) is not None
+                                    else ""
+                                ),
+                                "correlation_group": (
+                                    self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol).correlation_group
+                                    if self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol) is not None
+                                    else ""
+                                ),
+                                "correlation_density_factor": (
+                                    self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol).correlation_density_factor
+                                    if self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol) is not None
+                                    else 1.0
+                                ),
+                                "capped_by_correlation": (
+                                    self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol).capped_by_correlation
+                                    if self.supervisor.allocation_for_symbol(PodName.POD_A, preview.symbol) is not None
+                                    else False
+                                ),
+                            },
                             "risk": {
                                 "accepted": decisions_by_symbol.get(preview.symbol).accepted
                                 if preview.symbol in decisions_by_symbol
@@ -311,6 +349,21 @@ class PodALiveRunner:
                                 ],
                             },
                         },
+                    )
+                )
+        if journal is not None:
+            for review in self.supervisor.state.pod_a_signal_review:
+                if str(review.get("status")) != "filtered":
+                    continue
+                journal.append(
+                    build_signal_review_journal_record(
+                        timestamp=timestamp,
+                        record_index=self.report.records_processed,
+                        regime=current_regime,
+                        regime_snapshot=regime_snapshot,
+                        symbol_snapshot=snapshot_by_symbol.get(str(review.get("symbol", ""))),
+                        source="pod_a_live_filtered",
+                        review=review,
                     )
                 )
 

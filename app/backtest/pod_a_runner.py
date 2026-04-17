@@ -11,12 +11,13 @@ from app.trident.market_clusters import cluster_for_symbol
 from app.persistence.journal import (
     JsonlJournal,
     build_signal_journal_record,
+    build_signal_review_journal_record,
     build_trade_journal_record,
 )
 from app.risk.pod_a_gate import PodARiskGate
 from app.settings import AppConfig
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
+from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
 
 
 @dataclass(slots=True)
@@ -137,6 +138,11 @@ class PodABacktestRunner:
             decisions_by_symbol: dict[str, RiskDecision] = {
                 decision.trade_plan.symbol: decision for decision in risk_decisions
             }
+            pod_allocation = supervisor.capital_plan.pod_allocations[PodName.POD_A]
+            allocation_by_symbol = {
+                item.symbol: item
+                for item in pod_allocation.symbols
+            }
 
             if output_journal is not None:
                 fills_by_symbol: dict[str, list[dict[str, object]]] = {}
@@ -154,11 +160,35 @@ class PodABacktestRunner:
                             "side": preview.side,
                             "setup": preview.setup,
                             "confidence": preview.confidence,
+                            "reason_summary": preview.reason_summary,
+                            "setup_details": dict(preview.setup_details),
                             "confidence_components": (
                                 decisions_by_symbol[preview.symbol].trade_plan.confidence_components
                                 if preview.symbol in decisions_by_symbol
                                 else {}
                             ),
+                            "allocation": {
+                                "pod_target_pct": pod_allocation.target_pct,
+                                "pod_target_usd": pod_allocation.target_usd,
+                                "symbol_target_pct": allocation_by_symbol.get(preview.symbol).target_pct
+                                if preview.symbol in allocation_by_symbol
+                                else 0.0,
+                                "symbol_target_usd": allocation_by_symbol.get(preview.symbol).target_usd
+                                if preview.symbol in allocation_by_symbol
+                                else 0.0,
+                                "reason_summary": allocation_by_symbol.get(preview.symbol).reason_summary
+                                if preview.symbol in allocation_by_symbol
+                                else "",
+                                "correlation_group": allocation_by_symbol.get(preview.symbol).correlation_group
+                                if preview.symbol in allocation_by_symbol
+                                else "",
+                                "correlation_density_factor": allocation_by_symbol.get(preview.symbol).correlation_density_factor
+                                if preview.symbol in allocation_by_symbol
+                                else 1.0,
+                                "capped_by_correlation": allocation_by_symbol.get(preview.symbol).capped_by_correlation
+                                if preview.symbol in allocation_by_symbol
+                                else False,
+                            },
                             "source_file": record.source_file,
                             "risk": {
                                 "accepted": decisions_by_symbol.get(preview.symbol).accepted
@@ -232,6 +262,19 @@ class PodABacktestRunner:
                         },
                     )
                     for preview in previews
+                )
+                output_journal.append_many(
+                    build_signal_review_journal_record(
+                        timestamp=record.timestamp,
+                        record_index=record.record_index,
+                        regime=supervisor.state.regime.value,
+                        regime_snapshot=record.regime_snapshot,
+                        symbol_snapshot=snapshot_by_symbol.get(str(review.get("symbol", ""))),
+                        source="pod_a_backtest_filtered",
+                        review=review,
+                    )
+                    for review in supervisor.state.pod_a_signal_review
+                    if str(review.get("status")) == "filtered"
                 )
 
             for preview in previews:
