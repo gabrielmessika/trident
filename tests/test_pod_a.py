@@ -5,6 +5,7 @@ from app.risk.pod_a_gate import PodARiskGate
 from app.settings import (
     PodACampaignConfig,
     PodAReversalFadeConfig,
+    PodASetupRunnerConfig,
     PodAStructuralTargetConfig,
     PodASymbolModeConfig,
     load_config,
@@ -687,6 +688,59 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertTrue(bool(trade_plan.setup_details.get("campaign_mode_active")))
         self.assertTrue(bool(trade_plan.setup_details.get("routing_revoke_exempt")))
         self.assertGreater(trade_plan.trailing_activation_bps, trade_plan.stop_bps)
+
+    def test_trade_planner_applies_setup_runner_for_crypto_trend_pullback(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                setup_runner=PodASetupRunnerConfig(
+                    enabled=True,
+                    setups=["trend_pullback_long"],
+                    allowed_market_clusters=["crypto"],
+                    min_confidence=0.6,
+                    take_profit_multiplier=0.0,
+                    break_even_multiplier=1.0,
+                    trailing_activation_multiplier=1.4,
+                    trailing_distance_multiplier=0.8,
+                ),
+            ),
+        )
+        planner = AnchorTrendPlanner(config)
+        allocation = CapitalAllocator(config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+            )
+        )
+
+        assert signal is not None
+        trade_plan = planner.build_trade_plan(signal, allocation)
+
+        self.assertIsNotNone(trade_plan)
+        assert trade_plan is not None
+        self.assertEqual(trade_plan.take_profit_bps, 0.0)
+        self.assertEqual(trade_plan.break_even_trigger_bps, 160.0)
+        self.assertEqual(trade_plan.trailing_activation_bps, 224.0)
+        self.assertEqual(trade_plan.trailing_distance_bps, 128.0)
+        self.assertTrue(bool(trade_plan.setup_details.get("setup_runner_active")))
+        self.assertFalse(bool(trade_plan.setup_details.get("campaign_mode_active")))
 
     def test_trade_planner_reserves_capacity_for_campaign_add_on(self) -> None:
         config = replace(

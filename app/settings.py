@@ -198,6 +198,7 @@ class PodAConfig:
     intraday_setup_guardrail_max_cumulative_loss_usd: float = -10.0
     intraday_setup_guardrail_max_average_pnl_usd: float = -1.0
     campaign: PodACampaignConfig = field(default_factory=lambda: PodACampaignConfig())
+    setup_runner: PodASetupRunnerConfig = field(default_factory=lambda: PodASetupRunnerConfig())
     structural_targets: PodAStructuralTargetConfig = field(
         default_factory=lambda: PodAStructuralTargetConfig()
     )
@@ -253,6 +254,18 @@ class PodACampaignConfig:
     add_on_trigger_bps: float = 0.0
     add_on_min_confidence: float = 0.0
     max_add_ons_per_position: int = 0
+
+
+@dataclass(slots=True)
+class PodASetupRunnerConfig:
+    enabled: bool = False
+    setups: list[str] = field(default_factory=list)
+    allowed_market_clusters: list[str] = field(default_factory=list)
+    min_confidence: float = 0.0
+    take_profit_multiplier: float = 1.0
+    break_even_multiplier: float = 1.0
+    trailing_activation_multiplier: float = 1.0
+    trailing_distance_multiplier: float = 1.0
 
 
 @dataclass(slots=True)
@@ -575,6 +588,28 @@ def _pod_a_campaign(raw: object) -> PodACampaignConfig:
         add_on_trigger_bps=float(raw.get("add_on_trigger_bps", 0.0)),
         add_on_min_confidence=float(raw.get("add_on_min_confidence", 0.0)),
         max_add_ons_per_position=int(raw.get("max_add_ons_per_position", 0)),
+    )
+
+
+def _pod_a_setup_runner(raw: object) -> PodASetupRunnerConfig:
+    if not isinstance(raw, dict):
+        return PodASetupRunnerConfig()
+    return PodASetupRunnerConfig(
+        enabled=bool(raw.get("enabled", False)),
+        setups=_str_list(raw.get("setups", [])),
+        allowed_market_clusters=_str_list(
+            raw.get("allowed_market_clusters", []),
+            upper_values=False,
+        ),
+        min_confidence=float(raw.get("min_confidence", 0.0)),
+        take_profit_multiplier=float(raw.get("take_profit_multiplier", 1.0)),
+        break_even_multiplier=float(raw.get("break_even_multiplier", 1.0)),
+        trailing_activation_multiplier=float(
+            raw.get("trailing_activation_multiplier", 1.0)
+        ),
+        trailing_distance_multiplier=float(
+            raw.get("trailing_distance_multiplier", 1.0)
+        ),
     )
 
 
@@ -991,6 +1026,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 pod_a_data.get("intraday_setup_guardrail_max_average_pnl_usd", -1.0)
             ),
             campaign=_pod_a_campaign(pod_a_data.get("campaign", {})),
+            setup_runner=_pod_a_setup_runner(pod_a_data.get("setup_runner", {})),
             structural_targets=_pod_a_structural_targets(
                 pod_a_data.get("structural_targets", {})
             ),

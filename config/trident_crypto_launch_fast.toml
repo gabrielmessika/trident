@@ -344,6 +344,16 @@ add_on_trigger_bps = 0.0
 add_on_min_confidence = 0.0
 max_add_ons_per_position = 0
 
+[pod_a.setup_runner]
+enabled = true
+setups = ["trend_pullback_long"]
+allowed_market_clusters = ["crypto"]
+min_confidence = 0.0
+take_profit_multiplier = 0.0
+break_even_multiplier = 1.0
+trailing_activation_multiplier = 1.4
+trailing_distance_multiplier = 0.8
+
 [pod_a.structural_targets]
 enabled = false
 setups = ["trend_pullback_long"]

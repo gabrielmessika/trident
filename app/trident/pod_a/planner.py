@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.settings import (
     AppConfig,
     PodACampaignConfig,
+    PodASetupRunnerConfig,
     PodAStructuralTargetConfig,
     load_config,
 )
@@ -72,6 +73,9 @@ class AnchorTrendPlanner:
             signal.confidence,
             signal.market_cluster,
         )
+        setup_runner = self._setup_runner_for_signal(signal)
+        if setup_runner is not None:
+            exit_policy = self._setup_runner_exit_policy(stop_bps, setup_runner)
         if campaign is not None:
             exit_policy = self._scale_exit_policy(
                 exit_policy,
@@ -188,6 +192,7 @@ class AnchorTrendPlanner:
                 "campaign_add_on_min_confidence": round(campaign_add_on_min_confidence, 4),
                 "campaign_max_add_ons": campaign_max_add_ons,
                 "campaign_add_on_count": 0,
+                "setup_runner_active": setup_runner is not None,
                 "special_symbol_mode_active": symbol_mode is not None,
             },
         )
@@ -230,6 +235,48 @@ class AnchorTrendPlanner:
         if cci20 > campaign.max_cci20:
             return None
         return campaign
+
+    def _setup_runner_for_signal(
+        self,
+        signal: AnchorTrendSignal,
+    ) -> PodASetupRunnerConfig | None:
+        runner = self._config.pod_a.setup_runner
+        if not runner.enabled:
+            return None
+        if runner.setups and signal.setup not in runner.setups:
+            return None
+        if (
+            runner.allowed_market_clusters
+            and signal.market_cluster not in runner.allowed_market_clusters
+        ):
+            return None
+        if signal.confidence < runner.min_confidence:
+            return None
+        return runner
+
+    def _setup_runner_exit_policy(
+        self,
+        stop_bps: float,
+        runner: PodASetupRunnerConfig,
+    ) -> dict[str, float]:
+        return {
+            "take_profit_bps": round(
+                stop_bps * max(runner.take_profit_multiplier, 0.0),
+                4,
+            ),
+            "break_even_trigger_bps": round(
+                stop_bps * max(runner.break_even_multiplier, 0.0),
+                4,
+            ),
+            "trailing_activation_bps": round(
+                stop_bps * max(runner.trailing_activation_multiplier, 0.0),
+                4,
+            ),
+            "trailing_distance_bps": round(
+                stop_bps * max(runner.trailing_distance_multiplier, 0.0),
+                4,
+            ),
+        }
 
     def _structural_take_profit(
         self,

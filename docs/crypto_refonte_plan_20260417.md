@@ -99,6 +99,7 @@ Le profil de reference courant est:
 - `trend_pullback_long` seulement
 - `Pod B` hors chemin critique
 - grace de `routing_revoked` etendue a `24h` sur les principaux symbols crypto effectivement trades
+- `setup_runner` conservateur actif sur `trend_pullback_long`
 - deux vetoes pattern actifs:
   - `trend1h_negative`
   - `trend4h_positive_cci_mid`
@@ -109,15 +110,22 @@ Le profil de reference courant est:
 
 Validation exacte sur `server-data/replay_inputs/full_bot_latest_fetch.jsonl`:
 
-- baseline sans pattern veto: `+311.89 USD`
-- profil actif apres pattern vetoes + routing grace etendue: `+435.77 USD`
-- gain net valide: `+123.88 USD`
+- baseline active sans `setup_runner`: `+385.44 USD`
+- profil actif avec `setup_runner` conservateur: `+391.64 USD`
+- gain net valide le plus recent: `+6.20 USD`
+- lecture:
+  - la variante conservatrice allonge le hold moyen (`0.8396h -> 1.371h`)
+  - elle reduit les frais (`109.19 -> 95.81`)
+  - elle ameliore la fenetre recente `2026-04-13 -> 2026-04-17` (`+133.36 -> +135.36`)
+  - elle degrade legerement `2026-04-05 -> 2026-04-12` (`+341.74 -> +338.67`)
+  - elle reste donc promue seulement en version prudente, pas en mode runner agressif
 
 References:
 
 - `server-data/replay_reports/pod_a_pattern_veto_exact_validation_20260417.md`
 - `server-data/replay_reports/pod_a_pattern_watch_candidate_validation_20260417.md`
 - `server-data/replay_reports/pod_a_pattern_watch_summary_20260417.md`
+- `server-data/replay_reports/pod_a_setup_runner_validation_20260417.md`
 - `server-data/replay_reports/campaign_addon_validation_20260417.md`
 - `server-data/replay_reports/campaign_runner_refine_20260417.md`
 - `server-data/replay_reports/pod_a_reversal_fade_validation_20260417.md`
@@ -192,14 +200,22 @@ Etat:
 - version `campaign` deja branchee pour `trend_pullback_long`
 - utile mais pas encore transformante
 - reste un moteur de continuation, pas encore un moteur de target structurelle
+- un `setup_runner` explicite est maintenant branche pour `trend_pullback_long`
+- variante promue:
+  - `take_profit_multiplier = 0.0`
+  - `break_even_multiplier = 1.0`
+  - `trailing_activation_multiplier = 1.4`
+  - `trailing_distance_multiplier = 0.8`
+  - `min_confidence = 0.0`
 - support `entry tranche + add-on unique` implemente derriere flag
 - validation actuelle:
   - `campaign_addon_tight`: `+380.99 USD`
   - `campaign_relaxed_addon`: `+405.28 USD`
-  - baseline actif: `+435.77 USD`
+  - baseline sans `setup_runner`: `+385.44 USD`
+  - profil actif avec `setup_runner` prudent: `+391.64 USD`
 - lecture:
-  - l'add-on ne se declenche pas encore sur la fenetre de validation
-  - aucun scenario teste ne produit de gain net vs baseline
+  - l'add-on ne se declenche pas encore assez pour justifier une promotion
+  - le vrai gain recent vient du `setup_runner` prudent, pas de l'add-on
 - decision:
   - laisser l'add-on desactive dans les profils `launch-fast`
   - garder l'infrastructure en code pour une future iteration si les signaux persistent davantage
