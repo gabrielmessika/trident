@@ -250,9 +250,51 @@ Etat:
 - resultat actuel:
   - variante stricte: `+329.70 USD` soit `-22.23 USD` vs profil actif precedent
   - variante loose: `+321.13 USD` soit `-30.80 USD` vs profil actif precedent
+- validation supplementaire `2026-04-18` sur des shorts "tres stricts":
+  - utile pour redonner un peu d'activite sur une fenetre live tres courte ou `Pod A` restait muet
+  - mais non promouvable en profil reel
+  - sur `pod_a_last12h_20260418T0855.jsonl`:
+    - `trend_short_strict_v2`: `-8.91 USD`
+    - `liq_short_strict_v2`: `+6.36 USD`
+    - `combo_shorts_strict_v2`: `+10.86 USD`
+  - sur les replays larges versionnes:
+    - baseline: `+335.68 USD`
+    - `trend_short_strict_v2`: `+203.63 USD`
+    - `liq_short_strict_v2`: `+257.19 USD`
+    - `combo_shorts_strict_v2`: `+157.73 USD`
+  - lecture:
+    - meme tres filtres, les shorts degradent fortement `Pod A` sur la vraie fenetre large
+    - le besoin d'activite intraday ne justifie donc pas leur activation live a ce stade
 - decision:
   - garder `reversal_fade` desactive
   - ne pas promouvoir le short de retracement avant une logique de rejet confirmee plus robuste
+  - ne pas rouvrir de shorts `Pod A` uniquement pour corriger des periodes sans trade
+
+### Phase 2c. Moteur Short Separe
+
+Objectif: construire plus tard un vrai moteur short, sans polluer `Pod A`.
+
+Principes:
+
+- ne pas reutiliser les shorts actuels de `Pod A` comme solution de secours
+- separer completement la logique short du moteur `trend_pullback_long`
+- rester `shadow-only` jusqu'a validation large
+- utiliser des confirmations plus fortes que les longs:
+  - rejet confirme
+  - faiblesse de flow
+  - invalidation structurelle nette
+  - contexte de regime compatible
+
+Actions:
+
+- definir un moteur short dedie, avec ses propres setups et ses propres vetoes
+- journaliser les signaux shadow short separement
+- valider sur fenetre recente et large avant tout test live
+
+Etat:
+
+- inscrit au plan
+- aucune promotion live tant qu'un moteur distinct n'a pas ete valide
 
 ### Phase 3. Crypto Regime V2
 
@@ -317,6 +359,238 @@ Actions:
 - reconstruire autour d'un breakout HTF plus propre
 - pas de retour en production sans validation claire
 
+### Phase 6. Transfert Pod A -> Pod C
+
+Objectif: reutiliser les bonnes idees de `Pod A` nouvelle version sur `Pod C`, sans copier les briques qui n'ont pas le bon contexte.
+
+Photo courante sur `server-data/live_snapshots`:
+
+- `Pod A`
+  - `519` signaux
+  - `186` acceptes
+  - `98` trades clos
+  - `+368.82 USD`
+  - `80.05 USD` de frais
+  - `52.65 USD` de drawdown max
+  - hold moyen `1.0908h`
+- `Pod C`
+  - `150` signaux
+  - `45` acceptes
+  - `18` trades clos
+  - `+26.11 USD`
+  - `9.13 USD` de frais
+  - `7.46 USD` de drawdown max
+  - hold moyen `1.6176h`
+
+Lecture:
+
+- `Pod C` est deja plus selectif et tient deja plus longtemps ses positions que `Pod A`
+- le vrai edge courant de `Pod C` vient du filtrage, pas d'une sophistication d'exit
+- il ne faut donc pas lui copier en priorite les briques de type `runner`, `campaign` ou `reversal` sans d'abord enrichir son contexte
+
+Actions:
+
+- garder et renforcer la suppression des branches faibles deja validees dans `Pod C`
+- enrichir `setup_details` et le contexte propage pour rendre `Pod C` observable comme `Pod A`
+- lancer une analyse jour-par-jour `Pod C` par `cluster x setup x side x regime`
+- promouvoir ensuite des `pattern_vetoes` et `pattern_watchers` cluster-aware sur `Pod C`
+- seulement apres cela:
+  - tester des `cluster_modes`
+  - re-tester un `setup_runner` par cluster
+  - re-tester des `structural_targets`
+  - re-tester un `reversal_fade` ultra-strict
+
+Etat:
+
+- transferts deja valides:
+  - oui a la suppression brutale des branches faibles
+  - preuve actuelle:
+    - `cluster_aware_v2 = true`: `+26.11 USD`, `18` trades, `7.46 USD` de drawdown
+    - `cluster_aware_v2 = false`: `-63.66 USD`, `73` trades, `87.27 USD` de drawdown
+- transferts testes et rejetes a ce stade:
+  - `setup_runner` global de type `Pod A`
+    - baseline `Pod C`: `+26.11 USD`
+    - runner soft: `+22.92 USD`
+    - runner type `Pod A`: `+15.02 USD`
+  - hausse globale du `min_confidence`
+    - `0.66`, `0.72`, `0.75`: aucun impact, replay identique
+- transferts prometteurs mais bloques par manque de contexte:
+  - `pattern_vetoes`
+  - `pattern_watchers`
+  - `structural_targets`
+  - `reversal_fade`
+  - `cluster_modes`
+- Phase 6.1 demarree:
+  - enrichment de `setup_details` dans `Pod C`
+  - propagation jusqu'aux trades clos et journaux live/backtest
+  - report jour-par-jour cluster-aware ajoute
+  - premiere lecture sur `server-data/live_snapshots`:
+    - `silver|silver_breakout_long`: `+23.65 USD`
+    - `index|index_breakout_long`: `+10.00 USD`
+    - `oil|oil_pullback_long`: `-7.54 USD`
+    - pattern perdant le plus net: `oil|supportive|strong|normal` a `-12.14 USD` sur `3` trades, `100%` de jours negatifs
+  - decision:
+    - ne pas bloquer `oil` par symbole
+    - prioriser un futur veto cluster-aware sur certains buckets `oil` seulement apres validation replay exacte
+- Phase 6.2 validee:
+  - support `pattern_vetoes` et `pattern_watchers` ajoute a `Pod C`
+  - validation exacte sur `server-data/live_snapshots`:
+    - baseline sans veto: `+26.11 USD`
+    - watch-only `oil_pullback_long`: `+26.11 USD`
+    - veto precis `oil|supportive|strong|normal`: `+32.05 USD`
+    - veto large `oil_pullback_long`: `+33.65 USD`
+  - decision:
+    - promouvoir le veto cluster-aware `oil_pullback_long`
+    - ne pas activer le veto plus fin `oil|supportive|strong|normal` pour l'instant
+    - continuer a traiter `oil` comme une branche a reconstruire plutot qu'a elargir
+- Phase 6.3 validee:
+  - support `cluster_modes` ajoute a `Pod C`
+  - validation exacte sur `server-data/live_snapshots`:
+    - baseline actif: `+33.65 USD`
+    - `index_runner`: `+39.40 USD`
+    - `silver_runner`: `+31.87 USD`
+    - `index + silver`: `+37.62 USD`
+  - decision:
+    - promouvoir `pod_c.cluster_modes.index`
+    - ne pas activer de `cluster_mode` sur `silver`
+    - garder `silver` sur ses exits actuels tant qu'une autre variante ne bat pas `+23.65 USD`
+- Phase 6.4 validee:
+  - recherche d'un veto pattern-aware plus fin sur `index`
+  - validation exacte sur `server-data/live_snapshots`:
+    - profil actif: `+39.40 USD`
+    - veto `index_soft_trend`: `+35.57 USD`
+    - veto `index_extension_entry`: `+36.21 USD`
+  - decision:
+    - aucun veto `index` n'est promu
+    - ajouter seulement des `watchers`:
+      - `index_soft_trend_watch`
+      - `index_extension_entry_watch`
+    - garder `index` en `flow gagnant`, pas en `flow a couper`
+- Phase 6.5 validee:
+  - sweep dedie `silver` sur `server-data/live_snapshots`
+  - baseline actif mis a jour: `+39.78 USD`
+  - `silver_tp_extend`: `+45.04 USD`
+  - `silver_defensive`: `+40.43 USD`
+  - `silver_size_boost`: `+37.40 USD`
+  - `silver_tp_extend_size_boost`: `+41.03 USD`
+  - decision:
+    - promouvoir `pod_c.cluster_modes.silver`
+    - ne changer que `take_profit_multiplier = 1.08`
+    - ne pas toucher au sizing ni au trailing `silver` pour l'instant
+- Phase 6.6 validee:
+  - relecture `gold`:
+    - pas de flow ferme exploitable sur le dataset courant
+    - aucune promotion `gold` n'est justifiee a ce stade
+  - raffinage du mode `index` sur `server-data/live_snapshots`
+  - baseline actif mis a jour: `+45.04 USD`
+  - `index_time_extend`: `+44.33 USD`
+  - `index_tp_extend`: `+44.55 USD`
+  - `index_runner_looser`: `+45.32 USD`
+  - `index_tp_extend_tighter_trail`: `+46.25 USD`
+  - decision:
+    - promouvoir un `index` un peu plus ambitieux mais encore propre
+    - config retenue:
+      - `time_stop_hours = 9`
+      - `take_profit_multiplier = 1.28`
+      - `break_even_multiplier = 1.08`
+      - `trailing_activation_multiplier = 1.30`
+      - `trailing_distance_multiplier = 1.00`
+- Phase 6.7 validee:
+  - aucun pattern `index` perdant assez robuste n'apparait sur le report jour-par-jour mis a jour
+  - l'effort a donc ete deplace sur la reconstruction de `oil`
+  - autopsie sans veto:
+    - `oil`: `-6.74 USD` sur `8` trades
+    - poches perdantes surtout sur des pullbacks trop profonds ou trop crowded
+  - reconstruction testee en replay exact:
+    - baseline actif: `+46.25 USD`
+    - `oil_rebuild_v1`: `+57.62 USD`
+    - `oil_rebuild_v2`: `+55.84 USD`
+  - config promue dans le service:
+    - `trend_bps >= 9.0`
+    - `structure_score >= 0.24`
+    - `trade_flow_bias >= 0.25`
+    - `-2.6 <= vwap_distance_bps <= -1.0`
+    - `activity_ratio >= 1.7`
+    - `0.75 <= trade_flow_bias + book_imbalance <= 1.15`
+  - decision:
+    - supprimer le vieux veto global `oil_pullback_strategy`
+    - promouvoir la branche `oil` reconstruite au niveau du service
+    - garder `oil` comme branche tres selective, pas comme cluster a elargir
+- Phase 6.8 validee:
+  - robustesse multi-fenetres de `oil` reconstruite:
+    - `window_0413_0417`: `+52.22 -> +63.59 USD`
+    - `full_latest_fetch`: `+46.25 -> +57.62 USD`
+    - `window_0405_0412`: aucun trade dans les deux variantes
+  - `gold` d'abord reteste en ouverture naive:
+    - gain brut oui, mais drawdown trop eleve
+  - `gold` ensuite raffine avec une branche beaucoup plus selective:
+    - `cluster_regime = TrendExpansion`
+    - `global_regime in {TrendExpansion, PanicSqueeze}`
+    - `trend_bps >= 8.0`
+    - `structure_score >= 0.22`
+    - `trade_flow_bias >= 0.02`
+    - `0.5 <= vwap_distance_bps <= 3.5`
+    - `activity_ratio >= 1.1`
+    - `bucket_range_bps >= 14.0`
+    - `spread_bps <= 2.0`
+  - validation exacte:
+    - `live_snapshots`: `+57.62 -> +84.98 USD`
+    - `window_0413_0417`: `+63.59 -> +90.95 USD`
+    - `full_latest_fetch`: `+57.62 -> +84.98 USD`
+    - drawdown reste `4.22 USD`
+  - decision:
+    - debloquer `XYZ:GOLD`
+    - promouvoir `gold_breakout_long` dans `TradfiTrendService`
+    - garder `gold` sur une logique tres selective, sans mode d'exit specifique pour l'instant
+- Phase 6.9 validee:
+  - test d'un `cluster_mode.gold` dedie sur la branche `gold_breakout_long`
+  - variantes testées:
+    - `gold_runner_soft`
+    - `gold_tp_extend`
+    - `gold_tighter_trail`
+  - validation exacte:
+    - `live_snapshots`: `+84.98 -> +89.79 USD`
+    - `window_0413_0417`: `+90.95 -> +95.76 USD`
+    - `full_latest_fetch`: `+84.98 -> +89.79 USD`
+    - drawdown stable `4.22 USD`
+  - config promue:
+    - `time_stop_hours = 6`
+    - `take_profit_multiplier = 1.08`
+    - `break_even_multiplier = 1.00`
+    - `trailing_activation_multiplier = 1.10`
+    - `trailing_distance_multiplier = 1.10`
+  - decision:
+    - promouvoir `pod_c.cluster_modes.gold`
+    - garder un mode simple et leger, sans reouvrir un chantier de trailing plus complexe
+
+Decision:
+
+- pour `Pod C`, la bonne transposition de `Pod A` n'est pas "plus de trailing"
+- la bonne transposition est:
+  - plus de contexte
+  - plus d'analyse jour-par-jour
+  - plus de filtrage pattern-aware
+
+References:
+
+- `docs/pod_c_vs_pod_a_transfer_20260418.md`
+- `server-data/replay_reports/pod_c_day_by_day_patterns_20260418.md`
+- `server-data/replay_reports/pod_c_pattern_veto_validation_20260418.md`
+- `server-data/replay_reports/pod_c_cluster_mode_validation_20260418.md`
+- `server-data/replay_reports/pod_c_index_pattern_validation_20260418.md`
+- `server-data/replay_reports/pod_c_silver_mode_validation_20260418.md`
+- `server-data/replay_reports/pod_c_index_mode_refine_20260418.md`
+- `server-data/replay_reports/pod_c_oil_rebuild_validation_20260418.md`
+- `server-data/replay_reports/pod_c_oil_multiframe_validation_20260418.md`
+- `server-data/replay_reports/pod_c_gold_prototype_validation_20260418.md`
+- `server-data/replay_reports/pod_c_gold_multiframe_validation_20260418.md`
+- `server-data/replay_reports/pod_c_gold_refine_validation_20260418.md`
+- `server-data/replay_reports/pod_c_gold_cluster_mode_validation_20260418.md`
+- `server-data/reviews/pod_c_cluster_experiment_20260414.json`
+- `server-data/reviews/pod_c_cluster_v2_integration_20260414.json`
+- `server-data/reviews/pod_c_long_only_experiment_20260414.json`
+- `docs/pod_c_research_latest.md`
+
 ## Critere De Go-Live
 
 Le launch rapide peut etre deploye avant la refonte complete si:
@@ -354,9 +628,50 @@ Fait dans ce lot:
 - validation exacte du `intraday_setup_guardrail` faite: aucun impact sur le replay complet, meme en stress test
 - support de `structural_targets` ajoute a `Pod A`
 - validation exacte des `structural_targets` faite: degradation du replay complet, feature gardee desactivee
+- comparaison `Pod C` vs `Pod A` nouvelle version faite sur `server-data/live_snapshots`
+- phase `Transfert Pod A -> Pod C` ajoutee au plan
+- premiere shortlist des transferts valides / rejetes / bloques sur `Pod C` formalisee
+- `Pod C` Phase 6.1 implementee:
+  - `setup_details` riches
+  - report cluster-aware jour-par-jour
+  - premiere shortlist de patterns perdants non symboliques sur `oil`
+- `Pod C` Phase 6.2 implementee:
+  - support de `pattern_vetoes/watchers`
+  - veto `oil_pullback_long` promu dans la config
+  - replay exact valide a `+33.65 USD` vs `+26.11 USD` baseline
+- `Pod C` Phase 6.3 implementee:
+  - support de `cluster_modes`
+  - `index_runner` promu
+  - replay exact valide a `+39.40 USD` vs `+33.65 USD` baseline actif
+- `Pod C` Phase 6.4 implementee:
+  - aucun veto `index` promu apres validation exacte
+  - deux `watchers` `index` ajoutes a la config
+- `Pod C` Phase 6.5 implementee:
+  - `cluster_mode` `silver` promu avec `take_profit_multiplier = 1.08`
+  - replay exact valide a `+45.04 USD` vs `+39.78 USD` baseline actif
+- `Pod C` Phase 6.6 implementee:
+  - `cluster_mode` `index` raffine
+  - replay exact valide a `+46.25 USD` vs `+45.04 USD` baseline actif
+  - aucun chantier `gold` promu faute d'echantillon ferme exploitable
+- `Pod C` Phase 6.7 implementee:
+  - report jour-par-jour mis a jour: aucun veto `index` supplementaire a promouvoir
+  - `oil` reconstruit directement dans le service au lieu d'etre bloque globalement
+  - veto `oil_pullback_strategy` retire de la config
+  - replay exact valide a `+57.62 USD` vs `+46.25 USD` baseline actif
+- `Pod C` Phase 6.8 implementee:
+  - robustesse multi-fenetres de `oil` validee
+  - `gold_breakout_long` ajoute au service
+  - `XYZ:GOLD` debloque dans la config
+  - replay exact valide a `+84.98 USD` vs `+57.62 USD` baseline actif
+  - validation recente `0413_0417` a `+90.95 USD`
+- `Pod C` Phase 6.9 implementee:
+  - `cluster_mode.gold` promu
+  - replay exact valide a `+89.79 USD` vs `+84.98 USD` baseline actif
+  - validation recente `0413_0417` a `+95.76 USD`
 
 Prochaine etape recommandee:
 
 1. faire evoluer `Phase 2b` vers un modele de rejet confirme + reversal fade, au lieu d'un simple TP direct sur resistance
 2. analyser et reduire les `routing_revoked` restants hors `campaign`
-3. revalider ensuite `Crypto Regime V2` une fois le stack de setups stabilise
+3. lancer `Pod C` Phase 6.10: verifier s'il reste un vrai levier `equity/fx`, sinon geler `Pod C` et revenir sur `Crypto Regime V2`
+4. revalider ensuite `Crypto Regime V2` une fois le stack de setups stabilise

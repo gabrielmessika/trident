@@ -403,7 +403,7 @@ min_margin_usd = 20
 min_notional_usd = 10
 reentry_cooldown_minutes = 90
 time_stop_hours = 6
-blocked_symbols = ["XYZ:GOLD"]
+blocked_symbols = []
 min_bucket_notional_usd = 100.0
 min_bucket_trade_count = 3
 min_trend_bps = 8.0
@@ -412,6 +412,47 @@ max_vwap_distance_bps = 35.0
 min_reclaim_distance_bps = 6.0
 min_activity_ratio = 0.75
 activity_lookback = 20
+
+[[pod_c.pattern_watchers]]
+name = "index_soft_trend_watch"
+enabled = true
+setups = ["tradfi_continuation_long"]
+sides = ["long"]
+market_clusters = ["index"]
+trend_buckets = ["soft"]
+
+[[pod_c.pattern_watchers]]
+name = "index_extension_entry_watch"
+enabled = true
+setups = ["tradfi_continuation_long"]
+sides = ["long"]
+market_clusters = ["index"]
+vwap_buckets = ["extension"]
+
+[pod_c.cluster_modes.index]
+enabled = true
+allowed_setups = ["tradfi_continuation_long"]
+stop_bps_multiplier = 1.08
+stop_bps_floor = 55.0
+time_stop_hours = 9
+take_profit_multiplier = 1.28
+break_even_multiplier = 1.08
+trailing_activation_multiplier = 1.30
+trailing_distance_multiplier = 1.00
+
+[pod_c.cluster_modes.silver]
+enabled = true
+allowed_setups = ["tradfi_continuation_long"]
+take_profit_multiplier = 1.08
+
+[pod_c.cluster_modes.gold]
+enabled = true
+allowed_setups = ["tradfi_continuation_long"]
+time_stop_hours = 6
+take_profit_multiplier = 1.08
+break_even_multiplier = 1.00
+trailing_activation_multiplier = 1.10
+trailing_distance_multiplier = 1.10
 
 [pod_c.max_leverage_by_symbol]
 "XYZ:CL" = 20.0

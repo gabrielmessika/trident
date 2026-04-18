@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.settings import AppConfig, PodCConfig, load_config
+from app.trident.pod_c.cluster_mode import active_cluster_mode, scale_exit_policy
 from app.trident.pod_c.exits import initial_stop_bps, smart_exit_policy, time_stop_hours_for_cluster
 from app.trident.pod_c.signals import TradfiTrendSignal
 from app.trident.pod_c.sizing import PositionSizer
@@ -35,11 +36,27 @@ class TradfiTrendPlanner:
         if size_multiplier <= 0:
             return None
         margin_cap_usd = symbol_allocation.target_usd * size_multiplier
+        cluster_mode = active_cluster_mode(self.config, signal.market_cluster)
+        if cluster_mode is not None:
+            if cluster_mode.allowed_setups and signal.setup not in {
+                item.strip() for item in cluster_mode.allowed_setups if item.strip()
+            }:
+                cluster_mode = None
+            elif signal.confidence < max(cluster_mode.min_confidence, 0.0):
+                cluster_mode = None
         stop_bps = initial_stop_bps(
             signal.setup,
             signal.confidence,
             signal.market_cluster,
         )
+        if cluster_mode is not None:
+            stop_bps = round(
+                max(
+                    stop_bps * max(cluster_mode.stop_bps_multiplier, 0.0),
+                    max(cluster_mode.stop_bps_floor, 0.0),
+                ),
+                4,
+            )
         sized_trade = self._position_sizer.size_from_stop(
             symbol=signal.symbol,
             margin_cap_usd=margin_cap_usd,
@@ -53,6 +70,14 @@ class TradfiTrendPlanner:
             signal.confidence,
             signal.market_cluster,
         )
+        if cluster_mode is not None:
+            exit_policy = scale_exit_policy(exit_policy, cluster_mode)
+        time_stop_hours = time_stop_hours_for_cluster(
+            self.config.time_stop_hours,
+            signal.market_cluster,
+        )
+        if cluster_mode is not None and cluster_mode.time_stop_hours > 0:
+            time_stop_hours = int(cluster_mode.time_stop_hours)
 
         return TradePlan(
             symbol=signal.symbol,
@@ -61,10 +86,7 @@ class TradfiTrendPlanner:
             confidence=signal.confidence,
             target_notional_usd=sized_trade.target_notional_usd,
             stop_bps=stop_bps,
-            time_stop_hours=time_stop_hours_for_cluster(
-                self.config.time_stop_hours,
-                signal.market_cluster,
-            ),
+            time_stop_hours=time_stop_hours,
             take_profit_bps=exit_policy["take_profit_bps"],
             break_even_trigger_bps=exit_policy["break_even_trigger_bps"],
             trailing_activation_bps=exit_policy["trailing_activation_bps"],
@@ -77,7 +99,18 @@ class TradfiTrendPlanner:
             risk_budget_usd=sized_trade.risk_budget_usd,
             expected_loss_usd=sized_trade.expected_loss_usd,
             setup_details={
+                **dict(signal.setup_details or {}),
                 "market_cluster": signal.market_cluster,
                 "cluster_leader": signal.cluster_leader,
+                "cluster_mode_active": cluster_mode is not None,
+                "cluster_mode_name": (
+                    str(signal.market_cluster).strip().lower() if cluster_mode is not None else ""
+                ),
+                "stop_bps": round(stop_bps, 4),
+                "time_stop_hours": float(time_stop_hours),
+                "take_profit_bps": round(exit_policy["take_profit_bps"], 4),
+                "break_even_trigger_bps": round(exit_policy["break_even_trigger_bps"], 4),
+                "trailing_activation_bps": round(exit_policy["trailing_activation_bps"], 4),
+                "trailing_distance_bps": round(exit_policy["trailing_distance_bps"], 4),
             },
         )

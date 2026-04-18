@@ -27,6 +27,8 @@ class TradfiTrendContext:
     market_cluster: str = "crypto"
     cluster_aligned: bool = True
     cluster_leader: str = ""
+    global_regime: str = ""
+    cluster_regime: str = ""
 
 
 @dataclass(slots=True)
@@ -38,4 +40,5 @@ class TradfiTrendSignal:
     entry_price: float
     market_cluster: str = "crypto"
     cluster_leader: str = ""
+    setup_details: dict[str, float | str | bool] = field(default_factory=dict)
     confidence_components: dict[str, float] = field(default_factory=dict)

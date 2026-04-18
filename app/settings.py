@@ -228,6 +228,20 @@ class PodASymbolModeConfig:
 
 
 @dataclass(slots=True)
+class PodCClusterModeConfig:
+    enabled: bool = False
+    allowed_setups: list[str] = field(default_factory=list)
+    min_confidence: float = 0.0
+    stop_bps_multiplier: float = 1.0
+    stop_bps_floor: float = 0.0
+    time_stop_hours: int = 0
+    take_profit_multiplier: float = 1.0
+    break_even_multiplier: float = 1.0
+    trailing_activation_multiplier: float = 1.0
+    trailing_distance_multiplier: float = 1.0
+
+
+@dataclass(slots=True)
 class PodACampaignConfig:
     enabled: bool = False
     setups: list[str] = field(default_factory=list)
@@ -297,9 +311,22 @@ class PodAPatternVetoConfig:
     name: str
     enabled: bool = True
     setups: list[str] = field(default_factory=list)
+    sides: list[str] = field(default_factory=list)
+    market_clusters: list[str] = field(default_factory=list)
     regimes: list[str] = field(default_factory=list)
+    cluster_regimes: list[str] = field(default_factory=list)
+    cluster_strategies: list[str] = field(default_factory=list)
+    trend_buckets: list[str] = field(default_factory=list)
+    structure_buckets: list[str] = field(default_factory=list)
+    vwap_buckets: list[str] = field(default_factory=list)
+    activity_buckets: list[str] = field(default_factory=list)
+    trade_count_buckets: list[str] = field(default_factory=list)
+    flow_buckets: list[str] = field(default_factory=list)
+    flow_alignments: list[str] = field(default_factory=list)
     require_candles_ready: bool | None = None
     require_supertrend_direction: int | None = None
+    min_trend_bps: float | None = None
+    max_trend_bps: float | None = None
     min_trend_1h_bps: float | None = None
     max_trend_1h_bps: float | None = None
     min_trend_4h_bps: float | None = None
@@ -314,6 +341,14 @@ class PodAPatternVetoConfig:
     max_vwap_reclaim_score: float | None = None
     min_structure_score: float | None = None
     max_structure_score: float | None = None
+    min_vwap_distance_bps: float | None = None
+    max_vwap_distance_bps: float | None = None
+    min_activity_ratio: float | None = None
+    max_activity_ratio: float | None = None
+    min_trade_count_ratio: float | None = None
+    max_trade_count_ratio: float | None = None
+    min_flow_support_score: float | None = None
+    max_flow_support_score: float | None = None
 
 
 @dataclass(slots=True)
@@ -386,6 +421,9 @@ class PodCConfig:
     min_reclaim_distance_bps: float
     min_activity_ratio: float
     activity_lookback: int
+    pattern_vetoes: list[PodAPatternVetoConfig] = field(default_factory=list)
+    pattern_watchers: list[PodAPatternVetoConfig] = field(default_factory=list)
+    cluster_modes: dict[str, PodCClusterModeConfig] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -555,6 +593,35 @@ def _pod_a_symbol_modes(raw: object) -> dict[str, PodASymbolModeConfig]:
     return parsed
 
 
+def _pod_c_cluster_modes(raw: object) -> dict[str, PodCClusterModeConfig]:
+    if not isinstance(raw, dict):
+        return {}
+    parsed: dict[str, PodCClusterModeConfig] = {}
+    for cluster, payload in raw.items():
+        if not isinstance(payload, dict):
+            continue
+        normalized_cluster = str(cluster).strip().lower()
+        if not normalized_cluster:
+            continue
+        parsed[normalized_cluster] = PodCClusterModeConfig(
+            enabled=bool(payload.get("enabled", False)),
+            allowed_setups=_str_list(payload.get("allowed_setups", [])),
+            min_confidence=float(payload.get("min_confidence", 0.0)),
+            stop_bps_multiplier=float(payload.get("stop_bps_multiplier", 1.0)),
+            stop_bps_floor=float(payload.get("stop_bps_floor", 0.0)),
+            time_stop_hours=int(payload.get("time_stop_hours", 0)),
+            take_profit_multiplier=float(payload.get("take_profit_multiplier", 1.0)),
+            break_even_multiplier=float(payload.get("break_even_multiplier", 1.0)),
+            trailing_activation_multiplier=float(
+                payload.get("trailing_activation_multiplier", 1.0)
+            ),
+            trailing_distance_multiplier=float(
+                payload.get("trailing_distance_multiplier", 1.0)
+            ),
+        )
+    return parsed
+
+
 def _pod_a_campaign(raw: object) -> PodACampaignConfig:
     if not isinstance(raw, dict):
         return PodACampaignConfig()
@@ -678,11 +745,27 @@ def _pod_a_pattern_rules(raw: object) -> list[PodAPatternVetoConfig]:
                 name=name,
                 enabled=bool(item.get("enabled", True)),
                 setups=_str_list(item.get("setups", [])),
+                sides=_str_list(item.get("sides", [])),
+                market_clusters=_str_list(
+                    item.get("market_clusters", []),
+                    upper_values=False,
+                ),
                 regimes=_str_list(item.get("regimes", [])),
+                cluster_regimes=_str_list(item.get("cluster_regimes", [])),
+                cluster_strategies=_str_list(item.get("cluster_strategies", [])),
+                trend_buckets=_str_list(item.get("trend_buckets", [])),
+                structure_buckets=_str_list(item.get("structure_buckets", [])),
+                vwap_buckets=_str_list(item.get("vwap_buckets", [])),
+                activity_buckets=_str_list(item.get("activity_buckets", [])),
+                trade_count_buckets=_str_list(item.get("trade_count_buckets", [])),
+                flow_buckets=_str_list(item.get("flow_buckets", [])),
+                flow_alignments=_str_list(item.get("flow_alignments", [])),
                 require_candles_ready=_optional_bool(item.get("require_candles_ready")),
                 require_supertrend_direction=_optional_int(
                     item.get("require_supertrend_direction")
                 ),
+                min_trend_bps=_optional_float(item.get("min_trend_bps")),
+                max_trend_bps=_optional_float(item.get("max_trend_bps")),
                 min_trend_1h_bps=_optional_float(item.get("min_trend_1h_bps")),
                 max_trend_1h_bps=_optional_float(item.get("max_trend_1h_bps")),
                 min_trend_4h_bps=_optional_float(item.get("min_trend_4h_bps")),
@@ -705,6 +788,14 @@ def _pod_a_pattern_rules(raw: object) -> list[PodAPatternVetoConfig]:
                 ),
                 min_structure_score=_optional_float(item.get("min_structure_score")),
                 max_structure_score=_optional_float(item.get("max_structure_score")),
+                min_vwap_distance_bps=_optional_float(item.get("min_vwap_distance_bps")),
+                max_vwap_distance_bps=_optional_float(item.get("max_vwap_distance_bps")),
+                min_activity_ratio=_optional_float(item.get("min_activity_ratio")),
+                max_activity_ratio=_optional_float(item.get("max_activity_ratio")),
+                min_trade_count_ratio=_optional_float(item.get("min_trade_count_ratio")),
+                max_trade_count_ratio=_optional_float(item.get("max_trade_count_ratio")),
+                min_flow_support_score=_optional_float(item.get("min_flow_support_score")),
+                max_flow_support_score=_optional_float(item.get("max_flow_support_score")),
             )
         )
     return parsed
@@ -1183,6 +1274,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 pod_c_data.get("min_activity_ratio", 0.75)
             ),
             activity_lookback=int(pod_c_data.get("activity_lookback", pod_c_data.get("squeeze_lookback", 20))),
+            pattern_vetoes=_pod_a_pattern_vetoes(pod_c_data.get("pattern_vetoes", [])),
+            pattern_watchers=_pod_a_pattern_watchers(
+                pod_c_data.get("pattern_watchers", [])
+            ),
+            cluster_modes=_pod_c_cluster_modes(pod_c_data.get("cluster_modes", {})),
         ),
     )
 

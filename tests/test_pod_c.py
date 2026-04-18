@@ -8,13 +8,15 @@ from pathlib import Path
 from app.backtest.pod_c_runner import PodCBacktestRunner
 from app.execution.directional_executor import DirectionalExecutor
 from app.live.pod_c_live_runner import PodCLiveRunner
+from app.research.pod_c_day_by_day_patterns import _recommendations
 from app.risk.pod_c_gate import PodCRiskGate
-from app.settings import load_config
+from app.settings import PodAPatternVetoConfig, PodCClusterModeConfig, load_config
 from app.trident.pod_c import (
     TradfiTrendContext,
     TradfiTrendContextService,
     TradfiTrendPlanner,
     TradfiTrendService,
+    TradfiTrendSignal,
 )
 from app.trident.types import (
     PodAllocation,
@@ -192,6 +194,10 @@ class PodCTests(unittest.TestCase):
         self.assertEqual(signals[0].symbol, "SPX")
         self.assertEqual(signals[0].side, "long")
         self.assertEqual(signals[0].setup, "tradfi_continuation_long")
+        self.assertEqual(signals[0].setup_details["market_cluster"], "index")
+        self.assertEqual(signals[0].setup_details["cluster_strategy"], "index_breakout_long")
+        self.assertEqual(signals[0].setup_details["flow_alignment"], "supportive")
+        self.assertEqual(signals[0].setup_details["trend_bucket"], "strong")
 
     def test_tradfi_service_cluster_v2_accepts_oil_pullback_long(self) -> None:
         config = load_config("config/trident.toml")
@@ -207,14 +213,14 @@ class PodCTests(unittest.TestCase):
                         price=82.0,
                         ema_fast=82.1,
                         ema_slow=81.8,
-                        vwap_distance_bps=-1.0,
+                        vwap_distance_bps=-1.4,
                         structure_score=0.22,
                         funding_rate=0.0,
                         spread_bps=1.0,
                         btc_aligned=True,
-                        book_imbalance=0.10,
-                        trade_flow_bias=0.05,
-                        bucket_volume=2.0,
+                        book_imbalance=0.34,
+                        trade_flow_bias=0.42,
+                        bucket_volume=1.5,
                         bucket_trade_count=8,
                         bucket_range_bps=18.0,
                         market_cluster="oil",
@@ -232,14 +238,14 @@ class PodCTests(unittest.TestCase):
                     price=82.5,
                     ema_fast=83.2,
                     ema_slow=82.0,
-                    vwap_distance_bps=-2.5,
+                    vwap_distance_bps=-2.1,
                     structure_score=0.30,
                     funding_rate=0.0,
                     spread_bps=1.2,
                     btc_aligned=True,
-                    book_imbalance=0.10,
-                    trade_flow_bias=0.07,
-                    bucket_volume=3.0,
+                    book_imbalance=0.36,
+                    trade_flow_bias=0.44,
+                    bucket_volume=3.2,
                     bucket_trade_count=10,
                     bucket_range_bps=24.0,
                     market_cluster="oil",
@@ -255,6 +261,43 @@ class PodCTests(unittest.TestCase):
         self.assertEqual(len(signals), 1)
         self.assertEqual(signals[0].symbol, "XYZ:CL")
         self.assertEqual(signals[0].side, "long")
+
+    def test_tradfi_service_cluster_v2_rejects_weak_oil_pullback_long(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c = replace(config.pod_c, cluster_aware_v2_enabled=True)
+        service = TradfiTrendService(config.pod_c)
+        contexts = [
+            TradfiTrendContext(
+                symbol="XYZ:CL",
+                regime=Regime.TREND_EXPANSION.value,
+                price=82.5,
+                ema_fast=83.2,
+                ema_slow=82.0,
+                vwap_distance_bps=-3.1,
+                spread_bps=1.2,
+                funding_rate=0.0,
+                structure_score=0.30,
+                book_imbalance=0.52,
+                trade_flow_bias=0.36,
+                bucket_range_bps=24.0,
+                bucket_trade_count=10,
+                bucket_volume=3.0,
+                bucket_notional_usd=247.5,
+                activity_ratio=1.9,
+                trade_count_ratio=1.0,
+                trend_bps=12.0,
+                btc_aligned=True,
+                market_cluster="oil",
+                cluster_aligned=True,
+                cluster_leader="XYZ:CL",
+                global_regime=Regime.TREND_EXPANSION.value,
+                cluster_regime=Regime.TREND_EXPANSION.value,
+            ),
+        ]
+
+        signals = service.evaluate_many(contexts)
+
+        self.assertEqual(signals, [])
 
     def test_tradfi_service_cluster_v2_rejects_oil_short_breakdown(self) -> None:
         config = load_config("config/trident.toml")
@@ -397,12 +440,59 @@ class PodCTests(unittest.TestCase):
                 market_cluster="gold",
                 cluster_aligned=True,
                 cluster_leader="XYZ:GOLD",
+                global_regime=Regime.TREND_EXPANSION.value,
+                cluster_regime=Regime.TREND_EXPANSION.value,
             ),
         ]
 
         signals = service.evaluate_many(contexts)
 
-        self.assertEqual([signal.symbol for signal in signals], ["XYZ:SILVER", "XYZ:SP500"])
+        self.assertEqual(
+            [signal.symbol for signal in signals],
+            ["XYZ:SILVER", "XYZ:SP500", "XYZ:GOLD"],
+        )
+        self.assertEqual(signals[2].setup_details["cluster_strategy"], "gold_breakout_long")
+
+    def test_tradfi_service_cluster_v2_rejects_gold_outside_expansion(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c = replace(
+            config.pod_c,
+            cluster_aware_v2_enabled=True,
+            min_confidence=0.55,
+        )
+        service = TradfiTrendService(config.pod_c)
+        contexts = [
+            TradfiTrendContext(
+                symbol="XYZ:GOLD",
+                regime=Regime.RANGE_AUCTION.value,
+                price=3200.0,
+                ema_fast=3215.0,
+                ema_slow=3190.0,
+                vwap_distance_bps=2.0,
+                spread_bps=1.0,
+                funding_rate=0.0,
+                structure_score=0.26,
+                book_imbalance=0.05,
+                trade_flow_bias=0.04,
+                bucket_range_bps=18.0,
+                bucket_trade_count=9,
+                bucket_volume=1.0,
+                bucket_notional_usd=150.0,
+                activity_ratio=1.2,
+                trade_count_ratio=1.0,
+                trend_bps=9.0,
+                btc_aligned=True,
+                market_cluster="gold",
+                cluster_aligned=True,
+                cluster_leader="XYZ:GOLD",
+                global_regime=Regime.RANGE_AUCTION.value,
+                cluster_regime=Regime.RANGE_AUCTION.value,
+            ),
+        ]
+
+        signals = service.evaluate_many(contexts)
+
+        self.assertEqual(signals, [])
 
     def test_tradfi_planner_builds_trade_plan(self) -> None:
         config = load_config("config/trident.toml")
@@ -478,6 +568,119 @@ class PodCTests(unittest.TestCase):
         self.assertGreater(plan.target_notional_usd, plan.margin_usd)
         self.assertGreater(plan.risk_budget_usd, 0.0)
         self.assertGreater(plan.expected_loss_usd, 0.0)
+        self.assertIn("trend_bps", plan.setup_details)
+        self.assertIn("cluster_strategy", plan.setup_details)
+        self.assertIn("take_profit_bps", plan.setup_details)
+        self.assertEqual(plan.setup_details["cluster_strategy"], "index_breakout_long")
+        self.assertAlmostEqual(plan.setup_details["stop_bps"], plan.stop_bps, places=4)
+
+    def test_tradfi_planner_applies_cluster_mode_exit_overrides(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c = replace(
+            config.pod_c,
+            cluster_aware_v2_enabled=False,
+            cluster_modes={
+                "index": PodCClusterModeConfig(
+                    enabled=True,
+                    allowed_setups=["tradfi_continuation_long"],
+                    stop_bps_multiplier=1.1,
+                    stop_bps_floor=60.0,
+                    time_stop_hours=8,
+                    take_profit_multiplier=1.2,
+                    break_even_multiplier=1.1,
+                    trailing_activation_multiplier=1.25,
+                    trailing_distance_multiplier=1.15,
+                )
+            },
+        )
+        signal = TradfiTrendSignal(
+            symbol="SPX",
+            side="long",
+            setup="tradfi_continuation_long",
+            confidence=0.8,
+            entry_price=5050.0,
+            market_cluster="index",
+            cluster_leader="SPX",
+            setup_details={
+                "market_cluster": "index",
+                "cluster_strategy": "index_breakout_long",
+            },
+        )
+        planner = TradfiTrendPlanner(config)
+        allocation = PodAllocation(
+            pod=PodName.POD_C,
+            target_pct=0.3,
+            target_usd=300.0,
+            symbols=[SymbolAllocation(symbol="SPX", target_pct=0.3, target_usd=300.0)],
+        )
+        plan = planner.build_trade_plan(signal, allocation)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.time_stop_hours, 8)
+        self.assertTrue(plan.setup_details["cluster_mode_active"])
+        self.assertEqual(plan.setup_details["cluster_mode_name"], "index")
+        self.assertGreaterEqual(plan.stop_bps, 60.0)
+
+    def test_pod_c_day_by_day_recommendations_flags_losing_cluster_pattern(self) -> None:
+        recommendations = _recommendations(
+            [
+                {
+                    "date": "2026-04-14",
+                    "setup": "tradfi_continuation_long",
+                    "side": "long",
+                    "pnl_usd": -4.2,
+                    "setup_details": {
+                        "market_cluster": "oil",
+                        "cluster_strategy": "oil_pullback_long",
+                        "cluster_regime": "TrendExpansion",
+                        "trend_bucket": "medium",
+                        "structure_bucket": "strong",
+                        "vwap_bucket": "pullback",
+                        "activity_bucket": "normal",
+                        "flow_bucket": "strong",
+                        "flow_alignment": "supportive",
+                    },
+                },
+                {
+                    "date": "2026-04-15",
+                    "setup": "tradfi_continuation_long",
+                    "side": "long",
+                    "pnl_usd": -3.1,
+                    "setup_details": {
+                        "market_cluster": "oil",
+                        "cluster_strategy": "oil_pullback_long",
+                        "cluster_regime": "TrendExpansion",
+                        "trend_bucket": "medium",
+                        "structure_bucket": "strong",
+                        "vwap_bucket": "pullback",
+                        "activity_bucket": "normal",
+                        "flow_bucket": "strong",
+                        "flow_alignment": "supportive",
+                    },
+                },
+                {
+                    "date": "2026-04-16",
+                    "setup": "tradfi_continuation_long",
+                    "side": "long",
+                    "pnl_usd": -2.9,
+                    "setup_details": {
+                        "market_cluster": "oil",
+                        "cluster_strategy": "oil_pullback_long",
+                        "cluster_regime": "TrendExpansion",
+                        "trend_bucket": "medium",
+                        "structure_bucket": "strong",
+                        "vwap_bucket": "pullback",
+                        "activity_bucket": "normal",
+                        "flow_bucket": "strong",
+                        "flow_alignment": "supportive",
+                    },
+                },
+            ]
+        )
+        self.assertGreaterEqual(len(recommendations), 1)
+        patterns = {item["pattern"] for item in recommendations}
+        self.assertIn("oil|supportive|strong|normal", patterns)
+        self.assertIn("oil|oil_pullback_long", patterns)
 
     def test_pod_c_risk_gate_blocks_low_confidence(self) -> None:
         config = load_config("config/trident.toml")
@@ -500,6 +703,7 @@ class PodCTests(unittest.TestCase):
 
     def test_pod_c_risk_gate_blocks_configured_symbols(self) -> None:
         config = load_config("config/trident.toml")
+        config.pod_c.blocked_symbols = ["XYZ:GOLD"]
         gate = PodCRiskGate(config)
         decision = gate.evaluate_many(
             [
@@ -520,6 +724,88 @@ class PodCTests(unittest.TestCase):
         )[0]
         self.assertFalse(decision.accepted)
         self.assertEqual(decision.reason, "symbol_blocked")
+
+    def test_pod_c_risk_gate_blocks_cluster_pattern_veto(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c.pattern_vetoes = [
+            PodAPatternVetoConfig(
+                name="oil_supportive_strong_normal",
+                setups=["tradfi_continuation_long"],
+                sides=["long"],
+                market_clusters=["oil"],
+                flow_alignments=["supportive"],
+                flow_buckets=["strong"],
+                activity_buckets=["normal"],
+            )
+        ]
+        gate = PodCRiskGate(config)
+        decision = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="XYZ:CL",
+                    side="long",
+                    setup="tradfi_continuation_long",
+                    confidence=0.8,
+                    target_notional_usd=100.0,
+                    stop_bps=45.0,
+                    time_stop_hours=config.pod_c.time_stop_hours,
+                    margin_usd=25.0,
+                    effective_leverage=4.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=2.0,
+                    setup_details={
+                        "market_cluster": "oil",
+                        "flow_alignment": "supportive",
+                        "flow_bucket": "strong",
+                        "activity_bucket": "normal",
+                    },
+                )
+            ]
+        )[0]
+        self.assertFalse(decision.accepted)
+        self.assertEqual(
+            decision.reason,
+            "pattern_veto_oil_supportive_strong_normal",
+        )
+
+    def test_pod_c_risk_gate_records_pattern_watch_hits(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c.pattern_vetoes = []
+        config.pod_c.pattern_watchers = [
+            PodAPatternVetoConfig(
+                name="oil_pullback_watch",
+                setups=["tradfi_continuation_long"],
+                market_clusters=["oil"],
+                cluster_strategies=["oil_pullback_long"],
+            )
+        ]
+        gate = PodCRiskGate(config)
+        decision = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="XYZ:CL",
+                    side="long",
+                    setup="tradfi_continuation_long",
+                    confidence=0.8,
+                    target_notional_usd=100.0,
+                    stop_bps=45.0,
+                    time_stop_hours=config.pod_c.time_stop_hours,
+                    margin_usd=25.0,
+                    effective_leverage=4.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=2.0,
+                    setup_details={
+                        "market_cluster": "oil",
+                        "cluster_strategy": "oil_pullback_long",
+                    },
+                )
+            ]
+        )[0]
+        self.assertTrue(decision.accepted)
+        self.assertEqual(
+            decision.trade_plan.setup_details.get("pattern_watch_hits"),
+            "oil_pullback_watch",
+        )
 
     def test_pod_c_risk_gate_rejects_trade_plan_when_asset_leverage_limit_is_exceeded(self) -> None:
         config = load_config("config/trident.toml")

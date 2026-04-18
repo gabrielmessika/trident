@@ -11,6 +11,55 @@ def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
 
 
+def _direction_label(value: int) -> str:
+    return "long" if value >= 0 else "short"
+
+
+def _trend_bucket(value: float) -> str:
+    absolute = abs(value)
+    if absolute >= 18.0:
+        return "strong"
+    if absolute >= 10.0:
+        return "medium"
+    return "soft"
+
+
+def _structure_bucket(value: float) -> str:
+    absolute = abs(value)
+    if absolute >= 0.30:
+        return "strong"
+    if absolute >= 0.18:
+        return "medium"
+    return "soft"
+
+
+def _activity_bucket(value: float) -> str:
+    if value >= 1.8:
+        return "high"
+    if value >= 1.2:
+        return "normal"
+    return "soft"
+
+
+def _flow_bucket(value: float) -> str:
+    absolute = abs(value)
+    if absolute >= 0.18:
+        return "strong"
+    if absolute >= 0.08:
+        return "medium"
+    return "soft"
+
+
+def _vwap_bucket(value: float) -> str:
+    if value <= -4.0:
+        return "deep_pullback"
+    if value < 0.0:
+        return "pullback"
+    if value <= 2.0:
+        return "neutral"
+    return "extension"
+
+
 class TradfiTrendService:
     """Detects directional Tradfi setups on HL symbols using shared TRIDENT snapshots."""
 
@@ -122,6 +171,12 @@ class TradfiTrendService:
             entry_price=context.price,
             market_cluster=context.market_cluster,
             cluster_leader=context.cluster_leader,
+            setup_details=self._setup_details(
+                context,
+                side=direction,
+                setup=f"tradfi_continuation_{direction}",
+                reclaim=False,
+            ),
             confidence_components=components,
         )
 
@@ -152,19 +207,29 @@ class TradfiTrendService:
             entry_price=context.price,
             market_cluster=context.market_cluster,
             cluster_leader=context.cluster_leader,
+            setup_details=self._setup_details(
+                context,
+                side=direction,
+                setup=f"tradfi_reclaim_{direction}",
+                reclaim=True,
+            ),
             confidence_components=components,
         )
 
     def _aligned_direction(self, context: TradfiTrendContext) -> str | None:
-        trend_direction = 1 if context.ema_fast > context.ema_slow else -1
-        structure_direction = 1 if context.structure_score >= 0 else -1
-        flow_direction = 1 if (context.trade_flow_bias + context.book_imbalance) >= 0 else -1
+        trend_direction, structure_direction, flow_direction = self._direction_components(context)
         score = trend_direction + structure_direction + flow_direction
         if score >= 1:
             return "long"
         if score <= -1:
             return "short"
         return None
+
+    def _direction_components(self, context: TradfiTrendContext) -> tuple[int, int, int]:
+        trend_direction = 1 if context.ema_fast >= context.ema_slow else -1
+        structure_direction = 1 if context.structure_score >= 0 else -1
+        flow_direction = 1 if (context.trade_flow_bias + context.book_imbalance) >= 0 else -1
+        return trend_direction, structure_direction, flow_direction
 
     def _passes_cluster_strategy(
         self,
@@ -178,6 +243,8 @@ class TradfiTrendService:
             return self._is_oil_long_pullback(context, signal)
         if cluster == "silver":
             return self._is_silver_breakout_long(context, signal)
+        if cluster == "gold":
+            return self._is_gold_breakout_long(context, signal)
         if cluster == "index":
             return self._is_index_breakout_long(context, signal)
         return False
@@ -187,13 +254,16 @@ class TradfiTrendService:
         context: TradfiTrendContext,
         signal: TradfiTrendSignal,
     ) -> bool:
+        flow_support = context.trade_flow_bias + context.book_imbalance
         return (
             signal.setup == "tradfi_continuation_long"
             and signal.side == "long"
-            and context.trend_bps >= 8.0
-            and context.structure_score >= 0.18
-            and context.trade_flow_bias >= 0.02
-            and -4.0 <= context.vwap_distance_bps <= -0.5
+            and context.trend_bps >= 9.0
+            and context.structure_score >= 0.24
+            and context.trade_flow_bias >= 0.25
+            and -2.6 <= context.vwap_distance_bps <= -1.0
+            and context.activity_ratio >= 1.7
+            and 0.75 <= flow_support <= 1.15
             and context.bucket_range_bps >= 18.0
             and context.spread_bps <= 3.0
         )
@@ -211,6 +281,25 @@ class TradfiTrendService:
             and context.trade_flow_bias >= 0.03
             and 1.0 <= context.vwap_distance_bps <= 6.0
             and context.bucket_range_bps >= 18.0
+            and context.spread_bps <= 2.0
+        )
+
+    def _is_gold_breakout_long(
+        self,
+        context: TradfiTrendContext,
+        signal: TradfiTrendSignal,
+    ) -> bool:
+        return (
+            signal.setup == "tradfi_continuation_long"
+            and signal.side == "long"
+            and context.cluster_regime == "TrendExpansion"
+            and context.global_regime in {"TrendExpansion", "PanicSqueeze"}
+            and context.trend_bps >= 8.0
+            and context.structure_score >= 0.22
+            and context.trade_flow_bias >= 0.02
+            and 0.5 <= context.vwap_distance_bps <= 3.5
+            and context.activity_ratio >= 1.1
+            and context.bucket_range_bps >= 14.0
             and context.spread_bps <= 2.0
         )
 
@@ -272,6 +361,83 @@ class TradfiTrendService:
             + components["reclaim_quality"] * 0.08
             + components.get("setup_bonus", 0.0)
         )
+
+    def _cluster_strategy_name(
+        self,
+        context: TradfiTrendContext,
+        *,
+        setup: str,
+        side: str,
+    ) -> str:
+        cluster = str(context.market_cluster).strip().lower()
+        if setup == "tradfi_continuation_long" and side == "long":
+            if cluster == "oil":
+                return "oil_pullback_long"
+            if cluster == "silver":
+                return "silver_breakout_long"
+            if cluster == "gold":
+                return "gold_breakout_long"
+            if cluster == "index":
+                return "index_breakout_long"
+        if setup == "tradfi_reclaim_long" and side == "long":
+            return f"{cluster}_reclaim_long" if cluster else "reclaim_long"
+        if setup == "tradfi_reclaim_short" and side == "short":
+            return f"{cluster}_reclaim_short" if cluster else "reclaim_short"
+        return f"{cluster or 'tradfi'}_{setup}"
+
+    def _setup_details(
+        self,
+        context: TradfiTrendContext,
+        *,
+        side: str,
+        setup: str,
+        reclaim: bool,
+    ) -> dict[str, float | str | bool]:
+        trend_direction, structure_direction, flow_direction = self._direction_components(context)
+        alignment_score = trend_direction + structure_direction + flow_direction
+        flow_support_score = context.trade_flow_bias + context.book_imbalance
+        side_bias = 1 if side == "long" else -1
+        flow_alignment = "supportive" if flow_direction == side_bias else "fading"
+        if abs(flow_support_score) < 0.05:
+            flow_alignment = "neutral"
+        return {
+            "global_regime": context.global_regime or context.regime,
+            "cluster_regime": context.cluster_regime or context.regime,
+            "market_cluster": context.market_cluster,
+            "cluster_leader": context.cluster_leader,
+            "cluster_aligned": context.cluster_aligned,
+            "btc_aligned": context.btc_aligned,
+            "reclaim_context": reclaim,
+            "cluster_strategy": self._cluster_strategy_name(
+                context,
+                setup=setup,
+                side=side,
+            ),
+            "trend_bps": round(context.trend_bps, 4),
+            "structure_score": round(context.structure_score, 4),
+            "vwap_distance_bps": round(context.vwap_distance_bps, 4),
+            "spread_bps": round(context.spread_bps, 4),
+            "funding_rate": round(context.funding_rate, 8),
+            "bucket_range_bps": round(context.bucket_range_bps, 4),
+            "bucket_trade_count": float(context.bucket_trade_count),
+            "bucket_notional_usd": round(context.bucket_notional_usd, 4),
+            "activity_ratio": round(context.activity_ratio, 4),
+            "trade_count_ratio": round(context.trade_count_ratio, 4),
+            "book_imbalance": round(context.book_imbalance, 4),
+            "trade_flow_bias": round(context.trade_flow_bias, 4),
+            "flow_support_score": round(flow_support_score, 4),
+            "alignment_score": float(alignment_score),
+            "trend_direction": _direction_label(trend_direction),
+            "structure_direction": _direction_label(structure_direction),
+            "flow_direction": _direction_label(flow_direction),
+            "flow_alignment": flow_alignment,
+            "trend_bucket": _trend_bucket(context.trend_bps),
+            "structure_bucket": _structure_bucket(context.structure_score),
+            "vwap_bucket": _vwap_bucket(context.vwap_distance_bps),
+            "activity_bucket": _activity_bucket(context.activity_ratio),
+            "trade_count_bucket": _activity_bucket(context.trade_count_ratio),
+            "flow_bucket": _flow_bucket(flow_support_score),
+        }
 
     def reset(self) -> None:
         self._notional_history.clear()

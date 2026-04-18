@@ -82,6 +82,8 @@ class TradfiTrendContextService:
                     market_cluster=snapshot.market_cluster,
                     cluster_aligned=snapshot.cluster_aligned,
                     cluster_leader=snapshot.cluster_leader,
+                    global_regime=regime.value,
+                    cluster_regime=context_regime.value,
                 )
             )
         return contexts

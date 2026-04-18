@@ -222,6 +222,8 @@ class PodCLiveRunner:
                             "side": preview.side,
                             "setup": preview.setup,
                             "confidence": preview.confidence,
+                            "reason_summary": preview.reason_summary,
+                            "setup_details": dict(preview.setup_details),
                             "confidence_components": (
                                 decisions_by_symbol[preview.symbol].trade_plan.confidence_components
                                 if preview.symbol in decisions_by_symbol
@@ -370,6 +372,7 @@ class PodCLiveRunner:
             "close_reason": getattr(trade, "close_reason"),
             "opened_at": getattr(trade, "opened_at").isoformat() if getattr(trade, "opened_at") else None,
             "closed_at": getattr(trade, "closed_at").isoformat() if getattr(trade, "closed_at") else None,
+            "setup_details": dict(getattr(trade, "setup_details", {}) or {}),
         }
 
     def _record_closed_trade(
@@ -419,6 +422,7 @@ class PodCLiveRunner:
             hold_hours=self._hold_hours(trade),
             opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
             closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+            setup_details=getattr(trade, "setup_details", None),
         )
 
     async def _maintenance_loop(
