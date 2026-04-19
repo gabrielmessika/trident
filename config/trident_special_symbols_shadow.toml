@@ -35,6 +35,7 @@ observation_universe = [
   "AVAX", "LINK", "ARB",
   "ADA", "BNB", "LTC",
   "AAVE", "NEAR", "ZRO", "TAO",
+  "XPL", "BIO", "PENGU",
   "ZEC", "ENA", "TON", "BCH",
   "XYZ:CL", "XYZ:BRENTOIL", "XYZ:SP500",
   "XYZ:XYZ100", "XYZ:SILVER", "XYZ:GOLD",
@@ -47,7 +48,7 @@ tradable_min_bucket_notional_usd = 100.0
 tradable_min_bucket_trade_count = 3
 tradable_max_abs_funding_rate = 0.01
 # Observe le symbole mais l'exclut du pool tradable de tous les pods.
-tradable_blocked_symbols = ["TAO"]
+tradable_blocked_symbols = ["PENGU"]
 # Backward compat pour les anciennes commandes/tests.
 default_coins = ["BTC", "ETH", "SOL", "HYPE"]
 
@@ -154,6 +155,9 @@ XRP = 1440
 ZEC = 1440
 ZRO = 1440
 TAO = 240
+XPL = 240
+BIO = 240
+PENGU = 240
 
 [trident.routing]
 min_assign_score = 0.40
@@ -173,6 +177,9 @@ XRP = 9000
 SOL = 7200
 HYPE = 7200
 TAO = 21600
+XPL = 21600
+BIO = 21600
+PENGU = 14400
 
 [trident.routing.symbol_pod_overrides]
 # BTC = "pod_a"
@@ -421,20 +428,17 @@ AVAX = 10
 LINK = 10
 ARB = 10
 
-# Mode special TAO prepare, mais volontairement inactif tant que TAO
-# reste bloque globalement du pool tradable. Pour l'activer:
-# 1. retirer TAO de `hyperliquid.tradable_blocked_symbols`
-# 2. passer `enabled = true`
+# Sleeve shadow pour les coins "TAO-like" qui ne doivent pas suivre
+# exactement le flux standard de Pod A.
 [pod_a.symbol_modes.TAO]
-enabled = false
+enabled = true
 allowed_setups = [
-  "bos_retest_long",
-  "bos_retest_short",
+  "ichimoku_continuation_long",
+  "ichimoku_continuation_short",
   "trend_pullback_long",
-  "trend_pullback_short",
 ]
 allowed_regimes = ["TrendExpansion", "PanicSqueeze"]
-min_confidence = 0.72
+min_confidence = 0.70
 risk_per_trade_pct_multiplier = 0.35
 stop_bps_multiplier = 2.6
 stop_bps_floor = 180.0
@@ -443,6 +447,62 @@ take_profit_multiplier = 1.15
 break_even_multiplier = 1.35
 trailing_activation_multiplier = 1.4
 trailing_distance_multiplier = 1.2
+max_leverage = 4.0
+
+[pod_a.symbol_modes.XPL]
+enabled = true
+allowed_setups = [
+  "trend_pullback_long",
+]
+allowed_regimes = ["TrendExpansion", "PanicSqueeze"]
+min_confidence = 0.68
+risk_per_trade_pct_multiplier = 0.40
+stop_bps_multiplier = 2.2
+stop_bps_floor = 150.0
+time_stop_hours = 48
+take_profit_multiplier = 1.12
+break_even_multiplier = 1.30
+trailing_activation_multiplier = 1.35
+trailing_distance_multiplier = 1.15
+max_leverage = 5.0
+
+[pod_a.symbol_modes.BIO]
+enabled = true
+allowed_setups = [
+  "ichimoku_continuation_long",
+  "trend_pullback_long",
+]
+allowed_regimes = ["TrendExpansion", "PanicSqueeze"]
+min_confidence = 0.68
+risk_per_trade_pct_multiplier = 0.40
+stop_bps_multiplier = 2.2
+stop_bps_floor = 145.0
+time_stop_hours = 48
+take_profit_multiplier = 1.12
+break_even_multiplier = 1.30
+trailing_activation_multiplier = 1.35
+trailing_distance_multiplier = 1.15
+max_leverage = 5.0
+
+[pod_a.symbol_modes.PENGU]
+enabled = false
+# Observe `PENGU` dans cette config shadow, mais ne pas l'activer par defaut:
+# la recherche 30 jours le montre potentiellement rentable, mais nettement plus
+# heurte que le coeur `TAO/XPL/BIO`.
+allowed_setups = [
+  "ichimoku_continuation_long",
+  "trend_pullback_long",
+]
+allowed_regimes = ["TrendExpansion", "PanicSqueeze"]
+min_confidence = 0.70
+risk_per_trade_pct_multiplier = 0.30
+stop_bps_multiplier = 2.4
+stop_bps_floor = 170.0
+time_stop_hours = 48
+take_profit_multiplier = 1.10
+break_even_multiplier = 1.30
+trailing_activation_multiplier = 1.35
+trailing_distance_multiplier = 1.15
 max_leverage = 4.0
 
 [pod_b]

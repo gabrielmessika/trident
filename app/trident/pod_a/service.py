@@ -347,6 +347,66 @@ class AnchorTrendService:
                 confidence_components=components,
             )
 
+        if self._is_ichimoku_continuation_long(context):
+            components = self._confidence_components(context, "long")
+            components["setup_bonus"] = 0.07
+            return AnchorTrendSignal(
+                symbol=context.symbol,
+                side="long",
+                setup="ichimoku_continuation_long",
+                confidence=round(self._aggregate_confidence(components), 3),
+                entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
+                invalidation_price=long_invalidation_price(
+                    price=context.price,
+                    ema_slow=context.ema_slow,
+                    bucket_range_bps=max(context.bucket_range_bps, 18.0),
+                ),
+                setup_details=_with_regime(
+                    context,
+                    {
+                        "family": "ichimoku_continuation",
+                        "structure_score": round(context.structure_score, 4),
+                        "candles_ready": context.candles_ready,
+                        "trend_1h_bps": round(context.trend_1h_bps, 4),
+                        "trend_4h_bps": round(context.trend_4h_bps, 4),
+                        "mtf_bias_score": round(context.mtf_bias_score, 4),
+                    },
+                ),
+                confidence_components=components,
+            )
+
+        if self._is_ichimoku_continuation_short(context):
+            components = self._confidence_components(context, "short")
+            components["setup_bonus"] = 0.07
+            return AnchorTrendSignal(
+                symbol=context.symbol,
+                side="short",
+                setup="ichimoku_continuation_short",
+                confidence=round(self._aggregate_confidence(components), 3),
+                entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
+                invalidation_price=short_invalidation_price(
+                    price=context.price,
+                    ema_slow=context.ema_slow,
+                    bucket_range_bps=max(context.bucket_range_bps, 18.0),
+                ),
+                setup_details=_with_regime(
+                    context,
+                    {
+                        "family": "ichimoku_continuation",
+                        "structure_score": round(context.structure_score, 4),
+                        "candles_ready": context.candles_ready,
+                        "trend_1h_bps": round(context.trend_1h_bps, 4),
+                        "trend_4h_bps": round(context.trend_4h_bps, 4),
+                        "mtf_bias_score": round(context.mtf_bias_score, 4),
+                    },
+                ),
+                confidence_components=components,
+            )
+
         if self._is_long_setup(context):
             components = self._confidence_components(context, "long")
             return AnchorTrendSignal(
@@ -432,6 +492,8 @@ class AnchorTrendService:
             "vwap_reclaim_long": is_vwap_reclaim_long(context),
             "vwap_reclaim_short": is_vwap_reclaim_short(context),
             "reversal_fade_short": self._is_reversal_fade_short(context),
+            "ichimoku_continuation_long": self._is_ichimoku_continuation_long(context),
+            "ichimoku_continuation_short": self._is_ichimoku_continuation_short(context),
             "trend_pullback_long": self._is_long_setup(context),
             "trend_pullback_short": self._is_short_setup(context),
         }
@@ -478,6 +540,36 @@ class AnchorTrendService:
             and context.price <= context.ema_fast <= context.ema_slow
             and context.vwap_distance_bps <= MAX_PULLBACK_DISTANCE_BPS
             and self._passes_indicator_vetoes(context, "short")
+        )
+
+    def _is_ichimoku_continuation_long(self, context: AnchorTrendContext) -> bool:
+        return (
+            context.regime == "TrendExpansion"
+            and context.candles_ready
+            and context.structure_score >= 0.25
+            and context.price >= context.ema_fast >= context.ema_slow
+            and context.trend_1h_bps >= 0.0
+            and context.trend_4h_bps >= -5.0
+            and context.mtf_bias_score >= 5.0
+            and context.ichimoku_bias_score >= 0.25
+            and context.supertrend_direction > 0
+            and 0.35 <= context.stoch_rsi_k <= 0.95
+            and context.vwap_reclaim_score >= -0.10
+        )
+
+    def _is_ichimoku_continuation_short(self, context: AnchorTrendContext) -> bool:
+        return (
+            context.regime == "TrendExpansion"
+            and context.candles_ready
+            and context.structure_score <= -0.25
+            and context.price <= context.ema_fast <= context.ema_slow
+            and context.trend_1h_bps <= 0.0
+            and context.trend_4h_bps <= 5.0
+            and context.mtf_bias_score <= -5.0
+            and context.ichimoku_bias_score <= -0.25
+            and context.supertrend_direction < 0
+            and 0.05 <= context.stoch_rsi_k <= 0.65
+            and context.vwap_reclaim_score <= 0.10
         )
 
     def _is_reversal_fade_short(self, context: AnchorTrendContext) -> bool:

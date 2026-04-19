@@ -102,15 +102,16 @@ equity = ["XYZ:TSLA", "XYZ:NVDA", "XYZ:CRCL"]
 enabled = true
 
 [trident.regime]
-adx_trend_threshold = 22
-trend_structure_threshold = 0.30
+adx_trend_threshold = 20
+trend_structure_threshold = 0.27
 atr_ratio_panic_threshold = 1.8
-dead_zone_atr_threshold = 0.45
-dead_zone_range_threshold = 80
-switch_confirmation_bars = 3
+dead_zone_atr_threshold = 0.38
+dead_zone_range_threshold = 65
+switch_confirmation_bars = 4
 trend_confirmation_bars = 1
 panic_confirmation_bars = 1
-crypto_v2_enabled = false
+crypto_v2_enabled = true
+crypto_v2_mode = "hybrid_upgrade_only"
 
 [trident.capital]
 reference_equity_usd = 1000
@@ -179,22 +180,22 @@ TAO = 21600
 # ETH = "pod_b"
 
 [trident.allocations.trend_expansion]
-pod_a = 0.80
-pod_b = 0.00
+pod_a = 0.70
+pod_b = 0.10
 pod_c = 0.20
 cash = 0.00
 
 [trident.allocations.range_auction]
 pod_a = 0.10
-pod_b = 0.00
+pod_b = 0.10
 pod_c = 0.15
-cash = 0.75
+cash = 0.65
 
 [trident.allocations.panic_squeeze]
 pod_a = 0.10
-pod_b = 0.00
+pod_b = 0.10
 pod_c = 0.05
-cash = 0.85
+cash = 0.75
 
 [trident.allocations.dead_zone]
 pod_a = 0.00
@@ -291,7 +292,6 @@ target_pct = 0.00
 [pod_a]
 enabled = true
 allowed_market_clusters = ["crypto"]
-blocked_symbols = []
 max_allocation_pct = 0.85
 default_leverage = 2.0
 max_leverage = 30.0
@@ -446,7 +446,7 @@ trailing_distance_multiplier = 1.2
 max_leverage = 4.0
 
 [pod_b]
-enabled = false
+enabled = true
 allowed_market_clusters = ["crypto"]
 max_allocation_pct = 0.40
 # --- Pod B breakout directional parameters ---

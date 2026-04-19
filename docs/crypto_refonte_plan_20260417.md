@@ -1,3 +1,9 @@
+> `STATUS: REPLACED_BY_ACTIVE_PLAN`
+>
+> Les travaux restants de cette refonte ont ete consolides dans
+> [docs/trident_active_plan.md](/workspaces/trident/docs/trident_active_plan.md).
+> Ce fichier reste utile comme journal detaille de la refonte crypto.
+
 # Crypto Refonte Plan
 
 Date: `2026-04-17`
@@ -486,6 +492,248 @@ References:
 - `server-data/replay_reports/pod_b_autopsy_20260419/baseline_0405_0412.json`
 - `server-data/replay_reports/pod_b_autopsy_20260419/baseline_0413_0417.json`
 - `server-data/replay_reports/pod_b_autopsy_20260419/baseline_full.json`
+
+### Phase 5b. Special Symbols Sleeve (TAO-Like)
+
+Objectif: tester si un remplacement de `Pod B` par un sleeve etroit de coins "a part"
+peut etre plus robuste qu'un pod breakout generique.
+
+Etat:
+
+- scan cible HL 1 an (`2h`, `4h`, `1d`) termine sur les candidats tendance et les sous-performeurs `Pod A`
+- rapport: `server-data/replay_reports/tao_like_profile_scan_20260419_focus.md`
+- lecture:
+  - `DOGE` n'est pas `TAO-like`:
+    - dominant en `stoch_cci_reversion` / `range_mean_reversion`
+    - `trend_pullback` negatif en `2h`
+  - `ZRO` n'est pas `TAO-like`:
+    - dominant en `range_mean_reversion` / `funding_reversion`
+    - `trend_pullback` negatif en `2h` et `4h`
+  - `TON` n'est pas `TAO-like`:
+    - dominant en `ttm_squeeze_release`
+    - `trend_pullback` negatif en `2h`
+  - `HYPE` est un cas mixte, mais pas assez stable pour partager le mode `TAO`:
+    - `trend_pullback` positif en `2h`
+    - forte degradation en `4h`
+  - meilleurs candidats proches du profil `TAO`:
+    - `XPL`
+    - `BIO`
+    - `PENGU` plus faible / plus mixte
+  - `TAO` lui-meme ressort plutot comme un hybride `trend_breakout / campaign`
+    que comme un simple `trend_pullback`
+- decision provisoire:
+  - si on remplace `Pod B`, le bon candidat n'est pas un pod "DOGE/HYPE style"
+  - le meilleur candidat est un sleeve `special symbols` tres etroit:
+    - `TAO`
+    - `XPL`
+    - `BIO`
+    - optionnellement `PENGU`
+  - ce sleeve doit etre:
+    - exclu du scope standard de `Pod A`
+    - faible levier
+    - stop large
+    - time stop long
+    - logique `trend_breakout / campaign`, pas mean reversion
+  - `DOGE`, `HYPE`, `TON`, `ZRO` ne doivent pas etre migres tels quels dans ce sleeve
+- orientation actee:
+  - ce chantier ne doit plus etre pense comme une extension de `Pod A`
+  - il doit etre pense comme le futur remplaçant de `Pod B`
+  - les symbols coeur (`TAO`, `XPL`, `BIO`, puis eventuellement `PENGU`) devront devenir:
+    - non tradables par `Pod A`
+    - proprietes d'un pod dedie
+- implementation:
+  - config shadow dediee creee: `config/trident_special_symbols_shadow.toml`
+  - `TAO`, `XPL`, `BIO` ajoutes a un sleeve `Pod A symbol_modes` dedie
+  - `PENGU` laisse en option, `enabled = false` pour l'instant
+  - `TAO` n'est plus bloque dans cette config shadow seulement
+  - grace routing / debounce etendus pour `TAO`, `XPL`, `BIO`, `PENGU`
+  - prochaine validation utile:
+    - smoke test config
+    - replay comparable si l'input contient ces symbols
+    - sinon observation live / fetch serveur avec univers elargi
+  - validation initiale:
+  - smoke test config OK:
+    - `config/trident_special_symbols_shadow.toml` charge bien
+    - `app.research.tao_like_profile_scan` execute bien un scan `TAO/XPL/BIO`
+  - replay complet current input:
+    - baseline officiel: `+445.92 USD`
+    - shadow `special symbols`: `+450.05 USD`
+  - limite importante:
+    - l'input serveur courant contient `TAO`, mais pas encore `XPL`, `BIO`, `PENGU`
+    - donc ce replay valide surtout l'integration `TAO`
+    - il ne valide pas encore le sleeve complet cible
+  - lecture:
+    - `TAO` seul reste legerement negatif sur ce run
+    - le delta global positif est trop faible et trop path-dependent pour justifier une promotion prod
+    - decision: garder ce profil en `shadow-only` tant que le fetch serveur n'inclut pas `XPL/BIO`
+  - validation dataset HL 30 jours (hors `server-data`, source directe HL):
+    - dataset stocke:
+      - `server-data/research/hyperliquid_symbols/tao_xpl_bio_pengu_30d_20260419`
+    - couverture:
+      - `2h`, `4h`, `1d` completes sur `TAO`, `XPL`, `BIO`, `PENGU`
+      - funding 30 jours collecte aussi
+    - comparatif proxy baseline vs sleeve:
+      - report: `server-data/replay_reports/tao_like_sleeve_compare_20260419.md`
+      - baseline proxy (`trend_pullback` seul): `1362.11 bps`
+      - sleeve proxy (`trend_pullback / trend_breakout / ichimoku_continuation`): `2579.33 bps`
+      - delta: `+1217.23 bps`
+    - lecture:
+      - `XPL` fonctionne deja comme un coin `trend_pullback`
+      - `TAO` est mieux servi par une logique `ichimoku_continuation / breakout`
+      - `BIO` est legerement meilleur en mode sleeve
+      - `PENGU` n'a pas de baseline `trend_pullback` exploitable, mais devient interessant en sleeve
+    - verification de robustesse immediate:
+      - report: `server-data/replay_reports/tao_like_sleeve_backtest_20260419.md`
+      - coeur sleeve `TAO/XPL/BIO` sans `PENGU`:
+        - `1876.25 bps`
+        - jours positifs seulement sur cette fenetre research
+      - `PENGU` seul:
+        - `703.08 bps`
+        - mais avec plusieurs jours negatifs consecutifs
+        - profil nettement plus heurte
+    - decision actualisee:
+      - le sleeve coeur `TAO/XPL/BIO` reste la vraie piste de remplacement de `Pod B`
+      - `PENGU` reste `shadow-first`, pas membre du noyau pour l'instant
+      - prochaine validation necessaire:
+        - soit un fetch serveur elargi avec `XPL/BIO/PENGU`
+        - soit un runner snapshot/replay dedie a ces symbols
+  - profil live/dry-run prepare:
+    - config coeur dediee: `config/trident_special_symbols_core_shadow.toml`
+    - `Pod A` seul
+    - univers reduit a `ETH/TAO/XPL/BIO/PENGU`
+    - `BTC` laisse explicitement a `Pod A` principal
+    - `ETH` observe mais bloque au trading
+    - `PENGU` observe mais bloque au trading
+  - replay smoke test sur l'input serveur actuel:
+    - `server-data/replay_reports/trident_special_symbols_core_shadow_cli_20260419.json`
+    - resultat: `-5.17 USD`
+    - lecture:
+      - normal et non invalidant
+      - cet input serveur ne contient encore que `TAO`, pas `XPL/BIO`
+      - il valide surtout que le profil `core` est executable de bout en bout
+  - runner dedie `special symbols` maintenant en place:
+    - helper runtime:
+      - `app/special_symbols_runtime.py`
+    - runner backtest:
+      - `app/backtest/special_symbols_runner.py`
+    - runner live:
+      - `app/live/special_symbols_live_runner.py`
+    - objectif:
+      - faire du futur remplacement de `Pod B` un vrai pod isole
+      - avec ses propres status/journaux
+      - sans reutiliser `BTC`
+  - validation du runner dedie apres sortie de `BTC`:
+    - report:
+      - `server-data/replay_reports/special_symbols_core_shadow_backtest_20260419_btc_out.md`
+    - resultat:
+      - `-9.94 USD`
+      - `5` trades
+      - `TAO` uniquement
+    - lecture:
+      - pas surprenant et pas encore invalidant
+      - l'input serveur comparable ne contient toujours pas `XPL/BIO`
+      - on teste donc surtout un mini sleeve `TAO`, pas le vrai coeur `TAO/XPL/BIO`
+  - comparaison proxy de remplacement de `Pod B`:
+    - report:
+      - `server-data/replay_reports/special_symbols_replacement_compare_20260419.md`
+    - methode:
+      - `Pod A` rejoue avec `TAO/XPL/BIO/PENGU` bloques
+      - le pod special rejoue a part sur `TAO/XPL/BIO`
+      - `Pod C` rejoue a part
+      - les trois sleeves sont additionnes en proxy, sans capital partage
+    - resultat actuel:
+      - `Pod A blocked`: `+190.84 USD`
+      - `special symbols`: `-9.94 USD`
+      - `Pod C`: `+89.79 USD`
+      - combine proxy: `+270.69 USD`
+    - decision:
+      - ne pas promouvoir ce remplacement sur l'input serveur actuel
+      - la these reste vivante en research HL 30 jours, mais pas encore validee sur un replay snapshot comparable
+  - validation comparee sur replay synthétique HL 30 jours:
+    - dataset:
+      - `server-data/research/hyperliquid_symbols/eth_tao_xpl_bio_pengu_15m_30d_20260419`
+    - input replay synthetique:
+      - `server-data/replay_inputs/special_symbols_hl_15m_30d_20260419.jsonl`
+    - but:
+      - tester enfin le pod de remplacement sur un univers contenant reellement `TAO/XPL/BIO`
+      - avec une source `15m` suffisante pour que le moteur `Pod A` reconstruit ses briques `15m/1h/4h`
+    - premiers resultats:
+      - pod special coeur `TAO/XPL/BIO`:
+        - `+8.08 USD`
+        - `77` trades
+      - detail:
+        - `TAO`: `+10.15`
+        - `XPL`: `+0.75`
+        - `BIO`: `-2.82`
+        - setup destructeur identifie:
+          - `bos_retest_long`: `-28.10 USD`
+      - `Pod B` actuel sur ce meme input:
+        - `0.00 USD`
+        - `0` trade
+      - `Pod A` standard sur ce meme input:
+        - `-30.97 USD`
+        - `23` trades
+        - uniquement `ETH`
+    - optimisation immediate promue dans les configs shadow:
+      - suppression de `bos_retest_long` du pod special
+    - resultat apres suppression de `bos_retest_long`:
+      - pod special coeur `TAO/XPL/BIO`:
+        - `+25.30 USD`
+        - `68` trades
+        - `TAO`: `+13.29`
+        - `XPL`: `+13.28`
+        - `BIO`: `-1.27`
+      - setups restants:
+        - `ichimoku_continuation_long`: `+17.12`
+        - `ichimoku_continuation_short`: `+4.63`
+        - `trend_pullback_long`: `+3.55`
+    - selection coeur:
+      - `TAO + XPL`: `+26.57 USD`
+      - `TAO + XPL + BIO`: `+25.30 USD`
+      - `TAO + BIO`: `+12.02 USD`
+      - `XPL + BIO`: `+12.01 USD`
+    - decision actualisee:
+      - le meilleur launch-shadow courant n'est plus `TAO/XPL/BIO`
+      - c'est `TAO/XPL`
+      - `BIO` reste interessant en observation, mais pas dans le premier coeur promu
+    - config candidate creee:
+      - `config/trident_special_symbols_taoxpl_shadow.toml`
+  - isolation systeme preparee:
+  - support `pod_a.blocked_symbols` implemente
+  - objectif:
+    - reserver `TAO/XPL/BIO/PENGU` au futur pod de remplacement
+    - empecher `Pod A` de les trader quand on passera en integration reelle
+  - etat:
+    - les configs shadow `special symbols` restent des harnesses de validation
+    - la cible finale est un pod dedie, pas un `symbol_mode` permanent dans `Pod A`
+  - nouveau scaffold dedie implemente:
+    - helper runtime:
+      - `app/special_symbols_runtime.py`
+    - runner backtest dedie:
+      - `app/backtest/special_symbols_runner.py`
+    - runner live dedie:
+      - `app/live/special_symbols_live_runner.py`
+    - objectif:
+      - isoler le futur remplaçant de `Pod B` dans ses propres status/journaux
+      - reutiliser la pile validee de `Pod A` sans la confondre avec le `Pod A` principal
+  - smoke validation du nouveau runner dedie:
+    - report:
+      - `server-data/replay_reports/special_symbols_core_shadow_backtest_20260419.json`
+      - `server-data/replay_reports/special_symbols_core_shadow_backtest_20260419.md`
+    - resultat actuel:
+      - `-9.94 USD`
+      - `5` trades fermes
+      - `TAO` uniquement
+    - lecture:
+      - normal et encore peu informatif
+      - le backtest valide surtout le nouveau runner dedie de bout en bout
+      - il ne tranche toujours pas la these `TAO/XPL/BIO`, car l'input serveur comparable ne contient pas encore `XPL/BIO`
+  - prochaine validation utile:
+    - produire un input snapshot/replay elargi qui contient reellement `TAO/XPL/BIO`
+    - rejouer ensuite le runner dedie contre:
+      - baseline `Pod B`
+      - baseline `Pod B off`
+      - et version future ou `Pod A` bloque ces symbols
 - `server-data/replay_reports/pod_b_pattern_experiment_20260419_0405_0412.json`
 - `server-data/replay_reports/pod_b_pattern_experiment_20260419_0413_0417.json`
 - `server-data/replay_reports/pod_b_pattern_experiment_20260419_full.json`

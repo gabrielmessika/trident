@@ -1,3 +1,8 @@
+> `STATUS: RESEARCH_REFERENCE_ONLY`
+>
+> Ce document reste une note de faisabilite research. Il ne constitue plus un plan actif.
+> Le plan actif est [docs/trident_active_plan.md](/workspaces/trident/docs/trident_active_plan.md).
+
 # Pod Liq Data Feasibility
 
 ## Etat actuel

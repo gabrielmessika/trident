@@ -179,22 +179,22 @@ TAO = 21600
 # ETH = "pod_b"
 
 [trident.allocations.trend_expansion]
-pod_a = 0.80
-pod_b = 0.00
+pod_a = 0.70
+pod_b = 0.10
 pod_c = 0.20
 cash = 0.00
 
 [trident.allocations.range_auction]
 pod_a = 0.10
-pod_b = 0.00
+pod_b = 0.10
 pod_c = 0.15
-cash = 0.75
+cash = 0.65
 
 [trident.allocations.panic_squeeze]
 pod_a = 0.10
-pod_b = 0.00
+pod_b = 0.10
 pod_c = 0.05
-cash = 0.85
+cash = 0.75
 
 [trident.allocations.dead_zone]
 pod_a = 0.00
@@ -446,7 +446,7 @@ trailing_distance_multiplier = 1.2
 max_leverage = 4.0
 
 [pod_b]
-enabled = false
+enabled = true
 allowed_market_clusters = ["crypto"]
 max_allocation_pct = 0.40
 # --- Pod B breakout directional parameters ---

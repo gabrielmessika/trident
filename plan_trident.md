@@ -1,3 +1,8 @@
+> `STATUS: REPLACED_BY_ACTIVE_PLAN`
+>
+> Plan remplace par [docs/trident_active_plan.md](/workspaces/trident/docs/trident_active_plan.md).
+> Ce fichier reste historique seulement.
+
 # TRIDENT — Plan vivant
 
 > Derniere refonte: 2026-04-10

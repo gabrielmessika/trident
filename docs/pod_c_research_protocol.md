@@ -1,3 +1,8 @@
+> `STATUS: RESEARCH_PROTOCOL_REFERENCE_ONLY`
+>
+> Ce document reste un protocole de recherche. Il ne constitue plus une feuille de route.
+> Le plan actif est [docs/trident_active_plan.md](/workspaces/trident/docs/trident_active_plan.md).
+
 # Pod C Research Protocol
 
 - Use only TRIDENT snapshots produced by the native converters or live collector.

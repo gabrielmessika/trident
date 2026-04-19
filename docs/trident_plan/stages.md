@@ -1,3 +1,9 @@
+> `STATUS: REPLACED_BY_ACTIVE_PLAN`
+>
+> Les etapes restantes ont ete consolidees dans
+> [docs/trident_active_plan.md](/workspaces/trident/docs/trident_active_plan.md).
+> Ce fichier reste un historique des anciennes etapes.
+
 # TRIDENT — Etapes detaillees
 
 ## Etapes fermees

@@ -18,6 +18,9 @@ class PodARiskGate(TradePlanRiskGate):
         self._allowed_setups = {
             item.strip() for item in config.pod_a.allowed_setups if item.strip()
         }
+        self._blocked_symbols = {
+            item.strip().upper() for item in config.pod_a.blocked_symbols if item.strip()
+        }
         self._disabled_setups = {item.strip() for item in config.pod_a.disabled_setups if item.strip()}
         self._blocked_regimes = {
             item.strip().lower() for item in config.pod_a.blocked_regimes if item.strip()
@@ -108,6 +111,8 @@ class PodARiskGate(TradePlanRiskGate):
         )
         if reason != "accepted":
             return reason
+        if plan.symbol.strip().upper() in self._blocked_symbols:
+            return "symbol_blocked"
         symbol_mode = active_symbol_mode(self._config.pod_a, plan.symbol)
         symbol_mode_allowed_setups = (
             {item.strip() for item in symbol_mode.allowed_setups if item.strip()}

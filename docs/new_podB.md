@@ -1,3 +1,8 @@
+> `STATUS: HISTORICAL_SPEC_REFERENCE`
+>
+> Ce document n'est plus un plan actif. La feuille de route courante est
+> [docs/trident_active_plan.md](/workspaces/trident/docs/trident_active_plan.md).
+
 # TRIDENT — Spécification détaillée du nouveau Pod B
 
 Document historique: le remplacement de l'ancien Pod B maker par le Pod B directionnel breakout a maintenant ete implemente. Ce fichier reste utile pour retracer l'intention initiale, mais la source de verite courante est le code du repo et la documentation principale.

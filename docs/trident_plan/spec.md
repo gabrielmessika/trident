@@ -1,3 +1,8 @@
+> `STATUS: ARCHITECTURE_REFERENCE_ONLY`
+>
+> Ce fichier reste une reference d'architecture, mais plus une feuille de route.
+> Le plan actif est [docs/trident_active_plan.md](/workspaces/trident/docs/trident_active_plan.md).
+
 # TRIDENT — Spec et architecture
 
 ## Resume executif

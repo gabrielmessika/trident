@@ -1,3 +1,9 @@
+> `STATUS: REPLACED_BY_ACTIVE_PLAN`
+>
+> Le pilotage actif a ete deplace dans
+> [docs/trident_active_plan.md](/workspaces/trident/docs/trident_active_plan.md).
+> Ce fichier reste un tableau de bord historique.
+
 # TRIDENT — Statut
 
 ## Tableau de pilotage

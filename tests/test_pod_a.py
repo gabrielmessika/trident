@@ -211,6 +211,62 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertGreater(supportive.confidence, cautious.confidence)
         self.assertIn("confirmation_quality", supportive.confidence_components)
 
+    def test_generates_ichimoku_continuation_long_when_mtf_trend_is_clean(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="BIO",
+                regime="TrendExpansion",
+                price=1.024,
+                ema_fast=1.018,
+                ema_slow=0.998,
+                vwap_distance_bps=3.0,
+                structure_score=0.34,
+                funding_rate=0.0,
+                spread_bps=1.0,
+                btc_aligned=True,
+                trend_1h_bps=22.0,
+                trend_4h_bps=48.0,
+                mtf_bias_score=31.0,
+                candles_ready=True,
+                ichimoku_bias_score=0.42,
+                supertrend_direction=1,
+                stoch_rsi_k=0.58,
+                vwap_reclaim_score=0.06,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "ichimoku_continuation_long")
+
+    def test_generates_ichimoku_continuation_short_when_bearish_trend_is_clean(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="TAO",
+                regime="TrendExpansion",
+                price=244.0,
+                ema_fast=245.0,
+                ema_slow=248.5,
+                vwap_distance_bps=-2.0,
+                structure_score=-0.36,
+                funding_rate=0.0,
+                spread_bps=1.1,
+                btc_aligned=True,
+                trend_1h_bps=-18.0,
+                trend_4h_bps=-42.0,
+                mtf_bias_score=-27.0,
+                candles_ready=True,
+                ichimoku_bias_score=-0.38,
+                supertrend_direction=-1,
+                stoch_rsi_k=0.42,
+                vwap_reclaim_score=-0.03,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "ichimoku_continuation_short")
+
     def test_generates_short_signal_in_trend_expansion(self) -> None:
         signal = self.service.evaluate(
             AnchorTrendContext(
@@ -1134,6 +1190,73 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertEqual(accepted.reason, "accepted")
         self.assertFalse(rejected.accepted)
         self.assertEqual(rejected.reason, "symbol_mode_confidence_below_min")
+
+    def test_symbol_mode_can_allow_ichimoku_setup_outside_global_allowlist(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                symbol_modes={
+                    "BIO": PodASymbolModeConfig(
+                        enabled=True,
+                        allowed_setups=["ichimoku_continuation_long"],
+                        allowed_regimes=["TrendExpansion"],
+                        min_confidence=0.65,
+                    )
+                },
+            ),
+        )
+        gate = PodARiskGate(config)
+        accepted_plan = TradePlan(
+            symbol="BIO",
+            side="long",
+            setup="ichimoku_continuation_long",
+            confidence=0.7,
+            target_notional_usd=200.0,
+            stop_bps=180.0,
+            time_stop_hours=48,
+            margin_usd=50.0,
+            requested_leverage=4.0,
+            effective_leverage=4.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.6,
+            setup_details={"regime": "TrendExpansion"},
+        )
+
+        accepted = gate.evaluate_many([accepted_plan])[0]
+
+        self.assertTrue(accepted.accepted)
+        self.assertEqual(accepted.reason, "accepted")
+
+    def test_pod_a_can_block_reserved_symbols_for_future_special_pod(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                blocked_symbols=["TAO", "XPL", "BIO"],
+            ),
+        )
+        gate = PodARiskGate(config)
+        blocked_plan = TradePlan(
+            symbol="TAO",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.8,
+            target_notional_usd=200.0,
+            stop_bps=180.0,
+            time_stop_hours=48,
+            margin_usd=50.0,
+            requested_leverage=4.0,
+            effective_leverage=4.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.6,
+            setup_details={"regime": "TrendExpansion"},
+        )
+
+        decision = gate.evaluate_many([blocked_plan])[0]
+
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, "symbol_blocked")
 
 
 if __name__ == "__main__":

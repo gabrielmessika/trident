@@ -1,3 +1,9 @@
+> `STATUS: FINISHED_AND_MERGED_INTO_ACTIVE_PLAN`
+>
+> Les suites utiles de ce chantier ont ete absorbees dans
+> [docs/trident_active_plan.md](/workspaces/trident/docs/trident_active_plan.md).
+> Ce fichier reste un journal detaille du transfert `Pod A -> Pod C`.
+
 # Pod C vs Pod A Transfer
 
 Date: `2026-04-18`

@@ -40,6 +40,13 @@ class PodALiveRunner:
         coins: list[str] | None = None,
         *,
         use_live_asset_caps: bool = False,
+        runtime_name: str = "pod_a",
+        status_path: str | Path = "logs/pod_a_live_status.json",
+        supervisor_profile: str = "trident-live-pod-a",
+        signal_source: str = "pod_a_live_signal",
+        filtered_source: str = "pod_a_live_filtered",
+        trade_source: str = "pod_a_live_trade",
+        review_label: str = "Pod A",
     ) -> None:
         self.config = config
         self.coins = (
@@ -47,6 +54,13 @@ class PodALiveRunner:
             or config.hyperliquid.observation_universe
             or config.hyperliquid.default_coins
         )
+        self.runtime_name = str(runtime_name)
+        self.status_path = Path(status_path)
+        self.supervisor_profile = str(supervisor_profile)
+        self.signal_source = str(signal_source)
+        self.filtered_source = str(filtered_source)
+        self.trade_source = str(trade_source)
+        self.review_label = str(review_label)
         if use_live_asset_caps:
             self.config = apply_live_asset_leverage_caps(
                 self.config,
@@ -55,7 +69,7 @@ class PodALiveRunner:
         self.collector = HyperliquidLiveCollector(self.config, coins=self.coins)
         self.supervisor = TridentSupervisor(
             config=self.config,
-            profile="trident-live-pod-a",
+            profile=self.supervisor_profile,
             mode="dry-run",
         )
         self.risk_gate = PodARiskGate(self.config)
@@ -74,7 +88,7 @@ class PodALiveRunner:
         journal_path: str | Path | None = None,
     ) -> dict[str, object]:
         journal = JsonlJournal(journal_path, truncate=True) if journal_path is not None else None
-        status_path = Path("logs/pod_a_live_status.json")
+        status_path = self.status_path
         self._write_runtime_status(status_path)
         maintenance_task = asyncio.create_task(
             self._maintenance_loop(status_path, journal=journal)
@@ -238,7 +252,7 @@ class PodALiveRunner:
                         regime=current_regime,
                         regime_snapshot=regime_snapshot,
                         symbol_snapshot=snapshot_by_symbol.get(preview.symbol),
-                        source="pod_a_live_signal",
+                        source=self.signal_source,
                         signal={
                             "symbol": preview.symbol,
                             "side": preview.side,
@@ -367,7 +381,7 @@ class PodALiveRunner:
                         regime=current_regime,
                         regime_snapshot=regime_snapshot,
                         symbol_snapshot=snapshot_by_symbol.get(str(review.get("symbol", ""))),
-                        source="pod_a_live_filtered",
+                        source=self.filtered_source,
                         review=review,
                     )
                 )
@@ -442,7 +456,8 @@ class PodALiveRunner:
         owned_symbols = self.supervisor.registry.symbols_for(PodName.POD_A)
         accepted_count = sum(1 for decision in risk_decisions if decision.accepted)
         logger.info(
-            "Pod A review summary; ts=%s regime=%s tradable_count=%s owned_symbols=%s previews=%s trade_plans=%s accepted=%s opened=%s skipped=%s closed=%s open_positions=%s realized_pnl_usd=%.2f",
+            "%s review summary; ts=%s regime=%s tradable_count=%s owned_symbols=%s previews=%s trade_plans=%s accepted=%s opened=%s skipped=%s closed=%s open_positions=%s realized_pnl_usd=%.2f",
+            self.review_label,
             timestamp,
             regime,
             tradable_count,
@@ -510,7 +525,7 @@ class PodALiveRunner:
                     timestamp=timestamp,
                     record_index=self.report.records_processed,
                     trade=self._trade_to_record(trade),
-                    source="pod_a_live_trade",
+                    source=self.trade_source,
                 )
             )
         self.report.add_closed_trade(
@@ -564,7 +579,7 @@ class PodALiveRunner:
         write_runtime_status(
             path,
             {
-                "pod": "pod_a",
+                "pod": self.runtime_name,
                 "process_state": "running",
                 "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "collector": {

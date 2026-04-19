@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from app.live.pod_a_live_runner import PodALiveRunner
@@ -62,6 +63,16 @@ class _FakeInfoClient:
 class PodALiveRunnerTests(unittest.TestCase):
     def test_live_runner_processes_stream_records(self) -> None:
         config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_a=replace(
+                config.pod_a,
+                allowed_setups=["liquidity_sweep_reclaim_long", "trend_pullback_long"],
+                disabled_setups=[],
+                blocked_regimes=[],
+                allowed_setups_in_blocked_regimes=["liquidity_sweep_reclaim_long"],
+            ),
+        )
         runner = PodALiveRunner(config, coins=["BTC", "ETH"])
         records = [
             {
@@ -185,6 +196,75 @@ class PodALiveRunnerTests(unittest.TestCase):
         self.assertEqual(open_positions[0]["break_even_trigger_bps"], 40.0)
         self.assertEqual(open_positions[0]["trailing_activation_bps"], 80.0)
         self.assertEqual(open_positions[0]["trailing_distance_bps"], 30.0)
+
+    def test_live_runner_can_write_to_custom_status_path_for_specialized_shadow(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = PodALiveRunner(
+            config,
+            coins=["BTC"],
+            runtime_name="special_symbols",
+            status_path="logs/special_symbols_live_status.json",
+            supervisor_profile="trident-live-special-symbols-test",
+            signal_source="special_symbols_live_signal",
+            filtered_source="special_symbols_live_filtered",
+            trade_source="special_symbols_live_trade",
+            review_label="Special Symbols",
+        )
+        records = [
+            {
+                "timestamp": "2026-04-05T09:00:00Z",
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 32.0,
+                    "atr_ratio": 1.2,
+                    "range_width_bps": 180.0,
+                    "structure_score": 0.55,
+                    "btc_impulse": False,
+                },
+                "symbols": [
+                    {
+                        "symbol": "BTC",
+                        "price": 68000.0,
+                        "ema_fast": 67950.0,
+                        "ema_slow": 67800.0,
+                        "vwap_distance_bps": -5.0,
+                        "structure_score": 0.55,
+                        "funding_rate": 0.0,
+                        "spread_bps": 0.8,
+                        "btc_aligned": True,
+                        "book_imbalance": 0.1,
+                        "trade_flow_bias": 0.3,
+                        "bucket_volume": 2.0,
+                        "bucket_trade_count": 10,
+                        "bucket_range_bps": 40.0,
+                        "source": "test_live",
+                    },
+                ],
+            }
+        ]
+        runner.collector = _FakeCollector(records)  # type: ignore[assignment]
+
+        async def fake_iter_live_records(**_: object):
+            for record in records:
+                yield record
+
+        runner._iter_live_records = fake_iter_live_records  # type: ignore[method-assign]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = Path(tmpdir) / "special_symbols_live.jsonl"
+            result = asyncio.run(
+                runner.run(
+                    max_runtime_seconds=0.1,
+                    journal_path=journal_path,
+                )
+            )
+
+        self.assertEqual(result["records_processed"], 1)
+        runtime_status = json.loads(
+            Path("logs/special_symbols_live_status.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(runtime_status["pod"], "special_symbols")
+        self.assertEqual(runtime_status["collector"]["coins"], ["BTC", "ETH"])
 
 
 if __name__ == "__main__":
