@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 
 from app.risk.plan_gate import TradePlanRiskGate
-from app.settings import AppConfig
+from app.settings import AppConfig, PodBPatternRuleConfig
 
 
 class PodBRiskGate(TradePlanRiskGate):
@@ -14,6 +14,8 @@ class PodBRiskGate(TradePlanRiskGate):
         self._config = config
         self._guardrail_lookback = max(config.pod_b.bis_guardrail_lookback_trades, 1)
         self._closed_trade_pnl_by_key: dict[tuple[str, str], deque[float]] = {}
+        self._pattern_vetoes = list(config.pod_b.pattern_vetoes)
+        self._pattern_watchers = list(config.pod_b.pattern_watchers)
 
     def record_closed_trade(
         self,
@@ -85,6 +87,9 @@ class PodBRiskGate(TradePlanRiskGate):
             return reason
         if self._rolling_guardrail_triggered(plan.symbol, plan.setup):
             return "rolling_guardrail_symbol_setup"
+        pattern_veto = self._pattern_veto_reason(plan)
+        if pattern_veto is not None:
+            return pattern_veto
         min_notional = max(
             self._config.trident.risk.min_trade_notional_usd,
             self._config.pod_b.bis_min_notional_usd,
@@ -112,6 +117,7 @@ class PodBRiskGate(TradePlanRiskGate):
             > max_total_open_risk_usd
         ):
             return "total_open_risk_exceeded"
+        self._apply_pattern_watch_hits(plan)
         return "accepted"
 
     def _rolling_guardrail_triggered(self, symbol: str, setup: str | None) -> bool:
@@ -134,3 +140,120 @@ class PodBRiskGate(TradePlanRiskGate):
         if not normalized_symbol or not normalized_setup:
             return None
         return normalized_symbol, normalized_setup
+
+    def _pattern_veto_reason(self, plan) -> str | None:
+        for name in self._matching_pattern_rule_names(self._pattern_vetoes, plan):
+            return f"pattern_veto_{self._normalize_rule_name(name)}"
+        return None
+
+    def _apply_pattern_watch_hits(self, plan) -> None:
+        hits = self._matching_pattern_rule_names(self._pattern_watchers, plan)
+        details = dict(plan.setup_details or {})
+        if hits:
+            details["pattern_watch_hits"] = ",".join(hits)
+            details["pattern_watch_count"] = len(hits)
+        else:
+            details.pop("pattern_watch_hits", None)
+            details.pop("pattern_watch_count", None)
+        plan.setup_details = details
+
+    def _matching_pattern_rule_names(
+        self,
+        rules: list[PodBPatternRuleConfig],
+        plan,
+    ) -> list[str]:
+        return [rule.name for rule in rules if self._matches_pattern_rule(rule, plan)]
+
+    def _matches_pattern_rule(
+        self,
+        rule: PodBPatternRuleConfig,
+        plan,
+    ) -> bool:
+        if not rule.enabled:
+            return False
+        details = dict(plan.setup_details or {})
+        if rule.setups and plan.setup not in {item.strip() for item in rule.setups if item.strip()}:
+            return False
+        if rule.sides and str(plan.side).strip() not in {item.strip() for item in rule.sides if item.strip()}:
+            return False
+        regime = str(details.get("regime", "")).strip()
+        if rule.regimes and regime not in {item.strip() for item in rule.regimes if item.strip()}:
+            return False
+        if rule.require_strict_continuation_filter is not None:
+            if bool(details.get("strict_continuation_filter")) != rule.require_strict_continuation_filter:
+                return False
+        if not self._matches_float(plan.confidence, rule.min_confidence, rule.max_confidence):
+            return False
+        if not self._matches_float(
+            details.get("compression_score"),
+            rule.min_compression_score,
+            rule.max_compression_score,
+        ):
+            return False
+        if not self._matches_float(
+            details.get("activity_score"),
+            rule.min_activity_score,
+            rule.max_activity_score,
+        ):
+            return False
+        if not self._matches_float(
+            details.get("breakout_score"),
+            rule.min_breakout_score,
+            rule.max_breakout_score,
+        ):
+            return False
+        volume_ratio = details.get("volume_ratio", details.get("vol_ratio"))
+        if not self._matches_float(volume_ratio, rule.min_volume_ratio, rule.max_volume_ratio):
+            return False
+        if not self._matches_float(
+            details.get("trade_count_ratio"),
+            rule.min_trade_count_ratio,
+            rule.max_trade_count_ratio,
+        ):
+            return False
+        if not self._matches_float(
+            details.get("flow_support_quality"),
+            rule.min_flow_support_quality,
+            rule.max_flow_support_quality,
+        ):
+            return False
+        if not self._matches_float(
+            details.get("vwap_reclaim_quality"),
+            rule.min_vwap_reclaim_quality,
+            rule.max_vwap_reclaim_quality,
+        ):
+            return False
+        if not self._matches_float(
+            details.get("money_flow_quality"),
+            rule.min_money_flow_quality,
+            rule.max_money_flow_quality,
+        ):
+            return False
+        if not self._matches_float(
+            details.get("squeeze_release_quality"),
+            rule.min_squeeze_release_quality,
+            rule.max_squeeze_release_quality,
+        ):
+            return False
+        return True
+
+    def _matches_float(
+        self,
+        value: object,
+        minimum: float | None,
+        maximum: float | None,
+    ) -> bool:
+        if minimum is None and maximum is None:
+            return True
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return False
+        if minimum is not None and numeric < minimum:
+            return False
+        if maximum is not None and numeric > maximum:
+            return False
+        return True
+
+    def _normalize_rule_name(self, value: str) -> str:
+        return "_".join(part for part in str(value).strip().lower().replace("-", "_").split())

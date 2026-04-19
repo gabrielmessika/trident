@@ -142,7 +142,7 @@ class PodARiskGateTests(unittest.TestCase):
         )
 
         self.assertFalse(decisions[0].accepted)
-        self.assertEqual(decisions[0].reason, "setup_disabled")
+        self.assertEqual(decisions[0].reason, "setup_not_allowed")
 
     def test_rejects_non_whitelisted_setup_in_blocked_regime(self) -> None:
         decisions = self.gate.evaluate_many(
@@ -168,7 +168,21 @@ class PodARiskGateTests(unittest.TestCase):
         self.assertEqual(decisions[0].reason, "regime_filtered")
 
     def test_accepts_whitelisted_setup_in_blocked_regime(self) -> None:
-        decisions = self.gate.evaluate_many(
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                allowed_setups=["trend_pullback_long", "liquidity_sweep_reclaim_long"],
+                disabled_setups=[
+                    item
+                    for item in self.config.pod_a.disabled_setups
+                    if item != "liquidity_sweep_reclaim_long"
+                ],
+                allowed_setups_in_blocked_regimes=["liquidity_sweep_reclaim_long"],
+            ),
+        )
+        gate = PodARiskGate(config)
+        decisions = gate.evaluate_many(
             [
                 TradePlan(
                     symbol="ETH",
@@ -211,7 +225,7 @@ class PodARiskGateTests(unittest.TestCase):
         )
 
         self.assertFalse(decisions[0].accepted)
-        self.assertEqual(decisions[0].reason, "setup_disabled")
+        self.assertEqual(decisions[0].reason, "setup_not_allowed")
 
     def test_rejects_setup_not_in_allowlist(self) -> None:
         config = replace(

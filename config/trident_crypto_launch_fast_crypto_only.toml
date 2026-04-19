@@ -484,6 +484,26 @@ bis_enabled_setups = ["vol_expansion_long", "ttm_squeeze_release_long"]
 bis_max_concurrent_positions = 3
 bis_max_total_open_risk_pct = 0.015
 
+[[pod_b.pattern_vetoes]]
+name = "vol_ratio_low"
+enabled = true
+sides = ["long"]
+max_volume_ratio = 1.60
+
+[[pod_b.pattern_vetoes]]
+name = "vol_ratio_mid_low_confidence_high"
+enabled = true
+sides = ["long"]
+max_volume_ratio = 1.85
+min_confidence = 0.685
+
+[[pod_b.pattern_watchers]]
+name = "vol_ratio_mid_low_compression_high"
+enabled = true
+sides = ["long"]
+max_volume_ratio = 1.85
+min_compression_score = 0.26
+
 [pod_b.bis_max_leverage_by_symbol]
 # Fallback statique: les caps live HL doivent ecraser ces valeurs au runtime
 # quand le fetch `metaAndAssetCtxs` reussit.

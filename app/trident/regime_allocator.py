@@ -23,11 +23,33 @@ class RegimeAllocator:
         thresholds = self._config.trident.regime
         if not thresholds.crypto_v2_enabled:
             return self._classify_legacy(snapshot)
-        trend_threshold = thresholds.adx_trend_threshold
-        trend_structure_threshold = thresholds.trend_structure_threshold
-        panic_threshold = thresholds.atr_ratio_panic_threshold
-        dead_zone_threshold = thresholds.dead_zone_atr_threshold
-        dead_zone_range_threshold = thresholds.dead_zone_range_threshold
+        v2_regime = self._classify_v2(snapshot)
+        if self._crypto_v2_mode() == "hybrid_upgrade_only":
+            return self._classify_hybrid_v2(snapshot, v2_regime=v2_regime)
+        return v2_regime
+
+    def _classify_v2(self, snapshot: RegimeSnapshot) -> Regime:
+        thresholds = self._config.trident.regime
+        trend_threshold = self._v2_threshold_value(
+            thresholds.crypto_v2_adx_trend_threshold,
+            thresholds.adx_trend_threshold,
+        )
+        trend_structure_threshold = self._v2_threshold_value(
+            thresholds.crypto_v2_trend_structure_threshold,
+            thresholds.trend_structure_threshold,
+        )
+        panic_threshold = self._v2_threshold_value(
+            thresholds.crypto_v2_atr_ratio_panic_threshold,
+            thresholds.atr_ratio_panic_threshold,
+        )
+        dead_zone_threshold = self._v2_threshold_value(
+            thresholds.crypto_v2_dead_zone_atr_threshold,
+            thresholds.dead_zone_atr_threshold,
+        )
+        dead_zone_range_threshold = self._v2_threshold_value(
+            thresholds.crypto_v2_dead_zone_range_threshold,
+            thresholds.dead_zone_range_threshold,
+        )
         has_v2_context = bool(
             snapshot.symbol_count
             or snapshot.active_symbol_count
@@ -79,6 +101,32 @@ class RegimeAllocator:
             return Regime.DEAD_ZONE
 
         return Regime.RANGE_AUCTION
+
+    def _classify_hybrid_v2(
+        self,
+        snapshot: RegimeSnapshot,
+        *,
+        v2_regime: Regime | None = None,
+    ) -> Regime:
+        legacy = self._classify_legacy(snapshot)
+        resolved_v2 = v2_regime or self._classify_v2(snapshot)
+        if legacy == Regime.CASH:
+            return resolved_v2
+        if resolved_v2 == Regime.PANIC_SQUEEZE and legacy != Regime.PANIC_SQUEEZE:
+            return Regime.PANIC_SQUEEZE
+        if resolved_v2 == Regime.TREND_EXPANSION:
+            thresholds = self._config.trident.regime
+            if (
+                legacy == Regime.RANGE_AUCTION
+                and thresholds.crypto_v2_allow_range_to_trend_upgrade
+            ):
+                return Regime.TREND_EXPANSION
+            if (
+                legacy == Regime.DEAD_ZONE
+                and thresholds.crypto_v2_allow_dead_zone_to_trend_upgrade
+            ):
+                return Regime.TREND_EXPANSION
+        return legacy
 
     def resolve(
         self,
@@ -155,12 +203,18 @@ class RegimeAllocator:
         coherence_score = self._coherence_score(snapshot)
         leader_trend_score = self._leader_trend_score(snapshot)
         if candidate_regime == Regime.PANIC_SQUEEZE:
-            required = max(1, thresholds.panic_confirmation_bars)
+            required = self._confirmation_threshold(
+                thresholds.crypto_v2_panic_confirmation_bars,
+                thresholds.panic_confirmation_bars,
+            )
             if breadth_pct < 0.35 and leader_trend_score < 0.60:
                 required += 1
             return required
         if candidate_regime == Regime.TREND_EXPANSION:
-            required = max(1, thresholds.trend_confirmation_bars)
+            required = self._confirmation_threshold(
+                thresholds.crypto_v2_trend_confirmation_bars,
+                thresholds.trend_confirmation_bars,
+            )
             if snapshot.active_symbol_count >= 4 and breadth_pct < 0.45:
                 required += 1
             if snapshot.active_symbol_count >= 4 and coherence_score < 0.50:
@@ -168,7 +222,10 @@ class RegimeAllocator:
             return required
         if current_regime == Regime.CASH:
             return 1
-        required = max(1, thresholds.switch_confirmation_bars)
+        required = self._confirmation_threshold(
+            thresholds.crypto_v2_switch_confirmation_bars,
+            thresholds.switch_confirmation_bars,
+        )
         if (
             current_regime == Regime.TREND_EXPANSION
             and candidate_regime == Regime.RANGE_AUCTION
@@ -207,6 +264,18 @@ class RegimeAllocator:
 
     def _clamp(self, value: float, lower: float, upper: float) -> float:
         return max(lower, min(value, upper))
+
+    def _crypto_v2_mode(self) -> str:
+        mode = str(self._config.trident.regime.crypto_v2_mode or "full").strip().lower()
+        if not mode:
+            return "full"
+        return mode
+
+    def _v2_threshold_value(self, override: float | None, legacy: float) -> float:
+        return legacy if override is None else float(override)
+
+    def _confirmation_threshold(self, override: int | None, legacy: int) -> int:
+        return max(1, legacy if override is None else int(override))
 
     def _classify_legacy(self, snapshot: RegimeSnapshot) -> Regime:
         thresholds = self._config.trident.regime

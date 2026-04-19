@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from app.backtest.pod_b_runner import PodBBacktestRunner
-from app.settings import load_config
+from app.settings import PodBPatternRuleConfig, load_config
 from app.trident.pod_b import BreakoutContext, BreakoutPlanner, BreakoutService, PodBRiskGate
 from app.trident.types import PodAllocation, PodName, SymbolAllocation, TradePlan
 
@@ -143,6 +143,90 @@ class PodBTests(unittest.TestCase):
         recovered = risk_gate.evaluate_many([plan])
         self.assertTrue(recovered[0].accepted)
 
+    def test_risk_gate_blocks_rule_based_on_pattern_veto(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_b=replace(
+                config.pod_b,
+                pattern_vetoes=[
+                    PodBPatternRuleConfig(
+                        name="vol_ratio_low",
+                        enabled=True,
+                        setups=["vol_expansion_long"],
+                        sides=["long"],
+                        max_volume_ratio=1.60,
+                    )
+                ],
+            ),
+        )
+        risk_gate = PodBRiskGate(config)
+        plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="vol_expansion_long",
+            confidence=0.72,
+            target_notional_usd=100.0,
+            stop_bps=40.0,
+            time_stop_hours=2,
+            margin_usd=25.0,
+            effective_leverage=2.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.0,
+            setup_details={
+                "volume_ratio": 1.52,
+                "regime": "TrendExpansion",
+            },
+        )
+
+        decisions = risk_gate.evaluate_many([plan])
+        self.assertEqual(len(decisions), 1)
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "pattern_veto_vol_ratio_low")
+
+    def test_risk_gate_adds_pattern_watch_hits_on_accept(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_b=replace(
+                config.pod_b,
+                pattern_vetoes=[],
+                pattern_watchers=[
+                    PodBPatternRuleConfig(
+                        name="watch_mid_vol",
+                        enabled=True,
+                        setups=["vol_expansion_long"],
+                        sides=["long"],
+                        max_volume_ratio=1.85,
+                    )
+                ],
+            ),
+        )
+        risk_gate = PodBRiskGate(config)
+        plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="vol_expansion_long",
+            confidence=0.72,
+            target_notional_usd=100.0,
+            stop_bps=40.0,
+            time_stop_hours=2,
+            margin_usd=25.0,
+            effective_leverage=2.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.0,
+            setup_details={
+                "volume_ratio": 1.72,
+                "regime": "TrendExpansion",
+            },
+        )
+
+        decisions = risk_gate.evaluate_many([plan])
+        self.assertEqual(len(decisions), 1)
+        self.assertTrue(decisions[0].accepted)
+        self.assertEqual(plan.setup_details.get("pattern_watch_hits"), "watch_mid_vol")
+        self.assertEqual(plan.setup_details.get("pattern_watch_count"), 1)
+
     def test_service_blocks_signal_when_strict_continuation_filter_fails(self) -> None:
         config = load_config("config/trident.toml")
         disabled_filter_config = replace(
@@ -232,7 +316,15 @@ class PodBTests(unittest.TestCase):
 
     def test_runner_replays_strategy_on_routed_symbol_universe(self) -> None:
         config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_b=replace(config.pod_b, enabled=True),
+        )
         config.hyperliquid.observation_universe = ["BTC"]
+        config.trident.allocations.trend_expansion.pod_b = 1.0
+        config.trident.allocations.trend_expansion.pod_a = 0.0
+        config.trident.allocations.trend_expansion.pod_c = 0.0
+        config.trident.allocations.trend_expansion.cash = 0.0
 
         records = [
             {

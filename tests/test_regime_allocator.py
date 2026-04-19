@@ -71,6 +71,77 @@ class RegimeAllocatorTests(unittest.TestCase):
         )
         self.assertEqual(regime, Regime.RANGE_AUCTION)
 
+    def test_hybrid_mode_preserves_legacy_trend_when_v2_is_weaker(self) -> None:
+        self.config.trident.regime.crypto_v2_enabled = True
+        self.config.trident.regime.crypto_v2_mode = "hybrid_upgrade_only"
+        regime = self.allocator.classify(
+            RegimeSnapshot(
+                ready=True,
+                adx=34.0,
+                atr_ratio=1.3,
+                range_width_bps=190.0,
+                structure_score=0.62,
+                symbol_count=6,
+                active_symbol_count=6,
+                aligned_symbol_count=2,
+                breadth_pct=0.3333,
+                alt_participation_pct=0.2,
+                dispersion_pct=0.6667,
+                leader_trend_score=0.74,
+                coherence_score=0.42,
+            )
+        )
+        self.assertEqual(regime, Regime.TREND_EXPANSION)
+
+    def test_hybrid_mode_can_upgrade_legacy_range_with_v2_specific_thresholds(self) -> None:
+        self.config.trident.regime.crypto_v2_enabled = True
+        self.config.trident.regime.crypto_v2_mode = "hybrid_upgrade_only"
+        self.config.trident.regime.crypto_v2_adx_trend_threshold = 18.0
+        self.config.trident.regime.crypto_v2_trend_structure_threshold = 0.24
+        regime = self.allocator.classify(
+            RegimeSnapshot(
+                ready=True,
+                adx=20.0,
+                atr_ratio=1.05,
+                range_width_bps=165.0,
+                structure_score=0.26,
+                symbol_count=5,
+                active_symbol_count=5,
+                aligned_symbol_count=5,
+                breadth_pct=1.0,
+                alt_participation_pct=1.0,
+                dispersion_pct=0.0,
+                leader_trend_score=0.82,
+                coherence_score=0.86,
+            )
+        )
+        self.assertEqual(regime, Regime.TREND_EXPANSION)
+
+    def test_hybrid_mode_can_block_dead_zone_to_trend_upgrade(self) -> None:
+        self.config.trident.regime.crypto_v2_enabled = True
+        self.config.trident.regime.crypto_v2_mode = "hybrid_upgrade_only"
+        self.config.trident.regime.crypto_v2_allow_dead_zone_to_trend_upgrade = False
+        self.config.trident.regime.crypto_v2_adx_trend_threshold = 18.0
+        self.config.trident.regime.crypto_v2_trend_structure_threshold = 0.24
+        regime = self.allocator.classify(
+            RegimeSnapshot(
+                ready=True,
+                adx=20.0,
+                atr_ratio=0.40,
+                range_width_bps=50.0,
+                structure_score=0.26,
+                symbol_count=5,
+                active_symbol_count=5,
+                aligned_symbol_count=5,
+                breadth_pct=1.0,
+                alt_participation_pct=1.0,
+                dispersion_pct=0.0,
+                leader_trend_score=0.82,
+                coherence_score=0.86,
+            )
+        )
+        self.assertEqual(regime, Regime.DEAD_ZONE)
+
     def test_classifies_panic_squeeze(self) -> None:
         regime = self.allocator.classify(
             RegimeSnapshot(

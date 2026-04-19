@@ -150,7 +150,7 @@ Actions:
 
 Etat:
 
-- implemente dans `config/trident_crypto_launch_fast.toml`
+- implemente dans `config/trident.toml`
 - variante la plus simple et la mieux validee a ce stade:
   - `config/trident_crypto_launch_fast_crypto_only.toml`
 - support code ajoute pour `Pod A allowed_setups`
@@ -308,6 +308,68 @@ Actions:
 - hysteresis plus forte
 - validation sur replays multi-fenetres
 
+Etat:
+
+- socle `Crypto Regime V2` implemente dans le code, avec:
+  - enrichissement `snapshot` multi-symboles
+  - confirmations dediees
+  - nouveau mode experimental `crypto_v2_mode = "hybrid_upgrade_only"`
+  - support de seuils V2 separes du legacy pour continuer la recherche sans toucher au profil stable
+- validation `2026-04-18` sur le profil devenu `config/trident.toml`:
+  - `v2_moderate_a`:
+    - `window_0413_0417`: `+137.91 USD` vs baseline `+162.30 USD`
+    - `full_latest_fetch`: `+506.32 USD` vs baseline `+445.92 USD`
+  - `hybrid_moderate_a`:
+    - `window_0413_0417`: `+145.47 USD` vs baseline `+162.30 USD`
+    - `full_latest_fetch`: `+514.55 USD` vs baseline `+445.92 USD`
+  - `hybrid_trend_bias`:
+    - `window_0413_0417`: `+131.50 USD`
+    - `full_latest_fetch`: `+379.46 USD`
+  - `hybrid` avec seuils V2 separes du legacy:
+    - avec confirmations V2: `+86.85 USD` recent, `+418.43 USD` large
+    - sans overrides de confirmations: `+122.12 USD` recent, `+397.48 USD` large
+  - candidat `shadow` le plus propre a ce stade:
+    - `hybrid_range_only_no_confirm_override`
+    - principe:
+      - legacy conserve tel quel
+      - V2 ne peut upgrader que `RangeAuction -> TrendExpansion`
+      - pas d'upgrade `DeadZone -> TrendExpansion`
+      - pas d'overrides agressifs de confirmations
+    - resultats:
+      - `0405 -> 0412`: `+332.02 USD` vs baseline `+312.22 USD`
+      - `0413 -> 0417`: `+157.21 USD` vs baseline `+162.30 USD`
+      - `full_latest_fetch`: `+438.90 USD` vs baseline `+445.92 USD`
+- lecture:
+  - aucun candidat V2 ne bat encore le profil actif sur la fenetre recente
+  - le meilleur compromis large est `hybrid_moderate_a`, mais il reste trop en retrait sur `0413 -> 0417`
+  - separer les seuils V2 du legacy n'a pas suffi a lui seul; dans l'etat actuel, cela affaiblit surtout `Pod A`
+  - en revanche, la variante `range-only` sans confirmations agressives devient le premier candidat `shadow-only` vraiment credible
+- revalidation `2026-04-19` sur le code courant:
+  - `baseline_current` rejoue exactement a `+445.92 USD`
+  - `hybrid_moderate_a` rejoue exactement a `+514.55 USD`
+  - la baisse apparente a `+358.22 USD` observee sur un rerun `trident.toml` ne venait pas d'une derive `Pod A`, mais d'un backtest CLI lance sans `--respect-config-enabled`, ce qui a reintroduit artificiellement le routing multi-pods et `2031` reassignations
+- configs de travail:
+  - prod officielle: `config/trident.toml` = `baseline_current`
+  - shadow agressif: `config/trident_hybrid_moderate_a_shadow.toml` = `hybrid_moderate_a`
+- decision:
+  - garder `trident.regime.crypto_v2_enabled = false` dans les profils actifs par defaut
+  - conserver l'infrastructure `V2 full / hybrid / separate thresholds` pour les prochains retunes
+  - utiliser `baseline_current` comme reference prod agressive credible quand l'objectif premier est le chiffre
+  - garder `hybrid_moderate_a` hors defaut prod tant qu'il reste moins bon sur `0413 -> 0417`
+  - autoriser en revanche une evaluation `shadow-only` du candidat `hybrid_range_only_no_confirm_override`
+
+References:
+
+- `server-data/replay_reports/crypto_regime_v2_poda_validation_20260418.md`
+- `server-data/replay_reports/crypto_regime_v2_retune_validation_20260418.md`
+- `server-data/replay_reports/crypto_regime_v2_focused_retune_20260418.md`
+- `server-data/replay_reports/crypto_regime_v2_hybrid_validation_20260418.md`
+- `server-data/replay_reports/crypto_regime_v2_separate_thresholds_validation_20260418.md`
+- `server-data/replay_reports/crypto_regime_v2_autopsy_20260418/hybrid_moderate_a_autopsy.md`
+- `server-data/replay_reports/crypto_regime_v2_range_only_upgrade_validation_20260418.md`
+- `server-data/replay_reports/crypto_regime_v2_shadow_candidate_validation_20260418.md`
+- `server-data/replay_reports/crypto_regime_v2_current_decision_20260419.md`
+
 ### Phase 4. Analyse Jour Par Jour
 
 Objectif: identifier precisement les patterns qui marchent, ceux qui degradent le PnL, et les conditions de marche associees.
@@ -343,11 +405,16 @@ Etat:
 
 ## Prochaine Etape Recommandee
 
-- Le prochain levier a tester n'est plus le routing ni l'add-on campagne.
-- La meilleure piste restante est un `trend runner` plus configurable pour `trend_pullback_long` lui-meme:
-  - sans TP fixe trop court
-  - avec trailing plus tardif
-  - et sans elargir trop les cas `campaign` qui rendent le PnL.
+- `Crypto Regime V2` ne doit plus etre retune "en aveugle" par simple sweep de seuils.
+- L'autopsie regime-aware sur `0413 -> 0417` a ete faite:
+  - `DeadZone -> TrendExpansion` est globalement destructeur
+  - `RangeAuction -> TrendExpansion` reste utile mais trop variable pour etre promu tel quel
+  - une bonne partie de la degradation venait aussi du retuning global du legacy, pas seulement des upgrades V2
+- La prochaine etape utile est maintenant:
+  - brancher `hybrid_range_only_no_confirm_override` en `shadow-only`
+  - journaliser ses decisions a cote du baseline actif
+  - refaire une autopsie des derniers deltas `0413 -> 0417` symbole par symbole avant toute promotion
+- En parallele, `Pod C` peut continuer ses derniers raffinements de cluster, car c'est la branche qui s'ameliore le plus proprement en ce moment.
 
 ### Phase 5. Pod B Rebuild
 
@@ -358,6 +425,75 @@ Actions:
 - conserver `Pod B` en shadow
 - reconstruire autour d'un breakout HTF plus propre
 - pas de retour en production sans validation claire
+
+Etat:
+
+- analyse equivalente a `Pod A` terminee sur `config/trident.toml`
+- replays standalone courants avec `setup_details` preserves:
+  - `2026-04-05 -> 2026-04-12`: `+46.59 USD`, `26` trades clos
+  - `2026-04-13 -> 2026-04-17`: `-46.21 USD`, `30` trades clos
+  - `full_latest_fetch`: `-5.55 USD`, `57` trades clos
+- sweep de scenarios fait:
+  - meilleur mode early: `strict_continuation_filter`
+  - meilleur mode recent: `expansion_continuation`, mais encore negatif (`-18.62 USD`)
+  - meilleur mode large: `strict_continuation_filter`
+- lecture:
+  - le mode strict actuel reste le meilleur baseline global teste pour `Pod B`
+  - `Pod B` a de l'alpha local sur certaines fenetres, mais pas d'edge recent robuste
+  - la bonne direction n'est donc pas un `Pod B` plus actif, mais un `Pod B` plus selectif
+- analyse jour-par-jour terminee:
+  - meilleur candidat de veto non symbolique: `vol_ratio < 1.60`
+  - candidats secondaires a valider un par un:
+    - `vol_ratio < 1.85 and compression_score >= 0.26`
+    - `vol_ratio < 1.85 and confidence >= 0.685`
+- decision:
+  - ne pas promouvoir `expansion_continuation`
+  - garder `strict_continuation_filter` comme baseline `Pod B`
+  - support generique `pattern_vetoes / pattern_watchers` ajoute a `Pod B`
+  - premier veto exact valide et promu:
+    - `vol_ratio < 1.60`
+  - deuxieme veto exact valide et promu:
+    - `vol_ratio < 1.85 and confidence >= 0.685`
+  - candidat secondaire restant en `watch-only`:
+    - `vol_ratio < 1.85 and compression_score >= 0.26`
+- validation exacte du veto `vol_ratio_low`:
+  - `2026-04-05 -> 2026-04-12`: `+46.59 -> +49.79 USD`
+  - `2026-04-13 -> 2026-04-17`: `-46.21 -> +18.37 USD`
+  - `full_latest_fetch`: `-5.55 -> +68.16 USD`
+  - trades clos: `57 -> 29`
+  - drawdown max: `81.13 -> 21.35 USD`
+- validation exacte du veto `vol_ratio_mid_low_confidence_high` par-dessus le veto actif:
+  - `2026-04-05 -> 2026-04-12`: `+49.79 -> +49.79 USD`
+  - `2026-04-13 -> 2026-04-17`: `+18.37 -> +36.32 USD`
+  - `full_latest_fetch`: `+68.16 -> +86.11 USD`
+  - trades clos: `29 -> 25`
+  - drawdown max: `21.35 -> 14.18 USD`
+- validation exacte du candidat `vol_ratio_mid_low_compression_high` par-dessus les deux vetoes actifs:
+  - `2026-04-05 -> 2026-04-12`: `+49.79 -> +41.87 USD`
+  - `2026-04-13 -> 2026-04-17`: `+36.32 -> +43.98 USD`
+  - `full_latest_fetch`: `+86.11 -> +85.85 USD`
+  - trades clos: `25 -> 19`
+  - drawdown max: `14.18 -> 9.50 USD`
+- lecture:
+  - le gain vient d'une suppression tres propre de sous-regimes de breakout faibles
+  - `Pod B` devient nettement plus selectif et beaucoup plus propre
+  - `vol_ratio_mid_low_compression_high` aide surtout le recent, mais degrade trop l'early et n'ameliore pas vraiment le large
+  - il reste donc en `watch-only`
+  - la meilleure suite n'est plus d'ouvrir plus de branches, mais de chercher un dernier pattern perdant plus robuste ou de brancher `Pod B` en shadow live avec ces deux vetoes actifs
+
+References:
+
+- `server-data/replay_reports/pod_b_autopsy_20260419/baseline_0405_0412.json`
+- `server-data/replay_reports/pod_b_autopsy_20260419/baseline_0413_0417.json`
+- `server-data/replay_reports/pod_b_autopsy_20260419/baseline_full.json`
+- `server-data/replay_reports/pod_b_pattern_experiment_20260419_0405_0412.json`
+- `server-data/replay_reports/pod_b_pattern_experiment_20260419_0413_0417.json`
+- `server-data/replay_reports/pod_b_pattern_experiment_20260419_full.json`
+- `server-data/replay_reports/pod_b_day_by_day_patterns_20260419.md`
+- `server-data/replay_reports/pod_b_refonte_analysis_20260419.md`
+- `server-data/replay_reports/pod_b_pattern_veto_validation_20260419/summary.json`
+- `server-data/replay_reports/pod_b_second_veto_validation_20260419/summary.json`
+- `server-data/replay_reports/pod_b_third_veto_validation_20260419/summary.json`
 
 ### Phase 6. Transfert Pod A -> Pod C
 
@@ -608,7 +744,7 @@ Fait dans ce lot:
 - `Pod A allowed_setups` ajoute
 - garde-fou roulant `Pod A` ajoute
 - branchement live/backtest du garde-fou ajoute
-- profil `config/trident_crypto_launch_fast.toml` ajoute
+- profil `config/trident.toml` promu comme successeur du profil `launch_fast`
 - profil `config/trident_crypto_launch_fast_crypto_only.toml` ajoute
 - mode `Pod A campaign` ajoute pour `trend_pullback_long` crypto
 - analyse jour par jour ajoutee au plan de refonte

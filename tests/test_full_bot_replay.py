@@ -215,6 +215,10 @@ class FullBotReplayTests(unittest.TestCase):
         config.pod_c.enabled = True
         config.hyperliquid.observation_universe = ["BTC"]
         config.trident.routing.symbol_pod_overrides["BTC"] = "pod_b"
+        config.trident.allocations.trend_expansion.pod_b = 1.0
+        config.trident.allocations.trend_expansion.pod_a = 0.0
+        config.trident.allocations.trend_expansion.pod_c = 0.0
+        config.trident.allocations.trend_expansion.cash = 0.0
 
         records = [
             {

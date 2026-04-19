@@ -25,6 +25,17 @@ class RegimeThresholds:
     trend_confirmation_bars: int = 2
     panic_confirmation_bars: int = 1
     crypto_v2_enabled: bool = False
+    crypto_v2_mode: str = "full"
+    crypto_v2_adx_trend_threshold: float | None = None
+    crypto_v2_trend_structure_threshold: float | None = None
+    crypto_v2_atr_ratio_panic_threshold: float | None = None
+    crypto_v2_dead_zone_atr_threshold: float | None = None
+    crypto_v2_dead_zone_range_threshold: float | None = None
+    crypto_v2_switch_confirmation_bars: int | None = None
+    crypto_v2_trend_confirmation_bars: int | None = None
+    crypto_v2_panic_confirmation_bars: int | None = None
+    crypto_v2_allow_range_to_trend_upgrade: bool = True
+    crypto_v2_allow_dead_zone_to_trend_upgrade: bool = True
 
 
 @dataclass(slots=True)
@@ -392,6 +403,38 @@ class PodBConfig:
     bis_enabled_setups: list[str]
     bis_max_concurrent_positions: int
     bis_max_total_open_risk_pct: float
+    pattern_vetoes: list["PodBPatternRuleConfig"] = field(default_factory=list)
+    pattern_watchers: list["PodBPatternRuleConfig"] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PodBPatternRuleConfig:
+    name: str
+    enabled: bool = True
+    setups: list[str] = field(default_factory=list)
+    sides: list[str] = field(default_factory=list)
+    regimes: list[str] = field(default_factory=list)
+    require_strict_continuation_filter: bool | None = None
+    min_confidence: float | None = None
+    max_confidence: float | None = None
+    min_compression_score: float | None = None
+    max_compression_score: float | None = None
+    min_activity_score: float | None = None
+    max_activity_score: float | None = None
+    min_breakout_score: float | None = None
+    max_breakout_score: float | None = None
+    min_volume_ratio: float | None = None
+    max_volume_ratio: float | None = None
+    min_trade_count_ratio: float | None = None
+    max_trade_count_ratio: float | None = None
+    min_flow_support_quality: float | None = None
+    max_flow_support_quality: float | None = None
+    min_vwap_reclaim_quality: float | None = None
+    max_vwap_reclaim_quality: float | None = None
+    min_money_flow_quality: float | None = None
+    max_money_flow_quality: float | None = None
+    min_squeeze_release_quality: float | None = None
+    max_squeeze_release_quality: float | None = None
 
 
 @dataclass(slots=True)
@@ -807,7 +850,71 @@ def _pod_a_pattern_vetoes(raw: object) -> list[PodAPatternVetoConfig]:
 
 def _pod_a_pattern_watchers(raw: object) -> list[PodAPatternVetoConfig]:
     return _pod_a_pattern_rules(raw)
+
+
+def _pod_b_pattern_rules(raw: object) -> list[PodBPatternRuleConfig]:
+    if not isinstance(raw, list):
+        return []
+    parsed: list[PodBPatternRuleConfig] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        parsed.append(
+            PodBPatternRuleConfig(
+                name=name,
+                enabled=bool(item.get("enabled", True)),
+                setups=_str_list(item.get("setups", [])),
+                sides=_str_list(item.get("sides", [])),
+                regimes=_str_list(item.get("regimes", [])),
+                require_strict_continuation_filter=_optional_bool(
+                    item.get("require_strict_continuation_filter")
+                ),
+                min_confidence=_optional_float(item.get("min_confidence")),
+                max_confidence=_optional_float(item.get("max_confidence")),
+                min_compression_score=_optional_float(item.get("min_compression_score")),
+                max_compression_score=_optional_float(item.get("max_compression_score")),
+                min_activity_score=_optional_float(item.get("min_activity_score")),
+                max_activity_score=_optional_float(item.get("max_activity_score")),
+                min_breakout_score=_optional_float(item.get("min_breakout_score")),
+                max_breakout_score=_optional_float(item.get("max_breakout_score")),
+                min_volume_ratio=_optional_float(item.get("min_volume_ratio")),
+                max_volume_ratio=_optional_float(item.get("max_volume_ratio")),
+                min_trade_count_ratio=_optional_float(item.get("min_trade_count_ratio")),
+                max_trade_count_ratio=_optional_float(item.get("max_trade_count_ratio")),
+                min_flow_support_quality=_optional_float(
+                    item.get("min_flow_support_quality")
+                ),
+                max_flow_support_quality=_optional_float(
+                    item.get("max_flow_support_quality")
+                ),
+                min_vwap_reclaim_quality=_optional_float(
+                    item.get("min_vwap_reclaim_quality")
+                ),
+                max_vwap_reclaim_quality=_optional_float(
+                    item.get("max_vwap_reclaim_quality")
+                ),
+                min_money_flow_quality=_optional_float(item.get("min_money_flow_quality")),
+                max_money_flow_quality=_optional_float(item.get("max_money_flow_quality")),
+                min_squeeze_release_quality=_optional_float(
+                    item.get("min_squeeze_release_quality")
+                ),
+                max_squeeze_release_quality=_optional_float(
+                    item.get("max_squeeze_release_quality")
+                ),
+            )
+        )
     return parsed
+
+
+def _pod_b_pattern_vetoes(raw: object) -> list[PodBPatternRuleConfig]:
+    return _pod_b_pattern_rules(raw)
+
+
+def _pod_b_pattern_watchers(raw: object) -> list[PodBPatternRuleConfig]:
+    return _pod_b_pattern_rules(raw)
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
@@ -965,6 +1072,56 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                     regime_data.get("panic_confirmation_bars", 1)
                 ),
                 crypto_v2_enabled=bool(regime_data.get("crypto_v2_enabled", False)),
+                crypto_v2_mode=str(regime_data.get("crypto_v2_mode", "full"))
+                .strip()
+                .lower()
+                or "full",
+                crypto_v2_adx_trend_threshold=(
+                    None
+                    if regime_data.get("crypto_v2_adx_trend_threshold") is None
+                    else float(regime_data.get("crypto_v2_adx_trend_threshold"))
+                ),
+                crypto_v2_trend_structure_threshold=(
+                    None
+                    if regime_data.get("crypto_v2_trend_structure_threshold") is None
+                    else float(regime_data.get("crypto_v2_trend_structure_threshold"))
+                ),
+                crypto_v2_atr_ratio_panic_threshold=(
+                    None
+                    if regime_data.get("crypto_v2_atr_ratio_panic_threshold") is None
+                    else float(regime_data.get("crypto_v2_atr_ratio_panic_threshold"))
+                ),
+                crypto_v2_dead_zone_atr_threshold=(
+                    None
+                    if regime_data.get("crypto_v2_dead_zone_atr_threshold") is None
+                    else float(regime_data.get("crypto_v2_dead_zone_atr_threshold"))
+                ),
+                crypto_v2_dead_zone_range_threshold=(
+                    None
+                    if regime_data.get("crypto_v2_dead_zone_range_threshold") is None
+                    else float(regime_data.get("crypto_v2_dead_zone_range_threshold"))
+                ),
+                crypto_v2_switch_confirmation_bars=(
+                    None
+                    if regime_data.get("crypto_v2_switch_confirmation_bars") is None
+                    else int(regime_data.get("crypto_v2_switch_confirmation_bars"))
+                ),
+                crypto_v2_trend_confirmation_bars=(
+                    None
+                    if regime_data.get("crypto_v2_trend_confirmation_bars") is None
+                    else int(regime_data.get("crypto_v2_trend_confirmation_bars"))
+                ),
+                crypto_v2_panic_confirmation_bars=(
+                    None
+                    if regime_data.get("crypto_v2_panic_confirmation_bars") is None
+                    else int(regime_data.get("crypto_v2_panic_confirmation_bars"))
+                ),
+                crypto_v2_allow_range_to_trend_upgrade=bool(
+                    regime_data.get("crypto_v2_allow_range_to_trend_upgrade", True)
+                ),
+                crypto_v2_allow_dead_zone_to_trend_upgrade=bool(
+                    regime_data.get("crypto_v2_allow_dead_zone_to_trend_upgrade", True)
+                ),
             ),
             capital=CapitalLimits(
                 reference_equity_usd=float(capital_data.get("reference_equity_usd", 1000.0)),
@@ -1227,6 +1384,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             bis_max_total_open_risk_pct=float(
                 pod_b_data.get("bis_max_total_open_risk_pct", 0.02)
             ),
+            pattern_vetoes=_pod_b_pattern_vetoes(pod_b_data.get("pattern_vetoes", [])),
+            pattern_watchers=_pod_b_pattern_watchers(pod_b_data.get("pattern_watchers", [])),
         ),
         pod_c=PodCConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_C", bool(pod_c_data.get("enabled", False))),
