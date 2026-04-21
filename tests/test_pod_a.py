@@ -212,7 +212,22 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertIn("confirmation_quality", supportive.confidence_components)
 
     def test_generates_ichimoku_continuation_long_when_mtf_trend_is_clean(self) -> None:
-        signal = self.service.evaluate(
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                symbol_modes={
+                    "BIO": PodASymbolModeConfig(
+                        enabled=True,
+                        allowed_setups=["ichimoku_continuation_long"],
+                        allowed_regimes=["TrendExpansion"],
+                        min_confidence=0.65,
+                    )
+                },
+            ),
+        )
+        service = AnchorTrendService(config)
+        signal = service.evaluate(
             AnchorTrendContext(
                 symbol="BIO",
                 regime="TrendExpansion",
@@ -240,7 +255,22 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertEqual(signal.setup, "ichimoku_continuation_long")
 
     def test_generates_ichimoku_continuation_short_when_bearish_trend_is_clean(self) -> None:
-        signal = self.service.evaluate(
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                symbol_modes={
+                    "TAO": PodASymbolModeConfig(
+                        enabled=True,
+                        allowed_setups=["ichimoku_continuation_short"],
+                        allowed_regimes=["TrendExpansion"],
+                        min_confidence=0.65,
+                    )
+                },
+            ),
+        )
+        service = AnchorTrendService(config)
+        signal = service.evaluate(
             AnchorTrendContext(
                 symbol="TAO",
                 regime="TrendExpansion",
@@ -266,6 +296,34 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         assert signal is not None
         self.assertEqual(signal.setup, "ichimoku_continuation_short")
+
+    def test_default_prod_config_keeps_trend_pullback_when_ichimoku_special_mode_is_not_enabled(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="BIO",
+                regime="TrendExpansion",
+                price=1.024,
+                ema_fast=1.018,
+                ema_slow=0.998,
+                vwap_distance_bps=3.0,
+                structure_score=0.46,
+                funding_rate=0.0,
+                spread_bps=1.0,
+                btc_aligned=True,
+                trend_1h_bps=22.0,
+                trend_4h_bps=48.0,
+                mtf_bias_score=31.0,
+                candles_ready=True,
+                ichimoku_bias_score=0.42,
+                supertrend_direction=1,
+                stoch_rsi_k=0.58,
+                vwap_reclaim_score=0.06,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "trend_pullback_long")
 
     def test_generates_short_signal_in_trend_expansion(self) -> None:
         signal = self.service.evaluate(

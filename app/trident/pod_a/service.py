@@ -18,6 +18,7 @@ from app.trident.pod_a.setups import (
     nearest_resistance_level,
     nearest_support_level,
 )
+from app.trident.pod_a.symbol_mode import active_symbol_mode
 from app.trident.pod_a.structure import long_invalidation_price, short_invalidation_price
 from app.trident.pod_a.signals import AnchorTrendContext, AnchorTrendSignal
 
@@ -54,6 +55,12 @@ class AnchorTrendService:
 
     def __init__(self, config: AppConfig | None = None) -> None:
         self._config = config or load_config("config/trident.toml")
+        self._allowed_setups = {
+            item.strip() for item in self._config.pod_a.allowed_setups if item.strip()
+        }
+        self._disabled_setups = {
+            item.strip() for item in self._config.pod_a.disabled_setups if item.strip()
+        }
 
     def evaluate(self, context: AnchorTrendContext) -> AnchorTrendSignal | None:
         if not passes_anchor_filters(context):
@@ -347,7 +354,7 @@ class AnchorTrendService:
                 confidence_components=components,
             )
 
-        if self._is_ichimoku_continuation_long(context):
+        if self._setup_allowed_for_symbol("ichimoku_continuation_long", context.symbol) and self._is_ichimoku_continuation_long(context):
             components = self._confidence_components(context, "long")
             components["setup_bonus"] = 0.07
             return AnchorTrendSignal(
@@ -377,7 +384,7 @@ class AnchorTrendService:
                 confidence_components=components,
             )
 
-        if self._is_ichimoku_continuation_short(context):
+        if self._setup_allowed_for_symbol("ichimoku_continuation_short", context.symbol) and self._is_ichimoku_continuation_short(context):
             components = self._confidence_components(context, "short")
             components["setup_bonus"] = 0.07
             return AnchorTrendSignal(
@@ -492,8 +499,16 @@ class AnchorTrendService:
             "vwap_reclaim_long": is_vwap_reclaim_long(context),
             "vwap_reclaim_short": is_vwap_reclaim_short(context),
             "reversal_fade_short": self._is_reversal_fade_short(context),
-            "ichimoku_continuation_long": self._is_ichimoku_continuation_long(context),
-            "ichimoku_continuation_short": self._is_ichimoku_continuation_short(context),
+            "ichimoku_continuation_long": self._setup_allowed_for_symbol(
+                "ichimoku_continuation_long",
+                context.symbol,
+            )
+            and self._is_ichimoku_continuation_long(context),
+            "ichimoku_continuation_short": self._setup_allowed_for_symbol(
+                "ichimoku_continuation_short",
+                context.symbol,
+            )
+            and self._is_ichimoku_continuation_short(context),
             "trend_pullback_long": self._is_long_setup(context),
             "trend_pullback_short": self._is_short_setup(context),
         }
@@ -541,6 +556,25 @@ class AnchorTrendService:
             and context.vwap_distance_bps <= MAX_PULLBACK_DISTANCE_BPS
             and self._passes_indicator_vetoes(context, "short")
         )
+
+    def _setup_allowed_for_symbol(self, setup: str, symbol: str | None) -> bool:
+        symbol_mode = active_symbol_mode(self._config.pod_a, symbol)
+        symbol_mode_allowed_setups = (
+            {item.strip() for item in symbol_mode.allowed_setups if item.strip()}
+            if symbol_mode is not None
+            else set()
+        )
+        if symbol_mode_allowed_setups and setup not in symbol_mode_allowed_setups:
+            return False
+        if (
+            self._allowed_setups
+            and setup not in self._allowed_setups
+            and setup not in symbol_mode_allowed_setups
+        ):
+            return False
+        if setup in self._disabled_setups and setup not in symbol_mode_allowed_setups:
+            return False
+        return True
 
     def _is_ichimoku_continuation_long(self, context: AnchorTrendContext) -> bool:
         return (
