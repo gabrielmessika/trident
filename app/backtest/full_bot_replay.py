@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from app.backtest.pod_a_executor import PodAExecutor
 from app.backtest.pod_report import PodABacktestReport
 from app.backtest.routing_replay import RoutingReplayRunner
 from app.backtest.snapshot_loader import SnapshotLoader
@@ -71,7 +72,7 @@ class FullBotBacktestRunner:
         self.loader = SnapshotLoader()
         self.pod_a_risk_gate = PodARiskGate(self.config)
         self.pod_c_risk_gate = PodCRiskGate(self.config)
-        self.pod_a_executor = DirectionalExecutor(self.config)
+        self.pod_a_executor = PodAExecutor(self.config)
         self.pod_c_executor = DirectionalExecutor(self.config)
         self.pod_b_service = BreakoutService(self.config)
         self.pod_b_planner = BreakoutPlanner(self.config)

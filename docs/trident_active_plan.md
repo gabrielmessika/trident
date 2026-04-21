@@ -1,6 +1,6 @@
 # TRIDENT Active Plan
 
-Date: `2026-04-19`
+Date: `2026-04-21`
 
 ## Status
 
@@ -21,6 +21,12 @@ Date: `2026-04-19`
   - `Pod A +424.49`
   - `Pod B 0.00`
   - `Pod C +21.43`
+- note courante:
+  - le profil repo `config/trident.toml` inclut maintenant `pod_a.stop_grace_minutes = 165`
+  - validation replay sur le fetch serveur courant:
+    - `stop_grace=0`: `+421.10 USD`
+    - `stop_grace=165`: `+546.69 USD`
+    - delta `+125.59 USD`
 
 ### Shadow agressif
 
@@ -61,6 +67,113 @@ Date: `2026-04-19`
 - spec detaillee de l'ancien "nouveau Pod B":
   - archivee comme document historique
 
+## Validations Recentes
+
+### 2026-04-21 - Pod A `stop_grace` sur snapshots serveur comparables
+
+Contexte:
+
+- le replay complet aligne serveur / code fixe tourne sur:
+  - [stop_grace_solutions_20260421/baseline_current.md](/workspaces/trident/server-data/replay_reports/stop_grace_solutions_20260421/baseline_current.md)
+  - [stop_grace_solutions_20260421/baseline_current.json](/workspaces/trident/server-data/replay_reports/stop_grace_solutions_20260421/baseline_current.json)
+  - baseline recente sur fetch courant apres fix Pod A:
+    - total `+421.10 USD`
+    - `Pod A +399.67`
+    - `Pod B 0.00`
+    - `Pod C +21.43`
+
+Sweep initial:
+
+- artefacts:
+  - [stop_grace_solutions_20260421/scenario_summary.md](/workspaces/trident/server-data/replay_reports/stop_grace_solutions_20260421/scenario_summary.md)
+- resultat cle:
+  - `30m allpods`: `+18.30 USD`
+  - `60m allpods`: `+27.49 USD`
+  - `90m allpods`: `-0.29 USD`
+  - `120m allpods`: `+96.20 USD`
+  - `180m allpods`: `+124.62 USD`
+  - `120m pod_a_only`: `+95.60 USD`
+  - `120m pod_a_trend_only`: `+95.60 USD`
+- lecture retenue:
+  - le gain ne vient pas d'un effet portefeuille global
+  - l'effet utile est quasi entierement concentre sur `Pod A / trend_pullback_long`
+
+Raffinement cible `Pod A / trend_pullback_long`:
+
+- artefacts:
+  - [stop_grace_refine_20260421/scenario_summary.md](/workspaces/trident/server-data/replay_reports/stop_grace_refine_20260421/scenario_summary.md)
+  - [stop_grace_refine_20260421/daily_delta_vs_baseline.csv](/workspaces/trident/server-data/replay_reports/stop_grace_refine_20260421/daily_delta_vs_baseline.csv)
+- candidats testes:
+  - `105m`: `-24.99 USD`
+  - `120m`: `+95.60 USD`
+  - `135m`: `+107.57 USD`
+  - `150m`: `+95.66 USD`
+  - `165m`: `+125.59 USD`
+  - `180m`: `+124.02 USD`
+  - `210m`: `+162.99 USD`
+- stabilite journaliere:
+  - `120m`, `135m`, `165m`, `180m` ont chacun `8` jours meilleurs et `5` jours moins bons que la baseline
+  - `210m` monte a `9` jours meilleurs et `4` jours moins bons
+  - `105m` echoue (`6` jours meilleurs, `7` jours moins bons), donc le levier n'est pas monotone
+- vigilance anti-overfit:
+  - `165m` et `180m` gardent un gros poids sur `2026-04-09` et `2026-04-16`
+  - `210m` fait le meilleur chiffre brut, mais doit encore etre traite comme candidat agressif tant qu'il n'est pas valide sur plus d'inputs
+
+Check de robustesse par sous-fenetres:
+
+- artefact:
+  - [stop_grace_robustness_20260421/robustness_matrix.md](/workspaces/trident/server-data/replay_reports/stop_grace_robustness_20260421/robustness_matrix.md)
+- deltas vs baseline:
+  - `120m`: full `+95.60`, `2026-04-05 -> 2026-04-12 +18.88`, `2026-04-13 -> 2026-04-17 +84.49`
+  - `135m`: full `+107.57`, `2026-04-05 -> 2026-04-12 +24.08`, `2026-04-13 -> 2026-04-17 +88.84`
+  - `165m`: full `+125.59`, `2026-04-05 -> 2026-04-12 +52.93`, `2026-04-13 -> 2026-04-17 +90.68`
+  - `210m`: full `+162.99`, `2026-04-05 -> 2026-04-12 +39.23`, `2026-04-13 -> 2026-04-17 +98.32`
+- conclusion retenue:
+  - meilleur compromis perf / robustesse a ce stade: `stop_grace_165m` applique seulement a `Pod A / trend_pullback_long`
+  - variante prudente: `135m`
+  - `210m` reste un bon candidat `shadow-only`, mais pas encore la recommendation prod
+
+Decision de plan:
+
+- ne pas deployer de `stop_grace` global a tous les pods
+- promotion retenue dans le profil repo:
+  - scope minimal `Pod A / trend_pullback_long` seulement
+  - reference courante `165m`
+  - fallback prudent `135m`
+- avant confiance large / extension future:
+  - valider sur de nouveaux fetchs serveurs hors de cette fenetre
+  - verifier que le gain ne vient pas seulement de `2026-04-09` et `2026-04-16`
+
+Validation dynamique finale:
+
+- artefacts:
+  - [stop_grace_dynamic_20260421/scenario_summary.md](/workspaces/trident/server-data/replay_reports/stop_grace_dynamic_20260421/scenario_summary.md)
+  - [stop_grace_dynamic_v2_20260421/scenario_summary.md](/workspaces/trident/server-data/replay_reports/stop_grace_dynamic_v2_20260421/scenario_summary.md)
+- variantes dynamiques testées:
+  - `dynamic_extend_135_to_165`: identique au `135m`, donc aucun gain additionnel utile
+  - `dynamic_165_cut_on_regime_downgrade`: `498.51 USD`, protege une partie de la queue de pertes mais coupe trop de gagnants
+  - `dynamic_extend_165_to_210_on_recovery`: `525.15 USD`, reste sous le `165m` fixe
+  - `partial_grace_165m_stop_1p5x`: `439.61 USD`, nettement moins bon que `165m`
+- conclusion retenue:
+  - aucune variante dynamique testee ne bat le `165m` fixe
+  - le concept `stop_grace` est valide, mais la meilleure implementation a ce stade reste un `165m` fixe et scope a `Pod A / trend_pullback_long`
+
+Promotion retenue dans le repo:
+
+- implementation:
+  - `config/trident.toml`: `pod_a.stop_grace_minutes = 165`
+  - `app/settings.py`: ajout du champ de config `stop_grace_minutes`
+  - `app/backtest/pod_a_executor.py`: application effective du `stop_grace` sur `Pod A`
+  - `app/backtest/full_bot_replay.py`: replay aligne sur `PodAExecutor`
+  - `tests/test_pod_a_executor.py`: couverture de non-regression
+- validation finale sur le meme input serveur:
+  - baseline reexecutee avec `stop_grace=0`: `+421.10 USD`
+  - profil repo courant avec `stop_grace=165`: `+546.69 USD`
+  - delta total: `+125.59 USD`
+- statut:
+  - `165m` est maintenant la reference repo pour `Pod A`
+  - le redeploiement / alignement machine reelle reste suivi dans la roadmap d'alignement prod
+
 ## Roadmap Restante
 
 ### 1. Alignement Prod Et Nettoyage Des Profils
@@ -86,6 +199,14 @@ Objectif:
 Reste a faire:
 
 - reduire les `routing_revoked` restants hors `campaign`
+- surveiller et revalider hors echantillon le `stop_grace_165m` deja promu dans le profil repo:
+  - `Pod A / trend_pullback_long` seulement
+  - verifier sur nouveaux fetchs serveur comparables que le gain reste positif
+  - confirmer que le gain n'est pas capte par 1-2 journees exceptionnelles
+- ne pas relancer de variante dynamique `stop_grace` sans hypothese contextuelle plus solide:
+  - les variantes dynamiques testees a ce stade sont toutes sous le `165m` fixe
+- garder `stop_grace_210m` en piste research seulement:
+  - pas de promotion du profil repo tant qu'il n'est pas plus robuste que `165m` sur plusieurs fenetres
 - faire evoluer `Phase 2b` vers un vrai modele:
   - rejet confirme
   - reversal fade strict
