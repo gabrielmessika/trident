@@ -380,14 +380,20 @@ class SupervisorTests(unittest.TestCase):
         )
 
         snapshot = supervisor.snapshot()
+        expected_pod_a_pct = self.config.trident.allocations.trend_expansion.pod_a
+        expected_cash_pct = round(1.0 - expected_pod_a_pct, 6)
+        expected_per_symbol_pct = round(expected_pod_a_pct / 4.0, 6)
 
         self.assertEqual(snapshot["regime"], "TrendExpansion")
         self.assertEqual(snapshot["capital_plan"]["regime"], "TrendExpansion")
         self.assertEqual(snapshot["capital_plan"]["total_equity_usd"], 1000.0)
-        self.assertEqual(snapshot["pods"]["pod_a"]["target_pct"], 0.7)
+        self.assertEqual(snapshot["pods"]["pod_a"]["target_pct"], expected_pod_a_pct)
         self.assertEqual(snapshot["pods"]["pod_b"]["target_pct"], 0.0)
-        self.assertEqual(snapshot["capital_plan"]["cash_pct"], 0.3)
-        self.assertEqual(snapshot["capital_plan"]["pods"]["pod_a"]["symbols"][0]["target_pct"], 0.175)
+        self.assertEqual(snapshot["capital_plan"]["cash_pct"], expected_cash_pct)
+        self.assertEqual(
+            snapshot["capital_plan"]["pods"]["pod_a"]["symbols"][0]["target_pct"],
+            expected_per_symbol_pct,
+        )
 
     def test_supervisor_previews_pod_a_signals(self) -> None:
         supervisor = TridentSupervisor(

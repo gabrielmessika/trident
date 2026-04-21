@@ -188,6 +188,10 @@ class RoutingReplayTests(unittest.TestCase):
 
     def test_routing_replay_tracks_reassignments(self) -> None:
         self.config.trident.routing.reassignment_cooldown_seconds = 0
+        self.config.trident.allocations.trend_expansion.pod_a = 0.45
+        self.config.trident.allocations.trend_expansion.pod_b = 0.35
+        self.config.trident.allocations.trend_expansion.pod_c = 0.0
+        self.config.trident.allocations.trend_expansion.cash = 0.20
         records = [
             {
                 "timestamp": "2026-04-07T00:00:00Z",
@@ -201,7 +205,7 @@ class RoutingReplayTests(unittest.TestCase):
                 },
                 "symbols": [
                     {
-                        "symbol": "SPX",
+                        "symbol": "BTC",
                         "price": 5100.0,
                         "ema_fast": 5100.5,
                         "ema_slow": 5100.0,
@@ -215,6 +219,8 @@ class RoutingReplayTests(unittest.TestCase):
                         "bucket_volume": 0.5,
                         "bucket_trade_count": 5,
                         "bucket_range_bps": 12.0,
+                        "realized_vol_short_bps": 6.1,
+                        "realized_vol_long_bps": 5.0,
                     }
                 ],
             },
@@ -230,20 +236,28 @@ class RoutingReplayTests(unittest.TestCase):
                 },
                 "symbols": [
                     {
-                        "symbol": "SPX",
+                        "symbol": "BTC",
                         "price": 5110.0,
-                        "ema_fast": 5124.0,
-                        "ema_slow": 5092.0,
-                        "vwap_distance_bps": -2.5,
-                        "structure_score": 0.42,
+                        "ema_fast": 5110.3,
+                        "ema_slow": 5110.0,
+                        "vwap_distance_bps": 6.0,
+                        "structure_score": 0.2,
                         "funding_rate": 0.0,
                         "spread_bps": 1.0,
                         "btc_aligned": True,
-                        "book_imbalance": 0.12,
-                        "trade_flow_bias": 0.10,
-                        "bucket_volume": 1.8,
-                        "bucket_trade_count": 7,
-                        "bucket_range_bps": 20.0,
+                        "book_imbalance": 0.35,
+                        "trade_flow_bias": 0.35,
+                        "bucket_volume": 2.0,
+                        "bucket_trade_count": 12,
+                        "bucket_range_bps": 35.0,
+                        "delta_book_imbalance": 0.3,
+                        "delta_trade_flow_bias": 0.35,
+                        "volume_ratio": 2.8,
+                        "trade_count_ratio": 2.4,
+                        "realized_vol_short_bps": 8.0,
+                        "realized_vol_long_bps": 4.0,
+                        "compression_score": 0.4,
+                        "microprice_dislocation_bps": 1.5,
                     }
                 ],
             },
@@ -260,12 +274,16 @@ class RoutingReplayTests(unittest.TestCase):
         self.assertGreaterEqual(result.reassignment_event_count, 1)
         self.assertGreaterEqual(result.local_regime_transition_count, 2)
         self.assertEqual(result.max_ownership_conflict_count, 0)
-        self.assertEqual(result.symbol_reassignment_count_by_symbol.get("SPX"), 1)
+        self.assertEqual(result.symbol_reassignment_count_by_symbol.get("BTC"), 1)
 
     def test_routing_replay_applies_symbol_debounce_to_limit_second_reassignment(self) -> None:
         self.config.trident.routing.reassignment_cooldown_seconds = 0
         self.config.trident.routing.reassignment_debounce_min_score = 0.0
-        self.config.trident.routing.reassignment_debounce_seconds_by_symbol = {"SPX": 3600}
+        self.config.trident.routing.reassignment_debounce_seconds_by_symbol = {"BTC": 3600}
+        self.config.trident.allocations.trend_expansion.pod_a = 0.45
+        self.config.trident.allocations.trend_expansion.pod_b = 0.35
+        self.config.trident.allocations.trend_expansion.pod_c = 0.0
+        self.config.trident.allocations.trend_expansion.cash = 0.20
         records = [
             {
                 "timestamp": "2026-04-07T00:00:00Z",
@@ -279,7 +297,7 @@ class RoutingReplayTests(unittest.TestCase):
                 },
                 "symbols": [
                     {
-                        "symbol": "SPX",
+                        "symbol": "BTC",
                         "price": 5100.0,
                         "ema_fast": 5100.5,
                         "ema_slow": 5100.0,
@@ -293,6 +311,8 @@ class RoutingReplayTests(unittest.TestCase):
                         "bucket_volume": 0.5,
                         "bucket_trade_count": 5,
                         "bucket_range_bps": 12.0,
+                        "realized_vol_short_bps": 6.1,
+                        "realized_vol_long_bps": 5.0,
                     }
                 ],
             },
@@ -308,20 +328,28 @@ class RoutingReplayTests(unittest.TestCase):
                 },
                 "symbols": [
                     {
-                        "symbol": "SPX",
+                        "symbol": "BTC",
                         "price": 5110.0,
-                        "ema_fast": 5124.0,
-                        "ema_slow": 5092.0,
-                        "vwap_distance_bps": -2.5,
-                        "structure_score": 0.42,
+                        "ema_fast": 5110.3,
+                        "ema_slow": 5110.0,
+                        "vwap_distance_bps": 6.0,
+                        "structure_score": 0.2,
                         "funding_rate": 0.0,
                         "spread_bps": 1.0,
                         "btc_aligned": True,
-                        "book_imbalance": 0.12,
-                        "trade_flow_bias": 0.10,
-                        "bucket_volume": 1.8,
-                        "bucket_trade_count": 7,
-                        "bucket_range_bps": 20.0,
+                        "book_imbalance": 0.35,
+                        "trade_flow_bias": 0.35,
+                        "bucket_volume": 2.0,
+                        "bucket_trade_count": 12,
+                        "bucket_range_bps": 35.0,
+                        "delta_book_imbalance": 0.3,
+                        "delta_trade_flow_bias": 0.35,
+                        "volume_ratio": 2.8,
+                        "trade_count_ratio": 2.4,
+                        "realized_vol_short_bps": 8.0,
+                        "realized_vol_long_bps": 4.0,
+                        "compression_score": 0.4,
+                        "microprice_dislocation_bps": 1.5,
                     }
                 ],
             },
@@ -337,7 +365,7 @@ class RoutingReplayTests(unittest.TestCase):
                 },
                 "symbols": [
                     {
-                        "symbol": "SPX",
+                        "symbol": "BTC",
                         "price": 5100.0,
                         "ema_fast": 5100.5,
                         "ema_slow": 5100.0,
@@ -351,6 +379,8 @@ class RoutingReplayTests(unittest.TestCase):
                         "bucket_volume": 0.5,
                         "bucket_trade_count": 5,
                         "bucket_range_bps": 12.0,
+                        "realized_vol_short_bps": 6.1,
+                        "realized_vol_long_bps": 5.0,
                     }
                 ],
             },
@@ -365,7 +395,7 @@ class RoutingReplayTests(unittest.TestCase):
 
         self.assertEqual(result.records_processed, 3)
         self.assertEqual(result.reassignment_event_count, 1)
-        self.assertEqual(result.symbol_reassignment_count_by_symbol.get("SPX"), 1)
+        self.assertEqual(result.symbol_reassignment_count_by_symbol.get("BTC"), 1)
         self.assertIn("dynamic_debounce", result.mode_counts)
 
 

@@ -222,20 +222,23 @@ for item in report.get("pods", []):
     if isinstance(item, dict) and item.get("pod"):
         pods[item["pod"]] = item
 
+def effective_process_state(pod_name: str, runtime_filename: str) -> str:
+    report_state = str(pods.get(pod_name, {}).get("process_state", "")).strip()
+    if report_state:
+        return report_state
+    return str(load_json(runtime_dir / runtime_filename).get("process_state", "")).strip()
+
 lines = []
 if health.get("status") == "ok":
     lines.append("trident-api\tUp (derived from local /health snapshot)")
 
-pod_a = load_json(runtime_dir / "pod_a_live_status.json")
-if pod_a.get("process_state") == "running" or pods.get("pod_a", {}).get("process_state") == "running":
+if effective_process_state("pod_a", "pod_a_live_status.json") == "running":
     lines.append("trident-pod-a-live\tUp (derived from local runtime status)")
 
-pod_b = load_json(runtime_dir / "pod_b_live_status.json")
-if pod_b.get("process_state") == "running" or pods.get("pod_b", {}).get("process_state") == "running":
+if effective_process_state("pod_b", "pod_b_live_status.json") == "running":
     lines.append("trident-pod-b-live\tUp (derived from local runtime status)")
 
-pod_c = load_json(runtime_dir / "pod_c_live_status.json")
-if pod_c.get("process_state") == "running" or pods.get("pod_c", {}).get("process_state") == "running":
+if effective_process_state("pod_c", "pod_c_live_status.json") == "running":
     lines.append("trident-pod-c-live\tUp (derived from local runtime status)")
 
 outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")

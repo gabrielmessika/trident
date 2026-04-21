@@ -92,6 +92,7 @@ class CapitalAllocatorTests(unittest.TestCase):
         self.config.pod_c.enabled = True
         self.config.pod_b.enabled = True
         self.config.pod_b.max_allocation_pct = 0.85
+        self.config.trident.allocations.range_auction.pod_b = 0.75
         plan = self.allocator.build_plan(
             regime=Regime.RANGE_AUCTION,
             owned_symbols_by_pod={
@@ -126,6 +127,8 @@ class CapitalAllocatorTests(unittest.TestCase):
         )
 
     def test_correlated_crypto_groups_scale_uniform_allocations_and_return_cash(self) -> None:
+        self.config.pod_b.enabled = True
+        self.config.trident.allocations.range_auction.pod_b = 0.40
         plan = self.allocator.build_plan(
             regime=Regime.RANGE_AUCTION,
             owned_symbols_by_pod={

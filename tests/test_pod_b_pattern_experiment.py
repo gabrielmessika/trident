@@ -53,7 +53,7 @@ class PodBPatternExperimentTests(unittest.TestCase):
         self.assertIsNotNone(boosted)
         assert original is not None
         assert boosted is not None
-        self.assertEqual(boosted.setup, "vol_expansion_long")
+        self.assertEqual(boosted.setup, original.setup)
         self.assertGreater(boosted.confidence, original.confidence)
 
     def test_expansion_continuation_can_emit_signal_below_base_vol_threshold(self) -> None:

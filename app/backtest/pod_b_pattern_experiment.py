@@ -48,7 +48,7 @@ class ExperimentalBreakoutService(BreakoutService):
         signal: BreakoutSignal,
         context: BreakoutContext,
     ) -> BreakoutSignal:
-        if signal.setup != "vol_expansion_long":
+        if signal.side != "long":
             return signal
         if not self._matches_continuation_pattern(context):
             return signal
@@ -101,6 +101,13 @@ class ExperimentalBreakoutService(BreakoutService):
             activity_score=activity_score,
             breakout_score=breakout_score,
             setup_bonus=0.09,
+        )
+        # Continuation entries intentionally tolerate less compression than the
+        # base breakout families, so do not let a low compression snapshot
+        # dominate the confidence score here.
+        components["compression_quality"] = round(
+            max(float(components.get("compression_quality", 0.0)), 0.45),
+            4,
         )
         components["vol_expansion_quality"] = round(_clamp(vol_ratio / 2.0), 4)
         components["continuation_quality"] = round(

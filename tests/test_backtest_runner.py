@@ -187,7 +187,7 @@ class PodABacktestRunnerTests(unittest.TestCase):
             self.assertEqual(result.accepted_by_date, {})
             self.assertEqual(result.accepted_by_setup, {})
             self.assertEqual(result.rejected_by_date, {"2026-04-04": 1})
-            self.assertEqual(result.rejections_by_reason, {"setup_disabled": 1})
+            self.assertEqual(result.rejections_by_reason, {"setup_not_allowed": 1})
             self.assertEqual(result.rejected_by_setup, {"trend_pullback_short": 1})
 
     def test_runner_rejects_disabled_liquidity_sweep_reclaim_short(self) -> None:
@@ -232,7 +232,7 @@ class PodABacktestRunnerTests(unittest.TestCase):
             self.assertEqual(result.accepted_count, 0)
             self.assertEqual(result.rejected_count, 1)
             self.assertEqual(result.closed_trade_count, 0)
-            self.assertEqual(result.rejections_by_reason, {"setup_disabled": 1})
+            self.assertEqual(result.rejections_by_reason, {"setup_not_allowed": 1})
             self.assertEqual(result.rejected_by_setup, {"liquidity_sweep_reclaim_short": 1})
 
     def test_runner_respects_small_wallet_override(self) -> None:

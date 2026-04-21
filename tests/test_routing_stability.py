@@ -10,6 +10,7 @@ class RoutingStabilityTests(unittest.TestCase):
         self.config = load_config("config/trident.toml")
 
     def test_symbol_router_prefers_existing_owner_during_capacity_trim_within_margin(self) -> None:
+        self.config.pod_b.enabled = True
         self.config.trident.capital.reference_equity_usd = 100.0
         self.config.trident.capital.min_symbol_allocation_usd = 25.0
         self.config.trident.allocations.dead_zone.pod_a = 0.0
@@ -52,6 +53,7 @@ class RoutingStabilityTests(unittest.TestCase):
         self.assertEqual(resolved["ETH"].reason, "capacity_trim:pod_b")
 
     def test_symbol_router_capacity_trim_uses_wider_preservation_margin_for_incumbent(self) -> None:
+        self.config.pod_b.enabled = True
         self.config.trident.capital.reference_equity_usd = 100.0
         self.config.trident.capital.min_symbol_allocation_usd = 25.0
         self.config.trident.allocations.dead_zone.pod_a = 0.0
