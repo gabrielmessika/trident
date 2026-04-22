@@ -154,6 +154,8 @@ XRP = 1440
 ZEC = 1440
 ZRO = 1440
 TAO = 240
+"XYZ:SP500" = 540
+"XYZ:XYZ100" = 540
 
 [trident.routing]
 min_assign_score = 0.40

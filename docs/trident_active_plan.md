@@ -14,17 +14,17 @@ Date: `2026-04-22`
 
 - config: `config/trident.toml`
 - backtest de reference propre:
-  - [official_baseline_current_cli_20260422.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422.md)
-  - [official_baseline_current_cli_20260422.json](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422.json)
+  - [official_baseline_current_cli_20260422_pod_c_index540.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422_pod_c_index540.md)
+  - [official_baseline_current_cli_20260422_pod_c_index540.json](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422_pod_c_index540.json)
 - resultat:
-  - total `+545.09 USD`
+  - total `+557.54 USD`
   - `Pod A +535.37`
   - `Pod B 0.00`
-  - `Pod C +9.72`
+  - `Pod C +22.17`
 - note courante:
-  - le profil repo courant inclut `pod_a.stop_grace_minutes = 165` et `pod_a.opposite_signal_debounce_minutes = 15`
+  - le profil repo courant inclut `pod_a.stop_grace_minutes = 165`, `pod_a.opposite_signal_debounce_minutes = 15` et la promo `Pod C index routing grace 540m`
   - baseline officielle rerun sur le fetch serveur courant `2026-04-05 -> 2026-04-22`
-  - delta vs baseline officielle `20260419`: `+99.17 USD`
+  - delta vs baseline officielle pre-promo `20260422`: `+12.45 USD`
 
 ### Shadow agressif
 
@@ -281,6 +281,69 @@ Contexte:
   - `official_baseline_current_cli_20260422` devient la baseline replay de reference
   - les artefacts `20260419` restent historiques, mais ne doivent plus etre utilises comme reference prod par defaut
 
+### 2026-04-22 - Sweep `Pod C` sur `routing_revoked` clusterise
+
+- suite des pistes `Pod C` identifiees dans le plan actif
+- objectif:
+  - tester une extension de `routing_revoke_grace` par symbole Tradfi sur le fetch officiel courant
+  - verifier si `index` merite une promo repo et si `silver` doit rester en `shadow-only`
+- artefacts:
+  - [pod_c_routing_grace_candidates_20260422/scenario_summary.md](/workspaces/trident/server-data/replay_reports/pod_c_routing_grace_candidates_20260422/scenario_summary.md)
+  - [pod_c_routing_grace_candidates_20260422/scenario_summary.json](/workspaces/trident/server-data/replay_reports/pod_c_routing_grace_candidates_20260422/scenario_summary.json)
+  - [pod_c_routing_grace_candidates_20260422/report.md](/workspaces/trident/server-data/replay_reports/pod_c_routing_grace_candidates_20260422/report.md)
+- baseline courante:
+  - total: `+545.09 USD`
+  - `Pod C`: `+9.72 USD`
+  - `routing_revoked`: `14` trades, `-7.32 USD`
+  - detail `routing_revoked`: `index -2.99`, `silver -4.49`, `gold -2.76`, `oil +2.92`
+- scenarios testes:
+  - `index_180m`: `+7.07 USD`
+  - `index_540m`: `+12.45 USD`
+  - `silver_360m`: `+0.55 USD`
+  - `index_540m_plus_silver_360m`: `+13.00 USD`
+- lecture retenue:
+  - `index_540m` est le meilleur candidat propre:
+    - gain net `+12.45 USD`
+    - pas de degradation des `stop_hit`
+    - meilleure piste repo a ce stade
+  - `silver_360m` est trop fragile:
+    - gain tres faible
+    - `stop_hit` `3 -> 6`
+    - pnl `stop_hit` `-14.83 -> -27.80 USD`
+  - le combo `index_540m + silver_360m` fait le meilleur chiffre brut, mais le sur-gain vs `index_540m` seul n'est que `+0.55 USD` et herite de la degradation `silver`
+  - `gold` reste hors promo
+- decision de travail:
+  - candidat principal a implementer ensuite:
+    - `XYZ:SP500 = 540`
+    - `XYZ:XYZ100 = 540`
+  - garder `XYZ:SILVER` en `shadow-only`
+  - ne rien faire pour `XYZ:GOLD`
+  - ne pas relacher globalement les `stop_hit` de `Pod C`
+
+### 2026-04-22 - Promo repo `Pod C index routing grace 540m`
+
+- implementation repo:
+  - [config/trident.toml](/workspaces/trident/config/trident.toml): ajout de `routing_revoke_grace_minutes_by_symbol`
+    - `XYZ:SP500 = 540`
+    - `XYZ:XYZ100 = 540`
+  - [tests/test_pod_c.py](/workspaces/trident/tests/test_pod_c.py): test cible sur la grace specifique `index`
+- validation:
+  - test cible:
+    - `python -m unittest tests.test_pod_c.PodCTests.test_pod_c_keeps_index_position_with_symbol_specific_routing_revoke_grace -q`
+  - replay officiel:
+    - [official_baseline_current_cli_20260422_pod_c_index540.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422_pod_c_index540.md)
+    - [official_baseline_current_cli_20260422_pod_c_index540.json](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422_pod_c_index540.json)
+- resultat:
+  - total: `+557.54 USD`
+  - `Pod A`: `+535.37 USD`
+  - `Pod B`: `0.00 USD`
+  - `Pod C`: `+22.17 USD`
+  - delta vs baseline officielle pre-promo `20260422`: `+12.45 USD`
+- decision:
+  - la variante `index_540m` est maintenant promue dans le profil repo
+  - `silver` reste en `shadow-only`
+  - `gold` reste hors promo
+
 ## Roadmap Restante
 
 ### 1. Alignement Prod Et Nettoyage Des Profils
@@ -360,8 +423,8 @@ Reste a faire:
 
 - verifier s'il reste un vrai levier sur `equity` et `fx`
 - autopsier `routing_revoked` par cluster sur `Pod C`:
-  - candidat principal: `routing_revoke_grace` plus long sur `index` seulement
-  - variante secondaire: `silver` en `shadow-only`
+  - candidat principal retenu a ce stade: `routing_revoke_grace` plus long sur `index` seulement (`XYZ:SP500`, `XYZ:XYZ100` a `540m`) deja promu dans le repo
+  - variante secondaire: `silver` en `shadow-only` seulement
   - ne pas etendre a `gold` sans nouvelle hypothese plus solide
 - ne pas relacher globalement les `stop_hit` de `Pod C`:
   - echantillon trop faible

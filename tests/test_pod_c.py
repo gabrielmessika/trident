@@ -907,6 +907,116 @@ class PodCTests(unittest.TestCase):
         self.assertEqual(batch.skipped_open_symbols, ["SPX"])
         self.assertFalse(batch.has_open_position_after["SPX"])
 
+    def test_pod_c_keeps_index_position_with_symbol_specific_routing_revoke_grace(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            trident=replace(
+                config.trident,
+                execution=replace(
+                    config.trident.execution,
+                    routing_revoke_grace_minutes=0,
+                    routing_revoke_grace_minutes_by_symbol={"XYZ:SP500": 540},
+                ),
+            ),
+        )
+        executor = DirectionalExecutor(config)
+        decision = RiskDecision(
+            accepted=True,
+            reason="accepted",
+            trade_plan=TradePlan(
+                symbol="XYZ:SP500",
+                side="long",
+                setup="tradfi_continuation_long",
+                confidence=0.78,
+                target_notional_usd=120.0,
+                stop_bps=55.0,
+                time_stop_hours=24,
+                reentry_cooldown_minutes=config.pod_c.reentry_cooldown_minutes,
+                margin_usd=24.0,
+                effective_leverage=5.0,
+                risk_budget_usd=6.6,
+                expected_loss_usd=2.2,
+                setup_details={"market_cluster": "index"},
+            ),
+        )
+
+        executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="XYZ:SP500",
+                    price=5100.0,
+                    ema_fast=5094.0,
+                    ema_slow=5078.0,
+                    vwap_distance_bps=-3.0,
+                    structure_score=0.28,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    market_cluster="index",
+                    cluster_aligned=True,
+                    cluster_leader="XYZ:SP500",
+                )
+            ],
+            risk_decisions=[decision],
+            signal_sides_by_symbol={"XYZ:SP500": "long"},
+            timestamp="2026-04-05T10:00:00Z",
+            allowed_symbols={"XYZ:SP500"},
+        )
+
+        within_grace = executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="XYZ:SP500",
+                    price=5102.0,
+                    ema_fast=5097.0,
+                    ema_slow=5080.0,
+                    vwap_distance_bps=-1.0,
+                    structure_score=0.24,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    market_cluster="index",
+                    cluster_aligned=True,
+                    cluster_leader="XYZ:SP500",
+                )
+            ],
+            risk_decisions=[],
+            signal_sides_by_symbol={},
+            timestamp="2026-04-05T12:00:00Z",
+            allowed_symbols=set(),
+        )
+
+        self.assertEqual(len(within_grace.closed_trades), 0)
+        self.assertTrue(within_grace.has_open_position_after["XYZ:SP500"])
+
+        after_grace = executor.process_record(
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="XYZ:SP500",
+                    price=5101.0,
+                    ema_fast=5096.0,
+                    ema_slow=5082.0,
+                    vwap_distance_bps=-2.0,
+                    structure_score=0.2,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    market_cluster="index",
+                    cluster_aligned=True,
+                    cluster_leader="XYZ:SP500",
+                )
+            ],
+            risk_decisions=[],
+            signal_sides_by_symbol={},
+            timestamp="2026-04-05T19:01:00Z",
+            allowed_symbols=set(),
+        )
+
+        self.assertEqual(len(after_grace.closed_trades), 1)
+        self.assertEqual(after_grace.closed_trades[0].close_reason, "routing_revoked")
+        self.assertFalse(after_grace.has_open_position_after["XYZ:SP500"])
+
     def test_pod_c_live_runner_processes_records(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.enabled = True
