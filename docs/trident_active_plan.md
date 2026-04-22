@@ -1,6 +1,6 @@
 # TRIDENT Active Plan
 
-Date: `2026-04-21`
+Date: `2026-04-22`
 
 ## Status
 
@@ -14,19 +14,17 @@ Date: `2026-04-21`
 
 - config: `config/trident.toml`
 - backtest de reference propre:
-  - [official_baseline_current_cli_20260419.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260419.md)
-  - [official_baseline_current_cli_20260419.json](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260419.json)
+  - [official_baseline_current_cli_20260422.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422.md)
+  - [official_baseline_current_cli_20260422.json](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422.json)
 - resultat:
-  - total `+445.92 USD`
-  - `Pod A +424.49`
+  - total `+545.09 USD`
+  - `Pod A +535.37`
   - `Pod B 0.00`
-  - `Pod C +21.43`
+  - `Pod C +9.72`
 - note courante:
-  - le profil repo `config/trident.toml` inclut maintenant `pod_a.stop_grace_minutes = 165`
-  - validation replay sur le fetch serveur courant:
-    - `stop_grace=0`: `+421.10 USD`
-    - `stop_grace=165`: `+546.69 USD`
-    - delta `+125.59 USD`
+  - le profil repo courant inclut `pod_a.stop_grace_minutes = 165` et `pod_a.opposite_signal_debounce_minutes = 15`
+  - baseline officielle rerun sur le fetch serveur courant `2026-04-05 -> 2026-04-22`
+  - delta vs baseline officielle `20260419`: `+99.17 USD`
 
 ### Shadow agressif
 
@@ -41,7 +39,7 @@ Date: `2026-04-21`
   - `Pod C +46.53`
 - statut:
   - profitable, mais pas encore promu en prod
-  - reste moins bon que le baseline sur la fenetre recente `2026-04-13 -> 2026-04-17`
+  - reste sous le baseline officiel courant sur le fetch serveur complet
 
 ### Point d'attention operationnel
 
@@ -174,6 +172,115 @@ Promotion retenue dans le repo:
   - `165m` est maintenant la reference repo pour `Pod A`
   - le redeploiement / alignement machine reelle reste suivi dans la roadmap d'alignement prod
 
+### 2026-04-22 - Autopsie des sorties perdantes `Pod A` / `Pod C`
+
+Contexte:
+
+- analyse de suivi sur le profil repo courant avec `Pod A stop_grace_165m`
+- objectif:
+  - verifier si d'autres fermetures perdantes ont un potentiel comparable au `stop_grace`
+  - distinguer les sorties localement trop precoces des sorties globalement utiles au portefeuille
+
+`Pod A`:
+
+- pertes restantes par cause sur le profil courant:
+  - `stop_hit`: `29` trades, `-381.17 USD`
+  - `opposite_signal`: `6` trades, `-89.11 USD`
+  - `break_even_stop`: `15` trades, `-21.36 USD`
+  - `end_of_backtest`: `2` trades, `-15.06 USD`
+- lecture retenue:
+  - pas de nouveau levier du niveau `stop_grace` hors `stop_hit`
+  - les `6` `opposite_signal` sont tous des `trend_pullback_long` crypto encore dans la logique du `stop_grace`
+  - en contre-factuel cible trade par trade, laisser vivre ces positions au lieu de fermer sur `opposite_signal` ameliore le paquet de `-89.11` a `-32.73 USD`
+  - mais la suppression brute de `opposite_signal` n'est pas retenue comme solution:
+    - elle desorganise trop le recycle du capital et l'inventaire des trades
+    - elle doit rester une piste `shadow-only` tant qu'elle n'est pas validee en replay full-bot comparable
+- point d'implementation a verifier:
+  - les `preview_pod_a_signals` peuvent encore emettre `trend_pullback_short`
+  - ces previews shorts peuvent donc fermer un long via `opposite_signal`
+  - alors meme que les shorts `Pod A` restent desactives dans le profil repo
+- decision de recherche:
+  - ne pas retirer `opposite_signal` globalement
+  - privilegier un filtre plus fin:
+    - `opposite_signal_debounce` court
+    - ou exigence que le signal oppose soit executable et persistant avant fermeture
+
+`Pod C`:
+
+- tres peu de matiere sur le profil courant:
+  - `routing_revoked`: `11` trades, net `-2.07 USD`
+  - `stop_hit`: `2` trades, `-8.37 USD`
+- lecture retenue:
+  - le seul levier exploitable a ce stade est `routing_revoked`
+  - en contre-factuel cible, laisser vivre les `routing_revoked` au lieu de forcer la sortie passe de `-2.07` a `+8.46 USD`
+  - signal tres net sur le cluster `index`
+  - signal plus ambigu sur `silver`
+  - `gold` ne doit pas recevoir de grace supplementaire a ce stade
+  - les `stop_hit` Pod C sont trop peu nombreux et trop mixtes pour justifier un `stop_grace` equivalent
+- decision de recherche:
+  - ne pas deployer de `grace` global Pod C
+  - tester seulement une variante `routing_revoke_grace` plus longue et scopee a `index`
+  - garder `silver` en variante secondaire `shadow-only`
+  - ne pas etendre a `gold`
+
+### 2026-04-22 - Pod A `opposite_signal_debounce` promu a `15m`
+
+- suite directe de l'autopsie `Pod A` sur les sorties `opposite_signal`
+- comparaison replay sur `server-data/replay_inputs/full_bot_latest_fetch.jsonl`
+- artefacts:
+  - [pod_a_opposite_signal_candidates_20260422/scenario_summary.md](/workspaces/trident/server-data/replay_reports/pod_a_opposite_signal_candidates_20260422/scenario_summary.md)
+  - [pod_a_opposite_signal_candidates_20260422/scenario_summary.json](/workspaces/trident/server-data/replay_reports/pod_a_opposite_signal_candidates_20260422/scenario_summary.json)
+  - [pod_a_opposite_signal_candidates_20260422/debounce_30m_report.md](/workspaces/trident/server-data/replay_reports/pod_a_opposite_signal_candidates_20260422/debounce_30m_report.md)
+- baseline de comparaison:
+  - total: `+463.60 USD`
+  - `Pod A`: `+442.17 USD`
+  - `opposite_signal`: `9` trades, `-133.15 USD`
+- resultats retenus:
+  - `debounce_15m`: `+107.62 USD` vs baseline
+  - `debounce_30m`: strictement identique a `debounce_15m`
+  - `opposite_executable_persistent_2snap`: aucun effet sur ce replay
+  - `block_opposite_during_stop_grace_trend`: presque equivalent mais legerement sous le `debounce_15m`
+- decision:
+  - promouvoir `pod_a.opposite_signal_debounce_minutes = 15` dans le profil repo
+  - ne pas retenir `30m`, car le gain est identique avec une fenetre plus courte
+- implementation repo:
+  - [config/trident.toml](/workspaces/trident/config/trident.toml): `pod_a.opposite_signal_debounce_minutes = 15`
+  - [app/settings.py](/workspaces/trident/app/settings.py): ajout du champ `opposite_signal_debounce_minutes`
+  - [app/backtest/pod_a_executor.py](/workspaces/trident/app/backtest/pod_a_executor.py): debounce applique uniquement au close `opposite_signal` de `Pod A`
+  - [tests/test_pod_a_executor.py](/workspaces/trident/tests/test_pod_a_executor.py): couverture du close immediat, de la fenetre de debounce et de l'expiration
+- validation implementation:
+  - replay full-bot reexecute avec le code de prod et `config/trident.toml`
+  - total: `+571.22 USD`
+  - `Pod A`: `+549.79 USD`
+  - closes `Pod A`: `trailing_stop=76`, `stop_hit=32`, `break_even_stop=11`, `end_of_backtest=2`
+  - resultat identique au sweep candidat `debounce_15m`
+
+### 2026-04-22 - Baseline officielle replay remise a jour
+
+- contexte:
+  - nouvelles donnees serveur fetchees
+  - rerun officiel lance avec la config repo courante `config/trident.toml`
+  - commande officielle utilisee avec `--respect-config-enabled`
+- nouvelle reference canonique:
+  - [official_baseline_current_cli_20260422.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422.md)
+  - [official_baseline_current_cli_20260422.json](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422.json)
+  - [BACKTEST_REFERENCE_STATUS_20260422.md](/workspaces/trident/server-data/replay_reports/BACKTEST_REFERENCE_STATUS_20260422.md)
+- resultat:
+  - dates couvertes: `2026-04-05 -> 2026-04-22`
+  - total: `+545.09 USD`
+  - `Pod A`: `+535.37 USD`
+  - `Pod B`: `0.00 USD`
+  - `Pod C`: `+9.72 USD`
+  - `records_processed`: `21092`
+  - `duplicate_timestamps_skipped`: `292`
+- delta vs baseline officielle precedente `20260419`:
+  - total: `+99.17 USD`
+  - `Pod A`: `+110.88 USD`
+  - `Pod C`: `-11.71 USD`
+- decision:
+  - `official_baseline_current_cli_20260422` devient la baseline replay de reference
+  - les artefacts `20260419` restent historiques, mais ne doivent plus etre utilises comme reference prod par defaut
+
 ## Roadmap Restante
 
 ### 1. Alignement Prod Et Nettoyage Des Profils
@@ -207,6 +314,13 @@ Reste a faire:
   - les variantes dynamiques testees a ce stade sont toutes sous le `165m` fixe
 - garder `stop_grace_210m` en piste research seulement:
   - pas de promotion du profil repo tant qu'il n'est pas plus robuste que `165m` sur plusieurs fenetres
+- autopsier `opposite_signal` dans le contexte `stop_grace_165m`:
+  - ne pas supprimer brutalement la fermeture sur signal oppose
+  - `opposite_signal_debounce` court promu dans le repo: `pod_a.opposite_signal_debounce_minutes = 15`
+  - `30m` n'apporte rien de plus que `15m` sur le replay courant
+  - le gate `signal oppose executable + persistant` n'a pas montre d'effet utile sur le replay courant
+  - revalider hors echantillon le `15m` sur les prochains fetchs comparables avant de le considerer totalement stabilise
+  - verifier puis corriger si besoin le point de code ou un `trend_pullback_short` peut encore piloter la fermeture via `opposite_signal` alors que les shorts `Pod A` restent desactives dans le profil repo
 - faire evoluer `Phase 2b` vers un vrai modele:
   - rejet confirme
   - reversal fade strict
@@ -245,6 +359,17 @@ Objectif:
 Reste a faire:
 
 - verifier s'il reste un vrai levier sur `equity` et `fx`
+- autopsier `routing_revoked` par cluster sur `Pod C`:
+  - candidat principal: `routing_revoke_grace` plus long sur `index` seulement
+  - variante secondaire: `silver` en `shadow-only`
+  - ne pas etendre a `gold` sans nouvelle hypothese plus solide
+- ne pas relacher globalement les `stop_hit` de `Pod C`:
+  - echantillon trop faible
+  - contre-factuel non assez robuste pour promouvoir un equivalent `stop_grace`
+- garder une lecture par cause de fermeture perdante sur les prochains fetchs:
+  - `routing_revoked`
+  - `stop_hit`
+  - `time_stop` si cette cause emerge davantage
 - si non:
   - geler `Pod C` comme stack quasi finalise
   - limiter les evolutions a du tuning mineur et de l'observabilite
@@ -286,7 +411,7 @@ Restent hors du coeur live:
 
 - toute promotion de config ou de logique doit etre validee par replay complet sur la meme source d'entree
 - le benchmark par defaut est:
-  - [official_baseline_current_cli_20260419.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260419.md)
+  - [official_baseline_current_cli_20260422.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422.md)
 - les comparaisons non comparables ou experimentales doivent rester clairement etiquetees comme telles
 - un gain sur source synthetique seule ne suffit pas pour la prod
 

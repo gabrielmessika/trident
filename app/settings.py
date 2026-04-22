@@ -193,6 +193,7 @@ class PodAConfig:
     allow_partial_take_profit: bool
     allow_break_even: bool
     stop_grace_minutes: int
+    opposite_signal_debounce_minutes: int
     allowed_setups: list[str]
     disabled_setups: list[str]
     blocked_regimes: list[str]
@@ -1234,6 +1235,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             allow_break_even=bool(pod_a_data.get("allow_break_even", False)),
             stop_grace_minutes=int(pod_a_data.get("stop_grace_minutes", 0)),
+            opposite_signal_debounce_minutes=int(
+                pod_a_data.get("opposite_signal_debounce_minutes", 0)
+            ),
             allowed_setups=_str_list(pod_a_data.get("allowed_setups", [])),
             disabled_setups=_str_list(pod_a_data.get("disabled_setups", [])),
             blocked_regimes=_str_list(pod_a_data.get("blocked_regimes", [])),
