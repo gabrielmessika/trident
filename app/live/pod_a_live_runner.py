@@ -11,6 +11,10 @@ from app.backtest.pod_a_executor import PodAExecutor
 from app.backtest.pod_report import PodABacktestReport
 from app.hyperliquid.info_client import HyperliquidInfoClient, apply_live_asset_leverage_caps
 from app.live.collector import HyperliquidLiveCollector
+from app.live.replay_capture import (
+    annotate_snapshot_record,
+    build_maintenance_snapshot_record,
+)
 from app.live.runtime_status import write_runtime_status
 from app.persistence.journal import (
     JsonlJournal,
@@ -61,6 +65,7 @@ class PodALiveRunner:
         self.filtered_source = str(filtered_source)
         self.trade_source = str(trade_source)
         self.review_label = str(review_label)
+        self.snapshot_stream_source = f"{self.runtime_name}_live"
         if use_live_asset_caps:
             self.config = apply_live_asset_leverage_caps(
                 self.config,
@@ -98,6 +103,7 @@ class PodALiveRunner:
                 max_runtime_seconds=max_runtime_seconds,
                 max_messages=max_messages,
             ):
+                record = self._annotate_snapshot_record(record)
                 self._process_record(record, journal=journal)
                 self._write_runtime_status(status_path)
         finally:
@@ -108,6 +114,7 @@ class PodALiveRunner:
                 pass
 
         final_records = self.collector.builder.finalize()
+        final_records = [self._annotate_snapshot_record(record) for record in final_records]
         self.collector.stats.snapshots_written += len(self.collector.writer.append_many(final_records))
         for record in final_records:
             self._process_record(record, journal=journal)
@@ -155,8 +162,9 @@ class PodALiveRunner:
             max_runtime_seconds=max_runtime_seconds,
             max_messages=max_messages,
         ):
-            self.collector.stats.snapshots_written += len(self.collector.writer.append_many([record]))
-            yield record
+            annotated = self._annotate_snapshot_record(record)
+            self.collector.stats.snapshots_written += len(self.collector.writer.append_many([annotated]))
+            yield annotated
 
     def _process_record(
         self,
@@ -164,6 +172,9 @@ class PodALiveRunner:
         *,
         journal: JsonlJournal | None,
     ) -> None:
+        if str(record.get("capture_reason", "")) == "maintenance_refresh":
+            self._process_maintenance_record(record, journal=journal)
+            return
         timestamp = str(record.get("timestamp"))
         self._last_record_monotonic = time.monotonic()
         date_key = timestamp[:10]
@@ -422,6 +433,45 @@ class PodALiveRunner:
             execution=execution,
         )
 
+    def _process_maintenance_record(
+        self,
+        record: dict[str, object],
+        *,
+        journal: JsonlJournal | None,
+    ) -> None:
+        timestamp = str(record.get("timestamp"))
+        symbols = record.get("symbols", [])
+        if not isinstance(symbols, list):
+            return
+        snapshots = [SymbolMarketSnapshot(**item) for item in symbols if isinstance(item, dict)]
+        if not snapshots:
+            return
+        self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
+        managed_symbols = self.supervisor.managed_symbols_for(
+            PodName.POD_A,
+            {
+                str(symbol).upper()
+                for symbol in self.executor.portfolio.open_positions
+            },
+        )
+        execution = self.executor.process_record(
+            snapshots=snapshots,
+            risk_decisions=[],
+            signal_sides_by_symbol={},
+            timestamp=timestamp,
+            entry_allowed_symbols=self.supervisor.opening_symbols_for(PodName.POD_A),
+            managed_symbols=managed_symbols,
+        )
+        current_regime = self.supervisor.state.regime.value
+        for trade in execution.closed_trades:
+            self._record_closed_trade(
+                trade,
+                current_regime=current_regime,
+                date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else timestamp[:10]),
+                journal=journal,
+                timestamp=timestamp,
+            )
+
     def _hold_hours(self, trade: object) -> float | None:
         opened_at = getattr(trade, "opened_at", None)
         closed_at = getattr(trade, "closed_at", None)
@@ -656,6 +706,16 @@ class PodALiveRunner:
         if not snapshots:
             return False
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        maintenance_record = build_maintenance_snapshot_record(
+            timestamp=timestamp,
+            stream_source=self.snapshot_stream_source,
+            regime_snapshot=self.supervisor.state.regime_snapshot,
+            cluster_regime_snapshots=self.supervisor.state.cluster_regime_snapshots,
+            snapshots=snapshots,
+        )
+        self.collector.stats.snapshots_written += len(
+            self.collector.writer.append_many([maintenance_record])
+        )
         managed_symbols = self.supervisor.managed_symbols_for(
             PodName.POD_A,
             set(open_symbols),
@@ -684,6 +744,12 @@ class PodALiveRunner:
             len(execution.closed_trades),
         )
         return True
+
+    def _annotate_snapshot_record(self, record: dict[str, object]) -> dict[str, object]:
+        return annotate_snapshot_record(
+            record,
+            stream_source=self.snapshot_stream_source,
+        )
 
     def _rest_fallback_snapshot(
         self,

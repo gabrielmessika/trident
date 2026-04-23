@@ -24,6 +24,10 @@ class ReplayFeatureEnricher:
                 "prev_spread_bps": snapshot.spread_bps,
                 "prev_book_imbalance": snapshot.book_imbalance,
                 "prev_trade_flow_bias": snapshot.trade_flow_bias,
+                "prev_bid_depth_10bps": snapshot.bid_depth_10bps,
+                "prev_ask_depth_10bps": snapshot.ask_depth_10bps,
+                "prev_best_bid_size": snapshot.best_bid_size,
+                "prev_best_ask_size": snapshot.best_ask_size,
                 "avg_bucket_volume": snapshot.bucket_volume,
                 "avg_bucket_trade_count": float(snapshot.bucket_trade_count),
                 "realized_vol_short_bps": snapshot.realized_vol_short_bps,
@@ -41,6 +45,22 @@ class ReplayFeatureEnricher:
         delta_spread_bps = snapshot.spread_bps - state["prev_spread_bps"]
         delta_book_imbalance = snapshot.book_imbalance - state["prev_book_imbalance"]
         delta_trade_flow_bias = snapshot.trade_flow_bias - state["prev_trade_flow_bias"]
+        bid_depth_velocity = self._ratio_change(
+            snapshot.bid_depth_10bps,
+            state["prev_bid_depth_10bps"],
+        )
+        ask_depth_velocity = self._ratio_change(
+            snapshot.ask_depth_10bps,
+            state["prev_ask_depth_10bps"],
+        )
+        best_bid_size_velocity = self._ratio_change(
+            snapshot.best_bid_size,
+            state["prev_best_bid_size"],
+        )
+        best_ask_size_velocity = self._ratio_change(
+            snapshot.best_ask_size,
+            state["prev_best_ask_size"],
+        )
         volume_ratio = self._ratio_against_baseline(snapshot.bucket_volume, state["avg_bucket_volume"])
         trade_count_ratio = self._ratio_against_baseline(
             float(snapshot.bucket_trade_count),
@@ -76,6 +96,10 @@ class ReplayFeatureEnricher:
         state["prev_spread_bps"] = snapshot.spread_bps
         state["prev_book_imbalance"] = snapshot.book_imbalance
         state["prev_trade_flow_bias"] = snapshot.trade_flow_bias
+        state["prev_bid_depth_10bps"] = snapshot.bid_depth_10bps
+        state["prev_ask_depth_10bps"] = snapshot.ask_depth_10bps
+        state["prev_best_bid_size"] = snapshot.best_bid_size
+        state["prev_best_ask_size"] = snapshot.best_ask_size
         state["avg_bucket_volume"] = self._update_baseline(
             state["avg_bucket_volume"],
             snapshot.bucket_volume,
@@ -127,6 +151,22 @@ class ReplayFeatureEnricher:
                 snapshot.compression_score if snapshot.compression_score > 0 else compression_score,
                 4,
             ),
+            bid_depth_velocity=round(
+                snapshot.bid_depth_velocity if snapshot.bid_depth_velocity != 0.0 else bid_depth_velocity,
+                4,
+            ),
+            ask_depth_velocity=round(
+                snapshot.ask_depth_velocity if snapshot.ask_depth_velocity != 0.0 else ask_depth_velocity,
+                4,
+            ),
+            best_bid_size_velocity=round(
+                snapshot.best_bid_size_velocity if snapshot.best_bid_size_velocity != 0.0 else best_bid_size_velocity,
+                4,
+            ),
+            best_ask_size_velocity=round(
+                snapshot.best_ask_size_velocity if snapshot.best_ask_size_velocity != 0.0 else best_ask_size_velocity,
+                4,
+            ),
         )
 
     def _ema(self, prev: float, value: float, alpha: float) -> float:
@@ -141,6 +181,11 @@ class ReplayFeatureEnricher:
         if baseline > 0:
             return current / baseline
         return 2.0 if current > 0 else 1.0
+
+    def _ratio_change(self, current: float, previous: float) -> float:
+        if previous > 0:
+            return (current - previous) / previous
+        return 1.0 if current > 0 else 0.0
 
     def _range_width_bps(self, recent_low: float, recent_high: float, price: float) -> float:
         if price <= 0 or recent_low <= 0 or recent_high <= 0:

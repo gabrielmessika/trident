@@ -182,6 +182,10 @@ class SymbolMarketSnapshot:
     best_ask_size: float = 0.0
     bid_depth_10bps: float = 0.0
     ask_depth_10bps: float = 0.0
+    bid_depth_velocity: float = 0.0
+    ask_depth_velocity: float = 0.0
+    best_bid_size_velocity: float = 0.0
+    best_ask_size_velocity: float = 0.0
     microprice: float = 0.0
     microprice_dislocation_bps: float = 0.0
     buy_count: int = 0

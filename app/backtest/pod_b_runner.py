@@ -98,6 +98,20 @@ class PodBBacktestRunner:
                     price=snapshot.price,
                     ema_fast=snapshot.ema_fast,
                     ema_slow=snapshot.ema_slow,
+                    price_move_bps=(
+                        round(
+                            (snapshot.price - previous_snapshot.price)
+                            / previous_snapshot.price
+                            * 10_000.0,
+                            4,
+                        )
+                        if (
+                            (previous_snapshot := last_snapshot_by_symbol.get(snapshot.symbol)) is not None
+                            and previous_snapshot.price > 0
+                            and snapshot.price > 0
+                        )
+                        else 0.0
+                    ),
                     vwap_distance_bps=snapshot.vwap_distance_bps,
                     structure_score=snapshot.structure_score,
                     funding_rate=snapshot.funding_rate,
@@ -114,6 +128,7 @@ class PodBBacktestRunner:
                         else snapshot.bucket_volume * snapshot.price
                     ),
                     bucket_range_bps=snapshot.bucket_range_bps,
+                    delta_spread_bps=snapshot.delta_spread_bps,
                     delta_book_imbalance=snapshot.delta_book_imbalance,
                     delta_trade_flow_bias=snapshot.delta_trade_flow_bias,
                     volume_ratio=snapshot.volume_ratio,
@@ -121,6 +136,14 @@ class PodBBacktestRunner:
                     realized_vol_short_bps=snapshot.realized_vol_short_bps,
                     realized_vol_long_bps=snapshot.realized_vol_long_bps,
                     compression_score=snapshot.compression_score,
+                    best_bid_size=snapshot.best_bid_size,
+                    best_ask_size=snapshot.best_ask_size,
+                    bid_depth_10bps=snapshot.bid_depth_10bps,
+                    ask_depth_10bps=snapshot.ask_depth_10bps,
+                    bid_depth_velocity=snapshot.bid_depth_velocity,
+                    ask_depth_velocity=snapshot.ask_depth_velocity,
+                    best_bid_size_velocity=snapshot.best_bid_size_velocity,
+                    best_ask_size_velocity=snapshot.best_ask_size_velocity,
                     microprice_dislocation_bps=snapshot.microprice_dislocation_bps,
                 )
                 for snapshot in snapshots

@@ -909,6 +909,7 @@ class SymbolRouter:
                     else snapshot.bucket_volume * snapshot.price
                 ),
                 bucket_range_bps=snapshot.bucket_range_bps,
+                delta_spread_bps=snapshot.delta_spread_bps,
                 delta_book_imbalance=snapshot.delta_book_imbalance,
                 delta_trade_flow_bias=snapshot.delta_trade_flow_bias,
                 volume_ratio=snapshot.volume_ratio,
@@ -916,6 +917,14 @@ class SymbolRouter:
                 realized_vol_short_bps=snapshot.realized_vol_short_bps,
                 realized_vol_long_bps=snapshot.realized_vol_long_bps,
                 compression_score=snapshot.compression_score,
+                best_bid_size=snapshot.best_bid_size,
+                best_ask_size=snapshot.best_ask_size,
+                bid_depth_10bps=snapshot.bid_depth_10bps,
+                ask_depth_10bps=snapshot.ask_depth_10bps,
+                bid_depth_velocity=snapshot.bid_depth_velocity,
+                ask_depth_velocity=snapshot.ask_depth_velocity,
+                best_bid_size_velocity=snapshot.best_bid_size_velocity,
+                best_ask_size_velocity=snapshot.best_ask_size_velocity,
                 microprice_dislocation_bps=snapshot.microprice_dislocation_bps,
             )
         )

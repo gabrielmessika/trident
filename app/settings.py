@@ -428,8 +428,16 @@ class PodBPatternRuleConfig:
     max_breakout_score: float | None = None
     min_volume_ratio: float | None = None
     max_volume_ratio: float | None = None
+    min_bucket_notional_usd: float | None = None
+    max_bucket_notional_usd: float | None = None
+    min_spread_bps: float | None = None
+    max_spread_bps: float | None = None
     min_trade_count_ratio: float | None = None
     max_trade_count_ratio: float | None = None
+    min_liquidity_pull_score: float | None = None
+    max_liquidity_pull_score: float | None = None
+    min_depth_refill_score: float | None = None
+    max_depth_refill_score: float | None = None
     min_flow_support_quality: float | None = None
     max_flow_support_quality: float | None = None
     min_vwap_reclaim_quality: float | None = None
@@ -885,8 +893,16 @@ def _pod_b_pattern_rules(raw: object) -> list[PodBPatternRuleConfig]:
                 max_breakout_score=_optional_float(item.get("max_breakout_score")),
                 min_volume_ratio=_optional_float(item.get("min_volume_ratio")),
                 max_volume_ratio=_optional_float(item.get("max_volume_ratio")),
+                min_bucket_notional_usd=_optional_float(item.get("min_bucket_notional_usd")),
+                max_bucket_notional_usd=_optional_float(item.get("max_bucket_notional_usd")),
+                min_spread_bps=_optional_float(item.get("min_spread_bps")),
+                max_spread_bps=_optional_float(item.get("max_spread_bps")),
                 min_trade_count_ratio=_optional_float(item.get("min_trade_count_ratio")),
                 max_trade_count_ratio=_optional_float(item.get("max_trade_count_ratio")),
+                min_liquidity_pull_score=_optional_float(item.get("min_liquidity_pull_score")),
+                max_liquidity_pull_score=_optional_float(item.get("max_liquidity_pull_score")),
+                min_depth_refill_score=_optional_float(item.get("min_depth_refill_score")),
+                max_depth_refill_score=_optional_float(item.get("max_depth_refill_score")),
                 min_flow_support_quality=_optional_float(
                     item.get("min_flow_support_quality")
                 ),

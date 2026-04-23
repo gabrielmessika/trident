@@ -14,6 +14,9 @@ def _liq_record(
     trade_flow_bias: float,
     bucket_volume: float,
     bucket_trade_count: int,
+    bid_depth_10bps: float,
+    ask_depth_10bps: float,
+    microprice_dislocation_bps: float,
 ) -> dict[str, object]:
     return {
         "timestamp": timestamp,
@@ -41,6 +44,9 @@ def _liq_record(
                 "bucket_volume": bucket_volume,
                 "bucket_trade_count": bucket_trade_count,
                 "bucket_range_bps": 15.0,
+                "bid_depth_10bps": bid_depth_10bps,
+                "ask_depth_10bps": ask_depth_10bps,
+                "microprice_dislocation_bps": microprice_dislocation_bps,
                 "source": "test",
             }
         ],
@@ -53,15 +59,56 @@ class PodLiqResearchTests(unittest.TestCase):
             input_path = Path(tmpdir) / "snapshots.jsonl"
             json_path = Path(tmpdir) / "liq.json"
             md_path = Path(tmpdir) / "liq.md"
-            records = [
-                _liq_record("2026-04-05T10:00:00Z", 50.0, 1.0, 0.05, 0.05, 20.0, 3),
-                _liq_record("2026-04-05T10:01:00Z", 50.2, 2.0, 0.60, 0.70, 120.0, 12),
-                _liq_record("2026-04-05T10:02:00Z", 50.5, 1.5, 0.20, 0.30, 60.0, 5),
-                _liq_record("2026-04-05T10:03:00Z", 50.7, 2.2, 0.65, 0.75, 140.0, 13),
-                _liq_record("2026-04-05T10:04:00Z", 51.0, 1.4, 0.20, 0.25, 55.0, 5),
-                _liq_record("2026-04-05T10:05:00Z", 51.2, 2.3, 0.70, 0.80, 150.0, 14),
-                _liq_record("2026-04-05T10:06:00Z", 51.5, 1.3, 0.25, 0.30, 50.0, 4),
-            ]
+            records = []
+            price = 50.0
+            minute = 0
+            for _ in range(8):
+                records.append(
+                    _liq_record(
+                        f"2026-04-05T10:{minute:02d}:00Z",
+                        price,
+                        1.0,
+                        0.03,
+                        0.03,
+                        20.0,
+                        3,
+                        100.0,
+                        100.0,
+                        0.05,
+                    )
+                )
+                minute += 1
+                records.append(
+                    _liq_record(
+                        f"2026-04-05T10:{minute:02d}:00Z",
+                        price + 0.05,
+                        2.2,
+                        0.55,
+                        0.68,
+                        145.0,
+                        14,
+                        118.0,
+                        44.0,
+                        1.15,
+                    )
+                )
+                minute += 1
+                price += 0.22
+                records.append(
+                    _liq_record(
+                        f"2026-04-05T10:{minute:02d}:00Z",
+                        price,
+                        1.4,
+                        0.18,
+                        0.22,
+                        55.0,
+                        5,
+                        112.0,
+                        72.0,
+                        0.35,
+                    )
+                )
+                minute += 1
             input_path.write_text(
                 "\n".join(json.dumps(record) for record in records) + "\n",
                 encoding="utf-8",
@@ -77,7 +124,9 @@ class PodLiqResearchTests(unittest.TestCase):
             self.assertEqual(result.recommendation, "go")
             self.assertTrue(json_path.exists())
             self.assertTrue(md_path.exists())
-            self.assertIn("Recommendation: go", md_path.read_text(encoding="utf-8"))
+            markdown = md_path.read_text(encoding="utf-8")
+            self.assertIn("- Recommendation: `go`", markdown)
+            self.assertIn("liquidity_pull_continuation", markdown)
 
 
 if __name__ == "__main__":

@@ -135,6 +135,7 @@ class FullBotBacktestRunner:
                 dates_covered.add(timestamp[:10])
 
             snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            previous_snapshots_by_symbol = dict(latest_snapshots_by_symbol)
             latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
             previous_regime = supervisor.state.regime.value
             cluster_regime_snapshots = {
@@ -170,6 +171,7 @@ class FullBotBacktestRunner:
                 supervisor=supervisor,
                 report=pod_b_report,
                 snapshots=snapshots,
+                previous_snapshots_by_symbol=previous_snapshots_by_symbol,
                 timestamp=timestamp,
                 source_file=record.source_file,
                 previous_regime=previous_regime,
@@ -359,6 +361,7 @@ class FullBotBacktestRunner:
         supervisor: TridentSupervisor,
         report: PodABacktestReport,
         snapshots: list[SymbolMarketSnapshot],
+        previous_snapshots_by_symbol: dict[str, SymbolMarketSnapshot],
         timestamp: str | None,
         source_file: str,
         previous_regime: str,
@@ -385,6 +388,20 @@ class FullBotBacktestRunner:
                 price=snapshot.price,
                 ema_fast=snapshot.ema_fast,
                 ema_slow=snapshot.ema_slow,
+                price_move_bps=(
+                    round(
+                        (snapshot.price - previous_snapshot.price)
+                        / previous_snapshot.price
+                        * 10_000.0,
+                        4,
+                    )
+                    if (
+                        (previous_snapshot := previous_snapshots_by_symbol.get(snapshot.symbol)) is not None
+                        and previous_snapshot.price > 0
+                        and snapshot.price > 0
+                    )
+                    else 0.0
+                ),
                 vwap_distance_bps=snapshot.vwap_distance_bps,
                 structure_score=snapshot.structure_score,
                 funding_rate=snapshot.funding_rate,
@@ -401,6 +418,7 @@ class FullBotBacktestRunner:
                     else snapshot.bucket_volume * snapshot.price
                 ),
                 bucket_range_bps=snapshot.bucket_range_bps,
+                delta_spread_bps=snapshot.delta_spread_bps,
                 delta_book_imbalance=snapshot.delta_book_imbalance,
                 delta_trade_flow_bias=snapshot.delta_trade_flow_bias,
                 volume_ratio=snapshot.volume_ratio,
@@ -408,6 +426,14 @@ class FullBotBacktestRunner:
                 realized_vol_short_bps=snapshot.realized_vol_short_bps,
                 realized_vol_long_bps=snapshot.realized_vol_long_bps,
                 compression_score=snapshot.compression_score,
+                best_bid_size=snapshot.best_bid_size,
+                best_ask_size=snapshot.best_ask_size,
+                bid_depth_10bps=snapshot.bid_depth_10bps,
+                ask_depth_10bps=snapshot.ask_depth_10bps,
+                bid_depth_velocity=snapshot.bid_depth_velocity,
+                ask_depth_velocity=snapshot.ask_depth_velocity,
+                best_bid_size_velocity=snapshot.best_bid_size_velocity,
+                best_ask_size_velocity=snapshot.best_ask_size_velocity,
                 microprice_dislocation_bps=snapshot.microprice_dislocation_bps,
             )
             for snapshot in snapshots

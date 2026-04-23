@@ -186,6 +186,10 @@ class LiveSnapshotBuilder:
                     "prev_spread_bps": row.spread_bps,
                     "prev_book_imbalance": 0.0,
                     "prev_trade_flow_bias": 0.0,
+                    "prev_bid_depth_10bps": row.bid_depth_10bps,
+                    "prev_ask_depth_10bps": row.ask_depth_10bps,
+                    "prev_best_bid_size": row.best_bid_size,
+                    "prev_best_ask_size": row.best_ask_size,
                     "avg_bucket_volume": 0.0,
                     "avg_bucket_trade_count": 0.0,
                     "realized_vol_short_bps": 0.0,
@@ -205,6 +209,22 @@ class LiveSnapshotBuilder:
             delta_spread_bps = row.spread_bps - state["prev_spread_bps"]
             delta_book_imbalance = book_imbalance - state["prev_book_imbalance"]
             delta_trade_flow_bias = trades.flow_bias - state["prev_trade_flow_bias"]
+            bid_depth_velocity = self._ratio_change(
+                row.bid_depth_10bps,
+                state["prev_bid_depth_10bps"],
+            )
+            ask_depth_velocity = self._ratio_change(
+                row.ask_depth_10bps,
+                state["prev_ask_depth_10bps"],
+            )
+            best_bid_size_velocity = self._ratio_change(
+                row.best_bid_size,
+                state["prev_best_bid_size"],
+            )
+            best_ask_size_velocity = self._ratio_change(
+                row.best_ask_size,
+                state["prev_best_ask_size"],
+            )
             volume_ratio = self._ratio_against_baseline(
                 trades.total_volume,
                 state["avg_bucket_volume"],
@@ -275,6 +295,10 @@ class LiveSnapshotBuilder:
                     "best_ask_size": round(row.best_ask_size, 6),
                     "bid_depth_10bps": round(row.bid_depth_10bps, 6),
                     "ask_depth_10bps": round(row.ask_depth_10bps, 6),
+                    "bid_depth_velocity": round(bid_depth_velocity, 4),
+                    "ask_depth_velocity": round(ask_depth_velocity, 4),
+                    "best_bid_size_velocity": round(best_bid_size_velocity, 4),
+                    "best_ask_size_velocity": round(best_ask_size_velocity, 4),
                     "microprice": round(microprice, 8),
                     "microprice_dislocation_bps": round(microprice_dislocation_bps, 4),
                     "book_imbalance": round(book_imbalance, 4),
@@ -303,6 +327,10 @@ class LiveSnapshotBuilder:
             state["prev_spread_bps"] = row.spread_bps
             state["prev_book_imbalance"] = book_imbalance
             state["prev_trade_flow_bias"] = trades.flow_bias
+            state["prev_bid_depth_10bps"] = row.bid_depth_10bps
+            state["prev_ask_depth_10bps"] = row.ask_depth_10bps
+            state["prev_best_bid_size"] = row.best_bid_size
+            state["prev_best_ask_size"] = row.best_ask_size
             state["avg_bucket_volume"] = self._update_baseline(
                 state["avg_bucket_volume"],
                 trades.total_volume,
@@ -447,6 +475,11 @@ class LiveSnapshotBuilder:
         if baseline > 0:
             return current / baseline
         return 2.0 if current > 0 else 1.0
+
+    def _ratio_change(self, current: float, previous: float) -> float:
+        if previous > 0:
+            return (current - previous) / previous
+        return 1.0 if current > 0 else 0.0
 
     def _update_baseline(self, baseline: float, current: float, alpha: float) -> float:
         if baseline <= 0:

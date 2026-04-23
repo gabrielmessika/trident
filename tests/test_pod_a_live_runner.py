@@ -159,43 +159,66 @@ class PodALiveRunnerTests(unittest.TestCase):
 
     def test_maintenance_refresh_updates_open_position_market_data_without_new_records(self) -> None:
         config = load_config("config/trident.toml")
-        runner = PodALiveRunner(config, coins=["ETH"])
-        plan = TradePlan(
-            symbol="ETH",
-            side="long",
-            setup="trend_pullback_long",
-            confidence=0.8,
-            target_notional_usd=120.0,
-            stop_bps=45.0,
-            time_stop_hours=999999,
-            take_profit_bps=500.0,
-            break_even_trigger_bps=40.0,
-            trailing_activation_bps=80.0,
-            trailing_distance_bps=30.0,
-        )
-        opened = runner.executor.portfolio.open_from_plan(
-            plan,
-            price=3100.0,
-            entry_fee_usd=0.1,
-            timestamp="2026-04-12T09:00:00Z",
-        )
-        self.assertTrue(opened)
-        runner._info_client = _FakeInfoClient({"ETH": 3150.0})  # type: ignore[assignment]
-        runner._last_record_monotonic = 0.0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config.hyperliquid.snapshot_output_dir = str(Path(tmpdir) / "snapshots")
+            runner = PodALiveRunner(config, coins=["ETH"])
+            plan = TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.8,
+                target_notional_usd=120.0,
+                stop_bps=45.0,
+                time_stop_hours=999999,
+                take_profit_bps=500.0,
+                break_even_trigger_bps=40.0,
+                trailing_activation_bps=80.0,
+                trailing_distance_bps=30.0,
+            )
+            opened = runner.executor.portfolio.open_from_plan(
+                plan,
+                price=3100.0,
+                entry_fee_usd=0.1,
+                timestamp="2026-04-12T09:00:00Z",
+            )
+            self.assertTrue(opened)
+            runner._info_client = _FakeInfoClient({"ETH": 3150.0})  # type: ignore[assignment]
+            runner._last_record_monotonic = 0.0
 
-        refreshed = runner._refresh_open_positions_without_stream(
-            journal=None,
-            now=runner.MARKET_DATA_FALLBACK_IDLE_SECONDS + 1.0,
-        )
+            refreshed = runner._refresh_open_positions_without_stream(
+                journal=None,
+                now=runner.MARKET_DATA_FALLBACK_IDLE_SECONDS + 1.0,
+            )
 
-        self.assertTrue(refreshed)
-        open_positions = runner._build_open_positions_payload()
-        self.assertEqual(len(open_positions), 1)
-        self.assertEqual(open_positions[0]["current_price"], 3150.0)
-        self.assertGreater(open_positions[0]["unrealized_pnl_usd"], 0.0)
-        self.assertEqual(open_positions[0]["break_even_trigger_bps"], 40.0)
-        self.assertEqual(open_positions[0]["trailing_activation_bps"], 80.0)
-        self.assertEqual(open_positions[0]["trailing_distance_bps"], 30.0)
+            self.assertTrue(refreshed)
+            open_positions = runner._build_open_positions_payload()
+            self.assertEqual(len(open_positions), 1)
+            self.assertEqual(open_positions[0]["current_price"], 3150.0)
+            self.assertGreater(open_positions[0]["unrealized_pnl_usd"], 0.0)
+            self.assertEqual(open_positions[0]["break_even_trigger_bps"], 40.0)
+            self.assertEqual(open_positions[0]["trailing_activation_bps"], 80.0)
+            self.assertEqual(open_positions[0]["trailing_distance_bps"], 30.0)
+
+            written_files = list((Path(tmpdir) / "snapshots").glob("*.jsonl"))
+            self.assertEqual(len(written_files), 1)
+            snapshot_payload = json.loads(written_files[0].read_text(encoding="utf-8").strip())
+            self.assertEqual(snapshot_payload["stream_source"], "pod_a_live")
+            self.assertEqual(snapshot_payload["capture_reason"], "maintenance_refresh")
+            self.assertEqual(snapshot_payload["symbols"][0]["symbol"], "ETH")
+            self.assertEqual(snapshot_payload["symbols"][0]["source"], "rest_fallback")
+
+            replay_runner = PodALiveRunner(config, coins=["ETH"])
+            replay_opened = replay_runner.executor.portfolio.open_from_plan(
+                plan,
+                price=3100.0,
+                entry_fee_usd=0.1,
+                timestamp="2026-04-12T09:00:00Z",
+            )
+            self.assertTrue(replay_opened)
+            replay_runner._process_record(snapshot_payload, journal=None)
+            self.assertEqual(replay_runner.report.records_processed, 0)
+            replay_positions = replay_runner._build_open_positions_payload()
+            self.assertEqual(replay_positions[0]["current_price"], 3150.0)
 
     def test_live_runner_can_write_to_custom_status_path_for_specialized_shadow(self) -> None:
         config = load_config("config/trident.toml")

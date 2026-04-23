@@ -103,6 +103,57 @@ class PodBTests(unittest.TestCase):
 
         self.assertIsNone(signal)
 
+    def test_service_attaches_microstructure_watch_scores(self) -> None:
+        config = load_config("config/trident.toml")
+        service = BreakoutService(config)
+
+        signal = service.evaluate(
+            BreakoutContext(
+                symbol="BTC",
+                regime="TrendExpansion",
+                price=100.0,
+                ema_fast=100.8,
+                ema_slow=99.9,
+                vwap_distance_bps=9.0,
+                structure_score=0.42,
+                funding_rate=0.0,
+                spread_bps=1.1,
+                btc_aligned=True,
+                market_cluster="crypto",
+                cluster_leader="BTC",
+                book_imbalance=0.32,
+                trade_flow_bias=0.28,
+                bucket_trade_count=24,
+                bucket_notional_usd=800.0,
+                bucket_range_bps=34.0,
+                delta_spread_bps=0.6,
+                delta_book_imbalance=0.22,
+                delta_trade_flow_bias=0.30,
+                volume_ratio=2.4,
+                trade_count_ratio=1.9,
+                realized_vol_short_bps=7.0,
+                realized_vol_long_bps=4.0,
+                compression_score=0.70,
+                best_bid_size=4.0,
+                best_ask_size=1.8,
+                bid_depth_10bps=12.0,
+                ask_depth_10bps=6.0,
+                bid_depth_velocity=0.30,
+                ask_depth_velocity=-0.55,
+                best_bid_size_velocity=0.25,
+                best_ask_size_velocity=-0.45,
+                microprice_dislocation_bps=1.4,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertGreater(float(signal.setup_details.get("liquidity_pull_score", 0.0)), 0.0)
+        self.assertGreater(float(signal.setup_details.get("depth_refill_score", 0.0)), 0.0)
+        self.assertEqual(signal.setup_details.get("liquidity_pull_direction"), "long")
+        self.assertEqual(signal.setup_details.get("depth_refill_direction_depth10"), "long")
+        self.assertEqual(signal.setup_details.get("depth_refill_direction_touch"), "long")
+
     def test_risk_gate_applies_rolling_symbol_setup_guardrail(self) -> None:
         config = load_config("config/trident.toml")
         config = replace(
@@ -225,6 +276,55 @@ class PodBTests(unittest.TestCase):
         self.assertEqual(len(decisions), 1)
         self.assertTrue(decisions[0].accepted)
         self.assertEqual(plan.setup_details.get("pattern_watch_hits"), "watch_mid_vol")
+        self.assertEqual(plan.setup_details.get("pattern_watch_count"), 1)
+
+    def test_risk_gate_matches_microstructure_watch_rule(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_b=replace(
+                config.pod_b,
+                pattern_vetoes=[],
+                pattern_watchers=[
+                    PodBPatternRuleConfig(
+                        name="micro_depth_refill",
+                        enabled=True,
+                        sides=["long"],
+                        regimes=["TrendExpansion"],
+                        min_bucket_notional_usd=250.0,
+                        max_spread_bps=3.0,
+                        min_liquidity_pull_score=0.65,
+                        min_depth_refill_score=0.75,
+                    )
+                ],
+            ),
+        )
+        risk_gate = PodBRiskGate(config)
+        plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="vol_expansion_long",
+            confidence=0.72,
+            target_notional_usd=100.0,
+            stop_bps=40.0,
+            time_stop_hours=2,
+            margin_usd=25.0,
+            effective_leverage=2.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.0,
+            setup_details={
+                "regime": "TrendExpansion",
+                "spread_bps": 1.2,
+                "bucket_notional_usd": 800.0,
+                "liquidity_pull_score": 0.71,
+                "depth_refill_score": 0.82,
+            },
+        )
+
+        decisions = risk_gate.evaluate_many([plan])
+        self.assertEqual(len(decisions), 1)
+        self.assertTrue(decisions[0].accepted)
+        self.assertEqual(plan.setup_details.get("pattern_watch_hits"), "micro_depth_refill")
         self.assertEqual(plan.setup_details.get("pattern_watch_count"), 1)
 
     def test_service_blocks_signal_when_strict_continuation_filter_fails(self) -> None:

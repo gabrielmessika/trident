@@ -154,7 +154,7 @@ class BreakoutService:
             flow_support_quality=flow_support_quality,
             vwap_reclaim_quality=vwap_reclaim_quality,
         )
-        return BreakoutSignal(
+        signal = BreakoutSignal(
             symbol=context.symbol,
             side=direction,
             setup=f"compression_breakout_{direction}",
@@ -175,6 +175,7 @@ class BreakoutService:
             },
             confidence_components=components,
         )
+        return self._with_microstructure_watch_details(signal, context)
 
     def _vol_expansion(self, context: BreakoutContext) -> BreakoutSignal | None:
         direction = self._direction(context)
@@ -233,7 +234,7 @@ class BreakoutService:
             money_flow_quality=money_flow_quality,
         )
         components["vol_expansion_quality"] = round(_clamp(vol_ratio / 2.0), 4)
-        return BreakoutSignal(
+        signal = BreakoutSignal(
             symbol=context.symbol,
             side=direction,
             setup=f"vol_expansion_{direction}",
@@ -257,6 +258,7 @@ class BreakoutService:
             },
             confidence_components=components,
         )
+        return self._with_microstructure_watch_details(signal, context)
 
     def _ttm_squeeze_release(self, context: BreakoutContext) -> BreakoutSignal | None:
         direction = self._direction(context)
@@ -293,7 +295,7 @@ class BreakoutService:
             vwap_reclaim_quality=vwap_reclaim_quality,
             money_flow_quality=money_flow_quality,
         )
-        return BreakoutSignal(
+        signal = BreakoutSignal(
             symbol=context.symbol,
             side=direction,
             setup=f"ttm_squeeze_release_{direction}",
@@ -313,6 +315,171 @@ class BreakoutService:
             },
             confidence_components=components,
         )
+        return self._with_microstructure_watch_details(signal, context)
+
+    def _with_microstructure_watch_details(
+        self,
+        signal: BreakoutSignal,
+        context: BreakoutContext,
+    ) -> BreakoutSignal:
+        signal.setup_details = {
+            **dict(signal.setup_details or {}),
+            **self._microstructure_watch_details(context, signal.side),
+        }
+        return signal
+
+    def _microstructure_watch_details(
+        self,
+        context: BreakoutContext,
+        side: str,
+    ) -> dict[str, float | str | bool]:
+        liquidity_pull_score_raw, liquidity_pull_direction = self._liquidity_pull_signal(context)
+        depth_refill_score_raw, depth_refill_direction = self._depth_refill_signal(context)
+        touch_refill_score_raw, touch_refill_direction = self._touch_refill_signal(context)
+        liquidity_pull_score = (
+            liquidity_pull_score_raw if liquidity_pull_direction == side else 0.0
+        )
+        depth_refill_score_depth10 = (
+            depth_refill_score_raw if depth_refill_direction == side else 0.0
+        )
+        depth_refill_score_touch = (
+            touch_refill_score_raw if touch_refill_direction == side else 0.0
+        )
+        return {
+            "spread_bps": round(context.spread_bps, 4),
+            "bucket_notional_usd": round(context.bucket_notional_usd, 4),
+            "liquidity_pull_score": round(liquidity_pull_score, 4),
+            "liquidity_pull_score_raw": round(liquidity_pull_score_raw, 4),
+            "liquidity_pull_direction": liquidity_pull_direction,
+            "depth_refill_score": round(
+                max(depth_refill_score_depth10, depth_refill_score_touch),
+                4,
+            ),
+            "depth_refill_score_depth10": round(depth_refill_score_depth10, 4),
+            "depth_refill_score_touch": round(depth_refill_score_touch, 4),
+            "depth_refill_score_depth10_raw": round(depth_refill_score_raw, 4),
+            "depth_refill_score_touch_raw": round(touch_refill_score_raw, 4),
+            "depth_refill_direction_depth10": depth_refill_direction,
+            "depth_refill_direction_touch": touch_refill_direction,
+        }
+
+    def _liquidity_pull_signal(
+        self,
+        context: BreakoutContext,
+    ) -> tuple[float, str]:
+        bullish_pull = (
+            max(-context.ask_depth_velocity, 0.0) * 0.75
+            + max(context.bid_depth_velocity, 0.0) * 0.25
+        )
+        bearish_pull = (
+            max(-context.bid_depth_velocity, 0.0) * 0.75
+            + max(context.ask_depth_velocity, 0.0) * 0.25
+        )
+        direction = "long" if bullish_pull >= bearish_pull else "short"
+        dominant_pull = bullish_pull if direction == "long" else bearish_pull
+        flow_support = self._positive_for_direction(
+            context.trade_flow_bias * 0.55
+            + context.delta_trade_flow_bias * 0.20
+            + context.book_imbalance * 0.15
+            + context.delta_book_imbalance * 0.10,
+            direction,
+            scale=0.45,
+        )
+        micro_support = self._positive_for_direction(
+            context.microprice_dislocation_bps,
+            direction,
+            scale=1.5,
+        )
+        spread_widening = _clamp(max(context.delta_spread_bps, 0.0) / 2.0)
+        score = (
+            _clamp(dominant_pull / 1.25) * 0.45
+            + flow_support * 0.25
+            + micro_support * 0.15
+            + spread_widening * 0.15
+        )
+        return round(score, 4), direction
+
+    def _depth_refill_signal(
+        self,
+        context: BreakoutContext,
+    ) -> tuple[float, str]:
+        bullish_refill = (
+            max(context.bid_depth_velocity, 0.0) * 0.75
+            + max(-context.ask_depth_velocity, 0.0) * 0.15
+        )
+        bearish_refill = (
+            max(context.ask_depth_velocity, 0.0) * 0.75
+            + max(-context.bid_depth_velocity, 0.0) * 0.15
+        )
+        direction = "long" if bullish_refill >= bearish_refill else "short"
+        dominant_refill = bullish_refill if direction == "long" else bearish_refill
+        flow_support = self._positive_for_direction(
+            context.book_imbalance * 0.55 + context.trade_flow_bias * 0.45,
+            direction,
+            scale=0.45,
+        )
+        micro_support = self._positive_for_direction(
+            context.microprice_dislocation_bps,
+            direction,
+            scale=1.25,
+        )
+        spread_support = 1.0 - _clamp(context.spread_bps / 8.0)
+        spread_normalization = _clamp(max(-context.delta_spread_bps, 0.0) / 2.0)
+        score = (
+            _clamp(dominant_refill / 1.25) * 0.35
+            + flow_support * 0.25
+            + micro_support * 0.20
+            + spread_support * 0.10
+            + spread_normalization * 0.10
+        )
+        return round(score, 4), direction
+
+    def _touch_refill_signal(
+        self,
+        context: BreakoutContext,
+    ) -> tuple[float, str]:
+        bullish_refill = (
+            max(context.best_bid_size_velocity, 0.0) * 0.75
+            + max(-context.best_ask_size_velocity, 0.0) * 0.15
+        )
+        bearish_refill = (
+            max(context.best_ask_size_velocity, 0.0) * 0.75
+            + max(-context.best_bid_size_velocity, 0.0) * 0.15
+        )
+        direction = "long" if bullish_refill >= bearish_refill else "short"
+        dominant_refill = bullish_refill if direction == "long" else bearish_refill
+        flow_support = self._positive_for_direction(
+            context.book_imbalance * 0.55 + context.trade_flow_bias * 0.45,
+            direction,
+            scale=0.45,
+        )
+        micro_support = self._positive_for_direction(
+            context.microprice_dislocation_bps,
+            direction,
+            scale=1.10,
+        )
+        spread_support = 1.0 - _clamp(context.spread_bps / 6.0)
+        spread_normalization = _clamp(max(-context.delta_spread_bps, 0.0) / 1.5)
+        score = (
+            _clamp(dominant_refill / 1.10) * 0.35
+            + flow_support * 0.25
+            + micro_support * 0.20
+            + spread_support * 0.10
+            + spread_normalization * 0.10
+        )
+        return round(score, 4), direction
+
+    def _positive_for_direction(
+        self,
+        value: float,
+        direction: str,
+        *,
+        scale: float,
+    ) -> float:
+        if scale <= 0:
+            return 0.0
+        signed = value if direction == "long" else -value
+        return _clamp(signed / scale)
 
     def _matches_strict_continuation_pattern(self, context: BreakoutContext) -> bool:
         return (

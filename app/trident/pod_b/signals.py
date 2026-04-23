@@ -15,6 +15,7 @@ class BreakoutContext:
     funding_rate: float
     spread_bps: float
     btc_aligned: bool
+    price_move_bps: float = 0.0
     market_cluster: str = "crypto"
     cluster_leader: str = ""
     book_imbalance: float = 0.0
@@ -22,6 +23,7 @@ class BreakoutContext:
     bucket_trade_count: int = 0
     bucket_notional_usd: float = 0.0
     bucket_range_bps: float = 0.0
+    delta_spread_bps: float = 0.0
     delta_book_imbalance: float = 0.0
     delta_trade_flow_bias: float = 0.0
     volume_ratio: float = 1.0
@@ -29,6 +31,14 @@ class BreakoutContext:
     realized_vol_short_bps: float = 0.0
     realized_vol_long_bps: float = 0.0
     compression_score: float = 0.0
+    best_bid_size: float = 0.0
+    best_ask_size: float = 0.0
+    bid_depth_10bps: float = 0.0
+    ask_depth_10bps: float = 0.0
+    bid_depth_velocity: float = 0.0
+    ask_depth_velocity: float = 0.0
+    best_bid_size_velocity: float = 0.0
+    best_ask_size_velocity: float = 0.0
     microprice_dislocation_bps: float = 0.0
 
 

@@ -206,9 +206,33 @@ class PodBRiskGate(TradePlanRiskGate):
         if not self._matches_float(volume_ratio, rule.min_volume_ratio, rule.max_volume_ratio):
             return False
         if not self._matches_float(
+            details.get("bucket_notional_usd"),
+            rule.min_bucket_notional_usd,
+            rule.max_bucket_notional_usd,
+        ):
+            return False
+        if not self._matches_float(
+            details.get("spread_bps"),
+            rule.min_spread_bps,
+            rule.max_spread_bps,
+        ):
+            return False
+        if not self._matches_float(
             details.get("trade_count_ratio"),
             rule.min_trade_count_ratio,
             rule.max_trade_count_ratio,
+        ):
+            return False
+        if not self._matches_float(
+            details.get("liquidity_pull_score"),
+            rule.min_liquidity_pull_score,
+            rule.max_liquidity_pull_score,
+        ):
+            return False
+        if not self._matches_float(
+            details.get("depth_refill_score"),
+            rule.min_depth_refill_score,
+            rule.max_depth_refill_score,
         ):
             return False
         if not self._matches_float(

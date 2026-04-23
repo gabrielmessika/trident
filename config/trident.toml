@@ -509,6 +509,24 @@ sides = ["long"]
 max_volume_ratio = 1.85
 min_compression_score = 0.26
 
+[[pod_b.pattern_watchers]]
+name = "micro_liquidity_pull_trend_panic"
+enabled = true
+sides = ["long"]
+regimes = ["TrendExpansion", "PanicSqueeze"]
+min_liquidity_pull_score = 0.65
+max_spread_bps = 3.0
+min_bucket_notional_usd = 100.0
+
+[[pod_b.pattern_watchers]]
+name = "micro_depth_refill_trend_panic"
+enabled = true
+sides = ["long"]
+regimes = ["TrendExpansion", "PanicSqueeze"]
+min_depth_refill_score = 0.75
+max_spread_bps = 3.0
+min_bucket_notional_usd = 250.0
+
 [pod_b.bis_max_leverage_by_symbol]
 # Fallback statique: les caps live HL doivent ecraser ces valeurs au runtime
 # quand le fetch `metaAndAssetCtxs` reussit.

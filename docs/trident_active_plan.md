@@ -1,6 +1,6 @@
 # TRIDENT Active Plan
 
-Date: `2026-04-22`
+Date: `2026-04-23`
 
 ## Status
 
@@ -14,17 +14,18 @@ Date: `2026-04-22`
 
 - config: `config/trident.toml`
 - backtest de reference propre:
-  - [official_baseline_current_cli_20260422_pod_c_index540.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422_pod_c_index540.md)
-  - [official_baseline_current_cli_20260422_pod_c_index540.json](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422_pod_c_index540.json)
+  - [official_baseline_current_cli_20260423.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260423.md)
+  - [official_baseline_current_cli_20260423.json](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260423.json)
 - resultat:
-  - total `+557.54 USD`
-  - `Pod A +535.37`
+  - total `+562.48 USD`
+  - `Pod A +526.26`
   - `Pod B 0.00`
-  - `Pod C +22.17`
+  - `Pod C +36.22`
 - note courante:
   - le profil repo courant inclut `pod_a.stop_grace_minutes = 165`, `pod_a.opposite_signal_debounce_minutes = 15` et la promo `Pod C index routing grace 540m`
-  - baseline officielle rerun sur le fetch serveur courant `2026-04-05 -> 2026-04-22`
-  - delta vs baseline officielle pre-promo `20260422`: `+12.45 USD`
+  - baseline officielle rerun sur le fetch serveur courant `2026-04-05 -> 2026-04-23`
+  - l'input courant ne contient pas de snapshots pour `2026-04-19`
+  - delta vs baseline officielle precedente `20260422_pod_c_index540`: `+4.94 USD`
 
 ### Shadow agressif
 
@@ -344,6 +345,38 @@ Contexte:
   - `silver` reste en `shadow-only`
   - `gold` reste hors promo
 
+### 2026-04-23 - Baseline officielle replay reexecutee sur le fetch courant
+
+- contexte:
+  - rerun officiel relance avec le code courant du repo
+  - config utilisee: `config/trident.toml`
+  - input officiel: `server-data/replay_inputs/full_bot_latest_fetch.jsonl`
+  - commande officielle utilisee avec `--respect-config-enabled`
+- nouvelle reference canonique:
+  - [official_baseline_current_cli_20260423.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260423.md)
+  - [official_baseline_current_cli_20260423.json](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260423.json)
+- resultat:
+  - dates couvertes: `2026-04-05 -> 2026-04-23`
+  - note de couverture:
+    - l'input courant saute `2026-04-19`
+  - total: `+562.48 USD`
+  - `Pod A`: `+526.26 USD`
+  - `Pod B`: `0.00 USD`
+  - `Pod C`: `+36.22 USD`
+  - `records_processed`: `22102`
+  - `duplicate_timestamps_skipped`: `292`
+  - `directional_fees_usd`: `120.56224`
+  - `total_activity_count`: `167`
+  - `routing_reassignment_event_count`: `0`
+- delta vs baseline officielle precedente `20260422_pod_c_index540`:
+  - total: `+4.94 USD`
+  - `Pod A`: `-9.11 USD`
+  - `Pod C`: `+14.05 USD`
+  - `records_processed`: `+1010`
+- decision:
+  - `official_baseline_current_cli_20260423` devient la nouvelle baseline replay de reference
+  - les artefacts `20260422_pod_c_index540` restent comparables et utiles pour l'historique proche, mais ne doivent plus etre utilises comme benchmark par defaut
+
 ## Roadmap Restante
 
 ### 1. Alignement Prod Et Nettoyage Des Profils
@@ -462,7 +495,153 @@ Reste a faire:
   - `Pod B off`
 - ne promouvoir que si le sleeve ajoute du PnL net sans detruire la perf de `Pod A`
 
-### 6. Pistes Research Seulement
+### 6. Iteration Microstructure Observables-First
+
+Objectif:
+
+- exploiter davantage le socle `l2Book + trades` deja collecte sans lancer un nouveau pod non prouve
+- transformer les intuitions utiles de microstructure en hypotheses testables, puis en filtres `watchers / vetoes` si elles tiennent en replay comparable
+
+Etat:
+
+- le socle live existe deja:
+  - collector HL natif `l2Book + trades`
+  - snapshots enrichis avec `spread`, `depth`, `book_imbalance`, `trade_flow_bias`, `microprice_dislocation`, ratios d'activite et deltas
+  - sidecar intraminute `Pod B` en `10s / 30s`
+  - outillage `pod_liq_features` / `pod_liq_research`
+- les flux user HL (`userFills`, `openOrders`, `orderUpdates`, `clearinghouseState`) ne sont pas encore dans le chemin critique
+- il n'y a pas encore de signal first-class `cancel / replace`, `absorption` ou `exhaustion`; ces idees doivent donc d'abord etre testees via proxies observables sur snapshots comparables
+
+Validation `2026-04-23`:
+
+- rapports produits:
+  - [pod_liq_microstructure_iteration_report_20260423.md](/workspaces/trident/server-data/replay_reports/pod_liq_microstructure_iteration_report_20260423.md)
+  - [pod_liq_microstructure_candidates_20260423_h1.md](/workspaces/trident/server-data/replay_reports/pod_liq_microstructure_candidates_20260423_h1.md)
+  - [pod_liq_microstructure_candidates_20260423_h3.md](/workspaces/trident/server-data/replay_reports/pod_liq_microstructure_candidates_20260423_h3.md)
+- validation exhaustive supplementaire:
+  - [pod_liq_exhaustive_research_20260423.md](/workspaces/trident/server-data/replay_reports/pod_liq_exhaustive_research_20260423.md)
+  - [pod_liq_exhaustive_research_20260423.json](/workspaces/trident/server-data/replay_reports/pod_liq_exhaustive_research_20260423.json)
+- integration watch-only et validation replay:
+  - [full_bot_micro_watch_baseline_20260423.md](/workspaces/trident/server-data/replay_reports/full_bot_micro_watch_baseline_20260423.md)
+  - [full_bot_micro_watch_baseline_20260423.json](/workspaces/trident/server-data/replay_reports/full_bot_micro_watch_baseline_20260423.json)
+  - [full_bot_pod_b_enabled_20260423.md](/workspaces/trident/server-data/replay_reports/full_bot_pod_b_enabled_20260423.md)
+  - [full_bot_pod_b_enabled_20260423.json](/workspaces/trident/server-data/replay_reports/full_bot_pod_b_enabled_20260423.json)
+  - [pod_b_allocation_diagnosis_20260423.md](/workspaces/trident/server-data/replay_reports/pod_b_allocation_diagnosis_20260423.md)
+  - [pod_b_sleeve_sweep_20260423.md](/workspaces/trident/server-data/replay_reports/pod_b_sleeve_sweep_20260423.md)
+  - [pod_b_micro_watch_replay_20260423.json](/workspaces/trident/server-data/replay_reports/pod_b_micro_watch_replay_20260423.json)
+  - rapport de synthese:
+    - [pod_b_micro_watch_integration_20260423.md](/workspaces/trident/server-data/replay_reports/pod_b_micro_watch_integration_20260423.md)
+- verdict actuel sur snapshots serveur comparables:
+  - garder en `watch-only` / `shadow filter`:
+    - `depth_refill_continuation`
+    - `liquidity_pull_continuation`
+  - garder en `research-only`:
+    - `absorption_reversal`
+    - `cancel_replace_proxy` via `book_churn_flow_veto`
+  - rejeter dans leur forme actuelle:
+    - `exhaustion_reversal`
+- lecture de ces resultats:
+  - `depth_refill_continuation` est confirme comme meilleur candidat en replay exhaustif:
+    - meilleur mode retenu: `horizon=3`, `score>=0.75`, `spread<=3.0`, `notional>=250`, `regime=range_dead`
+    - holdout `2026-04-20 -> 2026-04-23`: `+1.3093 bps`, hit rate `0.5377`
+  - `liquidity_pull_continuation` est finalement assez propre pour rester aussi en `watch-only`:
+    - meilleur mode retenu: `horizon=3`, `score>=0.65`, `spread<=3.0`, `notional>=100`, `regime=trend_panic`
+    - holdout `2026-04-20 -> 2026-04-23`: `+0.9681 bps`, hit rate `0.5504`
+  - integration `watch-only` dans `Pod B`:
+    - watchers configures:
+      - `micro_liquidity_pull_trend_panic`
+      - `micro_depth_refill_trend_panic`
+    - replay complet `respect-config-enabled`:
+      - baseline strictement inchangee vs benchmark officiel `20260423`
+      - `total_realized_pnl_usd=562.48`
+      - `Pod A=526.26`, `Pod B=0.0`, `Pod C=36.22`
+    - replay `Pod B` dedie sur l'input officiel courant:
+      - `signal_count=0`, `accepted_count=0`, `closed_trade_count=0`
+      - conclusion: les watchers sont bien armes, mais `Pod B` reste actuellement dormant sur le fetch officiel comparable courant
+    - replay complet correctif avec `Pod B` explicitement active:
+      - `total_realized_pnl_usd=586.31`
+      - `Pod A=550.09`, `Pod B=0.0`, `Pod C=36.22`
+      - `routing_reassignment_event_count=2845`
+      - conclusion: le `0` de `Pod B` ne venait pas seulement de `enabled=false`; meme active, la strategie ne declenche aucun signal sur ce fetch officiel
+    - diagnostic racine confirme:
+      - la config courante alloue `Pod B` uniquement en `DeadZone`, alors que `Pod B` ne trade que `TrendExpansion / PanicSqueeze`
+      - sur le fetch officiel courant avec `Pod B` active et allocations par defaut:
+        - `opening scope` seulement en `DeadZone`
+        - `103599` contextes `Pod B`, tous rejetes d'abord par `regime_not_allowed`
+    - test correctif d'allocations alignees:
+      - avec un sleeve `Pod B` en `TrendExpansion / PanicSqueeze` et `0` en `DeadZone`, `Pod B` redevient actif
+      - replay `Pod B` dedie:
+        - `signal_count=107`
+        - `accepted_count=45`
+        - `closed_trade_count=43`
+        - `realized_pnl_usd=67.46`
+      - replay full bot:
+        - `total_realized_pnl_usd=438.93`
+        - `Pod A=324.42`, `Pod B=78.29`, `Pod C=36.22`
+      - conclusion: l'incoherence de config explique bien le silence de `Pod B`, mais une correction brute des allocations degrade le portefeuille global en cannibalisant `Pod A`
+    - mini-sweep de sleeves `Pod B`:
+      - `panic_only_5`:
+        - total `526.20`
+        - `Pod B -11.76`
+      - `trend_2_panic_5`:
+        - total `518.10`
+        - `Pod B -11.76`
+        - pas de signaux `TrendExpansion`; le sleeve `2%` est vraisemblablement trop petit pour devenir deployable avec le floor de sizing courant
+      - `trend_3_panic_5`:
+        - total `396.30`
+        - `Pod B +3.64`
+        - premiers signaux `TrendExpansion`, mais cannibalisation trop forte de `Pod A`
+      - conclusion:
+        - aucun sleeve teste ne bat la baseline officielle
+        - `Pod B` peut etre positif standalone, mais n'est pas encore portefeuille-additif sur le fetch officiel courant
+    - verification research sur le meme flux comparable:
+      - evenements bruts `liquidity_pull` compatibles watcher: `369`, expectancy moyenne `+2.3082 bps`, hit rate `0.5718`
+      - evenements bruts `depth_refill` compatibles watcher: `1169`, expectancy moyenne `+0.6139 bps`, hit rate `0.5252`
+      - conclusion pratique: les patterns existent bien dans le flux, mais ils ne croisent pas encore les conditions d'entree `Pod B` actuelles
+  - `absorption_reversal` n'est pas assez bon pour une promo, mais pas totalement mort:
+    - meilleur mode retenu: `horizon=3`, `score>=0.75`, `spread<=5.0`, `notional>=250`, `regime=trend_panic`
+    - holdout: `+0.1268 bps`; garder seulement en `research-only`
+  - `cancel_replace_proxy` via churn de carnet montre un veto plausible mais pas encore assez fort:
+    - meilleur mode retenu: `book_churn_flow_veto`, `horizon=5`, `score>=0.75`, `spread<=5.0`, `notional>=250`, `regime=trend_panic`
+    - holdout: `-0.8179 bps` dans le sens du flow, mais hit rate veto encore trop juste (`0.5103`)
+  - `exhaustion_reversal` reste a laisser tomber:
+    - meilleur mode trouve en train, mais le holdout repasse negatif (`-0.1073 bps`)
+  - limite replay importante:
+    - les snapshots comparables ne contiennent pas de vraies bandes `2 / 5 / 10 bps`
+    - on teste donc `best_bid_size / best_ask_size` comme proxy inner-band et `depth_10bps` comme proxy outer-band
+    - les feeds HL `orderUpdates / userFills / openOrders / clearinghouseState` ne sont pas dans l'input replay, donc non validables ici
+
+Reste a faire:
+
+- etendre le sidecar microstructure et les snapshots research avec des proxies testables:
+  - `liquidity_pull_score`: retrait rapide de profondeur, widening du spread, degradation d'imbalance
+  - `depth_velocity` et `refill_velocity` sur plusieurs bandes de profondeur (`2 / 5 / 10 bps`)
+  - `absorption_score`: gros notional et flow agressif, mais faible deplacement du mid
+  - `exhaustion_score`: intensite qui monte, mais `delta_mid` qui plafonne et alignement `flow / book` qui se degrade
+- prochaine iteration prioritaire:
+  - promouvoir au plus en `watcher` / veto shadow `Pod B` le proxy `depth_refill_continuation`
+  - promouvoir au plus en `watcher` / veto shadow `Pod B` le proxy `liquidity_pull_continuation`
+  - garder `absorption` et `book_churn_flow_veto` dans la boucle `research-only` tant qu'ils ne passent pas un holdout plus propre
+  - ne pas pousser `exhaustion` plus loin sans nouvelle formulation ou nouvelles donnees
+- ne pas attendre un vrai feed `cancel / replace` pour commencer:
+  - utiliser d'abord des proxies bases sur `depth pull`, `refill`, `spread` et `microprice_dislocation`
+- garder la premiere boucle en `research-only`:
+  - enrichir `app/research/pod_liq_features.py`
+  - enrichir `app/research/pod_liq_research.py`
+  - produire des rapports sur snapshots serveur comparables, pas sur candles HL seules
+  - mesurer l'expectancy par symbole, regime, cluster, setup et bucket de feature
+- brancher ces signaux d'abord comme filtres legers:
+  - priorite `Pod B` pour filtrer les faux breakouts, breakouts crowded et impulsions deja epuisees
+  - priorite secondaire `Pod A` seulement si un pattern perdant robuste emerge sur les phases impulsives
+  - priorite `Pod C` seulement si une poche perdante clusterisee reapparait nettement sur un fetch comparable
+- privilegier les tests de filtrage microstructure plutot qu'un nouveau retuning global des exits:
+  - plus prometteur a ce stade que relancer des `runner` globaux ou un nouveau sweep de `min_confidence`
+- ne pas creer de nouveau pod principal `funding / liq / open interest` sur cette base sans preuve replay comparable
+- si et seulement si l'execution HL reelle devient prioritaire:
+  - evaluer le branchement des flux `userFills / openOrders / orderUpdates / clearinghouseState`
+  - evaluer si `allMids` WS apporte un benefice reel par rapport au fallback REST actuel
+
+### 7. Pistes Research Seulement
 
 Restent hors du coeur live:
 
@@ -474,7 +653,7 @@ Restent hors du coeur live:
 
 - toute promotion de config ou de logique doit etre validee par replay complet sur la meme source d'entree
 - le benchmark par defaut est:
-  - [official_baseline_current_cli_20260422.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260422.md)
+  - [official_baseline_current_cli_20260423.md](/workspaces/trident/server-data/replay_reports/official_baseline_current_cli_20260423.md)
 - les comparaisons non comparables ou experimentales doivent rester clairement etiquetees comme telles
 - un gain sur source synthetique seule ne suffit pas pour la prod
 
