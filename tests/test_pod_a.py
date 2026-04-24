@@ -143,6 +143,36 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertEqual(signal.side, "long")
         self.assertEqual(signal.setup, "trend_pullback_long")
 
+    def test_trend_pullback_details_include_btc_overextension_features(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="BTC",
+                regime="TrendExpansion",
+                price=70000.0,
+                ema_fast=69800.0,
+                ema_slow=67200.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+                rsi21_4h=70.0,
+                ema50_distance_4h_pct=4.6,
+                ema50_distance_4h_atr=2.2,
+                macd_hist_4h=180.0,
+                macd_hist_delta_4h=-12.5,
+                upper_wick_ratio_4h=0.22,
+                bb_position_4h=0.96,
+                btc_overextension_score=0.73,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "trend_pullback_long")
+        self.assertEqual(signal.setup_details["rsi21_4h"], 70.0)
+        self.assertEqual(signal.setup_details["btc_overextension_score"], 0.73)
+
     def test_trend_pullback_respects_indicator_vetoes(self) -> None:
         signal = self.service.evaluate(
             AnchorTrendContext(

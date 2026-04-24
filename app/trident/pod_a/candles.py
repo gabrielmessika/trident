@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from math import sqrt
 
 from app.trident.types import SymbolMarketSnapshot
 
@@ -200,6 +201,121 @@ def _cci(candles: list[Candle], *, period: int = 20) -> float | None:
     return (typical_prices[-1] - sma) / (0.015 * mean_deviation)
 
 
+def _ema_series(values: list[float], *, period: int) -> list[float]:
+    if len(values) < period or period <= 0:
+        return []
+    alpha = 2.0 / (period + 1.0)
+    ema = sum(values[:period]) / period
+    series = [ema]
+    for value in values[period:]:
+        ema = value * alpha + ema * (1.0 - alpha)
+        series.append(ema)
+    return series
+
+
+def _ema_last(values: list[float], *, period: int) -> float | None:
+    series = _ema_series(values, period=period)
+    return series[-1] if series else None
+
+
+def _atr_last(candles: list[Candle], *, period: int = 14) -> float | None:
+    if len(candles) < period + 1:
+        return None
+    true_ranges: list[float] = []
+    for index in range(1, len(candles)):
+        candle = candles[index]
+        prev_close = candles[index - 1].close
+        true_ranges.append(
+            max(
+                candle.high - candle.low,
+                abs(candle.high - prev_close),
+                abs(candle.low - prev_close),
+            )
+        )
+    sample = true_ranges[-period:]
+    if len(sample) < period:
+        return None
+    return sum(sample) / period
+
+
+def _macd_histogram_series(
+    closes: list[float],
+    *,
+    fast_period: int = 12,
+    slow_period: int = 26,
+    signal_period: int = 9,
+) -> list[float]:
+    if len(closes) < slow_period + signal_period:
+        return []
+    fast = _ema_series(closes, period=fast_period)
+    slow = _ema_series(closes, period=slow_period)
+    if not fast or not slow:
+        return []
+    offset = len(fast) - len(slow)
+    macd = [fast[index + offset] - slow_value for index, slow_value in enumerate(slow)]
+    signal = _ema_series(macd, period=signal_period)
+    if not signal:
+        return []
+    signal_offset = len(macd) - len(signal)
+    return [macd[index + signal_offset] - signal_value for index, signal_value in enumerate(signal)]
+
+
+def _bollinger_position(candles: list[Candle], *, period: int = 20) -> float | None:
+    if len(candles) < period:
+        return None
+    closes = [candle.close for candle in candles[-period:] if candle.close > 0]
+    if len(closes) < period:
+        return None
+    middle = sum(closes) / len(closes)
+    variance = sum((value - middle) ** 2 for value in closes) / len(closes)
+    deviation = sqrt(variance)
+    upper = middle + deviation * 2.0
+    lower = middle - deviation * 2.0
+    if upper - lower <= 1e-9:
+        return 0.5
+    return _clamp((closes[-1] - lower) / (upper - lower), -1.0, 2.0)
+
+
+def _wick_ratios(candle: Candle | None) -> tuple[float, float]:
+    if candle is None or candle.high <= candle.low:
+        return 0.0, 0.0
+    candle_range = candle.high - candle.low
+    upper = max(candle.high - max(candle.open, candle.close), 0.0)
+    lower = max(min(candle.open, candle.close) - candle.low, 0.0)
+    return upper / candle_range, lower / candle_range
+
+
+def _btc_overextension_score(
+    *,
+    rsi21_4h: float,
+    ema50_distance_4h_pct: float,
+    ema50_distance_4h_atr: float,
+    macd_hist_4h: float,
+    macd_hist_delta_4h: float,
+    upper_wick_ratio_4h: float,
+    bb_position_4h: float,
+) -> float:
+    if ema50_distance_4h_pct <= 0.0:
+        return 0.0
+    distance_score = _clamp(ema50_distance_4h_pct / 4.0, 0.0, 1.0)
+    atr_score = _clamp(ema50_distance_4h_atr / 2.0, 0.0, 1.0)
+    rsi_score = _clamp((rsi21_4h - 55.0) / 15.0, 0.0, 1.0)
+    macd_score = 0.0
+    if macd_hist_delta_4h < 0.0:
+        macd_score = 1.0 if macd_hist_4h > 0.0 else 0.5
+    wick_score = _clamp(upper_wick_ratio_4h / 0.35, 0.0, 1.0)
+    bb_score = _clamp((bb_position_4h - 0.75) / 0.25, 0.0, 1.0)
+    return round(
+        distance_score * 0.30
+        + atr_score * 0.15
+        + rsi_score * 0.25
+        + macd_score * 0.15
+        + wick_score * 0.05
+        + bb_score * 0.10,
+        4,
+    )
+
+
 def _ichimoku_bias(candles: list[Candle]) -> float | None:
     if len(candles) < 26:
         return None
@@ -352,10 +468,20 @@ class CandleService:
                 "supertrend_direction": 0,
                 "stoch_rsi_k": 0.5,
                 "cci20": 0.0,
+                "rsi21_4h": 50.0,
+                "ema50_distance_4h_pct": 0.0,
+                "ema50_distance_4h_atr": 0.0,
+                "macd_hist_4h": 0.0,
+                "macd_hist_delta_4h": 0.0,
+                "upper_wick_ratio_4h": 0.0,
+                "lower_wick_ratio_4h": 0.0,
+                "bb_position_4h": 0.5,
+                "btc_overextension_score": 0.0,
             }
 
         candles_15m = buffers["15m"].candles()
         candles_1h = buffers["1h"].candles()
+        candles_4h = buffers["4h"].candles()
         trend_15m_bps = buffers["15m"].trend_bps(window=4)
         trend_1h_bps = buffers["1h"].trend_bps(window=4)
         trend_4h_bps = buffers["4h"].trend_bps(window=3)
@@ -396,6 +522,39 @@ class CandleService:
         supertrend_direction = _supertrend_direction(candles_15m)
         stoch_rsi_k = _stoch_rsi(candles_15m) or 0.5
         cci20 = _cci(candles_15m) or 0.0
+        closes_4h = [candle.close for candle in candles_4h if candle.close > 0]
+        rsi21_values_4h = _rsi_series(closes_4h, period=21)
+        rsi21_4h = rsi21_values_4h[-1] if rsi21_values_4h else 50.0
+        ema50_4h = _ema_last(closes_4h, period=50)
+        latest_close_4h = closes_4h[-1] if closes_4h else 0.0
+        ema50_distance_4h_pct = 0.0
+        ema50_distance_4h_atr = 0.0
+        if ema50_4h is not None and ema50_4h > 0.0 and latest_close_4h > 0.0:
+            ema50_distance_4h_pct = ((latest_close_4h - ema50_4h) / ema50_4h) * 100.0
+            atr14_4h = _atr_last(candles_4h, period=14)
+            if atr14_4h is not None and atr14_4h > 0.0:
+                ema50_distance_4h_atr = (latest_close_4h - ema50_4h) / atr14_4h
+        macd_hist_values_4h = _macd_histogram_series(closes_4h)
+        macd_hist_4h = macd_hist_values_4h[-1] if macd_hist_values_4h else 0.0
+        macd_hist_delta_4h = (
+            macd_hist_values_4h[-1] - macd_hist_values_4h[-2]
+            if len(macd_hist_values_4h) >= 2
+            else 0.0
+        )
+        upper_wick_ratio_4h, lower_wick_ratio_4h = _wick_ratios(
+            candles_4h[-1] if candles_4h else None
+        )
+        bb_position_raw_4h = _bollinger_position(candles_4h)
+        bb_position_4h = bb_position_raw_4h if bb_position_raw_4h is not None else 0.5
+        btc_overextension_score = _btc_overextension_score(
+            rsi21_4h=rsi21_4h,
+            ema50_distance_4h_pct=ema50_distance_4h_pct,
+            ema50_distance_4h_atr=ema50_distance_4h_atr,
+            macd_hist_4h=macd_hist_4h,
+            macd_hist_delta_4h=macd_hist_delta_4h,
+            upper_wick_ratio_4h=upper_wick_ratio_4h,
+            bb_position_4h=bb_position_4h,
+        )
         return {
             "trend_15m_bps": trend_15m_bps,
             "trend_1h_bps": trend_1h_bps,
@@ -413,4 +572,13 @@ class CandleService:
             "supertrend_direction": int(supertrend_direction),
             "stoch_rsi_k": round(float(stoch_rsi_k), 4),
             "cci20": round(float(cci20), 4),
+            "rsi21_4h": round(float(rsi21_4h), 4),
+            "ema50_distance_4h_pct": round(float(ema50_distance_4h_pct), 4),
+            "ema50_distance_4h_atr": round(float(ema50_distance_4h_atr), 4),
+            "macd_hist_4h": round(float(macd_hist_4h), 8),
+            "macd_hist_delta_4h": round(float(macd_hist_delta_4h), 8),
+            "upper_wick_ratio_4h": round(float(upper_wick_ratio_4h), 4),
+            "lower_wick_ratio_4h": round(float(lower_wick_ratio_4h), 4),
+            "bb_position_4h": round(float(bb_position_4h), 4),
+            "btc_overextension_score": round(float(btc_overextension_score), 4),
         }

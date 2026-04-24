@@ -45,6 +45,54 @@ class PodARiskGateTests(unittest.TestCase):
             ],
         )
 
+    def test_default_config_loads_btc_overextension_veto(self) -> None:
+        rule = next(
+            rule
+            for rule in self.config.pod_a.pattern_vetoes
+            if rule.name == "btc_overextension_4h"
+        )
+
+        self.assertEqual(rule.symbols, ["BTC"])
+        self.assertEqual(rule.sides, ["long"])
+        self.assertEqual(rule.min_rsi21_4h, 65.0)
+        self.assertEqual(rule.min_ema50_distance_4h_pct, 4.0)
+        self.assertEqual(rule.min_btc_overextension_score, 0.70)
+        self.assertIsNone(rule.max_macd_hist_delta_4h)
+
+    def test_default_config_loads_hype_trend_pullback_veto(self) -> None:
+        rule = next(
+            rule
+            for rule in self.config.pod_a.pattern_vetoes
+            if rule.name == "hype_trend_pullback_long_targeted"
+        )
+
+        self.assertEqual(rule.symbols, ["HYPE"])
+        self.assertEqual(rule.sides, ["long"])
+        self.assertEqual(rule.setups, ["trend_pullback_long"])
+
+    def test_rejects_hype_trend_pullback_targeted_veto(self) -> None:
+        decisions = self.gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="HYPE",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.72,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                )
+            ]
+        )
+
+        self.assertEqual(len(decisions), 1)
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "pattern_veto_hype_trend_pullback_long_targeted")
+
     def test_rejects_low_confidence_trade_plan(self) -> None:
         decisions = self.gate.evaluate_many(
             [
@@ -343,6 +391,54 @@ class PodARiskGateTests(unittest.TestCase):
 
         self.assertTrue(decisions[0].accepted)
         self.assertEqual(decisions[0].reason, "accepted")
+
+    def test_rejects_btc_overextension_pattern_veto_only_for_btc(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                pattern_vetoes=[
+                    PodAPatternVetoConfig(
+                        name="btc_overextension_4h",
+                        symbols=["BTC"],
+                        sides=["long"],
+                        setups=["trend_pullback_long"],
+                        min_rsi21_4h=65.0,
+                        min_ema50_distance_4h_pct=4.0,
+                        max_macd_hist_delta_4h=0.0,
+                        min_btc_overextension_score=0.65,
+                    )
+                ],
+            ),
+        )
+        gate = PodARiskGate(config)
+        base_plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.82,
+            target_notional_usd=450.0,
+            stop_bps=80.0,
+            time_stop_hours=24,
+            margin_usd=150.0,
+            effective_leverage=3.0,
+            risk_budget_usd=7.5,
+            expected_loss_usd=3.6,
+            setup_details={
+                "regime": "TrendExpansion",
+                "rsi21_4h": 70.0,
+                "ema50_distance_4h_pct": 4.6,
+                "macd_hist_delta_4h": -12.5,
+                "btc_overextension_score": 0.73,
+            },
+        )
+
+        rejected = gate.evaluate_many([base_plan])[0]
+        accepted_other_symbol = gate.evaluate_many([replace(base_plan, symbol="ETH")])[0]
+
+        self.assertFalse(rejected.accepted)
+        self.assertEqual(rejected.reason, "pattern_veto_btc_overextension_4h")
+        self.assertTrue(accepted_other_symbol.accepted)
 
     def test_tags_trade_with_pattern_watch_hit_without_rejecting(self) -> None:
         config = replace(

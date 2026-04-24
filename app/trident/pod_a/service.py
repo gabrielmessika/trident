@@ -47,6 +47,15 @@ def _with_regime(context: AnchorTrendContext, details: dict[str, float | str | b
         "stoch_rsi_k": round(context.stoch_rsi_k, 4),
         "cci20": round(context.cci20, 4),
         "vwap_reclaim_score": round(context.vwap_reclaim_score, 4),
+        "rsi21_4h": round(context.rsi21_4h, 4),
+        "ema50_distance_4h_pct": round(context.ema50_distance_4h_pct, 4),
+        "ema50_distance_4h_atr": round(context.ema50_distance_4h_atr, 4),
+        "macd_hist_4h": round(context.macd_hist_4h, 8),
+        "macd_hist_delta_4h": round(context.macd_hist_delta_4h, 8),
+        "upper_wick_ratio_4h": round(context.upper_wick_ratio_4h, 4),
+        "lower_wick_ratio_4h": round(context.lower_wick_ratio_4h, 4),
+        "bb_position_4h": round(context.bb_position_4h, 4),
+        "btc_overextension_score": round(context.btc_overextension_score, 4),
     }
 
 

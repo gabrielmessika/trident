@@ -325,6 +325,7 @@ class PodAPatternVetoConfig:
     name: str
     enabled: bool = True
     setups: list[str] = field(default_factory=list)
+    symbols: list[str] = field(default_factory=list)
     sides: list[str] = field(default_factory=list)
     market_clusters: list[str] = field(default_factory=list)
     regimes: list[str] = field(default_factory=list)
@@ -363,6 +364,24 @@ class PodAPatternVetoConfig:
     max_trade_count_ratio: float | None = None
     min_flow_support_score: float | None = None
     max_flow_support_score: float | None = None
+    min_rsi21_4h: float | None = None
+    max_rsi21_4h: float | None = None
+    min_ema50_distance_4h_pct: float | None = None
+    max_ema50_distance_4h_pct: float | None = None
+    min_ema50_distance_4h_atr: float | None = None
+    max_ema50_distance_4h_atr: float | None = None
+    min_macd_hist_4h: float | None = None
+    max_macd_hist_4h: float | None = None
+    min_macd_hist_delta_4h: float | None = None
+    max_macd_hist_delta_4h: float | None = None
+    min_upper_wick_ratio_4h: float | None = None
+    max_upper_wick_ratio_4h: float | None = None
+    min_lower_wick_ratio_4h: float | None = None
+    max_lower_wick_ratio_4h: float | None = None
+    min_bb_position_4h: float | None = None
+    max_bb_position_4h: float | None = None
+    min_btc_overextension_score: float | None = None
+    max_btc_overextension_score: float | None = None
 
 
 @dataclass(slots=True)
@@ -799,6 +818,7 @@ def _pod_a_pattern_rules(raw: object) -> list[PodAPatternVetoConfig]:
                 name=name,
                 enabled=bool(item.get("enabled", True)),
                 setups=_str_list(item.get("setups", [])),
+                symbols=_str_list(item.get("symbols", []), upper_values=True),
                 sides=_str_list(item.get("sides", [])),
                 market_clusters=_str_list(
                     item.get("market_clusters", []),
@@ -850,6 +870,48 @@ def _pod_a_pattern_rules(raw: object) -> list[PodAPatternVetoConfig]:
                 max_trade_count_ratio=_optional_float(item.get("max_trade_count_ratio")),
                 min_flow_support_score=_optional_float(item.get("min_flow_support_score")),
                 max_flow_support_score=_optional_float(item.get("max_flow_support_score")),
+                min_rsi21_4h=_optional_float(item.get("min_rsi21_4h")),
+                max_rsi21_4h=_optional_float(item.get("max_rsi21_4h")),
+                min_ema50_distance_4h_pct=_optional_float(
+                    item.get("min_ema50_distance_4h_pct")
+                ),
+                max_ema50_distance_4h_pct=_optional_float(
+                    item.get("max_ema50_distance_4h_pct")
+                ),
+                min_ema50_distance_4h_atr=_optional_float(
+                    item.get("min_ema50_distance_4h_atr")
+                ),
+                max_ema50_distance_4h_atr=_optional_float(
+                    item.get("max_ema50_distance_4h_atr")
+                ),
+                min_macd_hist_4h=_optional_float(item.get("min_macd_hist_4h")),
+                max_macd_hist_4h=_optional_float(item.get("max_macd_hist_4h")),
+                min_macd_hist_delta_4h=_optional_float(
+                    item.get("min_macd_hist_delta_4h")
+                ),
+                max_macd_hist_delta_4h=_optional_float(
+                    item.get("max_macd_hist_delta_4h")
+                ),
+                min_upper_wick_ratio_4h=_optional_float(
+                    item.get("min_upper_wick_ratio_4h")
+                ),
+                max_upper_wick_ratio_4h=_optional_float(
+                    item.get("max_upper_wick_ratio_4h")
+                ),
+                min_lower_wick_ratio_4h=_optional_float(
+                    item.get("min_lower_wick_ratio_4h")
+                ),
+                max_lower_wick_ratio_4h=_optional_float(
+                    item.get("max_lower_wick_ratio_4h")
+                ),
+                min_bb_position_4h=_optional_float(item.get("min_bb_position_4h")),
+                max_bb_position_4h=_optional_float(item.get("max_bb_position_4h")),
+                min_btc_overextension_score=_optional_float(
+                    item.get("min_btc_overextension_score")
+                ),
+                max_btc_overextension_score=_optional_float(
+                    item.get("max_btc_overextension_score")
+                ),
             )
         )
     return parsed

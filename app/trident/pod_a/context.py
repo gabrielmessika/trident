@@ -96,4 +96,13 @@ class MarketContextService:
                 float(features["mtf_bias_score"]),
                 candles_ready=bool(features["candles_ready"]),
             ),
+            rsi21_4h=float(features["rsi21_4h"]),
+            ema50_distance_4h_pct=float(features["ema50_distance_4h_pct"]),
+            ema50_distance_4h_atr=float(features["ema50_distance_4h_atr"]),
+            macd_hist_4h=float(features["macd_hist_4h"]),
+            macd_hist_delta_4h=float(features["macd_hist_delta_4h"]),
+            upper_wick_ratio_4h=float(features["upper_wick_ratio_4h"]),
+            lower_wick_ratio_4h=float(features["lower_wick_ratio_4h"]),
+            bb_position_4h=float(features["bb_position_4h"]),
+            btc_overextension_score=float(features["btc_overextension_score"]),
         )

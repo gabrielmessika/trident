@@ -22,6 +22,8 @@ INTERVAL_TO_MS = {
     "30m": 30 * 60 * 1000,
     "1h": 60 * 60 * 1000,
     "2h": 2 * 60 * 60 * 1000,
+    "4h": 4 * 60 * 60 * 1000,
+    "1d": 24 * 60 * 60 * 1000,
 }
 
 DEFAULT_HOLD_BARS = {
@@ -29,6 +31,8 @@ DEFAULT_HOLD_BARS = {
     "30m": 4,
     "1h": 4,
     "2h": 4,
+    "4h": 3,
+    "1d": 3,
 }
 
 FUNDING_ZSCORE_PERIODS = {
@@ -36,6 +40,8 @@ FUNDING_ZSCORE_PERIODS = {
     "30m": 144,
     "1h": 72,
     "2h": 36,
+    "4h": 18,
+    "1d": 14,
 }
 
 PATTERN_TO_ARCHETYPE = {
@@ -48,6 +54,7 @@ PATTERN_TO_ARCHETYPE = {
     "range_mean_reversion": "mean_reversion",
     "funding_reversion": "mean_reversion",
     "stoch_cci_reversion": "mean_reversion",
+    "ema50_overextension_reversion": "mean_reversion",
 }
 
 
@@ -611,9 +618,39 @@ class StrategyResult:
     total_net_bps: float
     first_signal_time: str | None
     last_signal_time: str | None
+    side_breakdown: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+def _trade_return_summary(values: list[float]) -> dict[str, object]:
+    if not values:
+        return {
+            "sample_count": 0,
+            "hit_rate": 0.0,
+            "expectancy_net_bps": 0.0,
+            "profit_factor": 0.0,
+            "avg_winner_bps": 0.0,
+            "avg_loser_bps": 0.0,
+            "median_net_bps": 0.0,
+            "total_net_bps": 0.0,
+        }
+    winners = [value for value in values if value >= 0]
+    losers = [value for value in values if value < 0]
+    gross_profit = sum(value for value in winners if value > 0)
+    gross_loss = abs(sum(value for value in losers if value < 0))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+    return {
+        "sample_count": len(values),
+        "hit_rate": round(sum(1 for value in values if value > 0) / len(values), 4),
+        "expectancy_net_bps": round(sum(values) / len(values), 4),
+        "profit_factor": round(profit_factor, 4) if math.isfinite(profit_factor) else 999.0,
+        "avg_winner_bps": round(sum(winners) / len(winners), 4) if winners else 0.0,
+        "avg_loser_bps": round(sum(losers) / len(losers), 4) if losers else 0.0,
+        "median_net_bps": round(median(values), 4),
+        "total_net_bps": round(sum(values), 4),
+    }
 
 
 @dataclass(slots=True)
@@ -1218,6 +1255,14 @@ class HyperliquidTop30Analyzer:
                 pattern="stoch_cci_reversion",
                 signal_fn=self._stoch_cci_reversion_signal,
             ),
+            self._evaluate_pattern(
+                symbol=symbol,
+                interval=interval,
+                candles=candles,
+                features=features,
+                pattern="ema50_overextension_reversion",
+                signal_fn=self._ema50_overextension_reversion_signal,
+            ),
         ]
         return [item for item in pattern_results if item is not None]
 
@@ -1239,6 +1284,7 @@ class HyperliquidTop30Analyzer:
         ema50 = _ema(closes, 50)
         ema100 = _ema(closes, 100)
         rsi14 = _rsi(closes, 14)
+        rsi21 = _rsi(closes, 21)
         macd_fast = _ema(closes, 12)
         macd_slow = _ema(closes, 26)
         macd_line: list[float | None] = [None] * len(closes)
@@ -1260,6 +1306,13 @@ class HyperliquidTop30Analyzer:
         atr14 = _atr(highs, lows, closes, 14)
         adx14 = _adx(highs, lows, closes, 14)
         bb_upper, bb_middle, bb_lower, bb_width = _bollinger(closes, 20)
+        bb_position: list[float | None] = [None] * len(closes)
+        for index, close in enumerate(closes):
+            upper_value = bb_upper[index]
+            lower_value = bb_lower[index]
+            if upper_value is None or lower_value is None or upper_value <= lower_value:
+                continue
+            bb_position[index] = (close - lower_value) / (upper_value - lower_value)
         bb_width_pct = _rolling_percentile(bb_width, 100)
         keltner_upper, keltner_basis, keltner_lower = _keltner_channels(highs, lows, closes, 20, 1.5)
         squeeze_on: list[float | None] = [None] * len(closes)
@@ -1304,6 +1357,15 @@ class HyperliquidTop30Analyzer:
         for index in range(8, len(closes)):
             if closes[index - 8] > 0:
                 recent_return_8[index] = (closes[index] - closes[index - 8]) / closes[index - 8] * 10_000.0
+        ema50_distance_pct: list[float | None] = [None] * len(closes)
+        ema50_distance_atr: list[float | None] = [None] * len(closes)
+        for index, close in enumerate(closes):
+            ema50_value = ema50[index]
+            atr_value = atr14[index]
+            if ema50_value is not None and ema50_value > 0:
+                ema50_distance_pct[index] = (close - ema50_value) / ema50_value * 100.0
+            if ema50_value is not None and atr_value is not None and atr_value > 0:
+                ema50_distance_atr[index] = (close - ema50_value) / atr_value
 
         aligned_funding = self._align_funding(timestamps=timestamps, funding=funding, field="funding_rate")
         funding_zscore = _rolling_zscore(
@@ -1322,12 +1384,14 @@ class HyperliquidTop30Analyzer:
             "ema50": ema50,
             "ema100": ema100,
             "rsi14": rsi14,
+            "rsi21": rsi21,
             "macd_hist": macd_hist,
             "atr14": atr14,
             "adx14": adx14,
             "bb_upper": bb_upper,
             "bb_middle": bb_middle,
             "bb_lower": bb_lower,
+            "bb_position": bb_position,
             "bb_width_pct": bb_width_pct,
             "keltner_upper": keltner_upper,
             "keltner_basis": keltner_basis,
@@ -1350,6 +1414,8 @@ class HyperliquidTop30Analyzer:
             "trend_slope_20": trend_slope_20,
             "recent_return_8": recent_return_8,
             "one_bar_return_bps": one_bar_return_bps,
+            "ema50_distance_pct": ema50_distance_pct,
+            "ema50_distance_atr": ema50_distance_atr,
             "funding_rate": aligned_funding,
             "funding_zscore": funding_zscore,
             **ichimoku,
@@ -1386,6 +1452,8 @@ class HyperliquidTop30Analyzer:
     ) -> StrategyResult | None:
         hold_bars = DEFAULT_HOLD_BARS[interval]
         trade_returns: list[float] = []
+        long_returns: list[float] = []
+        short_returns: list[float] = []
         winners: list[float] = []
         losers: list[float] = []
         next_allowed_index = 0
@@ -1417,6 +1485,10 @@ class HyperliquidTop30Analyzer:
                 long_count += 1
             net_return = aligned_return - self.round_trip_cost_bps
             trade_returns.append(net_return)
+            if side == "short":
+                short_returns.append(net_return)
+            else:
+                long_returns.append(net_return)
             if net_return >= 0:
                 winners.append(net_return)
             else:
@@ -1448,6 +1520,10 @@ class HyperliquidTop30Analyzer:
                 total_net_bps=0.0,
                 first_signal_time=None,
                 last_signal_time=None,
+                side_breakdown={
+                    "long": _trade_return_summary([]),
+                    "short": _trade_return_summary([]),
+                },
             )
 
         gross_expectancy = sum(value + self.round_trip_cost_bps for value in trade_returns) / len(trade_returns)
@@ -1472,6 +1548,10 @@ class HyperliquidTop30Analyzer:
             total_net_bps=round(sum(trade_returns), 4),
             first_signal_time=first_signal_time,
             last_signal_time=last_signal_time,
+            side_breakdown={
+                "long": _trade_return_summary(long_returns),
+                "short": _trade_return_summary(short_returns),
+            },
         )
 
     def _trend_breakout_signal(
@@ -1988,6 +2068,52 @@ class HyperliquidTop30Analyzer:
             and mfi14 >= 65
         ):
             return "short"
+        return None
+
+    def _ema50_overextension_reversion_signal(
+        self,
+        index: int,
+        features: dict[str, list[float | None] | list[float] | list[int]],
+    ) -> str | None:
+        close = self._value(features, "close", index)
+        ema50_distance_pct = self._value(features, "ema50_distance_pct", index)
+        ema50_distance_atr = self._value(features, "ema50_distance_atr", index)
+        rsi21 = self._value(features, "rsi21", index)
+        macd_hist = self._value(features, "macd_hist", index)
+        macd_prev = self._value(features, "macd_hist", index - 1)
+        bb_position = self._value(features, "bb_position", index)
+        stoch_k = self._value(features, "stoch_rsi_k", index)
+        cci20 = self._value(features, "cci20", index)
+        if None in (
+            close,
+            ema50_distance_pct,
+            ema50_distance_atr,
+            rsi21,
+            macd_hist,
+            macd_prev,
+            bb_position,
+            stoch_k,
+            cci20,
+        ):
+            return None
+        if close <= 0:
+            return None
+        if (
+            ema50_distance_pct >= 4.0
+            and ema50_distance_atr >= 2.0
+            and rsi21 >= 65.0
+            and (macd_hist <= macd_prev or bb_position >= 0.90)
+            and (stoch_k >= 0.75 or cci20 >= 100.0)
+        ):
+            return "short"
+        if (
+            ema50_distance_pct <= -4.0
+            and ema50_distance_atr <= -2.0
+            and rsi21 <= 35.0
+            and (macd_hist >= macd_prev or bb_position <= 0.10)
+            and (stoch_k <= 0.25 or cci20 <= -100.0)
+        ):
+            return "long"
         return None
 
     def _value(

@@ -256,57 +256,131 @@ class PodARiskGate(TradePlanRiskGate):
     ) -> bool:
         if not rule.enabled:
             return False
+        details = dict(plan.setup_details or {})
+        if rule.symbols and plan.symbol.strip().upper() not in {
+            item.strip().upper() for item in rule.symbols if item.strip()
+        }:
+            return False
         if rule.setups and plan.setup not in {item.strip() for item in rule.setups if item.strip()}:
             return False
-        current_regime = str(plan.setup_details.get("regime", "")).strip()
+        if rule.sides and str(plan.side).strip() not in {
+            item.strip() for item in rule.sides if item.strip()
+        }:
+            return False
+        market_cluster = str(details.get("market_cluster", "")).strip().lower()
+        if rule.market_clusters and market_cluster not in {
+            item.strip().lower() for item in rule.market_clusters if item.strip()
+        }:
+            return False
+        current_regime = str(details.get("regime", "")).strip()
         if rule.regimes and current_regime not in {item.strip() for item in rule.regimes if item.strip()}:
             return False
         if rule.require_candles_ready is not None:
-            if bool(plan.setup_details.get("candles_ready")) != rule.require_candles_ready:
+            if bool(details.get("candles_ready")) != rule.require_candles_ready:
                 return False
         if rule.require_supertrend_direction is not None:
-            if int(plan.setup_details.get("supertrend_direction", 0) or 0) != rule.require_supertrend_direction:
+            if int(details.get("supertrend_direction", 0) or 0) != rule.require_supertrend_direction:
                 return False
         if not self._within_range(
-            plan.setup_details.get("trend_1h_bps"),
+            details.get("trend_1h_bps"),
             minimum=rule.min_trend_1h_bps,
             maximum=rule.max_trend_1h_bps,
         ):
             return False
         if not self._within_range(
-            plan.setup_details.get("trend_4h_bps"),
+            details.get("trend_4h_bps"),
             minimum=rule.min_trend_4h_bps,
             maximum=rule.max_trend_4h_bps,
         ):
             return False
         if not self._within_range(
-            plan.setup_details.get("ichimoku_bias_score"),
+            details.get("ichimoku_bias_score"),
             minimum=rule.min_ichimoku_bias_score,
             maximum=rule.max_ichimoku_bias_score,
         ):
             return False
         if not self._within_range(
-            plan.setup_details.get("stoch_rsi_k"),
+            details.get("stoch_rsi_k"),
             minimum=rule.min_stoch_rsi_k,
             maximum=rule.max_stoch_rsi_k,
         ):
             return False
         if not self._within_range(
-            plan.setup_details.get("cci20"),
+            details.get("cci20"),
             minimum=rule.min_cci20,
             maximum=rule.max_cci20,
         ):
             return False
         if not self._within_range(
-            plan.setup_details.get("vwap_reclaim_score"),
+            details.get("vwap_reclaim_score"),
             minimum=rule.min_vwap_reclaim_score,
             maximum=rule.max_vwap_reclaim_score,
         ):
             return False
         if not self._within_range(
-            plan.setup_details.get("structure_score"),
+            details.get("structure_score"),
             minimum=rule.min_structure_score,
             maximum=rule.max_structure_score,
+        ):
+            return False
+        if not self._within_range(
+            details.get("vwap_distance_bps"),
+            minimum=rule.min_vwap_distance_bps,
+            maximum=rule.max_vwap_distance_bps,
+        ):
+            return False
+        if not self._within_range(
+            details.get("rsi21_4h"),
+            minimum=rule.min_rsi21_4h,
+            maximum=rule.max_rsi21_4h,
+        ):
+            return False
+        if not self._within_range(
+            details.get("ema50_distance_4h_pct"),
+            minimum=rule.min_ema50_distance_4h_pct,
+            maximum=rule.max_ema50_distance_4h_pct,
+        ):
+            return False
+        if not self._within_range(
+            details.get("ema50_distance_4h_atr"),
+            minimum=rule.min_ema50_distance_4h_atr,
+            maximum=rule.max_ema50_distance_4h_atr,
+        ):
+            return False
+        if not self._within_range(
+            details.get("macd_hist_4h"),
+            minimum=rule.min_macd_hist_4h,
+            maximum=rule.max_macd_hist_4h,
+        ):
+            return False
+        if not self._within_range(
+            details.get("macd_hist_delta_4h"),
+            minimum=rule.min_macd_hist_delta_4h,
+            maximum=rule.max_macd_hist_delta_4h,
+        ):
+            return False
+        if not self._within_range(
+            details.get("upper_wick_ratio_4h"),
+            minimum=rule.min_upper_wick_ratio_4h,
+            maximum=rule.max_upper_wick_ratio_4h,
+        ):
+            return False
+        if not self._within_range(
+            details.get("lower_wick_ratio_4h"),
+            minimum=rule.min_lower_wick_ratio_4h,
+            maximum=rule.max_lower_wick_ratio_4h,
+        ):
+            return False
+        if not self._within_range(
+            details.get("bb_position_4h"),
+            minimum=rule.min_bb_position_4h,
+            maximum=rule.max_bb_position_4h,
+        ):
+            return False
+        if not self._within_range(
+            details.get("btc_overextension_score"),
+            minimum=rule.min_btc_overextension_score,
+            maximum=rule.max_btc_overextension_score,
         ):
             return False
         return True

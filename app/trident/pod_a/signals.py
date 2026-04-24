@@ -40,6 +40,15 @@ class AnchorTrendContext:
     stoch_rsi_k: float = 0.5
     cci20: float = 0.0
     vwap_reclaim_score: float = 0.0
+    rsi21_4h: float = 50.0
+    ema50_distance_4h_pct: float = 0.0
+    ema50_distance_4h_atr: float = 0.0
+    macd_hist_4h: float = 0.0
+    macd_hist_delta_4h: float = 0.0
+    upper_wick_ratio_4h: float = 0.0
+    lower_wick_ratio_4h: float = 0.0
+    bb_position_4h: float = 0.5
+    btc_overextension_score: float = 0.0
 
 
 @dataclass(slots=True)

@@ -1,6 +1,6 @@
 # TRIDENT Active Plan
 
-Date: `2026-04-23`
+Date: `2026-04-24`
 
 ## Status
 
@@ -23,6 +23,7 @@ Date: `2026-04-23`
   - `Pod C +36.22`
 - note courante:
   - le profil repo courant inclut `pod_a.stop_grace_minutes = 165`, `pod_a.opposite_signal_debounce_minutes = 15` et la promo `Pod C index routing grace 540m`
+  - le profil repo courant inclut maintenant le veto `Pod A / BTC overextension 4h` en dry-run prod
   - baseline officielle rerun sur le fetch serveur courant `2026-04-05 -> 2026-04-23`
   - l'input courant ne contient pas de snapshots pour `2026-04-19`
   - delta vs baseline officielle precedente `20260422_pod_c_index540`: `+4.94 USD`
@@ -495,7 +496,294 @@ Reste a faire:
   - `Pod B off`
 - ne promouvoir que si le sleeve ajoute du PnL net sans detruire la perf de `Pod A`
 
-### 6. Iteration Microstructure Observables-First
+### 6. BTC Overextension Et Revue Coin-Par-Coin
+
+Objectif:
+
+- transformer les intuitions de `evos_btc.md` en hypotheses testables dans TRIDENT
+- traiter `BTC` comme cas pilote avant toute generalisation aux autres coins crypto
+- eviter d'ajouter une strategie mean-reversion directe sans preuve replay comparable
+
+Lecture retenue:
+
+- le signal `BTC` propose est une mean reversion apres sur-extension:
+  - prix trop loin de `EMA50`
+  - momentum surachete (`RSI21 > 65`)
+  - confirmation par essoufflement (`MACD histogram` en baisse, meche haute / rejection)
+- le signal brut annonce environ `77%` sur seulement `~18` occurrences en `4h`:
+  - trop faible pour une promotion directe
+  - utile comme hypothese de filtre / watcher
+  - insuffisant pour ouvrir un short live ou creer un pod dedie
+- dans l'architecture actuelle, l'integration la plus saine est:
+  - d'abord `research-only`
+  - puis `watch-only`
+  - puis veto / filtre d'entree `Pod A` si le replay full-bot confirme
+
+Evolutions BTC a implementer:
+
+- ajouter une famille research `btc_overextension_reversion`:
+  - timeframe principal `4h`
+  - timeframes de controle `1h` et `2h`
+  - horizon de test `1`, `2`, `3` bougies
+  - variantes:
+    - short theorique apres sur-extension
+    - no-entry veto pour les longs `Pod A`
+    - early-exit watcher pour une position longue deja ouverte
+- enrichir les features candles research:
+  - `rsi21`
+  - distance a `EMA50` en pourcentage
+  - distance a `EMA50` normalisee par `ATR14`
+  - variation du `MACD histogram`
+  - ratio meche haute / corps et meche basse / corps
+  - position dans les bandes de Bollinger
+- ajouter un rapport BTC dedie:
+  - resultat par timeframe
+  - train / validation / holdout chronologique
+  - nombre d'occurrences
+  - hit rate
+  - expectancy nette apres frais
+  - distribution par regime TRIDENT
+  - impact simule comme veto de `Pod A / trend_pullback_long`
+- ajouter une option de replay full-bot shadow:
+  - baseline officielle courante
+  - baseline + watcher BTC sans effet execution
+  - baseline + veto BTC sur entrees longues `Pod A`
+  - baseline + early-exit BTC uniquement si la version veto est deja positive
+- ajouter si necessaire le support de regles `pattern_vetoes / pattern_watchers` scopees par symbole:
+  - ex: `symbols = ["BTC"]`
+  - ne pas appliquer un veto BTC globalement aux autres coins sans validation separee
+- ne pas activer de short BTC live sur cette base:
+  - les shorts `Pod A` restent desactives dans le profil repo
+  - toute branche short doit passer par un moteur short separe ou une variante shadow explicite
+
+Critere de promotion BTC:
+
+- minimum `40` occurrences cumulees sur la famille testee, ou justification explicite si le pattern reste rare
+- expectancy nette positive apres frais sur train et holdout
+- pas de degradation de la baseline full-bot officielle
+- pas de gain concentre sur 1 ou 2 journees
+- meilleur resultat en mode filtre / veto avant toute hypothese de strategie standalone
+- promotion maximale initiale:
+  - `watcher` si le signal est informatif mais pas encore portefeuille-additif
+  - `veto Pod A BTC-only` si le replay complet bat la baseline
+  - jamais `nouveau pod` sans preuve transversale sur plusieurs coins
+
+Statut implementation `2026-04-24`:
+
+- implemente dans `Pod A` comme veto BTC-only sur `trend_pullback_long`
+- features runtime ajoutees: `rsi21_4h`, distance `EMA50 4h` en `%` et `ATR`, `MACD hist 4h`, ratios de meches, position Bollinger, `btc_overextension_score`
+- regle active:
+  - `symbols = ["BTC"]`
+  - `sides = ["long"]`
+  - `min_rsi21_4h = 65.0`
+  - `min_ema50_distance_4h_pct = 4.0`
+  - `min_btc_overextension_score = 0.70`
+- replay strict initial avec `max_macd_hist_delta_4h = 0.0`: aucun veto declenche, perf identique baseline
+- replay adapte score-only:
+  - rapport: `server-data/replay_reports/full_bot_btc_overextension_poda_score_20260424.json`
+  - baseline officielle: total `+562.48`, `Pod A +526.26`
+  - variante BTC veto: total `+586.39`, `Pod A +550.17`
+  - delta: `+23.91` total / `+23.91` Pod A
+  - `4` decisions veto, `3` trades BTC en moins, PnL BTC `+147.55 -> +171.46`
+- interpretation: signal utile en filtre Pod A, mais encore trop concentre pour generalisation automatique; prochaine etape = holdout / extension multi-fenetres avant de dupliquer sur d'autres coins
+
+Activation prod dry-run:
+
+- la modification est active dans `config/trident.toml`, qui est la config prod de reference
+- `pod-a-live` et `trident_dry_run_launcher` chargent `config/trident.toml` par defaut
+- le deploiement Docker peut toutefois surcharger via `TRIDENT_CONFIG_PATH`; verifier que le serveur ne pointe plus vers un ancien profil `config/trident_crypto_launch_fast*`
+- comme le systeme tourne actuellement en dry-run, la regle peut etre observee en conditions prod sans ordre reel
+
+Checklist avant passage live:
+
+- verifier sur le serveur que `TRIDENT_CONFIG_PATH=config/trident.toml` pour `trident-api` et `pod-a-live`
+- redeployer / restart `pod-a-live` apres synchronisation de la config pour garantir que le veto est charge
+- confirmer dans les logs dry-run que les rejets `pattern_veto_btc_overextension_4h` apparaissent seulement sur `BTC` long `trend_pullback_long`
+- confirmer dans les logs dry-run que les rejets `pattern_veto_hype_trend_pullback_long_targeted` apparaissent seulement sur `HYPE` long `trend_pullback_long`
+- surveiller au moins une fenetre dry-run recente avec:
+  - absence d'erreur dans `logs/pod_a_live_status.json`
+  - snapshots frais dans `data/live_snapshots`
+  - pas de baisse nette de PnL dry-run attribuable au veto BTC
+  - pas de reduction excessive d'activite BTC hors zones d'overextension
+- relancer un replay full-bot sur les snapshots dry-run les plus recents apres deploiement serveur
+- verifier que la config live garde les shorts `Pod A` desactives; ce changement reste un veto long, pas une strategie short
+- avant ordre reel:
+  - commencer avec Pod A seul ou taille minimale
+  - confirmer caps de levier HL live appliques
+  - verifier que le dashboard et les journaux affichent les positions / rejets attendus
+  - garder un rollback simple: desactiver `[[pod_a.pattern_vetoes]].name = "btc_overextension_4h"` ou repasser `enabled = false`
+
+Index rapports et artefacts `2026-04-24`:
+
+| Sujet | Fichier | Chemin | Usage |
+|-------|---------|--------|-------|
+| BTC overextension Pod A, replay score-only | `full_bot_btc_overextension_poda_score_20260424.md` | `server-data/replay_reports/full_bot_btc_overextension_poda_score_20260424.md` | synthese lisible du replay valide |
+| BTC overextension Pod A, replay score-only | `full_bot_btc_overextension_poda_score_20260424.json` | `server-data/replay_reports/full_bot_btc_overextension_poda_score_20260424.json` | chiffres machine-readable du replay valide |
+| BTC overextension Pod A, replay strict initial | `full_bot_btc_overextension_poda_20260424.md` | `server-data/replay_reports/full_bot_btc_overextension_poda_20260424.md` | tentative stricte, perf identique baseline |
+| BTC overextension Pod A, replay strict initial | `full_bot_btc_overextension_poda_20260424.json` | `server-data/replay_reports/full_bot_btc_overextension_poda_20260424.json` | details machine-readable de la tentative stricte |
+| Matrice patterns tous coins | `bot_coin_pattern_matrix_20260424.md` | `server-data/replay_reports/bot_coin_pattern_matrix_20260424.md` | tableau lisible par coin avec split `L/S` |
+| Matrice patterns tous coins | `bot_coin_pattern_matrix_20260424.json` | `server-data/replay_reports/bot_coin_pattern_matrix_20260424.json` | resultats complets et `side_breakdown` par pattern |
+| Validation ciblee coin+pattern Pod A | `pod_a_coin_pattern_targeted_validation_20260424.md` | `server-data/replay_reports/pod_a_coin_pattern_targeted_validation_20260424.md` | reference de decision par coin/pattern, long-only |
+| Validation ciblee coin+pattern Pod A | `pod_a_coin_pattern_targeted_validation_20260424.json` | `server-data/replay_reports/pod_a_coin_pattern_targeted_validation_20260424.json` | resultats machine-readable par coin/pattern |
+| Archive garde-fou global shorts | `pod_a_pattern_evolution_validation_20260424.md` | `server-data/replay_reports/pod_a_pattern_evolution_validation_20260424.md` | test global par famille, non utilise pour decision coin-par-coin |
+| Archive garde-fou global shorts | `pod_a_pattern_evolution_validation_20260424.json` | `server-data/replay_reports/pod_a_pattern_evolution_validation_20260424.json` | resultats machine-readable du test global |
+| Dataset recherche tous coins | `manifest.json` | `data/research/hyperliquid_bot_coins/current/manifest.json` | index de collecte, fenetres, symboles, timeframes |
+| Dataset recherche tous coins | `raw/candles/<tf>/<symbol>.json.gz` | `data/research/hyperliquid_bot_coins/current/raw/candles/` | bougies conservees pour recalculs |
+| Dataset recherche tous coins | `raw/funding/<symbol>.json.gz` | `data/research/hyperliquid_bot_coins/current/raw/funding/` | funding conserve pour recalculs |
+
+Methodologie pour etudier chaque coin en detail:
+
+- construire une file d'analyse par vagues:
+  - vague 1 core: `BTC`, `ETH`, `SOL`, `HYPE`
+  - vague 2 majors observees: `DOGE`, `XRP`, `SUI`, `AVAX`, `LINK`, `ARB`, `ADA`, `BNB`, `LTC`, `AAVE`, `NEAR`, `ZRO`, `ZEC`, `ENA`, `TON`, `BCH`
+  - vague 3 symbols speciaux / bloques: `TAO`, puis candidats type `XPL`, `BIO`, `PENGU` seulement si la collecte les couvre
+  - tradfi `XYZ:*` a traiter separement via la boucle `Pod C`, pas avec les seuils crypto BTC
+- pour chaque coin, produire un dossier standard:
+  - qualite data: couverture, trous, nombre de bougies par timeframe
+  - liquidite: volume, notional, spread, trade count, open interest
+  - relation BTC/ETH: correlation, beta, alignement / divergence
+  - regime: perf des patterns par `TrendExpansion`, `RangeAuction`, `PanicSqueeze`, `DeadZone`
+  - archetypes: trend, breakout, mean reversion, funding reversion
+  - compatibilite pod:
+    - `Pod A` si trend / pullback robuste
+    - `Pod B` si breakout / squeeze robuste
+    - sleeve special si comportement isolé et non transferable
+    - `observe_only` si edge faible ou non stable
+    - `new_pod_candidate` seulement si mean reversion robuste sur plusieurs coins
+- utiliser des seuils normalises, pas un copier-coller BTC:
+  - distance EMA en `ATR`
+  - percentiles historiques par symbole
+  - z-scores de funding / volume
+  - buckets de volatilite et de liquidite
+- separer trois niveaux de preuve:
+  - candles HL: utile pour trouver des hypotheses
+  - snapshots serveur comparables: necessaires pour valider un filtre compatible TRIDENT
+  - replay full-bot: obligatoire avant toute promotion
+- standardiser les sorties:
+  - un JSON machine-readable par coin
+  - un MD de synthese par coin
+  - une matrice finale `symbol -> owner recommande -> action`
+- planifier les decisions possibles:
+  - `promote_watch`
+  - `promote_veto_shadow`
+  - `promote_config_candidate`
+  - `keep_research_only`
+  - `observe_only`
+  - `remove_from_tradable_pool`
+
+Matrice coin-par-coin `2026-04-24`:
+
+- dataset stocke: `data/research/hyperliquid_bot_coins/current`
+- rapport complet:
+  - `server-data/replay_reports/bot_coin_pattern_matrix_20260424.md`
+  - `server-data/replay_reports/bot_coin_pattern_matrix_20260424.json`
+- demande initiale `30j`, elargie automatiquement a `180j`:
+  - `1h`, `2h`, `4h`, `1d`: fenetre complete
+  - `15m`, `30m`: limite officielle HL `5000` bougies, completee avec l'ancien dataset local + tails recents
+- horizons testes: `1`, `2`, `3` bougies
+- le rapport `2026-04-24` inclut maintenant un split `long-only` / `short-only` par pattern (`side_breakdown` dans le JSON, labels `L/S` dans le MD)
+- lecture: ce tableau est `research candles`; toute promotion config doit passer par replay full-bot comparable
+
+Validation ciblee full-bot coin+pattern `2026-04-24`:
+
+- rapport de reference:
+  - `server-data/replay_reports/pod_a_coin_pattern_targeted_validation_20260424.md`
+  - `server-data/replay_reports/pod_a_coin_pattern_targeted_validation_20260424.json`
+- baseline actuelle avec veto BTC: total `+586.39`, `Pod A +550.17`
+- shorts: non testes dans cette passe; tous les scenarios sont `long-only`
+- `TAO`: debloque uniquement dans le scenario `TAO trend_pullback`, Pod B gardant TAO bloque
+- verdicts `keep`:
+  - `BTC trend_pullback`: ablation delta `-171.46`, PnL cible baseline `+171.46` sur `28` trades
+  - `LINK trend_pullback`: ablation delta `-13.49`, PnL cible baseline `+13.49` sur `5` trades
+  - `ENA trend_pullback`: ablation delta `-106.98`, PnL cible baseline `+106.98` sur `9` trades
+- verdicts `reject`:
+  - `HYPE trend_pullback`: ablation delta `+10.25`; retirer HYPE ameliore le full-bot
+  - `XRP ichimoku_continuation`: ajout delta `-242.56`, PnL cible `-10.77` sur `23` trades
+  - `AVAX vwap_reclaim`: ajout delta `-2.95`, PnL cible `-2.95` sur `1` trade
+  - `ARB ichimoku_continuation`: ajout delta `-252.08`, PnL cible `-20.29` sur `23` trades
+  - `BNB ichimoku_continuation`: ajout delta `-235.62`, PnL cible `-3.83` sur `10` trades
+  - `LTC ichimoku_continuation`: ajout delta `-203.88`, PnL cible `-9.27` sur `13` trades
+  - `NEAR vwap_reclaim`: ajout delta `-18.05`, PnL cible `-25.88` sur `2` trades
+  - `TAO trend_pullback`: ajout delta `-596.77`, PnL cible `-46.60` sur `8` trades; garder TAO bloque
+- verdicts `no_effect`:
+  - `ETH vwap_reclaim`: aucun trade cible sur cette fenetre
+  - `BNB vwap_reclaim`: aucun trade cible sur cette fenetre
+- conclusion operationnelle:
+  - garder `BTC`, `LINK`, `ENA` dans `trend_pullback_long`
+  - veto cible `HYPE / trend_pullback_long` ajoute a `config/trident.toml` pour observation dry-run:
+    - `[[pod_a.pattern_vetoes]].name = "hype_trend_pullback_long_targeted"`
+    - `symbols = ["HYPE"]`
+    - `sides = ["long"]`
+    - `setups = ["trend_pullback_long"]`
+    - raison replay: retirer HYPE ameliorait le full-bot de `+10.25`
+    - avant passage live: confirmer sur une seconde fenetre replay / dry-run
+  - ne pas promouvoir les ajouts `vwap_reclaim_long` ou `ichimoku_continuation_long` testes ici
+  - garder `TAO` bloque tradable
+
+Archive garde-fou global shorts `2026-04-24`:
+
+- rapport:
+  - `server-data/replay_reports/pod_a_pattern_evolution_validation_20260424.md`
+  - `server-data/replay_reports/pod_a_pattern_evolution_validation_20260424.json`
+- baseline actuelle avec veto BTC: total `+586.39`, `Pod A +550.17`
+- `trend_pullback`:
+  - no-short: delta `0.00`
+  - shorts-on: delta `-335.20`, `trend_pullback_short -335.20`
+  - verdict: `reject` pour la reactivation globale du short
+- `vwap_reclaim`:
+  - no-short: delta `-87.26`
+  - shorts-on: delta `-130.30`, `vwap_reclaim_short -43.04`
+  - verdict: `reject`
+- `ichimoku_continuation`:
+  - no-short: delta `-355.17`
+  - shorts-on: delta `-927.37`, `ichimoku_continuation_short -572.20`
+  - verdict: `reject`
+- conclusion operationnelle:
+  - ce test etait global par famille, pas cible coin-par-coin
+  - il sert seulement de garde-fou: ne pas reactiver les shorts Pod A globalement
+  - les decisions coin-par-coin doivent se baser sur `pod_a_coin_pattern_targeted_validation_20260424.*`
+
+| Coin | Patterns les plus interessants | Lecture / suite |
+|------|--------------------------------|-----------------|
+| `BTC` | `trend_pullback` `2h h3`: `57.2004 bps`, n=`14`<br>`funding_reversion` `4h h3`: `53.3059 bps`, n=`8` | `Pod A` |
+| `ETH` | `vwap_reclaim` `4h h1`: `108.9252 bps`, n=`14`<br>`vwap_reclaim` `2h h2`: `53.9404 bps`, n=`38` | `Pod A`, corr BTC 1h `0.8945` |
+| `SOL` | `funding_reversion` `2h h2`: `82.7706 bps`, n=`16`<br>`funding_reversion` `2h h3`: `77.6316 bps`, n=`15` | `research_only`, corr BTC 1h `0.8462` |
+| `HYPE` | `funding_reversion` `15m h3`: `59.7231 bps`, n=`11`<br>`trend_pullback` `2h h2`: `105.8477 bps`, n=`9` | `research_only`, corr BTC 1h `0.5658` |
+| `DOGE` | `ttm_squeeze_release` `2h h1`: `75.8638 bps`, n=`10`<br>`ttm_squeeze_release` `2h h2`: `50.7612 bps`, n=`10` | `Pod B`, corr BTC 1h `0.7974` |
+| `XRP` | `ema50_overextension_reversion` `15m h3`: `46.4922 bps`, n=`11`<br>`ichimoku_continuation` `4h h3`: `60.4905 bps`, n=`53` | `watch/veto`, corr BTC 1h `0.7966` |
+| `SUI` | `ttm_squeeze_release` `2h h2`: `126.6209 bps`, n=`14`<br>`ttm_squeeze_release` `2h h3`: `123.7374 bps`, n=`14` | `Pod B`, corr BTC 1h `0.7913` |
+| `AVAX` | `vwap_reclaim` `2h h1`: `56.054 bps`, n=`23`<br>`ttm_squeeze_release` `30m h3`: `31.347 bps`, n=`19` | `Pod A`, corr BTC 1h `0.7879` |
+| `LINK` | `ttm_squeeze_release` `2h h2`: `71.0509 bps`, n=`9`<br>`trend_pullback` `1h h3`: `35.4078 bps`, n=`20` | `Pod B`, corr BTC 1h `0.8482` |
+| `ARB` | `ichimoku_continuation` `4h h3`: `59.0739 bps`, n=`51`<br>`ichimoku_continuation` `4h h2`: `49.4271 bps`, n=`65` | `Pod A`, corr BTC 1h `0.7382` |
+| `ADA` | `funding_reversion` `2h h2`: `72.4633 bps`, n=`16`<br>`funding_reversion` `2h h1`: `48.6946 bps`, n=`17` | `research_only`, corr BTC 1h `0.8076` |
+| `BNB` | `vwap_reclaim` `4h h1`: `36.5701 bps`, n=`18`<br>`ichimoku_continuation` `4h h3`: `28.9087 bps`, n=`47` | `Pod A`, corr BTC 1h `0.8352` |
+| `LTC` | `ema50_overextension_reversion` `2h h3`: `40.9118 bps`, n=`55`<br>`ichimoku_continuation` `4h h2`: `41.6604 bps`, n=`42` | `watch/veto`, corr BTC 1h `0.7109` |
+| `AAVE` | `funding_reversion` `2h h2`: `82.8807 bps`, n=`9`<br>`funding_reversion` `2h h3`: `90.4577 bps`, n=`9` | `research_only`, corr BTC 1h `0.7273` |
+| `NEAR` | `squeeze_breakout` `1h h2`: `51.8767 bps`, n=`11`<br>`vwap_reclaim` `1h h2`: `31.0235 bps`, n=`55` | `Pod B`, corr BTC 1h `0.6523` |
+| `ZRO` | `ema50_overextension_reversion` `4h h3`: `95.1641 bps`, n=`36`<br>`ttm_squeeze_release` `2h h3`: `78.5522 bps`, n=`10` | `watch/veto`, corr BTC 1h `0.4578` |
+| `TAO` | `trend_pullback` `2h h3`: `177.6836 bps`, n=`11`<br>`trend_pullback` `2h h2`: `149.0897 bps`, n=`11` | `Pod A`, corr BTC 1h `0.6102`; reste bloque tradable |
+| `ZEC` | `range_mean_reversion` `15m h3`: `97.0182 bps`, n=`8`<br>`range_mean_reversion` `15m h2`: `60.7868 bps`, n=`8` | `research_only`, corr BTC 1h `0.4422` |
+| `ENA` | `trend_breakout` `30m h3`: `85.6124 bps`, n=`8`<br>`trend_pullback` `2h h2`: `79.8661 bps`, n=`8` | `Pod A`, corr BTC 1h `0.7057` |
+| `TON` | `stoch_cci_reversion` `1h h3`: `57.55 bps`, n=`14`<br>`ttm_squeeze_release` `2h h3`: `91.5703 bps`, n=`9` | `research_only`, corr BTC 1h `0.5944` |
+| `BCH` | `ttm_squeeze_release` `2h h2`: `73.5455 bps`, n=`8`<br>`ttm_squeeze_release` `2h h3`: `82.5992 bps`, n=`8` | `Pod B`, corr BTC 1h `0.5849` |
+
+Reste a faire:
+
+- confirmer le veto candidat `HYPE / trend_pullback_long` sur une deuxieme fenetre replay avant toute promotion config
+- ne pas reprendre les tests shorts tant qu'une hypothese short ciblee n'est pas redefinie coin par coin
+- implementer en shadow/watch seulement les familles non executables avant replay PnL:
+  - `funding_reversion`
+  - `ema50_overextension_reversion` hors veto BTC
+  - `range_mean_reversion`
+  - `stoch_cci_reversion`
+  - familles squeeze / breakout cote `Pod B`
+- transformer les meilleurs candidats `watch/veto` en hypotheses de replay full-bot, une par symbole
+- prioriser les candidats a sample plus robuste: `LTC`, `ZRO`, `ARB`, `BNB`, `XRP`
+- analyser separement les familles `funding_reversion` avant toute promotion, car elles ne correspondent pas encore a un pod live dedie
+- garder `TAO` bloque tant que le choix tradable n'est pas revalide en replay full-bot et en dry-run
+- ne pas etendre le veto BTC aux autres coins sans replay full-bot comparable par symbole
+
+### 7. Iteration Microstructure Observables-First
 
 Objectif:
 
@@ -641,7 +929,7 @@ Reste a faire:
   - evaluer le branchement des flux `userFills / openOrders / orderUpdates / clearinghouseState`
   - evaluer si `allMids` WS apporte un benefice reel par rapport au fallback REST actuel
 
-### 7. Pistes Research Seulement
+### 8. Pistes Research Seulement
 
 Restent hors du coeur live:
 
