@@ -768,6 +768,41 @@ class PodCTests(unittest.TestCase):
             "pattern_veto_oil_supportive_strong_normal",
         )
 
+    def test_default_config_blocks_pod_c_silver_strong_extension_veto(self) -> None:
+        config = load_config("config/trident.toml")
+        self.assertTrue(
+            any(
+                rule.name == "silver_strong_extension_veto"
+                for rule in config.pod_c.pattern_vetoes
+            )
+        )
+        gate = PodCRiskGate(config)
+        decision = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="XYZ:SILVER",
+                    side="long",
+                    setup="tradfi_continuation_long",
+                    confidence=0.8,
+                    target_notional_usd=100.0,
+                    stop_bps=45.0,
+                    time_stop_hours=config.pod_c.time_stop_hours,
+                    margin_usd=25.0,
+                    effective_leverage=4.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=2.0,
+                    setup_details={
+                        "market_cluster": "silver",
+                        "trend_bucket": "strong",
+                        "structure_bucket": "strong",
+                        "vwap_bucket": "extension",
+                    },
+                )
+            ]
+        )[0]
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, "pattern_veto_silver_strong_extension_veto")
+
     def test_pod_c_risk_gate_records_pattern_watch_hits(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.pattern_vetoes = []

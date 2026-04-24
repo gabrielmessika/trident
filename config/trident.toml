@@ -613,6 +613,16 @@ sides = ["long"]
 market_clusters = ["index"]
 vwap_buckets = ["extension"]
 
+[[pod_c.pattern_vetoes]]
+name = "silver_strong_extension_veto"
+enabled = true
+setups = ["tradfi_continuation_long"]
+sides = ["long"]
+market_clusters = ["silver"]
+trend_buckets = ["strong"]
+structure_buckets = ["strong"]
+vwap_buckets = ["extension"]
+
 [pod_c.cluster_modes.index]
 enabled = true
 allowed_setups = ["tradfi_continuation_long"]

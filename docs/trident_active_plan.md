@@ -24,6 +24,7 @@ Date: `2026-04-24`
 - note courante:
   - le profil repo courant inclut `pod_a.stop_grace_minutes = 165`, `pod_a.opposite_signal_debounce_minutes = 15` et la promo `Pod C index routing grace 540m`
   - le profil repo courant inclut maintenant le veto `Pod A / BTC overextension 4h` en dry-run prod
+  - le profil repo courant inclut maintenant les vetoes dry-run `Pod A / XRP overextension 4h` et `Pod C / silver strong extension`
   - baseline officielle rerun sur le fetch serveur courant `2026-04-05 -> 2026-04-23`
   - l'input courant ne contient pas de snapshots pour `2026-04-19`
   - delta vs baseline officielle precedente `20260422_pod_c_index540`: `+4.94 USD`
@@ -68,6 +69,77 @@ Date: `2026-04-24`
   - archivee comme document historique
 
 ## Validations Recentes
+
+### 2026-04-24 - Pod C sweep patterns tradfi
+
+Contexte:
+
+- demande: repasser sur les coins `Pod C` (`GOLD`, `OIL`, `SILVER`, `index`, `equity`, `fx`) avec la meme logique de detection de patterns, tester les candidats un par un, garder uniquement les deltas positifs
+- source replay comparable:
+  - [full_bot_latest_fetch.jsonl](/workspaces/trident/server-data/replay_inputs/full_bot_latest_fetch.jsonl)
+- rapports:
+  - detection Pod C isolee:
+    - [pod_c_day_by_day_patterns_current_20260424.md](/workspaces/trident/server-data/replay_reports/pod_c_day_by_day_patterns_current_20260424.md)
+    - [pod_c_day_by_day_patterns_current_20260424.json](/workspaces/trident/server-data/replay_reports/pod_c_day_by_day_patterns_current_20260424.json)
+  - validation full replay un par un:
+    - [pod_c_pattern_implementation_validation_20260424.md](/workspaces/trident/server-data/replay_reports/pod_c_pattern_implementation_validation_20260424.md)
+    - [pod_c_pattern_implementation_validation_20260424.json](/workspaces/trident/server-data/replay_reports/pod_c_pattern_implementation_validation_20260424.json)
+  - probe research-only sans `cluster_aware_v2`:
+    - [pod_c_relaxed_cluster_probe_20260424.md](/workspaces/trident/server-data/replay_reports/pod_c_relaxed_cluster_probe_20260424.md)
+    - [pod_c_relaxed_cluster_probe_20260424.json](/workspaces/trident/server-data/replay_reports/pod_c_relaxed_cluster_probe_20260424.json)
+
+Baseline full replay avant cette passe:
+
+- total `+603.09 USD`
+- `Pod A +566.87`
+- `Pod B 0.00`
+- `Pod C +36.22`
+
+Resultat apres candidat conserve:
+
+- total `+608.05 USD`
+- `Pod A +566.87`
+- `Pod B 0.00`
+- `Pod C +41.18`
+- delta: `+4.96 USD`
+
+Tableau de synthese:
+
+| Coin | Cluster | Pattern le plus interessant | Test full replay | Decision |
+|---|---|---|---:|---|
+| `XYZ:CL` | `oil` | `oil_pullback_long` | `+8.47 / 5 trades` | garder branche actuelle, rien a ajouter |
+| `XYZ:BRENTOIL` | `oil` | `oil_pullback_long` | `+2.04 / 1 trade` | garder branche actuelle, rien a ajouter |
+| `XYZ:SP500` | `index` | `index_breakout_long` | `+3.04 / 1 trade` | garder branche actuelle, rien a ajouter |
+| `XYZ:XYZ100` | `index` | `index_breakout_long` | `+6.42 / 2 trades` | garder branche actuelle, rien a ajouter |
+| `XYZ:SILVER` | `silver` | `silver_breakout_long`, mais veto `strong/strong/extension` | `+19.01 / 13 trades`, veto `+4.96` | promouvoir `pod_c.pattern_vetoes.silver_strong_extension_veto` |
+| `XYZ:GOLD` | `gold` | `gold_breakout_long` fragile sur le full replay courant | `-2.76 / 1 trade` | pas de veto promu: les sous-patterns gold detectes en runner isole ne declenchent pas en full replay |
+| `XYZ:JPY` | `fx` | aucun pattern actif, aucun trade dans le probe relaxe | `0 trade` | non couvert par `cluster_aware_v2`, pas de promo sans nouvelle branche dediee |
+| `XYZ:TSLA` | `equity` | probe relaxe negatif | `-5.43 / 6 trades` | ne pas ajouter de branche equity |
+| `XYZ:NVDA` | `equity` | aucun pattern actif, aucun trade dans le probe relaxe | `0 trade` | ne pas ajouter de branche equity |
+| `XYZ:CRCL` | `equity` | aucun pattern actif, aucun trade dans le probe relaxe | `0 trade` | ne pas ajouter de branche equity |
+
+Probe complementaire:
+
+- desactivation research-only de `cluster_aware_v2`: `-138.11 USD` sur `158` trades
+- lecture:
+  - confirme que les branches cluster-aware actuelles sont utiles pour couper le bruit
+  - `equity` sort negatif (`TSLA -5.43 / 6 trades`)
+  - `fx` ne donne aucun trade exploitable sur la fenetre
+
+Changement promu en dry-run:
+
+- `config/trident.toml`
+  - `[[pod_c.pattern_vetoes]] silver_strong_extension_veto`
+  - scope: `tradfi_continuation_long`, `silver`, `trend_bucket=strong`, `structure_bucket=strong`, `vwap_bucket=extension`
+- couverture test:
+  - `tests/test_pod_c.py::PodCTests::test_default_config_blocks_pod_c_silver_strong_extension_veto`
+
+Avant passage live:
+
+- refaire un full replay propre avec la config fichier apres promo si le fetch serveur change
+- verifier que le nombre de rejets `pattern_veto_silver_strong_extension_veto` reste faible et cible (`6` sur cette fenetre)
+- verifier que `XYZ:SILVER` continue de trader les entrees `medium/strong` rentables et n'est pas coupe globalement
+- garder `GOLD`, `equity`, `fx` en observation: aucune branche nouvelle n'est validee par le full replay courant
 
 ### 2026-04-21 - Pod A `stop_grace` sur snapshots serveur comparables
 
