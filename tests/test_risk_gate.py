@@ -59,6 +59,21 @@ class PodARiskGateTests(unittest.TestCase):
         self.assertEqual(rule.min_btc_overextension_score, 0.70)
         self.assertIsNone(rule.max_macd_hist_delta_4h)
 
+    def test_default_config_loads_xrp_overextension_veto(self) -> None:
+        rule = next(
+            rule
+            for rule in self.config.pod_a.pattern_vetoes
+            if rule.name == "xrp_overextension_4h_targeted"
+        )
+
+        self.assertEqual(rule.symbols, ["XRP"])
+        self.assertEqual(rule.sides, ["long"])
+        self.assertEqual(rule.setups, ["trend_pullback_long"])
+        self.assertEqual(rule.min_rsi21_4h, 65.0)
+        self.assertEqual(rule.min_ema50_distance_4h_pct, 4.0)
+        self.assertEqual(rule.min_ema50_distance_4h_atr, 2.0)
+        self.assertEqual(rule.min_btc_overextension_score, 0.70)
+
     def test_default_config_loads_hype_trend_pullback_veto(self) -> None:
         rule = next(
             rule
@@ -92,6 +107,35 @@ class PodARiskGateTests(unittest.TestCase):
         self.assertEqual(len(decisions), 1)
         self.assertFalse(decisions[0].accepted)
         self.assertEqual(decisions[0].reason, "pattern_veto_hype_trend_pullback_long_targeted")
+
+    def test_rejects_xrp_overextension_targeted_veto(self) -> None:
+        decisions = self.gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="XRP",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.72,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={
+                        "rsi21_4h": 70.0,
+                        "ema50_distance_4h_pct": 4.6,
+                        "ema50_distance_4h_atr": 2.2,
+                        "btc_overextension_score": 0.73,
+                    },
+                )
+            ]
+        )
+
+        self.assertEqual(len(decisions), 1)
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "pattern_veto_xrp_overextension_4h_targeted")
 
     def test_rejects_low_confidence_trade_plan(self) -> None:
         decisions = self.gate.evaluate_many(

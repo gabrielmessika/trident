@@ -600,6 +600,7 @@ Checklist avant passage live:
 - redeployer / restart `pod-a-live` apres synchronisation de la config pour garantir que le veto est charge
 - confirmer dans les logs dry-run que les rejets `pattern_veto_btc_overextension_4h` apparaissent seulement sur `BTC` long `trend_pullback_long`
 - confirmer dans les logs dry-run que les rejets `pattern_veto_hype_trend_pullback_long_targeted` apparaissent seulement sur `HYPE` long `trend_pullback_long`
+- confirmer dans les logs dry-run que les rejets `pattern_veto_xrp_overextension_4h_targeted` apparaissent seulement sur `XRP` long `trend_pullback_long`
 - surveiller au moins une fenetre dry-run recente avec:
   - absence d'erreur dans `logs/pod_a_live_status.json`
   - snapshots frais dans `data/live_snapshots`
@@ -611,7 +612,7 @@ Checklist avant passage live:
   - commencer avec Pod A seul ou taille minimale
   - confirmer caps de levier HL live appliques
   - verifier que le dashboard et les journaux affichent les positions / rejets attendus
-  - garder un rollback simple: desactiver `[[pod_a.pattern_vetoes]].name = "btc_overextension_4h"` ou repasser `enabled = false`
+  - garder un rollback simple: desactiver le veto concerne (`btc_overextension_4h`, `hype_trend_pullback_long_targeted`, `xrp_overextension_4h_targeted`) ou repasser `enabled = false`
 
 Index rapports et artefacts `2026-04-24`:
 
@@ -625,6 +626,8 @@ Index rapports et artefacts `2026-04-24`:
 | Matrice patterns tous coins | `bot_coin_pattern_matrix_20260424.json` | `server-data/replay_reports/bot_coin_pattern_matrix_20260424.json` | resultats complets et `side_breakdown` par pattern |
 | Validation ciblee coin+pattern Pod A | `pod_a_coin_pattern_targeted_validation_20260424.md` | `server-data/replay_reports/pod_a_coin_pattern_targeted_validation_20260424.md` | reference de decision par coin/pattern, long-only |
 | Validation ciblee coin+pattern Pod A | `pod_a_coin_pattern_targeted_validation_20260424.json` | `server-data/replay_reports/pod_a_coin_pattern_targeted_validation_20260424.json` | resultats machine-readable par coin/pattern |
+| Validation implementations candidates | `coin_pattern_implementation_validation_20260424.md` | `server-data/replay_reports/coin_pattern_implementation_validation_20260424.md` | test cible des candidats Pod A veto / Pod B slot |
+| Validation implementations candidates | `coin_pattern_implementation_validation_20260424.json` | `server-data/replay_reports/coin_pattern_implementation_validation_20260424.json` | resultats machine-readable des candidats implementes |
 | Archive garde-fou global shorts | `pod_a_pattern_evolution_validation_20260424.md` | `server-data/replay_reports/pod_a_pattern_evolution_validation_20260424.md` | test global par famille, non utilise pour decision coin-par-coin |
 | Archive garde-fou global shorts | `pod_a_pattern_evolution_validation_20260424.json` | `server-data/replay_reports/pod_a_pattern_evolution_validation_20260424.json` | resultats machine-readable du test global |
 | Dataset recherche tous coins | `manifest.json` | `data/research/hyperliquid_bot_coins/current/manifest.json` | index de collecte, fenetres, symboles, timeframes |
@@ -720,6 +723,39 @@ Validation ciblee full-bot coin+pattern `2026-04-24`:
   - ne pas promouvoir les ajouts `vwap_reclaim_long` ou `ichimoku_continuation_long` testes ici
   - garder `TAO` bloque tradable
 
+Validation implementation candidats non couverts Pod A `2026-04-24`:
+
+- rapport:
+  - `server-data/replay_reports/coin_pattern_implementation_validation_20260424.md`
+  - `server-data/replay_reports/coin_pattern_implementation_validation_20260424.json`
+- baseline config de depart: veto BTC + HYPE actif, total `+596.64`, `Pod A +560.42`, `Pod C +36.22`, `Pod B 0.00`
+- methodologie:
+  - `ema50_overextension_reversion`: transforme en veto Pod A cible `trend_pullback_long` par symbole
+  - `ttm_squeeze_release`: teste via slot Pod B cible `ttm_squeeze_release_long`
+  - `squeeze_breakout`: teste via slot Pod B cible `compression_breakout_long`
+  - pour Pod B, chaque delta est mesure contre un replay controle avec meme routage/allocation mais setup Pod B desactive
+- verdict `keep_candidate`:
+  - `XRP ema50_overextension_reversion`: delta `+6.45`, 1 veto, PnL cible `-3.07/3t` -> `+3.38/2t`
+  - action: veto ajoute a `config/trident.toml` pour observation dry-run:
+    - `[[pod_a.pattern_vetoes]].name = "xrp_overextension_4h_targeted"`
+    - `symbols = ["XRP"]`
+    - `sides = ["long"]`
+    - `setups = ["trend_pullback_long"]`
+    - seuils: `rsi21_4h >= 65`, `ema50_distance_4h_pct >= 4`, `ema50_distance_4h_atr >= 2`, `btc_overextension_score >= 0.70`
+- verdicts `no_effect`:
+  - `LTC ema50_overextension_reversion`: aucun veto declenche, delta `0.00`
+  - `ZRO ema50_overextension_reversion`: aucun veto declenche, delta `0.00`
+  - `DOGE`, `SUI`, `AVAX`, `LINK`, `ZRO`, `TON`, `BCH` en `ttm_squeeze_release_long`: aucun trade Pod B cible
+  - `NEAR squeeze_breakout` mappe en `compression_breakout_long`: aucun trade Pod B cible
+- non implementes dans cette passe:
+  - `funding_reversion`: necessite un sleeve dedie; les snapshots replay exposent le funding courant mais pas le z-score funding + trigger BB/stoch/CCI de la recherche candles
+  - `range_mean_reversion` et `stoch_cci_reversion`: necessitent un pod mean-reversion, pas adapte a Pod A/Pod B actuels
+  - `trend_breakout`: pas de mapping production strict; ne pas assimiler automatiquement a Pod B compression
+- conclusion operationnelle:
+  - promouvoir seulement `XRP` en veto dry-run
+  - ne pas activer Pod B pour les candidats squeeze tant que le moteur live ne reproduit pas de signaux sur snapshots serveur
+  - conserver les edges Pod B candles comme recherche, pas comme config executable
+
 Archive garde-fou global shorts `2026-04-24`:
 
 - rapport:
@@ -770,15 +806,16 @@ Archive garde-fou global shorts `2026-04-24`:
 Reste a faire:
 
 - confirmer le veto candidat `HYPE / trend_pullback_long` sur une deuxieme fenetre replay avant toute promotion config
+- confirmer le veto candidat `XRP / xrp_overextension_4h_targeted` sur dry-run et sur une deuxieme fenetre replay avant toute promotion live
 - ne pas reprendre les tests shorts tant qu'une hypothese short ciblee n'est pas redefinie coin par coin
 - implementer en shadow/watch seulement les familles non executables avant replay PnL:
   - `funding_reversion`
-  - `ema50_overextension_reversion` hors veto BTC
   - `range_mean_reversion`
   - `stoch_cci_reversion`
-  - familles squeeze / breakout cote `Pod B`
-- transformer les meilleurs candidats `watch/veto` en hypotheses de replay full-bot, une par symbole
-- prioriser les candidats a sample plus robuste: `LTC`, `ZRO`, `ARB`, `BNB`, `XRP`
+- ne pas promouvoir `LTC` / `ZRO` overextension sur la fenetre actuelle: aucun veto cible n'a declenche en replay
+- ne pas promouvoir les familles squeeze / breakout cote `Pod B` dans la config actuelle: tous les tests cibles ont fait `0` trade
+- transformer les meilleurs candidats `watch/veto` restants en hypotheses de replay full-bot, une par symbole
+- prioriser les candidats a sample plus robuste hors deja testes: `ARB`, `BNB`, puis nouvelles donnees `LTC` / `ZRO`
 - analyser separement les familles `funding_reversion` avant toute promotion, car elles ne correspondent pas encore a un pod live dedie
 - garder `TAO` bloque tant que le choix tradable n'est pas revalide en replay full-bot et en dry-run
 - ne pas etendre le veto BTC aux autres coins sans replay full-bot comparable par symbole
