@@ -130,11 +130,14 @@ def build_runtime_report(
     pod_a_runtime = load_runtime_status("logs/pod_a_live_status.json")
     pod_b_runtime = load_runtime_status("logs/pod_b_live_status.json")
     pod_c_runtime = load_runtime_status("logs/pod_c_live_status.json")
-    runtime_supervisor = merge_runtime_supervisor_snapshot(
-        pod_a_runtime,
-        pod_b_runtime,
-        pod_c_runtime,
-        base_snapshot=runtime_snapshot if isinstance(runtime_snapshot, dict) else None,
+    runtime_supervisor = (
+        runtime_snapshot
+        if isinstance(runtime_snapshot, dict)
+        else merge_runtime_supervisor_snapshot(
+            pod_a_runtime,
+            pod_b_runtime,
+            pod_c_runtime,
+        )
     )
     pod_health_by_name = {
         health.pod.value: health for health in supervisor.pod_health()

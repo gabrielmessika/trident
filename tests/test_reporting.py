@@ -255,6 +255,86 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(pod_c["preview_count"], 1)
         self.assertEqual(report["regime"], "TrendExpansion")
 
+    def test_build_runtime_report_keeps_provided_snapshot_authoritative(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c.enabled = True
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-reporting-authoritative-snapshot",
+            mode="observation",
+        )
+        runtime_snapshot = {
+            "regime": "RangeAuction",
+            "enabled_pods": ["pod_a", "pod_c"],
+            "ownership_conflicts": [],
+            "capital_plan": {
+                "regime": "RangeAuction",
+                "cash_usd": 940.0,
+                "pods": {
+                    "pod_a": {"target_pct": 0.0, "target_usd": 0.0},
+                    "pod_b": {"target_pct": 0.0, "target_usd": 0.0},
+                    "pod_c": {"target_pct": 0.06, "target_usd": 60.0},
+                },
+            },
+            "pods": {
+                "pod_a": {"owned_symbols": [], "target_pct": 0.0, "target_usd": 0.0},
+                "pod_b": {"owned_symbols": [], "target_pct": 0.0, "target_usd": 0.0},
+                "pod_c": {
+                    "owned_symbols": ["XYZ:BRENTOIL"],
+                    "target_pct": 0.06,
+                    "target_usd": 60.0,
+                },
+            },
+            "pod_c_signal_preview": [],
+        }
+        conflicting_pod_c_runtime = {
+            "pod": "pod_c",
+            "process_state": "running",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "open_positions": [
+                {"symbol": "XYZ:BRENTOIL", "unrealized_pnl_usd": 9.25}
+            ],
+            "report": {
+                "closed_trade_count": 1,
+                "realized_pnl_usd": -0.68,
+            },
+            "supervisor": {
+                "regime": "RangeAuction",
+                "capital_plan": {
+                    "regime": "RangeAuction",
+                    "cash_usd": 890.0,
+                    "pods": {
+                        "pod_c": {"target_pct": 0.11, "target_usd": 110.0},
+                    },
+                },
+                "pods": {
+                    "pod_c": {
+                        "owned_symbols": ["XYZ:BRENTOIL", "XYZ:CL", "XYZ:GOLD"],
+                        "target_pct": 0.11,
+                        "target_usd": 110.0,
+                    }
+                },
+            },
+        }
+
+        def _runtime_loader(path):
+            if "pod_c_live_status.json" in str(path):
+                return conflicting_pod_c_runtime
+            return None
+
+        with patch("app.reporting.multi_pod.load_runtime_status", side_effect=_runtime_loader):
+            report = build_runtime_report(
+                supervisor,
+                runtime_snapshot=runtime_snapshot,
+            ).to_dict()
+
+        pod_c = next(item for item in report["pods"] if item["pod"] == "pod_c")
+        self.assertEqual(pod_c["owned_symbols"], ["XYZ:BRENTOIL"])
+        self.assertEqual(pod_c["target_pct"], 0.06)
+        self.assertEqual(pod_c["target_usd"], 60.0)
+        self.assertEqual(pod_c["position_count"], 1)
+        self.assertEqual(pod_c["total_unrealized_pnl_usd"], 9.25)
+
     def test_build_cohabitation_summary_aggregates_pnl(self) -> None:
         class DummyResult:
             records_processed = 42

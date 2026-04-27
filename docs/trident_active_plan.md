@@ -70,6 +70,66 @@ Date: `2026-04-24`
 
 ## Validations Recentes
 
+### 2026-04-27 - Regime BTC range et sleeve crypto breadth
+
+Contexte:
+
+- demande: comprendre pourquoi le bot reste faible alors que le marche crypto semble favorable, et verifier si le blocage quand `BTC` est en range est trop restrictif
+- source recente:
+  - snapshots serveur `2026-04-24 -> 2026-04-27`, fetch `--days 4`
+- validation large:
+  - [full_bot_latest_fetch.jsonl](/workspaces/trident/server-data/replay_inputs/full_bot_latest_fetch.jsonl)
+  - fenetre couverte: `2026-04-05T19:45:00Z -> 2026-04-27T07:59:00Z`
+- mode de lecture:
+  - `Pod B` garde son statut desactive
+  - les tests de sleeves sont des contre-factuels research, pas des promos config
+
+Constat marche:
+
+- la fenetre recente n'est pas uniformement haussiere:
+  - `2026-04-26`: panier crypto moyen `+0.99%`, `17/20` coins positives
+  - `2026-04-27` matin: panier crypto moyen `-1.82%`, `1/20` coin positive
+- le bot a surtout ouvert tard le `2026-04-26` et tot le `2026-04-27`, juste avant le fade
+
+Tests recents `Pod A`:
+
+| Variante | PnL net | Trades clos | Lecture |
+|---|---:|---:|---|
+| baseline live | `-40.05` | `13` | faible mais moins mauvais |
+| `hybrid_moderate_a` | `-142.98` | `26` | plus d'activite, faux positifs |
+| sleeve `RangeAuction` strict | `-69.87` | `19` | plus de bruit et de frais |
+| sleeve `RangeAuction + DeadZone` strict | `-213.45` | `33` | rejet |
+| sleeve loose | `-213.23` | `34` | rejet |
+
+Validation full replay:
+
+| Variante | Total full bot | Pod A | Pod C | Trades clos | Decision |
+|---|---:|---:|---:|---:|---|
+| baseline live | `+649.81` | `+613.67` | `+36.14` | `169` | garder reference |
+| `hybrid_moderate_a` | `+295.55` | `+250.53` | `+45.02` | `253` | ne pas promouvoir |
+
+Decision:
+
+- ne pas activer `crypto_v2_enabled` / `hybrid_moderate_a` en prod sur cette base
+- ne pas relacher globalement `RangeAuction` ou `DeadZone` pour `Pod A`
+- garder `BTC range` comme throttle de risque plutot que comme hypothese a supprimer brutalement
+- l'idee reste vivante sous une forme plus ciblee:
+  - creer un candidat `alt_breadth_continuation`
+  - shadow-only
+  - sizing minuscule
+  - pas un changement de regime global
+  - conditions minimales a tester:
+    - breadth et alt participation fortes
+    - symbole local bullish
+    - anti-late-entry / anti-FOMO
+    - filtre de frais et liquidite
+    - validation obligatoire sur full replay avant toute promotion
+
+Point important:
+
+- le probleme n'est pas un bug evident de calcul de regime: le legacy est coherent avec ses seuils, mais trop BTC-led pour capturer des derives haussieres lentes
+- la solution ne doit pas etre un abaissement global des seuils, qui augmente surtout le churn
+
 ### 2026-04-24 - Pod C sweep patterns tradfi
 
 Contexte:
