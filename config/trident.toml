@@ -489,6 +489,17 @@ SUI = 10
 AVAX = 10
 LINK = 10
 ARB = 10
+ADA = 10
+BNB = 10
+LTC = 10
+AAVE = 10
+NEAR = 10
+ZRO = 5
+TAO = 5
+ZEC = 10
+ENA = 10
+TON = 10
+BCH = 10
 
 # Mode special TAO prepare, mais volontairement inactif tant que TAO
 # reste bloque globalement du pool tradable. Pour l'activer:

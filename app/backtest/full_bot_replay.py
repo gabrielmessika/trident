@@ -137,6 +137,18 @@ class FullBotBacktestRunner:
             snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
             previous_snapshots_by_symbol = dict(latest_snapshots_by_symbol)
             latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
+            if record.capture_reason == "maintenance_refresh":
+                self._process_maintenance_record(
+                    supervisor=supervisor,
+                    pod_a_report=pod_a_report,
+                    pod_b_report=pod_b_report,
+                    pod_c_report=pod_c_report,
+                    snapshots=snapshots,
+                    timestamp=timestamp,
+                    source_file=record.source_file,
+                    stream_source=record.stream_source,
+                )
+                continue
             previous_regime = supervisor.state.regime.value
             cluster_regime_snapshots = {
                 cluster: RegimeSnapshot(**snap)
@@ -295,12 +307,18 @@ class FullBotBacktestRunner:
                 "current_date_key": date_key,
             }
         risk_decisions = self.pod_a_risk_gate.evaluate_many(trade_plans)
+        opening_symbols = supervisor.opening_symbols_for(PodName.POD_A)
+        managed_symbols = supervisor.managed_symbols_for(
+            PodName.POD_A,
+            active_symbols=self.pod_a_executor.portfolio.open_positions.keys(),
+        )
         execution = self.pod_a_executor.process_record(
             snapshots=snapshots,
             risk_decisions=risk_decisions,
             signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
             timestamp=timestamp,
-            allowed_symbols=supervisor.allowed_symbols_for(PodName.POD_A),
+            entry_allowed_symbols=opening_symbols,
+            managed_symbols=managed_symbols,
         )
         self._record_directional_tick(
             report=report,
@@ -493,6 +511,93 @@ class FullBotBacktestRunner:
             executor=self.pod_b_executor,
             closed_trade_recorder=self._record_pod_b_closed_trade,
         )
+
+    def _process_maintenance_record(
+        self,
+        *,
+        supervisor: TridentSupervisor,
+        pod_a_report: PodABacktestReport,
+        pod_b_report: PodABacktestReport,
+        pod_c_report: PodABacktestReport,
+        snapshots: list[SymbolMarketSnapshot],
+        timestamp: str | None,
+        source_file: str,
+        stream_source: str | None,
+    ) -> None:
+        for pod_name, report, executor, closed_trade_recorder in self._maintenance_targets(
+            stream_source=stream_source,
+            pod_a_report=pod_a_report,
+            pod_b_report=pod_b_report,
+            pod_c_report=pod_c_report,
+        ):
+            managed_symbols = supervisor.managed_symbols_for(
+                pod_name,
+                active_symbols=executor.portfolio.open_positions.keys(),
+            )
+            execution = executor.process_record(
+                snapshots=snapshots,
+                risk_decisions=[],
+                signal_sides_by_symbol={},
+                timestamp=timestamp,
+                entry_allowed_symbols=supervisor.opening_symbols_for(pod_name),
+                managed_symbols=managed_symbols,
+            )
+            self._record_directional_tick(
+                report=report,
+                config=self.config,
+                current_regime=supervisor.state.regime.value,
+                timestamp=timestamp,
+                source_file=source_file,
+                previews=[],
+                risk_decisions=[],
+                execution=execution,
+                executor=executor,
+                closed_trade_recorder=closed_trade_recorder,
+            )
+
+    def _maintenance_targets(
+        self,
+        *,
+        stream_source: str | None,
+        pod_a_report: PodABacktestReport,
+        pod_b_report: PodABacktestReport,
+        pod_c_report: PodABacktestReport,
+    ) -> list[
+        tuple[
+            PodName,
+            PodABacktestReport,
+            DirectionalExecutor,
+            Callable[[object], None] | None,
+        ]
+    ]:
+        source = str(stream_source or "").strip().lower()
+        targets = {
+            PodName.POD_A: (
+                PodName.POD_A,
+                pod_a_report,
+                self.pod_a_executor,
+                self._record_pod_a_closed_trade,
+            ),
+            PodName.POD_B: (
+                PodName.POD_B,
+                pod_b_report,
+                self.pod_b_executor,
+                self._record_pod_b_closed_trade,
+            ),
+            PodName.POD_C: (
+                PodName.POD_C,
+                pod_c_report,
+                self.pod_c_executor,
+                None,
+            ),
+        }
+        if source.startswith("pod_a"):
+            return [targets[PodName.POD_A]]
+        if source.startswith("pod_b"):
+            return [targets[PodName.POD_B]]
+        if source.startswith("pod_c"):
+            return [targets[PodName.POD_C]]
+        return list(targets.values())
 
     def _pod_b_planning_allocation(
         self,

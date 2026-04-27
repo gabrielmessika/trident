@@ -1,6 +1,6 @@
 # TRIDENT Active Plan
 
-Date: `2026-04-24`
+Date: `2026-04-27`
 
 ## Status
 
@@ -25,6 +25,9 @@ Date: `2026-04-24`
   - le profil repo courant inclut `pod_a.stop_grace_minutes = 165`, `pod_a.opposite_signal_debounce_minutes = 15` et la promo `Pod C index routing grace 540m`
   - le profil repo courant inclut maintenant le veto `Pod A / BTC overextension 4h` en dry-run prod
   - le profil repo courant inclut maintenant les vetoes dry-run `Pod A / XRP overextension 4h` et `Pod C / silver strong extension`
+  - le profil repo courant inclut maintenant le combo de vetoes MTF `Pod A` valide le `2026-04-27`
+  - le full replay est maintenant aligne sur le dry-run live pour les snapshots `collector + maintenance_refresh`
+  - `config/trident.toml` contient les caps de levier live crypto manquants (`ADA`, `AAVE`, `NEAR`, `ENA`, etc.)
   - baseline officielle rerun sur le fetch serveur courant `2026-04-05 -> 2026-04-23`
   - l'input courant ne contient pas de snapshots pour `2026-04-19`
   - delta vs baseline officielle precedente `20260422_pod_c_index540`: `+4.94 USD`
@@ -69,6 +72,61 @@ Date: `2026-04-24`
   - archivee comme document historique
 
 ## Validations Recentes
+
+### 2026-04-27 - Parite dry-run / replay serveur
+
+Contexte:
+
+- demande: comparer la mauvaise journee dry-run `2026-04-27` (`-39.84 USD`) au backtest avant l'evo MTF, puis verifier si l'evo ameliore cette journee
+- source:
+  - fetch serveur `--days 4`
+  - snapshots `2026-04-24 -> 2026-04-27`
+  - `Pod B` desactive, conforme au serveur
+- artefacts:
+  - synthese: [dryrun_vs_backtest_mtf_20260427_all_stream.md](/workspaces/trident/server-data/replay_reports/dryrun_vs_backtest_mtf_20260427_all_stream.md)
+  - JSON final: [dryrun_vs_backtest_mtf_20260427_all_stream_after_pod_a_fix.json](/workspaces/trident/server-data/replay_reports/dryrun_vs_backtest_mtf_20260427_all_stream_after_pod_a_fix.json)
+
+Resultat final:
+
+| Run | PnL `2026-04-27` |
+|---|---:|
+| dry-run serveur | `-39.84` |
+| replay avant evo MTF | `-39.84` |
+| replay apres evo MTF | `-39.84` |
+
+Details par pod apres correctifs:
+
+| Pod | Dry-run | Replay corrige |
+|---|---:|---:|
+| `Pod A` | `-43.83` | `-43.83` |
+| `Pod C` | `+3.99` | `+3.99` |
+| total | `-39.84` | `-39.84` |
+
+Correctifs appliques:
+
+- `Pod C`:
+  - cause: le full replay confondait symboles ouvrables et symboles geres
+  - effet bug: `XYZ:BRENTOIL` sortait en replay par `routing_revoked` a `05:57`, au lieu du TP live a `08:01`
+  - fix: full replay aligne sur le live avec `entry_allowed_symbols` + `managed_symbols`
+  - resultat: `Pod C +3.99`, `BRENTOIL +8.80` en `take_profit_hit`, identique dry-run
+- `Pod A`:
+  - cause 1: les `maintenance_refresh` etaient traites comme des bougies normales dans le full replay
+  - effet bug: le replay modifiait le regime / les entrees sur des records qui, en live, servent seulement a monitorer les positions ouvertes
+  - cause 2: caps de levier live manquants dans `config/trident.toml`
+  - effet bug: `ENA`, `ADA`, `NEAR` etaient tailles a `30x` en replay au lieu de `10x`; `AAVE` disparaissait de la sequence replay
+  - fixes:
+    - `SnapshotLoader` conserve maintenant `capture_reason` et `stream_source`
+    - `FullBotBacktestRunner` traite `maintenance_refresh` comme le live: surveillance/fermeture uniquement, pas de nouvelle decision
+    - `Pod A` full replay utilise aussi `entry_allowed_symbols` + `managed_symbols`
+    - ajout des caps crypto HL manquants dans `config/trident.toml`
+  - resultat: `Pod A -43.83`, 8 trades, AAVE inclus a `-12.42`, identique dry-run
+
+Decision:
+
+- la parite `dry-run serveur <-> full replay` est maintenant validee sur cette mauvaise journee
+- la conclusion MTF ne change pas: l'evo MTF n'ameliore pas cette journee precise, car les nouveaux vetoes ne rejettent pas les trades perdants du jour
+- toutes les validations futures sur fetch live doivent inclure les `maintenance_refresh`; le collector-only n'est pas un harnais de parite suffisant
+- tests repo apres correctifs: `273 passed`
 
 ### 2026-04-27 - Regime BTC range et sleeve crypto breadth
 
@@ -566,6 +624,8 @@ Reste a faire:
 - supprimer ou archiver les profils stale encore presents seulement sur serveur
 - nettoyer les references de deploy qui pointent vers des profils obsoletes
 - verifier que les replays officiels utilisent toujours `--respect-config-enabled`
+- verifier que les replays de parite live utilisent bien `collector + maintenance_refresh`
+- garder le rapport de parite `2026-04-27` comme reference de debug si un futur dry-run diverge du replay
 
 ### 2. Pod A Crypto Core
 
@@ -576,6 +636,8 @@ Objectif:
 Reste a faire:
 
 - reduire les `routing_revoked` restants hors `campaign`
+- revalider les prochains fetchs avec les caps de levier live maintenant inscrits en config
+- ne plus interpreter un delta replay/live tant que les `maintenance_refresh` ne sont pas inclus dans le harnais
 - surveiller et revalider hors echantillon le `stop_grace_165m` deja promu dans le profil repo:
   - `Pod A / trend_pullback_long` seulement
   - verifier sur nouveaux fetchs serveur comparables que le gain reste positif

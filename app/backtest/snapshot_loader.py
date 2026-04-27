@@ -20,6 +20,8 @@ class SnapshotRecord:
     regime_snapshot: dict[str, object]
     symbols: list[dict[str, object]]
     cluster_regime_snapshots: dict[str, dict[str, object]] | None = None
+    capture_reason: str | None = None
+    stream_source: str | None = None
 
 
 def merge_snapshot_payloads(payloads: list[dict[str, object]]) -> dict[str, object]:
@@ -68,6 +70,8 @@ def merge_snapshot_records(records: list[SnapshotRecord]) -> SnapshotRecord:
                 "regime_snapshot": record.regime_snapshot,
                 "symbols": record.symbols,
                 "cluster_regime_snapshots": record.cluster_regime_snapshots,
+                "capture_reason": record.capture_reason,
+                "stream_source": record.stream_source,
             }
             for record in records
         ]
@@ -91,6 +95,16 @@ def merge_snapshot_records(records: list[SnapshotRecord]) -> SnapshotRecord:
             merged_payload.get("cluster_regime_snapshots")
             if isinstance(merged_payload.get("cluster_regime_snapshots"), dict)
             else None
+        ),
+        capture_reason=(
+            merged_payload.get("capture_reason")
+            if isinstance(merged_payload.get("capture_reason"), str)
+            else primary.capture_reason
+        ),
+        stream_source=(
+            merged_payload.get("stream_source")
+            if isinstance(merged_payload.get("stream_source"), str)
+            else primary.stream_source
         ),
     )
 
@@ -168,6 +182,16 @@ class SnapshotLoader:
                         symbols=enriched_payload.get("symbols", []),
                         cluster_regime_snapshots=(
                             cluster_raw if isinstance(cluster_raw, dict) else None
+                        ),
+                        capture_reason=(
+                            enriched_payload.get("capture_reason")
+                            if isinstance(enriched_payload.get("capture_reason"), str)
+                            else None
+                        ),
+                        stream_source=(
+                            enriched_payload.get("stream_source")
+                            if isinstance(enriched_payload.get("stream_source"), str)
+                            else None
                         ),
                     )
 

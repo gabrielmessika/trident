@@ -211,6 +211,38 @@ class FullBotReplayTests(unittest.TestCase):
         self.assertEqual(result.first_timestamp, "2026-04-05T10:00:00Z")
         self.assertEqual(result.last_timestamp, "2026-04-05T10:00:00Z")
 
+    def test_full_bot_replay_skips_maintenance_refresh_as_decision_record(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_a.enabled = True
+        config.pod_b.enabled = True
+        config.pod_c.enabled = True
+        maintenance_record = _full_bot_record(
+            "2026-04-05T10:00:15Z",
+            btc_price=999.0,
+            eth_price=99.0,
+            sol_price=199.0,
+        )
+        maintenance_record["capture_reason"] = "maintenance_refresh"
+        maintenance_record["stream_source"] = "pod_a_live"
+        collector_record = _full_bot_record(
+            "2026-04-05T10:01:00Z",
+            btc_price=1005.0,
+            eth_price=100.4,
+            sol_price=200.8,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "snapshots.jsonl"
+            input_path.write_text(
+                json.dumps(maintenance_record) + "\n" + json.dumps(collector_record) + "\n",
+                encoding="utf-8",
+            )
+
+            result = FullBotBacktestRunner(config).run_jsonl(input_path=input_path)
+
+        self.assertEqual(result.records_processed, 1)
+        self.assertEqual(result.pod_a.get("records_processed"), 1)
+
     def test_full_bot_replay_runs_directional_pod_b(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_a.enabled = True
