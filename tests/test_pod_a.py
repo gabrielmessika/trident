@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 from app.risk.pod_a_gate import PodARiskGate
 from app.settings import (
@@ -172,6 +173,38 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertEqual(signal.setup, "trend_pullback_long")
         self.assertEqual(signal.setup_details["rsi21_4h"], 70.0)
         self.assertEqual(signal.setup_details["btc_overextension_score"], 0.73)
+
+    def test_trend_pullback_details_include_completed_mtf_candidate_features(self) -> None:
+        signal = self.service.evaluate(
+            AnchorTrendContext(
+                symbol="ETH",
+                regime="TrendExpansion",
+                price=3100.0,
+                ema_fast=3090.0,
+                ema_slow=3050.0,
+                vwap_distance_bps=-8.0,
+                structure_score=0.62,
+                funding_rate=0.0001,
+                spread_bps=1.2,
+                btc_aligned=True,
+                prev_ema50_ready_1h=True,
+                prev_rsi14_1h=46.2,
+                prev_ema20_distance_ema50_1h_pct=-0.42,
+                entry_vs_open_1h_bps=58.4,
+                prev_ema50_ready_4h=True,
+                prev_rsi14_4h=38.6,
+                prev_ema50_distance_4h_pct=-1.15,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.setup, "trend_pullback_long")
+        self.assertTrue(signal.setup_details["prev_ema50_ready_1h"])
+        self.assertEqual(signal.setup_details["prev_rsi14_1h"], 46.2)
+        self.assertEqual(signal.setup_details["entry_vs_open_1h_bps"], 58.4)
+        self.assertEqual(signal.setup_details["prev_rsi14_4h"], 38.6)
+        self.assertEqual(signal.setup_details["prev_ema50_distance_4h_pct"], -1.15)
 
     def test_trend_pullback_respects_indicator_vetoes(self) -> None:
         signal = self.service.evaluate(
@@ -542,6 +575,55 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertGreater(last_context.trend_1h_bps, 0.0)
         self.assertGreater(last_context.trend_4h_bps, 0.0)
         self.assertGreater(last_context.mtf_bias_score, 0.0)
+
+    def test_market_context_service_exposes_completed_hourly_candidate_features(self) -> None:
+        base = datetime(2026, 4, 4, tzinfo=UTC)
+        last_context = None
+        for index in range(55):
+            price = 100.0 + index
+            contexts = self.context_service.build_contexts(
+                regime=Regime.TREND_EXPANSION,
+                timestamp=(base + timedelta(hours=index)).isoformat().replace("+00:00", "Z"),
+                snapshots=[
+                    SymbolMarketSnapshot(
+                        symbol="ETH",
+                        price=price,
+                        ema_fast=price - 0.2,
+                        ema_slow=price - 0.8,
+                        vwap_distance_bps=1.0,
+                        structure_score=0.65,
+                        funding_rate=0.0,
+                        spread_bps=1.0,
+                        btc_aligned=True,
+                    )
+                ],
+            )
+            last_context = contexts[0]
+
+        assert last_context is not None
+        contexts = self.context_service.build_contexts(
+            regime=Regime.TREND_EXPANSION,
+            timestamp=(base + timedelta(hours=54, minutes=30)).isoformat().replace("+00:00", "Z"),
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="ETH",
+                    price=156.0,
+                    ema_fast=155.8,
+                    ema_slow=155.2,
+                    vwap_distance_bps=1.0,
+                    structure_score=0.65,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                )
+            ],
+        )
+        last_context = contexts[0]
+
+        self.assertTrue(last_context.prev_ema50_ready_1h)
+        self.assertGreater(last_context.prev_rsi14_1h, 50.0)
+        self.assertGreater(last_context.prev_ema20_distance_ema50_1h_pct, 0.0)
+        self.assertGreater(last_context.entry_vs_open_1h_bps, 0.0)
 
     def test_market_context_service_detects_hourly_structure_break(self) -> None:
         timestamps = [

@@ -394,6 +394,43 @@ min_cci20 = -100.0
 max_cci20 = 100.0
 
 [[pod_a.pattern_vetoes]]
+name = "mtf_4h_rsi14_weakness"
+enabled = true
+sides = ["long"]
+setups = ["trend_pullback_long"]
+market_clusters = ["crypto"]
+max_prev_rsi14_4h = 40.0
+
+[[pod_a.pattern_vetoes]]
+name = "mtf_4h_close_below_ema50"
+enabled = true
+sides = ["long"]
+setups = ["trend_pullback_long"]
+market_clusters = ["crypto"]
+require_prev_ema50_ready_4h = true
+max_prev_ema50_distance_4h_pct = 0.0
+
+[[pod_a.pattern_vetoes]]
+name = "mtf_1h_chop_ema20_under_ema50_rsi40_50"
+enabled = true
+sides = ["long"]
+setups = ["trend_pullback_long"]
+market_clusters = ["crypto"]
+require_prev_ema50_ready_1h = true
+min_prev_rsi14_1h = 40.0
+max_prev_rsi14_1h = 50.0
+max_prev_ema20_distance_ema50_1h_pct = 0.0
+
+[[pod_a.pattern_vetoes]]
+name = "mtf_1h_overextension_chase"
+enabled = true
+sides = ["long"]
+setups = ["trend_pullback_long"]
+market_clusters = ["crypto"]
+min_prev_rsi14_1h = 70.0
+min_entry_vs_open_1h_bps = 50.0
+
+[[pod_a.pattern_vetoes]]
 name = "btc_overextension_4h"
 enabled = true
 symbols = ["BTC"]

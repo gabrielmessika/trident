@@ -40,6 +40,13 @@ class AnchorTrendContext:
     stoch_rsi_k: float = 0.5
     cci20: float = 0.0
     vwap_reclaim_score: float = 0.0
+    prev_ema50_ready_1h: bool = False
+    prev_rsi14_1h: float = 50.0
+    prev_ema20_distance_ema50_1h_pct: float = 0.0
+    entry_vs_open_1h_bps: float = 0.0
+    prev_ema50_ready_4h: bool = False
+    prev_rsi14_4h: float = 50.0
+    prev_ema50_distance_4h_pct: float = 0.0
     rsi21_4h: float = 50.0
     ema50_distance_4h_pct: float = 0.0
     ema50_distance_4h_atr: float = 0.0

@@ -96,6 +96,15 @@ class MarketContextService:
                 float(features["mtf_bias_score"]),
                 candles_ready=bool(features["candles_ready"]),
             ),
+            prev_ema50_ready_1h=bool(features["prev_ema50_ready_1h"]),
+            prev_rsi14_1h=float(features["prev_rsi14_1h"]),
+            prev_ema20_distance_ema50_1h_pct=float(
+                features["prev_ema20_distance_ema50_1h_pct"]
+            ),
+            entry_vs_open_1h_bps=float(features["entry_vs_open_1h_bps"]),
+            prev_ema50_ready_4h=bool(features["prev_ema50_ready_4h"]),
+            prev_rsi14_4h=float(features["prev_rsi14_4h"]),
+            prev_ema50_distance_4h_pct=float(features["prev_ema50_distance_4h_pct"]),
             rsi21_4h=float(features["rsi21_4h"]),
             ema50_distance_4h_pct=float(features["ema50_distance_4h_pct"]),
             ema50_distance_4h_atr=float(features["ema50_distance_4h_atr"]),

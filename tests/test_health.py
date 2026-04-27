@@ -197,6 +197,9 @@ class HealthApiTests(unittest.TestCase):
             "app.observability.api.load_runtime_status",
             side_effect=_api_runtime_loader,
         ), patch(
+            "app.observability.api._refresh_supervisor_from_latest_snapshot",
+            return_value=False,
+        ), patch(
             "app.reporting.multi_pod.load_runtime_status",
             side_effect=_api_runtime_loader,
         ):
@@ -346,6 +349,9 @@ class HealthApiTests(unittest.TestCase):
         with patch(
             "app.observability.api.load_runtime_status",
             side_effect=_runtime_loader,
+        ), patch(
+            "app.observability.api._refresh_supervisor_from_latest_snapshot",
+            return_value=False,
         ), patch(
             "app.observability.metrics.load_runtime_status",
             side_effect=_runtime_loader,
@@ -524,6 +530,9 @@ class HealthApiTests(unittest.TestCase):
         with patch(
             "app.observability.api.load_runtime_status",
             side_effect=[pod_a_runtime, pod_c_runtime, None],
+        ), patch(
+            "app.observability.api._refresh_supervisor_from_latest_snapshot",
+            return_value=False,
         ), patch(
             "app.reporting.multi_pod.load_runtime_status",
             side_effect=[pod_a_runtime, pod_c_runtime, None, None, None, None],

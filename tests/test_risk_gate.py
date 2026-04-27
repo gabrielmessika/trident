@@ -85,6 +85,21 @@ class PodARiskGateTests(unittest.TestCase):
         self.assertEqual(rule.sides, ["long"])
         self.assertEqual(rule.setups, ["trend_pullback_long"])
 
+    def test_default_config_loads_mtf_candidate_vetoes(self) -> None:
+        rules = {rule.name: rule for rule in self.config.pod_a.pattern_vetoes}
+
+        self.assertEqual(rules["mtf_4h_rsi14_weakness"].max_prev_rsi14_4h, 40.0)
+        self.assertTrue(rules["mtf_4h_close_below_ema50"].require_prev_ema50_ready_4h)
+        self.assertEqual(
+            rules["mtf_1h_chop_ema20_under_ema50_rsi40_50"].max_prev_rsi14_1h,
+            50.0,
+        )
+        self.assertEqual(
+            rules["mtf_1h_chop_ema20_under_ema50_rsi40_50"].max_prev_ema20_distance_ema50_1h_pct,
+            0.0,
+        )
+        self.assertEqual(rules["mtf_1h_overextension_chase"].min_entry_vs_open_1h_bps, 50.0)
+
     def test_rejects_hype_trend_pullback_targeted_veto(self) -> None:
         decisions = self.gate.evaluate_many(
             [
@@ -391,6 +406,138 @@ class PodARiskGateTests(unittest.TestCase):
 
         self.assertFalse(decisions[0].accepted)
         self.assertEqual(decisions[0].reason, "pattern_veto_trend1h_negative")
+
+    def test_rejects_pattern_veto_for_completed_4h_weakness(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                pattern_vetoes=[
+                    PodAPatternVetoConfig(
+                        name="candidate_4h_rsi_weakness",
+                        setups=["trend_pullback_long"],
+                        require_prev_ema50_ready_4h=True,
+                        max_prev_rsi14_4h=40.0,
+                    )
+                ],
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={
+                        "regime": "TrendExpansion",
+                        "prev_ema50_ready_4h": True,
+                        "prev_rsi14_4h": 38.0,
+                    },
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "pattern_veto_candidate_4h_rsi_weakness")
+
+    def test_rejects_pattern_veto_for_completed_hourly_chop(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                pattern_vetoes=[
+                    PodAPatternVetoConfig(
+                        name="candidate_1h_chop",
+                        setups=["trend_pullback_long"],
+                        require_prev_ema50_ready_1h=True,
+                        min_prev_rsi14_1h=40.0,
+                        max_prev_rsi14_1h=50.0,
+                        max_prev_ema20_distance_ema50_1h_pct=0.0,
+                    )
+                ],
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={
+                        "regime": "TrendExpansion",
+                        "prev_ema50_ready_1h": True,
+                        "prev_rsi14_1h": 46.0,
+                        "prev_ema20_distance_ema50_1h_pct": -0.3,
+                    },
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "pattern_veto_candidate_1h_chop")
+
+    def test_rejects_pattern_veto_for_hourly_overextension_chase(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                pattern_vetoes=[
+                    PodAPatternVetoConfig(
+                        name="candidate_1h_overextension",
+                        setups=["trend_pullback_long"],
+                        min_prev_rsi14_1h=70.0,
+                        min_entry_vs_open_1h_bps=50.0,
+                    )
+                ],
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
+            [
+                TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.82,
+                    target_notional_usd=450.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    margin_usd=150.0,
+                    effective_leverage=3.0,
+                    risk_budget_usd=7.5,
+                    expected_loss_usd=3.6,
+                    setup_details={
+                        "regime": "TrendExpansion",
+                        "prev_rsi14_1h": 72.0,
+                        "entry_vs_open_1h_bps": 66.0,
+                    },
+                )
+            ]
+        )
+
+        self.assertFalse(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "pattern_veto_candidate_1h_overextension")
 
     def test_accepts_trade_when_pattern_veto_does_not_match(self) -> None:
         config = replace(

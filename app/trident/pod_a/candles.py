@@ -128,6 +128,11 @@ class TimeframeBuffer:
             return None
         return self._current.close
 
+    def current_open(self) -> float | None:
+        if self._current is None:
+            return None
+        return self._current.open
+
 
 def _clamp(value: float, lower: float = -1.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
@@ -283,6 +288,28 @@ def _wick_ratios(candle: Candle | None) -> tuple[float, float]:
     upper = max(candle.high - max(candle.open, candle.close), 0.0)
     lower = max(min(candle.open, candle.close) - candle.low, 0.0)
     return upper / candle_range, lower / candle_range
+
+
+def _completed_indicator_snapshot(candles: list[Candle]) -> dict[str, float | bool]:
+    closes = [candle.close for candle in candles if candle.close > 0]
+    latest_close = closes[-1] if closes else 0.0
+    rsi14_values = _rsi_series(closes, period=14)
+    ema20 = _ema_last(closes, period=20)
+    ema50 = _ema_last(closes, period=50)
+    ema50_ready = ema50 is not None and ema50 > 0.0
+    ema20_distance_ema50_pct = 0.0
+    ema50_distance_pct = 0.0
+    if ema50_ready:
+        if ema20 is not None and ema20 > 0.0:
+            ema20_distance_ema50_pct = ((ema20 - ema50) / ema50) * 100.0
+        if latest_close > 0.0:
+            ema50_distance_pct = ((latest_close - ema50) / ema50) * 100.0
+    return {
+        "ema50_ready": ema50_ready,
+        "rsi14": rsi14_values[-1] if rsi14_values else 50.0,
+        "ema20_distance_ema50_pct": ema20_distance_ema50_pct,
+        "ema50_distance_pct": ema50_distance_pct,
+    }
 
 
 def _btc_overextension_score(
@@ -468,6 +495,13 @@ class CandleService:
                 "supertrend_direction": 0,
                 "stoch_rsi_k": 0.5,
                 "cci20": 0.0,
+                "prev_ema50_ready_1h": False,
+                "prev_rsi14_1h": 50.0,
+                "prev_ema20_distance_ema50_1h_pct": 0.0,
+                "entry_vs_open_1h_bps": 0.0,
+                "prev_ema50_ready_4h": False,
+                "prev_rsi14_4h": 50.0,
+                "prev_ema50_distance_4h_pct": 0.0,
                 "rsi21_4h": 50.0,
                 "ema50_distance_4h_pct": 0.0,
                 "ema50_distance_4h_atr": 0.0,
@@ -489,7 +523,20 @@ class CandleService:
         range_low_1h = buffers["1h"].recent_range_low(window=4)
         swing_high_1h = buffers["1h"].last_swing_high()
         swing_low_1h = buffers["1h"].last_swing_low()
+        completed_1h_features = _completed_indicator_snapshot(buffers["1h"].completed_candles())
+        completed_4h_features = _completed_indicator_snapshot(buffers["4h"].completed_candles())
+        current_open_1h = buffers["1h"].current_open()
         current_close_1h = buffers["1h"].current_close()
+        entry_vs_open_1h_bps = 0.0
+        if (
+            current_open_1h is not None
+            and current_open_1h > 0.0
+            and current_close_1h is not None
+            and current_close_1h > 0.0
+        ):
+            entry_vs_open_1h_bps = (
+                ((current_close_1h - current_open_1h) / current_open_1h) * 10_000.0
+            )
         structure_ready = (
             range_high_1h is not None
             and range_low_1h is not None
@@ -572,6 +619,19 @@ class CandleService:
             "supertrend_direction": int(supertrend_direction),
             "stoch_rsi_k": round(float(stoch_rsi_k), 4),
             "cci20": round(float(cci20), 4),
+            "prev_ema50_ready_1h": bool(completed_1h_features["ema50_ready"]),
+            "prev_rsi14_1h": round(float(completed_1h_features["rsi14"]), 4),
+            "prev_ema20_distance_ema50_1h_pct": round(
+                float(completed_1h_features["ema20_distance_ema50_pct"]),
+                4,
+            ),
+            "entry_vs_open_1h_bps": round(float(entry_vs_open_1h_bps), 4),
+            "prev_ema50_ready_4h": bool(completed_4h_features["ema50_ready"]),
+            "prev_rsi14_4h": round(float(completed_4h_features["rsi14"]), 4),
+            "prev_ema50_distance_4h_pct": round(
+                float(completed_4h_features["ema50_distance_pct"]),
+                4,
+            ),
             "rsi21_4h": round(float(rsi21_4h), 4),
             "ema50_distance_4h_pct": round(float(ema50_distance_4h_pct), 4),
             "ema50_distance_4h_atr": round(float(ema50_distance_4h_atr), 4),

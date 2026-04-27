@@ -364,6 +364,18 @@ class PodAPatternVetoConfig:
     max_trade_count_ratio: float | None = None
     min_flow_support_score: float | None = None
     max_flow_support_score: float | None = None
+    require_prev_ema50_ready_1h: bool | None = None
+    require_prev_ema50_ready_4h: bool | None = None
+    min_prev_rsi14_1h: float | None = None
+    max_prev_rsi14_1h: float | None = None
+    min_prev_ema20_distance_ema50_1h_pct: float | None = None
+    max_prev_ema20_distance_ema50_1h_pct: float | None = None
+    min_entry_vs_open_1h_bps: float | None = None
+    max_entry_vs_open_1h_bps: float | None = None
+    min_prev_rsi14_4h: float | None = None
+    max_prev_rsi14_4h: float | None = None
+    min_prev_ema50_distance_4h_pct: float | None = None
+    max_prev_ema50_distance_4h_pct: float | None = None
     min_rsi21_4h: float | None = None
     max_rsi21_4h: float | None = None
     min_ema50_distance_4h_pct: float | None = None
@@ -870,6 +882,34 @@ def _pod_a_pattern_rules(raw: object) -> list[PodAPatternVetoConfig]:
                 max_trade_count_ratio=_optional_float(item.get("max_trade_count_ratio")),
                 min_flow_support_score=_optional_float(item.get("min_flow_support_score")),
                 max_flow_support_score=_optional_float(item.get("max_flow_support_score")),
+                require_prev_ema50_ready_1h=_optional_bool(
+                    item.get("require_prev_ema50_ready_1h")
+                ),
+                require_prev_ema50_ready_4h=_optional_bool(
+                    item.get("require_prev_ema50_ready_4h")
+                ),
+                min_prev_rsi14_1h=_optional_float(item.get("min_prev_rsi14_1h")),
+                max_prev_rsi14_1h=_optional_float(item.get("max_prev_rsi14_1h")),
+                min_prev_ema20_distance_ema50_1h_pct=_optional_float(
+                    item.get("min_prev_ema20_distance_ema50_1h_pct")
+                ),
+                max_prev_ema20_distance_ema50_1h_pct=_optional_float(
+                    item.get("max_prev_ema20_distance_ema50_1h_pct")
+                ),
+                min_entry_vs_open_1h_bps=_optional_float(
+                    item.get("min_entry_vs_open_1h_bps")
+                ),
+                max_entry_vs_open_1h_bps=_optional_float(
+                    item.get("max_entry_vs_open_1h_bps")
+                ),
+                min_prev_rsi14_4h=_optional_float(item.get("min_prev_rsi14_4h")),
+                max_prev_rsi14_4h=_optional_float(item.get("max_prev_rsi14_4h")),
+                min_prev_ema50_distance_4h_pct=_optional_float(
+                    item.get("min_prev_ema50_distance_4h_pct")
+                ),
+                max_prev_ema50_distance_4h_pct=_optional_float(
+                    item.get("max_prev_ema50_distance_4h_pct")
+                ),
                 min_rsi21_4h=_optional_float(item.get("min_rsi21_4h")),
                 max_rsi21_4h=_optional_float(item.get("max_rsi21_4h")),
                 min_ema50_distance_4h_pct=_optional_float(

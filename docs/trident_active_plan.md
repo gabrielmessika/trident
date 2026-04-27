@@ -125,6 +125,47 @@ Decision:
     - filtre de frais et liquidite
     - validation obligatoire sur full replay avant toute promotion
 
+### 2026-04-27 - Validation MTF Pod A
+
+Contexte:
+
+- question utilisateur: verifier si `Pod A` exploite vraiment le multi-timeframe et chercher des patterns par coin/timeframe sur les trades recents
+- artefacts:
+  - recap trades/bougies: [mtf_trade_candle_recap_20260427.csv](/workspaces/trident/server-data/replay_reports/mtf_trade_candle_recap_20260427.csv)
+  - recap patterns: [mtf_trade_pattern_recap_20260427.md](/workspaces/trident/server-data/replay_reports/mtf_trade_pattern_recap_20260427.md)
+  - validation full replay MTF: [pod_a_mtf_candidate_validation_20260427.md](/workspaces/trident/server-data/replay_reports/pod_a_mtf_candidate_validation_20260427.md)
+
+Constats:
+
+- avant cette validation, `Pod A` faisait deja du MTF intraday (`15m`, `1h`, `4h`) via `CandleService`, mais pas de gate arbitraire type `EMA50 1h + RSI 1D`
+- la bougie `1D` reste offline/research seulement sur cette source; pas de promotion daily sans historique plus long
+- les meilleurs patterns candidats sont des filtres locaux au coin, pas un relachement global du regime BTC:
+  - faiblesse 4h: `prev_rsi14_4h <= 40` ou close 4h precedent sous EMA50
+  - chop 1h: EMA20 1h sous EMA50 1h et RSI14 1h entre `40` et `50`
+  - chase 1h: RSI14 1h >= `70` et entree deja `+50 bps` au-dessus de l'open 1h courant
+
+Validation full replay comparable, `Pod B` desactive, replay routing final saute pour accelerer:
+
+| Variante | Total | Delta | Pod A | Trades Pod A | Decision |
+|---|---:|---:|---:|---:|---|
+| baseline comparable | `+645.68` | `+0.00` | `+613.67` | `144` | reference de ce harnais |
+| `mtf_4h_weakness_veto` | `+726.21` | `+80.53` | `+694.20` | `133` | favorable |
+| `mtf_1h_chop_veto` | `+730.88` | `+85.20` | `+698.87` | `135` | favorable |
+| `mtf_1h_overextension_veto` | `+677.76` | `+32.08` | `+645.75` | `139` | favorable mais plus faible |
+| `mtf_1h_overextension_throttle_50pct` | `+667.43` | `+21.75` | `+635.42` | `144` | moins bon que veto |
+| combo 3 vetoes | `+749.20` | `+103.52` | `+717.19` | `125` | promouvoir |
+
+Decision:
+
+- promouvoir le combo en `pod_a.pattern_vetoes` dans [config/trident.toml](/workspaces/trident/config/trident.toml)
+- ne pas promouvoir le throttle overextension: il est positif mais moins bon que le veto dur
+- garder `Pod B` desactive comme prevu
+- confirmation post-promotion avec la config principale:
+  - total `+749.20`
+  - `Pod A` `+717.19`, `125` trades clos
+  - `Pod C` `+32.01`, `26` trades clos
+  - `Pod B` `0.00`
+
 Point important:
 
 - le probleme n'est pas un bug evident de calcul de regime: le legacy est coherent avec ses seuils, mais trop BTC-led pour capturer des derives haussieres lentes

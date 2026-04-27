@@ -281,6 +281,12 @@ class PodARiskGate(TradePlanRiskGate):
         if rule.require_supertrend_direction is not None:
             if int(details.get("supertrend_direction", 0) or 0) != rule.require_supertrend_direction:
                 return False
+        if rule.require_prev_ema50_ready_1h is not None:
+            if bool(details.get("prev_ema50_ready_1h")) != rule.require_prev_ema50_ready_1h:
+                return False
+        if rule.require_prev_ema50_ready_4h is not None:
+            if bool(details.get("prev_ema50_ready_4h")) != rule.require_prev_ema50_ready_4h:
+                return False
         if not self._within_range(
             details.get("trend_1h_bps"),
             minimum=rule.min_trend_1h_bps,
@@ -327,6 +333,36 @@ class PodARiskGate(TradePlanRiskGate):
             details.get("vwap_distance_bps"),
             minimum=rule.min_vwap_distance_bps,
             maximum=rule.max_vwap_distance_bps,
+        ):
+            return False
+        if not self._within_range(
+            details.get("prev_rsi14_1h"),
+            minimum=rule.min_prev_rsi14_1h,
+            maximum=rule.max_prev_rsi14_1h,
+        ):
+            return False
+        if not self._within_range(
+            details.get("prev_ema20_distance_ema50_1h_pct"),
+            minimum=rule.min_prev_ema20_distance_ema50_1h_pct,
+            maximum=rule.max_prev_ema20_distance_ema50_1h_pct,
+        ):
+            return False
+        if not self._within_range(
+            details.get("entry_vs_open_1h_bps"),
+            minimum=rule.min_entry_vs_open_1h_bps,
+            maximum=rule.max_entry_vs_open_1h_bps,
+        ):
+            return False
+        if not self._within_range(
+            details.get("prev_rsi14_4h"),
+            minimum=rule.min_prev_rsi14_4h,
+            maximum=rule.max_prev_rsi14_4h,
+        ):
+            return False
+        if not self._within_range(
+            details.get("prev_ema50_distance_4h_pct"),
+            minimum=rule.min_prev_ema50_distance_4h_pct,
+            maximum=rule.max_prev_ema50_distance_4h_pct,
         ):
             return False
         if not self._within_range(
