@@ -336,12 +336,18 @@ class FullBotBacktestRunner:
         previews = supervisor.preview_pod_c_signals(snapshots)
         trade_plans = supervisor.build_pod_c_trade_plans(snapshots)
         risk_decisions = self.pod_c_risk_gate.evaluate_many(trade_plans)
+        opening_symbols = supervisor.opening_symbols_for(PodName.POD_C)
+        managed_symbols = supervisor.managed_symbols_for(
+            PodName.POD_C,
+            active_symbols=self.pod_c_executor.portfolio.open_positions.keys(),
+        )
         execution = self.pod_c_executor.process_record(
             snapshots=snapshots,
             risk_decisions=risk_decisions,
             signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
             timestamp=timestamp,
-            allowed_symbols=supervisor.allowed_symbols_for(PodName.POD_C),
+            entry_allowed_symbols=opening_symbols,
+            managed_symbols=managed_symbols,
         )
         self._record_directional_tick(
             report=report,

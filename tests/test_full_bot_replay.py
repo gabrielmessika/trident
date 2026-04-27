@@ -2,9 +2,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.backtest.full_bot_replay import FullBotBacktestRunner
+from app.backtest.pod_report import PodABacktestReport
 from app.settings import load_config
+from app.trident.types import PodName, Regime, SymbolMarketSnapshot, TradePlan
 
 
 def _full_bot_record(timestamp: str, *, btc_price: float, eth_price: float, sol_price: float) -> dict[str, object]:
@@ -321,6 +324,63 @@ class FullBotReplayTests(unittest.TestCase):
         self.assertGreaterEqual(result.pod_b.get("closed_trade_count", 0), 1)
         self.assertGreater(result.pod_b.get("realized_pnl_usd", 0.0), 0.0)
         self.assertEqual(result.pod_b.get("trades_by_cluster", {}).get("crypto", 0), 1)
+
+    def test_pod_c_keeps_active_symbol_when_opening_allocation_drops(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = FullBotBacktestRunner(config, force_enable_all_pods=False)
+        runner.pod_c_risk_gate = SimpleNamespace(evaluate_many=lambda plans: [])
+        runner.pod_c_executor.portfolio.open_from_plan(
+            TradePlan(
+                symbol="XYZ:BRENTOIL",
+                side="long",
+                setup="tradfi_continuation_long",
+                confidence=0.7,
+                target_notional_usd=1000.0,
+                stop_bps=500.0,
+                time_stop_hours=24,
+                take_profit_bps=500.0,
+                margin_usd=100.0,
+                effective_leverage=10.0,
+            ),
+            price=100.0,
+            entry_fee_usd=0.35,
+            timestamp="2026-04-27T04:57:00+00:00",
+        )
+        supervisor = SimpleNamespace(
+            state=SimpleNamespace(regime=Regime.RANGE_AUCTION),
+            preview_pod_c_signals=lambda snapshots: [],
+            build_pod_c_trade_plans=lambda snapshots: [],
+            opening_symbols_for=lambda pod_name: set(),
+            managed_symbols_for=lambda pod_name, active_symbols=None: (
+                {"XYZ:BRENTOIL"} if pod_name == PodName.POD_C and active_symbols else set()
+            ),
+        )
+
+        runner._process_pod_c(
+            supervisor=supervisor,
+            report=PodABacktestReport(),
+            snapshots=[
+                SymbolMarketSnapshot(
+                    symbol="XYZ:BRENTOIL",
+                    price=100.1,
+                    ema_fast=100.0,
+                    ema_slow=100.0,
+                    vwap_distance_bps=0.0,
+                    structure_score=0.0,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    market_cluster="oil",
+                )
+            ],
+            timestamp="2026-04-27T05:57:19+00:00",
+            source_file="snapshots.jsonl",
+            previous_regime=Regime.RANGE_AUCTION.value,
+            current_regime=Regime.RANGE_AUCTION.value,
+        )
+
+        self.assertIn("XYZ:BRENTOIL", runner.pod_c_executor.portfolio.open_positions)
+        self.assertEqual(runner.pod_c_executor.portfolio.closed_trades, [])
 
 
 if __name__ == "__main__":
