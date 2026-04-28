@@ -73,6 +73,69 @@ Date: `2026-04-27`
 
 ## Validations Recentes
 
+### 2026-04-27 - Pod B Hyperps dynamique avec cycle de vie
+
+Contexte:
+
+- demande: remplacer le `Pod B` par une piste Hyperps, puis eviter une liste statique obsolete
+- constat live HL au `2026-04-27`:
+  - la logique UI/API ne marque plus `TAO/XPL/BIO/PENGU` comme Hyperps actifs
+  - l'unique Hyperp actif detecte via `metaAndAssetCtxs` / `marginMode=strictIsolated` est `MEGA`
+- probleme de backtest:
+  - utiliser la liste live courante comme verite historique introduirait du lookahead
+  - le replay doit donc lire des snapshots dates de l'univers Hyperps
+
+Implementation:
+
+- ajout d'un registre snapshot-first:
+  - `HyperpUniverseRegistry`
+  - `HyperpUniverseSnapshot`
+  - `extract_active_hyperp_symbols`
+- ajout d'un cycle de vie:
+  - `active_hyperp`: poids `1.0`, patterns Hyperps pleins
+  - `cooling_off`: poids exponentiel decroissant, strictness accrue
+  - `alumni`: poids encore plus faible, patterns plus restrictifs
+  - `retired`: exclu du pod
+- politique par defaut:
+  - half-life `30j`
+  - cooling `30j`
+  - retraite `120j`
+  - poids minimal tradable `0.15`
+- effets runtime/replay:
+  - allocation par symbole multipliee par `lifecycle_weight`
+  - risque par trade multiplie par `lifecycle_weight`
+  - signaux moins permissifs hors `active_hyperp`:
+    - seuils de liquidite plus stricts
+    - seuils d'interet/volume/trade-count plus hauts
+    - seuils de deviation/funding plus durs
+
+Validations:
+
+| Scenario | Univers | Resultat Pod B Hyperps | Lecture |
+|---|---|---:|---|
+| special symbols statique | `TAO/XPL/BIO/PENGU` actifs | `+8.71`, `5` trades | reproduit le meilleur replay precedent |
+| special symbols sortie `2026-04-13` | memes symbols en `cooling_off` sur validation | delta global `+7.75` | edge conserve, exposure validation reduite |
+| live universe serveur | `MEGA` uniquement | `0.00`, `0` trade | correct: pas de donnees MEGA dans le fetch |
+| serveur courant avec ancienne liste en cooling `2026-04-24` | surtout `TAO` disponible | Pod B seul `-5.64`, holdout `-7.74` | ne pas activer si seul TAO est exploitable |
+
+Artefacts:
+
+- statique: [hyperps_pod_b_lifecycle_static_20260427.md](/workspaces/trident/server-data/replay_reports/hyperps_pod_b_lifecycle_static_20260427.md)
+- cooling `2026-04-13`: [hyperps_pod_b_lifecycle_exit_20260413_20260427.md](/workspaces/trident/server-data/replay_reports/hyperps_pod_b_lifecycle_exit_20260413_20260427.md)
+- serveur cible: [hyperps_pod_b_lifecycle_exit_20260424_server_targeted_20260427.md](/workspaces/trident/server-data/replay_reports/hyperps_pod_b_lifecycle_exit_20260424_server_targeted_20260427.md)
+- live universe: [hyperps_pod_b_live_universe_server_targeted_20260427.json](/workspaces/trident/server-data/replay_reports/hyperps_pod_b_live_universe_server_targeted_20260427.json)
+
+Decision:
+
+- garder l'infra dynamique, elle corrige le probleme de liste obsolete
+- ne pas promouvoir le nouveau `Pod B Hyperps` en prod tant que la collecte live ne contient pas les Hyperps actifs courants, notamment `MEGA`
+- ne pas utiliser `TAO` comme substitut live d'un Hyperp actif
+- prochaine etape utile:
+  - snapshotter quotidiennement la liste Hyperps HL
+  - ajouter `MEGA` a l'univers d'observation si le budget WS le permet
+  - refaire le replay quand quelques jours de donnees live Hyperps actifs existent
+- tests repo apres implementation: `278 passed`
+
 ### 2026-04-27 - Parite dry-run / replay serveur
 
 Contexte:
