@@ -59,6 +59,10 @@ class ExecutionConfig:
     dry_run_taker_fee_bps: float = 3.5
     dry_run_slippage_bps: float = 0.5
     dry_run_spread_multiplier: float = 0.5
+    live_order_slippage_bps: float = 8.0
+    live_close_slippage_bps: float = 12.0
+    live_max_order_notional_usd: float = 50.0
+    live_require_protective_orders: bool = True
     routing_revoke_grace_minutes: int = 0
     routing_revoke_grace_minutes_by_symbol: dict[str, int] = field(default_factory=dict)
 
@@ -1275,6 +1279,18 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 ),
                 dry_run_spread_multiplier=float(
                     execution_data.get("dry_run_spread_multiplier", 0.5)
+                ),
+                live_order_slippage_bps=float(
+                    execution_data.get("live_order_slippage_bps", 8.0)
+                ),
+                live_close_slippage_bps=float(
+                    execution_data.get("live_close_slippage_bps", 12.0)
+                ),
+                live_max_order_notional_usd=float(
+                    execution_data.get("live_max_order_notional_usd", 50.0)
+                ),
+                live_require_protective_orders=bool(
+                    execution_data.get("live_require_protective_orders", True)
                 ),
                 routing_revoke_grace_minutes=int(
                     execution_data.get("routing_revoke_grace_minutes", 0)

@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--fresh-start] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--fresh-start] [service]
 
 Actions:
   start     démarre l'API + Pod A + Pod B + Pod C + funding par défaut
@@ -28,6 +28,10 @@ Actions:
 
 Compatibilité :
   --with-pod-b / --with-pod-c / --with-funding restent acceptés mais sont redondants.
+
+Sécurité live :
+  --mode dry-run est le défaut. --mode live lance Pod A + Pod C par défaut,
+  refuse Pod B, puis lance un preflight credentials + reconciliation + orderUpdates.
 EOF
 }
 
@@ -48,6 +52,7 @@ ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
 FRESH_START=""
+MODE="${TRIDENT_MODE:-dry-run}"
 CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
 SERVICE_ARG=""
 
@@ -67,6 +72,10 @@ while [ $# -gt 0 ]; do
             ;;
         --config)
             CONFIG_PATH="$2"
+            shift 2
+            ;;
+        --mode)
+            MODE="$2"
             shift 2
             ;;
         --without-pod-b)
@@ -96,6 +105,18 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+case "$MODE" in
+    dry-run|live)
+        ;;
+    observation)
+        warn "Mode observation accepté pour compatibilité; préfère --mode dry-run pour les déploiements préparatoires."
+        ;;
+    *)
+        error "Mode invalide: ${MODE}. Valeurs attendues: dry-run ou live."
+        exit 1
+        ;;
+esac
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -104,16 +125,22 @@ PROFILE_ARGS=()
 [ -n "$ENABLE_POD_C" ] && PROFILE_ARGS+=(--profile pod_c)
 [ -n "$ENABLE_FUNDING" ] && PROFILE_ARGS+=(--profile funding)
 
+COMPOSE_ENV_ARGS=()
+if [ -f ".env.trident" ]; then
+    COMPOSE_ENV_ARGS+=(--env-file .env.trident)
+fi
+
 compose() {
     TRIDENT_ENABLE_POD_A="true" \
     TRIDENT_ENABLE_POD_B="${ENABLE_POD_B:+true}" \
     TRIDENT_ENABLE_POD_C="${ENABLE_POD_C:+true}" \
+    TRIDENT_MODE="${MODE}" \
     TRIDENT_CONFIG_PATH="${CONFIG_PATH}" \
-    docker compose -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"
+    docker compose "${COMPOSE_ENV_ARGS[@]}" -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"
 }
 
 compose_all() {
-    docker compose -f docker-compose.trident.yml "$@"
+    docker compose "${COMPOSE_ENV_ARGS[@]}" -f docker-compose.trident.yml "$@"
 }
 
 default_services() {
@@ -183,8 +210,51 @@ require_runtime_files() {
     mkdir -p logs data runtime
 }
 
+guard_live_start() {
+    if [ "$MODE" != "live" ]; then
+        return 0
+    fi
+    if [ -n "$ENABLE_POD_B" ]; then
+        error "Mode live refuse: Pod B n'est pas valide pour ce lancement. Relance avec --without-pod-b."
+        exit 1
+    fi
+
+    local pod_a_state_path="${TRIDENT_LIVE_STATE_PATH_POD_A:-${TRIDENT_LIVE_STATE_PATH:-runtime/trident/live_state_pod_a.json}}"
+    local pod_c_state_path="${TRIDENT_LIVE_STATE_PATH_POD_C:-runtime/trident/live_state_pod_c.json}"
+
+    info "Preflight live Pod A: credentials, reconciliation exchange, websocket orderUpdates..."
+    local pod_a_args=(
+        python -m app.live.preflight
+        --config "${CONFIG_PATH}"
+        --pod pod_a
+        --state-path "${pod_a_state_path}"
+    )
+    if [ -n "$ENABLE_POD_C" ]; then
+        pod_a_args+=(--external-state-path "${pod_c_state_path}")
+    fi
+    if ! compose run --rm --no-deps trident-api "${pod_a_args[@]}"; then
+        error "Preflight live Pod A refuse. Aucun service live ne sera demarre."
+        exit 1
+    fi
+
+    if [ -n "$ENABLE_POD_C" ]; then
+        info "Preflight live Pod C: credentials, reconciliation exchange, websocket orderUpdates..."
+        if ! compose run --rm --no-deps trident-api \
+            python -m app.live.preflight \
+                --config "${CONFIG_PATH}" \
+                --pod pod_c \
+                --state-path "${pod_c_state_path}" \
+                --external-state-path "${pod_a_state_path}"; then
+            error "Preflight live Pod C refuse. Aucun service live ne sera demarre."
+            exit 1
+        fi
+    fi
+    ok "Preflight live OK"
+}
+
 case "$ACTION" in
     start)
+        guard_live_start
         require_runtime_files
         mapfile -t SERVICES < <(default_services)
         if [ -n "$FRESH_START" ]; then
@@ -193,6 +263,7 @@ case "$ACTION" in
             stop_unmanaged_services "${SERVICES[@]}"
         fi
         info "Démarrage: ${SERVICES[*]}"
+        info "Mode: ${MODE}"
         info "Config: ${CONFIG_PATH}"
         compose up -d --force-recreate "${SERVICES[@]}"
         ok "Services démarrés"
@@ -204,15 +275,19 @@ case "$ACTION" in
         ok "Services arrêtés"
         ;;
     restart)
+        guard_live_start
         mapfile -t SERVICES < <(default_services)
         info "Redémarrage: ${SERVICES[*]}"
+        info "Mode: ${MODE}"
         compose restart "${SERVICES[@]}"
         ok "Services redémarrés"
         ;;
     update)
+        guard_live_start
         require_runtime_files
         mapfile -t SERVICES < <(default_services)
         info "Rebuild + redémarrage: ${SERVICES[*]}"
+        info "Mode: ${MODE}"
         info "Config: ${CONFIG_PATH}"
         compose build
         compose up -d "${SERVICES[@]}"

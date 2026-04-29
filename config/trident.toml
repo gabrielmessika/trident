@@ -128,6 +128,10 @@ max_total_open_risk_pct = 0.03
 dry_run_taker_fee_bps = 3.5
 dry_run_slippage_bps = 0.5
 dry_run_spread_multiplier = 0.5
+live_order_slippage_bps = 8.0
+live_close_slippage_bps = 12.0
+live_max_order_notional_usd = 50.0
+live_require_protective_orders = true
 # Grace appliquee seulement quand un pod perd le droit d'ouvrir sur un symbol
 # et qu'il doit encore sortir proprement de la position existante.
 routing_revoke_grace_minutes = 60

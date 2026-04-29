@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -49,7 +50,11 @@ class PodBLiveRunner:
         coins: list[str] | None = None,
         *,
         use_live_asset_caps: bool = False,
+        mode: str | None = None,
     ) -> None:
+        self.mode = mode or os.getenv("TRIDENT_MODE", "dry-run")
+        if self.mode == "live":
+            raise RuntimeError("Pod B live execution is disabled for the first real canary")
         selected_coins = (
             coins
             or symbols_in_allowed_clusters(
@@ -744,6 +749,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-runtime-seconds", type=float)
     parser.add_argument("--max-messages", type=int)
     parser.add_argument("--journal-output", help="Optional JSONL live journal path")
+    parser.add_argument("--mode", default=os.getenv("TRIDENT_MODE", "dry-run"), choices=["dry-run", "live"])
     return parser
 
 
@@ -753,7 +759,7 @@ async def _run_from_args() -> None:
     coins = None
     if args.coins:
         coins = [coin.strip().upper() for coin in args.coins.split(",") if coin.strip()]
-    result = await PodBLiveRunner(config, coins=coins, use_live_asset_caps=True).run(
+    result = await PodBLiveRunner(config, coins=coins, use_live_asset_caps=True, mode=args.mode).run(
         max_runtime_seconds=args.max_runtime_seconds,
         max_messages=args.max_messages,
         journal_path=args.journal_output,

@@ -3,19 +3,25 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.backtest.pod_a_executor import PodAExecutor
 from app.backtest.pod_report import PodABacktestReport
+from app.execution.live import LiveExecutionVenue
 from app.hyperliquid.info_client import HyperliquidInfoClient, apply_live_asset_leverage_caps
+from app.hyperliquid.private_state import HyperliquidCredentials, HyperliquidPrivateInfoClient
 from app.live.collector import HyperliquidLiveCollector
+from app.live.reconciliation import ReconciliationReport, reconcile_exchange_state
 from app.live.replay_capture import (
     annotate_snapshot_record,
     build_maintenance_snapshot_record,
 )
 from app.live.runtime_status import write_runtime_status
+from app.live.state_store import LiveStateStore, live_state_path_for_pod
+from app.live.user_stream import UserOrderUpdateMonitor, check_order_updates_subscription
 from app.persistence.journal import (
     JsonlJournal,
     build_signal_journal_record,
@@ -29,6 +35,11 @@ from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str) -> bool:
+    value = os.getenv(name, "")
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
 class PodALiveRunner:
@@ -51,8 +62,10 @@ class PodALiveRunner:
         filtered_source: str = "pod_a_live_filtered",
         trade_source: str = "pod_a_live_trade",
         review_label: str = "Pod A",
+        mode: str | None = None,
     ) -> None:
         self.config = config
+        self.mode = mode or os.getenv("TRIDENT_MODE", "dry-run")
         self.coins = (
             coins
             or config.hyperliquid.observation_universe
@@ -75,10 +88,38 @@ class PodALiveRunner:
         self.supervisor = TridentSupervisor(
             config=self.config,
             profile=self.supervisor_profile,
-            mode="dry-run",
+            mode="live" if self.mode == "live" else "dry-run",
         )
         self.risk_gate = PodARiskGate(self.config)
         self.executor = PodAExecutor(self.config)
+        self.live_state_store: LiveStateStore | None = None
+        self.live_external_state_stores: list[LiveStateStore] = []
+        self.live_reconciliation_report: ReconciliationReport | None = None
+        self._live_private_client: HyperliquidPrivateInfoClient | None = None
+        self._live_user_stream: UserOrderUpdateMonitor | None = None
+        self._live_trading_paused = False
+        if self.mode == "live":
+            credentials = HyperliquidCredentials.from_env()
+            self.live_state_store = LiveStateStore(
+                live_state_path_for_pod(self.runtime_name, allow_global=True)
+            )
+            if _env_flag("TRIDENT_ENABLE_POD_C") and self.runtime_name != "pod_c":
+                self.live_external_state_stores.append(
+                    LiveStateStore(live_state_path_for_pod("pod_c", allow_global=False))
+                )
+            self._live_private_client = HyperliquidPrivateInfoClient(
+                self.config.hyperliquid,
+                credentials,
+            )
+            self.executor.venue = LiveExecutionVenue(
+                self.config,
+                credentials,
+                private_info_client=self._live_private_client,
+            )
+            self._live_user_stream = UserOrderUpdateMonitor(
+                self.config.hyperliquid,
+                account_address=credentials.account_address,
+            )
         self.report = PodABacktestReport()
         self._latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
         self._info_client = HyperliquidInfoClient(self.config.hyperliquid)
@@ -92,8 +133,16 @@ class PodALiveRunner:
         max_messages: int | None = None,
         journal_path: str | Path | None = None,
     ) -> dict[str, object]:
-        journal = JsonlJournal(journal_path, truncate=True) if journal_path is not None else None
+        journal = (
+            JsonlJournal(journal_path, truncate=(self.mode != "live"))
+            if journal_path is not None
+            else None
+        )
         status_path = self.status_path
+        if self.mode == "live":
+            await self._prepare_live_execution()
+            if self._live_user_stream is not None:
+                self._live_user_stream.start()
         self._write_runtime_status(status_path)
         maintenance_task = asyncio.create_task(
             self._maintenance_loop(status_path, journal=journal)
@@ -105,6 +154,7 @@ class PodALiveRunner:
             ):
                 record = self._annotate_snapshot_record(record)
                 self._process_record(record, journal=journal)
+                self._persist_live_state()
                 self._write_runtime_status(status_path)
         finally:
             maintenance_task.cancel()
@@ -112,27 +162,31 @@ class PodALiveRunner:
                 await maintenance_task
             except asyncio.CancelledError:
                 pass
+            if self._live_user_stream is not None:
+                await self._live_user_stream.stop()
 
         final_records = self.collector.builder.finalize()
         final_records = [self._annotate_snapshot_record(record) for record in final_records]
         self.collector.stats.snapshots_written += len(self.collector.writer.append_many(final_records))
         for record in final_records:
             self._process_record(record, journal=journal)
+            self._persist_live_state()
             self._write_runtime_status(status_path)
 
-        final_trades, _ = self.executor.finalize(
-            snapshots=[],
-            timestamp=None,
-        )
-        for trade in final_trades:
-            self._record_closed_trade(
-                trade,
-                current_regime=self.supervisor.state.regime.value,
-                date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else "unknown"),
-                journal=journal,
-                timestamp=trade.closed_at.isoformat() if trade.closed_at else None,
+        if self.mode != "live":
+            final_trades, _ = self.executor.finalize(
+                snapshots=[],
+                timestamp=None,
             )
-            self._write_runtime_status(status_path)
+            for trade in final_trades:
+                self._record_closed_trade(
+                    trade,
+                    current_regime=self.supervisor.state.regime.value,
+                    date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else "unknown"),
+                    journal=journal,
+                    timestamp=trade.closed_at.isoformat() if trade.closed_at else None,
+                )
+                self._write_runtime_status(status_path)
 
         result = self.report.to_dict()
         result["collector"] = {
@@ -151,6 +205,111 @@ class PodALiveRunner:
         result["journal_path"] = str(journal_path) if journal_path is not None else None
         self._write_runtime_status(status_path)
         return result
+
+    async def _prepare_live_execution(self) -> None:
+        if self.live_state_store is None or self._live_private_client is None:
+            raise RuntimeError("Live execution requested without live state components")
+        account_state = self._live_private_client.fetch_account_state(
+            fills_lookback_hours=float(os.getenv("TRIDENT_LIVE_FILLS_LOOKBACK_HOURS", "24"))
+        )
+        self.live_reconciliation_report = reconcile_exchange_state(
+            account_state=account_state,
+            portfolio=self.executor.portfolio,
+            state_store=self.live_state_store,
+            allow_unknown_exchange_positions=os.getenv("TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS") == "true",
+            allow_open_orders=os.getenv("TRIDENT_LIVE_ALLOW_OPEN_ORDERS") == "true",
+            external_state_stores=self.live_external_state_stores,
+        )
+        if not self.live_reconciliation_report.ready:
+            raise RuntimeError(
+                "Live reconciliation failed: "
+                + ",".join(self.live_reconciliation_report.reasons)
+            )
+        if os.getenv("TRIDENT_LIVE_SKIP_USER_WS_CHECK") != "true":
+            credentials = HyperliquidCredentials.from_env()
+            ws_check = await check_order_updates_subscription(
+                self.config.hyperliquid,
+                account_address=credentials.account_address,
+                timeout_seconds=min(self.config.hyperliquid.connect_timeout_seconds, 10.0),
+            )
+            if not ws_check.ok:
+                raise RuntimeError(f"orderUpdates websocket check failed: {ws_check.error}")
+        self._persist_live_state()
+
+    def _persist_live_state(self) -> None:
+        if self.mode != "live" or self.live_state_store is None:
+            return
+        orders = getattr(self.executor.venue, "orders_by_symbol", None)
+        self.live_state_store.save_portfolio(
+            self.executor.portfolio,
+            orders=orders if isinstance(orders, dict) and orders else None,
+            mode="live",
+        )
+
+    def _live_ready_for_entries(self) -> bool:
+        if self._live_trading_paused:
+            return False
+        if self._live_user_stream is None:
+            return False
+        return self._live_user_stream.healthy(
+            max_stale_seconds=max(self.config.hyperliquid.message_timeout_seconds * 3, 60.0)
+        )
+
+    def _sync_live_exchange_state(self, *, journal: JsonlJournal | None) -> bool:
+        if self.mode != "live" or self._live_private_client is None or self.live_state_store is None:
+            return False
+        try:
+            account_state = self._live_private_client.fetch_account_state(
+                fills_lookback_hours=float(os.getenv("TRIDENT_LIVE_FILLS_LOOKBACK_HOURS", "24"))
+            )
+        except Exception as exc:
+            logger.warning("Live exchange reconciliation failed; entries paused: %s", exc)
+            self._live_trading_paused = True
+            return False
+        report = reconcile_exchange_state(
+            account_state=account_state,
+            portfolio=self.executor.portfolio,
+            state_store=self.live_state_store,
+            allow_unknown_exchange_positions=os.getenv("TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS") == "true",
+            allow_open_orders=os.getenv("TRIDENT_LIVE_ALLOW_OPEN_ORDERS") == "true",
+            external_state_stores=self.live_external_state_stores,
+        )
+        self.live_reconciliation_report = report
+        self._live_trading_paused = not report.ready
+        changed = False
+        for symbol in list(self.executor.portfolio.open_positions):
+            if symbol in account_state.positions:
+                continue
+            fill = next((item for item in account_state.recent_fills if item.symbol == symbol), None)
+            price = fill.price if fill is not None and fill.price > 0 else 0.0
+            if price <= 0:
+                continue
+            timestamp = (
+                datetime.fromtimestamp((fill.timestamp_ms if fill else 0) / 1000, tz=timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+                if fill is not None and fill.timestamp_ms > 0
+                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            trade = self.executor.portfolio.close_position(
+                symbol,
+                price,
+                fill.fee_usd if fill is not None else 0.0,
+                timestamp,
+                "exchange_closed",
+            )
+            if trade is not None:
+                self._record_closed_trade(
+                    trade,
+                    current_regime=self.supervisor.state.regime.value,
+                    date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else timestamp[:10]),
+                    journal=journal,
+                    timestamp=timestamp,
+                )
+                changed = True
+        if changed:
+            self._persist_live_state()
+        return changed
 
     async def _iter_live_records(
         self,
@@ -217,6 +376,8 @@ class PodALiveRunner:
                 "current_date_key": date_key,
             }
         risk_decisions = self.risk_gate.evaluate_many(trade_plans)
+        if self.mode == "live" and not self._live_ready_for_entries():
+            risk_decisions = []
         entry_allowed_symbols = self.supervisor.opening_symbols_for(PodName.POD_A)
         managed_symbols = self.supervisor.managed_symbols_for(
             PodName.POD_A,
@@ -620,8 +781,11 @@ class PodALiveRunner:
         while True:
             await asyncio.sleep(self.MAINTENANCE_POLL_SECONDS)
             now = time.monotonic()
+            live_synced = self._sync_live_exchange_state(journal=journal)
             refreshed = self._refresh_open_positions_without_stream(journal=journal, now=now)
-            if refreshed or (now - last_status_write) >= self.STATUS_HEARTBEAT_SECONDS:
+            if refreshed:
+                self._persist_live_state()
+            if live_synced or refreshed or (now - last_status_write) >= self.STATUS_HEARTBEAT_SECONDS:
                 self._write_runtime_status(path)
                 last_status_write = now
 
@@ -630,6 +794,7 @@ class PodALiveRunner:
             path,
             {
                 "pod": self.runtime_name,
+                "mode": self.mode,
                 "process_state": "running",
                 "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "collector": {
@@ -644,6 +809,17 @@ class PodALiveRunner:
                     "rate_limit_error_count": self.collector.stats.rate_limit_error_count,
                     "last_error": self.collector.stats.last_error,
                 },
+                "live_reconciliation": (
+                    self.live_reconciliation_report.to_dict()
+                    if self.live_reconciliation_report is not None
+                    else None
+                ),
+                "live_trading_paused": self._live_trading_paused,
+                "user_order_updates": (
+                    self._live_user_stream.stats.to_dict()
+                    if self._live_user_stream is not None
+                    else None
+                ),
                 "report": self.report.to_dict(),
                 "open_positions": self._build_open_positions_payload(),
                 "supervisor": self.supervisor.snapshot(),
@@ -853,6 +1029,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-runtime-seconds", type=float, help="Optional local smoke duration")
     parser.add_argument("--max-messages", type=int, help="Optional max websocket messages")
     parser.add_argument("--journal-output", help="Optional JSONL live journal path")
+    parser.add_argument("--mode", default=os.getenv("TRIDENT_MODE", "dry-run"), choices=["dry-run", "live"])
     return parser
 
 
@@ -862,7 +1039,7 @@ async def _run_from_args() -> None:
     coins = None
     if args.coins:
         coins = [coin.strip().upper() for coin in args.coins.split(",") if coin.strip()]
-    result = await PodALiveRunner(config, coins=coins, use_live_asset_caps=True).run(
+    result = await PodALiveRunner(config, coins=coins, use_live_asset_caps=True, mode=args.mode).run(
         max_runtime_seconds=args.max_runtime_seconds,
         max_messages=args.max_messages,
         journal_path=args.journal_output,

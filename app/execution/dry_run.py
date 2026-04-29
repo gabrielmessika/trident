@@ -32,6 +32,7 @@ class DryRunExecutionVenue:
         spread_bps: float,
         notional_usd: float,
         timestamp: str | None,
+        plan: object | None = None,
     ) -> DryRunFill:
         return self._build_fill(
             symbol=symbol,
@@ -52,6 +53,7 @@ class DryRunExecutionVenue:
         spread_bps: float,
         notional_usd: float,
         timestamp: str | None,
+        plan: object | None = None,
     ) -> DryRunFill:
         return self._build_fill(
             symbol=symbol,

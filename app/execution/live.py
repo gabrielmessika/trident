@@ -1,0 +1,444 @@
+from __future__ import annotations
+
+import logging
+import secrets
+import time
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any
+
+from app.execution.dry_run import DryRunFill
+from app.hyperliquid.private_state import (
+    ExchangeAccountState,
+    HyperliquidCredentials,
+    HyperliquidPrivateInfoClient,
+    sdk_base_url_from_info_url,
+)
+from app.live.errors import HyperliquidAPIError
+from app.settings import AppConfig
+from app.trident.types import TradePlan
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class LiveOrderResult:
+    status: str
+    oid: int | None = None
+    cloid: str | None = None
+    filled_size: Decimal = Decimal("0")
+    avg_price: float = 0.0
+    error: str | None = None
+    raw: object | None = None
+
+    @property
+    def filled(self) -> bool:
+        return self.filled_size > 0 and self.avg_price > 0
+
+
+@dataclass(slots=True)
+class LiveExecutionFill(DryRunFill):
+    oid: int | None = None
+    cloid: str | None = None
+    filled_size: Decimal = Decimal("0")
+    complete: bool = True
+    protective_oids: dict[str, int | None] = field(default_factory=dict)
+    raw_response: object | None = None
+
+
+class LiveExecutionVenue:
+    """Hyperliquid execution venue using the official Python SDK.
+
+    The venue uses IOC reduce-only/order calls for the initial canary profile and
+    places protective reduce-only trigger orders after entry fills.
+    """
+
+    def __init__(
+        self,
+        config: AppConfig,
+        credentials: HyperliquidCredentials,
+        *,
+        exchange_client: Any | None = None,
+        private_info_client: HyperliquidPrivateInfoClient | None = None,
+    ) -> None:
+        errors = credentials.validate_for_trading()
+        if errors:
+            raise HyperliquidAPIError("; ".join(errors))
+        self.config = config
+        self.credentials = credentials
+        self.exchange_client = exchange_client or self._build_exchange_client()
+        self.private_info_client = private_info_client or HyperliquidPrivateInfoClient(
+            config.hyperliquid,
+            credentials,
+        )
+        self.order_slippage_bps = float(
+            getattr(config.trident.execution, "live_order_slippage_bps", 8.0)
+        )
+        self.close_slippage_bps = float(
+            getattr(config.trident.execution, "live_close_slippage_bps", 12.0)
+        )
+        self.max_order_notional_usd = float(
+            getattr(config.trident.execution, "live_max_order_notional_usd", 50.0)
+        )
+        self.require_protective_orders = bool(
+            getattr(config.trident.execution, "live_require_protective_orders", True)
+        )
+        self.orders_by_symbol: dict[str, dict[str, object]] = {}
+        self.last_block_reason_by_symbol: dict[str, str] = {}
+
+    def _build_exchange_client(self) -> Any:
+        try:
+            from eth_account import Account
+            from hyperliquid.exchange import Exchange
+        except Exception as exc:  # pragma: no cover - dependency guard
+            raise HyperliquidAPIError(
+                "hyperliquid-python-sdk and eth-account are required for live trading"
+            ) from exc
+        wallet = Account.from_key(self.credentials.secret_key)
+        return Exchange(
+            wallet,
+            sdk_base_url_from_info_url(self.config.hyperliquid.info_url),
+            vault_address=self.credentials.vault_address,
+            account_address=self.credentials.account_address,
+            timeout=self.config.hyperliquid.connect_timeout_seconds,
+        )
+
+    def open_fill(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        mid_price: float,
+        spread_bps: float,
+        notional_usd: float,
+        timestamp: str | None,
+        plan: TradePlan | None = None,
+    ) -> LiveExecutionFill | None:
+        symbol = symbol.upper()
+        if notional_usd <= 0 or mid_price <= 0:
+            self.last_block_reason_by_symbol[symbol] = "invalid_notional_or_price"
+            return None
+        if notional_usd > self.max_order_notional_usd:
+            self.last_block_reason_by_symbol[symbol] = (
+                f"notional_above_live_cap:{notional_usd:.2f}>{self.max_order_notional_usd:.2f}"
+            )
+            return None
+        state = self.private_info_client.fetch_account_state(fills_lookback_hours=2.0)
+        if self._has_exchange_exposure(state, symbol):
+            self.last_block_reason_by_symbol[symbol] = "exchange_position_or_order_exists"
+            return None
+        is_buy = side == "long"
+        limit_px = self._limit_price(
+            mid_price,
+            side=side,
+            action="open",
+            slippage_bps=self.order_slippage_bps,
+        )
+        size = self._size_from_notional(notional_usd, limit_px)
+        cloid = self._new_cloid()
+        result = self._submit_order(
+            symbol=symbol,
+            is_buy=is_buy,
+            size=size,
+            limit_px=limit_px,
+            reduce_only=False,
+            cloid=cloid,
+        )
+        if not result.filled:
+            self.last_block_reason_by_symbol[symbol] = result.error or result.status
+            return None
+
+        actual_notional = float(result.filled_size) * result.avg_price
+        fill = LiveExecutionFill(
+            symbol=symbol,
+            side=side,
+            action="open",
+            price=result.avg_price,
+            notional_usd=round(actual_notional, 6),
+            fee_usd=0.0,
+            slippage_bps=round(abs((result.avg_price - mid_price) / mid_price) * 10_000.0, 4),
+            timestamp=timestamp,
+            oid=result.oid,
+            cloid=result.cloid,
+            filled_size=result.filled_size,
+            complete=True,
+            raw_response=result.raw,
+        )
+        if plan is not None:
+            fill.protective_oids = self._place_protective_orders(
+                plan=plan,
+                fill=fill,
+            )
+        self.orders_by_symbol[symbol] = {
+            "entry_oid": fill.oid,
+            "entry_cloid": fill.cloid,
+            "protective_oids": dict(fill.protective_oids),
+            "last_open_response": result.raw,
+        }
+        return fill
+
+    def close_fill(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        mid_price: float,
+        spread_bps: float,
+        notional_usd: float,
+        timestamp: str | None,
+        plan: TradePlan | None = None,
+    ) -> LiveExecutionFill | None:
+        symbol = symbol.upper()
+        if notional_usd <= 0 or mid_price <= 0:
+            self.last_block_reason_by_symbol[symbol] = "invalid_close_notional_or_price"
+            return None
+        is_buy = side == "short"
+        limit_px = self._limit_price(
+            mid_price,
+            side=side,
+            action="close",
+            slippage_bps=self.close_slippage_bps,
+        )
+        size = self._size_from_notional(notional_usd, limit_px)
+        cloid = self._new_cloid()
+        result = self._submit_order(
+            symbol=symbol,
+            is_buy=is_buy,
+            size=size,
+            limit_px=limit_px,
+            reduce_only=True,
+            cloid=cloid,
+        )
+        if not result.filled:
+            self.last_block_reason_by_symbol[symbol] = result.error or result.status
+            return None
+        actual_notional = float(result.filled_size) * result.avg_price
+        self._cancel_known_protective_orders(symbol)
+        return LiveExecutionFill(
+            symbol=symbol,
+            side=side,
+            action="close",
+            price=result.avg_price,
+            notional_usd=round(actual_notional, 6),
+            fee_usd=0.0,
+            slippage_bps=round(abs((result.avg_price - mid_price) / mid_price) * 10_000.0, 4),
+            timestamp=timestamp,
+            oid=result.oid,
+            cloid=result.cloid,
+            filled_size=result.filled_size,
+            complete=self._remaining_position_size(symbol) == Decimal("0"),
+            raw_response=result.raw,
+        )
+
+    def _submit_order(
+        self,
+        *,
+        symbol: str,
+        is_buy: bool,
+        size: float,
+        limit_px: float,
+        reduce_only: bool,
+        cloid: str,
+        order_type: dict[str, object] | None = None,
+    ) -> LiveOrderResult:
+        try:
+            from hyperliquid.utils.types import Cloid
+            raw = self.exchange_client.order(
+                symbol,
+                is_buy,
+                size,
+                limit_px,
+                order_type or {"limit": {"tif": "Ioc"}},
+                reduce_only=reduce_only,
+                cloid=Cloid.from_str(cloid),
+            )
+        except Exception as exc:
+            raise HyperliquidAPIError(f"Hyperliquid order call failed for {symbol}: {exc}") from exc
+        return parse_order_result(raw, cloid=cloid)
+
+    def _place_protective_orders(
+        self,
+        *,
+        plan: TradePlan,
+        fill: LiveExecutionFill,
+    ) -> dict[str, int | None]:
+        protective: dict[str, int | None] = {}
+        if fill.filled_size <= 0:
+            return protective
+        stop_price = self._stop_price(plan, fill.price)
+        if stop_price > 0:
+            sl = self._submit_trigger(
+                symbol=fill.symbol,
+                side=plan.side,
+                trigger_price=stop_price,
+                size=float(fill.filled_size),
+                tpsl="sl",
+            )
+            protective["sl"] = sl.oid
+        if plan.take_profit_bps > 0:
+            tp_price = self._take_profit_price(plan, fill.price)
+            tp = self._submit_trigger(
+                symbol=fill.symbol,
+                side=plan.side,
+                trigger_price=tp_price,
+                size=float(fill.filled_size),
+                tpsl="tp",
+            )
+            protective["tp"] = tp.oid
+        if self.require_protective_orders and protective.get("sl") is None:
+            logger.error("SL trigger missing after live entry; attempting emergency close for %s", fill.symbol)
+            self.close_fill(
+                symbol=fill.symbol,
+                side=plan.side,
+                mid_price=fill.price,
+                spread_bps=0.0,
+                notional_usd=fill.notional_usd,
+                timestamp=fill.timestamp,
+            )
+            raise HyperliquidAPIError(f"Missing SL trigger after live entry on {fill.symbol}")
+        return protective
+
+    def _submit_trigger(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        trigger_price: float,
+        size: float,
+        tpsl: str,
+    ) -> LiveOrderResult:
+        is_buy = side == "short"
+        cloid = self._new_cloid()
+        result = self._submit_order(
+            symbol=symbol,
+            is_buy=is_buy,
+            size=size,
+            limit_px=self._round_wire(trigger_price),
+            reduce_only=True,
+            cloid=cloid,
+            order_type={
+                "trigger": {
+                    "isMarket": True,
+                    "triggerPx": str(self._round_wire(trigger_price)),
+                    "tpsl": tpsl,
+                }
+            },
+        )
+        if result.error:
+            raise HyperliquidAPIError(f"Protective {tpsl} trigger rejected for {symbol}: {result.error}")
+        return result
+
+    def _cancel_known_protective_orders(self, symbol: str) -> None:
+        metadata = self.orders_by_symbol.get(symbol, {})
+        protective = metadata.get("protective_oids", {})
+        if not isinstance(protective, dict):
+            return
+        for oid in list(protective.values()):
+            if oid is None:
+                continue
+            try:
+                self.exchange_client.cancel(symbol, int(oid))
+            except Exception as exc:
+                logger.warning("Failed to cancel protective oid=%s for %s: %s", oid, symbol, exc)
+
+    def _remaining_position_size(self, symbol: str) -> Decimal:
+        try:
+            state = self.private_info_client.fetch_account_state(fills_lookback_hours=1.0)
+        except HyperliquidAPIError:
+            return Decimal("1")
+        position = state.positions.get(symbol)
+        if position is None:
+            return Decimal("0")
+        return abs(position.size)
+
+    def _has_exchange_exposure(self, state: ExchangeAccountState, symbol: str) -> bool:
+        if symbol in state.positions:
+            return True
+        return any(order.symbol == symbol for order in state.all_orders)
+
+    def _limit_price(
+        self,
+        mid_price: float,
+        *,
+        side: str,
+        action: str,
+        slippage_bps: float,
+    ) -> float:
+        sign = 1.0
+        if side == "long":
+            sign = 1.0 if action == "open" else -1.0
+        else:
+            sign = -1.0 if action == "open" else 1.0
+        return self._round_wire(mid_price * (1.0 + sign * slippage_bps / 10_000.0))
+
+    def _size_from_notional(self, notional_usd: float, limit_px: float) -> float:
+        return self._round_wire(notional_usd / limit_px)
+
+    def _stop_price(self, plan: TradePlan, entry_price: float) -> float:
+        if plan.invalidation_price and plan.invalidation_price > 0:
+            return self._round_wire(plan.invalidation_price)
+        delta = plan.stop_bps / 10_000.0
+        if plan.side == "long":
+            return self._round_wire(entry_price * (1.0 - delta))
+        return self._round_wire(entry_price * (1.0 + delta))
+
+    def _take_profit_price(self, plan: TradePlan, entry_price: float) -> float:
+        delta = plan.take_profit_bps / 10_000.0
+        if plan.side == "long":
+            return self._round_wire(entry_price * (1.0 + delta))
+        return self._round_wire(entry_price * (1.0 - delta))
+
+    def _new_cloid(self) -> str:
+        millis = int(time.time() * 1000) & ((1 << 48) - 1)
+        random_bits = secrets.randbits(80)
+        return f"0x{((millis << 80) | random_bits):032x}"
+
+    def _round_wire(self, value: float) -> float:
+        return float(f"{value:.8f}")
+
+
+def parse_order_result(raw: object, *, cloid: str | None = None) -> LiveOrderResult:
+    if not isinstance(raw, dict):
+        return LiveOrderResult(status="invalid_response", cloid=cloid, raw=raw)
+    if str(raw.get("status", "")).lower() == "err":
+        return LiveOrderResult(status="error", cloid=cloid, error=str(raw.get("response", raw)), raw=raw)
+    response = raw.get("response", {})
+    if not isinstance(response, dict):
+        return LiveOrderResult(status=str(raw.get("status", "unknown")), cloid=cloid, raw=raw)
+    data = response.get("data", {})
+    if not isinstance(data, dict):
+        return LiveOrderResult(status=str(response.get("type", "unknown")), cloid=cloid, raw=raw)
+    statuses = data.get("statuses", [])
+    if not isinstance(statuses, list) or not statuses:
+        return LiveOrderResult(status="no_status", cloid=cloid, raw=raw)
+    first = statuses[0]
+    if not isinstance(first, dict):
+        return LiveOrderResult(status="invalid_status", cloid=cloid, raw=raw)
+    if "error" in first:
+        return LiveOrderResult(status="error", cloid=cloid, error=str(first.get("error")), raw=raw)
+    resting = first.get("resting")
+    if isinstance(resting, dict):
+        return LiveOrderResult(
+            status="resting",
+            oid=_maybe_int(resting.get("oid")),
+            cloid=cloid,
+            raw=raw,
+        )
+    filled = first.get("filled")
+    if isinstance(filled, dict):
+        return LiveOrderResult(
+            status="filled",
+            oid=_maybe_int(filled.get("oid")),
+            cloid=cloid,
+            filled_size=Decimal(str(filled.get("totalSz", "0"))),
+            avg_price=float(filled.get("avgPx", 0.0) or 0.0),
+            raw=raw,
+        )
+    return LiveOrderResult(status="unknown_status", cloid=cloid, raw=raw)
+
+
+def _maybe_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None

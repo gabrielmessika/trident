@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -97,7 +97,14 @@ class DirectionalExecutor:
                 spread_bps=snapshot.spread_bps,
                 notional_usd=existing.target_notional_usd,
                 timestamp=timestamp,
+                plan=None,
             )
+            if fill is None:
+                continue
+            if not bool(getattr(fill, "complete", True)):
+                self._reduce_open_position_notional(snapshot.symbol, float(fill.notional_usd))
+                fills.append(asdict(fill))
+                continue
             trade = self.portfolio.close_position(
                 snapshot.symbol,
                 fill.price,
@@ -147,13 +154,29 @@ class DirectionalExecutor:
                         spread_bps=snapshot.spread_bps,
                         notional_usd=additional_notional_usd,
                         timestamp=timestamp,
+                        plan=decision.trade_plan,
                     )
+                    if fill is None:
+                        skipped_open_symbols.append(decision.trade_plan.symbol)
+                        continue
                     if self.portfolio.scale_into_position(
                         decision.trade_plan.symbol,
-                        additional_notional_usd=additional_notional_usd,
-                        additional_margin_usd=additional_margin_usd,
-                        additional_risk_budget_usd=additional_risk_budget_usd,
-                        additional_expected_loss_usd=additional_expected_loss_usd,
+                        additional_notional_usd=float(fill.notional_usd),
+                        additional_margin_usd=self._scaled_margin(
+                            additional_margin_usd,
+                            additional_notional_usd,
+                            float(fill.notional_usd),
+                        ),
+                        additional_risk_budget_usd=self._scaled_margin(
+                            additional_risk_budget_usd,
+                            additional_notional_usd,
+                            float(fill.notional_usd),
+                        ),
+                        additional_expected_loss_usd=self._scaled_margin(
+                            additional_expected_loss_usd,
+                            additional_notional_usd,
+                            float(fill.notional_usd),
+                        ),
                         price=fill.price,
                         entry_fee_usd=fill.fee_usd,
                         plan=decision.trade_plan,
@@ -173,7 +196,19 @@ class DirectionalExecutor:
                     spread_bps=snapshot.spread_bps,
                     notional_usd=existing.target_notional_usd,
                     timestamp=timestamp,
+                    plan=None,
                 )
+                if close_fill is None:
+                    skipped_open_symbols.append(decision.trade_plan.symbol)
+                    continue
+                if not bool(getattr(close_fill, "complete", True)):
+                    self._reduce_open_position_notional(
+                        decision.trade_plan.symbol,
+                        float(close_fill.notional_usd),
+                    )
+                    fills.append(asdict(close_fill))
+                    skipped_open_symbols.append(decision.trade_plan.symbol)
+                    continue
                 trade = self.portfolio.close_position(
                     decision.trade_plan.symbol,
                     close_fill.price,
@@ -192,9 +227,27 @@ class DirectionalExecutor:
                 spread_bps=snapshot.spread_bps,
                 notional_usd=decision.trade_plan.target_notional_usd,
                 timestamp=timestamp,
+                plan=decision.trade_plan,
             )
+            if fill is None:
+                skipped_open_symbols.append(decision.trade_plan.symbol)
+                continue
+            plan = decision.trade_plan
+            if float(fill.notional_usd) != float(plan.target_notional_usd):
+                scale = (
+                    float(fill.notional_usd) / float(plan.target_notional_usd)
+                    if float(plan.target_notional_usd) > 0
+                    else 1.0
+                )
+                plan = replace(
+                    plan,
+                    target_notional_usd=float(fill.notional_usd),
+                    margin_usd=round(float(plan.margin_usd) * scale, 6),
+                    risk_budget_usd=round(float(plan.risk_budget_usd) * scale, 6),
+                    expected_loss_usd=round(float(plan.expected_loss_usd) * scale, 6),
+                )
             if self.portfolio.open_from_plan(
-                decision.trade_plan,
+                plan,
                 fill.price,
                 fill.fee_usd,
                 timestamp,
@@ -215,6 +268,24 @@ class DirectionalExecutor:
             },
             close_reasons_by_symbol=close_reasons_by_symbol,
         )
+
+    def _reduce_open_position_notional(self, symbol: str, closed_notional_usd: float) -> None:
+        position = self.portfolio.open_positions.get(symbol)
+        if position is None:
+            return
+        remaining = max(float(position.target_notional_usd) - max(closed_notional_usd, 0.0), 0.0)
+        if remaining <= 0:
+            return
+        scale = remaining / float(position.target_notional_usd)
+        position.target_notional_usd = round(remaining, 6)
+        position.margin_usd = round(float(position.margin_usd) * scale, 6)
+        position.risk_budget_usd = round(float(position.risk_budget_usd) * scale, 6)
+        position.expected_loss_usd = round(float(position.expected_loss_usd) * scale, 6)
+
+    def _scaled_margin(self, value: float, planned_notional: float, actual_notional: float) -> float:
+        if planned_notional <= 0:
+            return value
+        return round(float(value) * max(actual_notional, 0.0) / planned_notional, 6)
 
     def _routing_revoke_grace_active(self, existing: object, timestamp: str | None) -> bool:
         symbol = str(getattr(existing, "symbol", "")).upper()

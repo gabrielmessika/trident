@@ -14,21 +14,28 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--fresh-start]
+Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--fresh-start]
 
 Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
 - build Docker sur le serveur
 - optionnellement démarre les services
-- permet de choisir explicitement le fichier de config live/dry-run
+- permet de choisir explicitement le mode dry-run/live et le fichier de config
 - `--fresh-start` purge les journaux/statuts live avant démarrage
 
 Par défaut :
 - host SSH : trident-hetzner
+- mode : dry-run
 - démarrage avec `--start` : API + Pod A + Pod B + Pod C + funding
 - `--without-pod-b` retire Pod B
 - `--without-pod-c` retire Pod C
 - `--without-funding` retire le collecteur funding/OI global
+
+Sécurité live :
+- `--mode live` lance Pod A + Pod C par défaut et refuse Pod B.
+- pour démarrer en live, utilisez aussi `--without-pod-b`;
+  le serveur lance un preflight par pod: credentials + reconciliation + orderUpdates.
+- pour un live Pod A seul, ajoutez aussi `--without-pod-c`.
 
 Compatibilité :
 - `--with-pod-b`, `--with-pod-c`, `--with-funding` restent acceptés mais sont désormais redondants
@@ -41,6 +48,7 @@ SSH_USER="${TRIDENT_DEPLOY_USER:-trident-deploy}"
 IDENTITY_FILE="${TRIDENT_DEPLOY_IDENTITY:-${HOME}/.ssh/trident_hetzner_ed25519}"
 DEPLOY_DIR="/opt/trident"
 START=""
+MODE="${TRIDENT_MODE:-dry-run}"
 CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
 ENABLE_POD_B="true"
 ENABLE_POD_C="true"
@@ -68,8 +76,10 @@ selected_pods_label() {
 selected_server_flags() {
     local flags=""
     local quoted_config
+    local quoted_mode
+    quoted_mode="$(printf '%q' "$MODE")"
     quoted_config="$(printf '%q' "$CONFIG_PATH")"
-    flags="${flags} --config ${quoted_config}"
+    flags="${flags} --mode ${quoted_mode} --config ${quoted_config}"
     [ -z "$ENABLE_POD_B" ] && flags="${flags} --without-pod-b"
     [ -z "$ENABLE_POD_C" ] && flags="${flags} --without-pod-c"
     [ -z "$ENABLE_FUNDING" ] && flags="${flags} --without-funding"
@@ -94,6 +104,10 @@ while [ $# -gt 0 ]; do
         --start)
             START="true"
             shift
+            ;;
+        --mode)
+            MODE="$2"
+            shift 2
             ;;
         --config)
             CONFIG_PATH="$2"
@@ -138,6 +152,15 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+case "$MODE" in
+    dry-run|live)
+        ;;
+    *)
+        error "Mode invalide: ${MODE}. Valeurs attendues: dry-run ou live."
+        exit 1
+        ;;
+esac
 
 if [ ! -f "$IDENTITY_FILE" ]; then
     error "Clé SSH introuvable: $IDENTITY_FILE"
@@ -224,6 +247,7 @@ start_remote() {
     local extra_args
     extra_args="$(selected_server_flags)"
     info "Services demandés: $(selected_pods_label)"
+    info "Mode demandé: ${MODE}"
     info "Config demandée: ${CONFIG_PATH}"
     ssh_remote "cd ${DEPLOY_DIR} && ./scripts/trident_server.sh start${extra_args}"
     ok "Services démarrés"
@@ -251,6 +275,7 @@ echo "========================================="
 echo ""
 if [ -n "$START" ]; then
     echo "Services actifs sur ${HOST}: $(selected_pods_label)"
+    echo "  Mode actif : ${MODE}"
     echo "  Config active : ${CONFIG_PATH}"
     echo "  SSH : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST}"
     echo "  Dashboard public : http://<server-ip-or-dns>:3000/dashboard"
@@ -260,9 +285,12 @@ if [ -n "$START" ]; then
     echo "  Contrôle serveur : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST} 'cd ${DEPLOY_DIR} && ./scripts/trident_server.sh status$(selected_server_flags)'"
 else
     echo "Pour démarrer après déploiement :"
-    echo "  ./deploy.sh --start"
-    echo "  ./deploy.sh --start --config config/trident_crypto_launch_fast_crypto_only.toml"
-    echo "  ./deploy.sh --start --config config/trident_crypto_launch_fast_crypto_only.toml --fresh-start"
+    echo "  ./deploy.sh --start --mode dry-run"
+    echo "  ./deploy.sh --start --mode dry-run --config config/trident_crypto_launch_fast_crypto_only.toml"
+    echo "  ./deploy.sh --start --mode dry-run --config config/trident_crypto_launch_fast_crypto_only.toml --fresh-start"
+    echo "  ./deploy.sh --mode live --config config/trident.toml"
+    echo "  ./deploy.sh --start --mode live --without-pod-b --without-funding"
+    echo "  ./deploy.sh --start --mode live --without-pod-b --without-pod-c --without-funding"
     echo "  ./deploy.sh --start --without-pod-c"
     echo "  ./deploy.sh --start --without-funding"
 fi

@@ -141,28 +141,49 @@ Exclusions principales :
 
 ## 3. Déployer et démarrer
 
-Pour déployer puis démarrer tout le stack par défaut :
+Pour déployer puis démarrer tout le stack par défaut en dry-run préparatoire :
 
 ```bash
-./deploy.sh --start
+./deploy.sh --start --mode dry-run
 ```
+
+`--mode dry-run` est le défaut, mais il est recommandé de le passer
+explicitement avant un passage live pour éviter toute ambiguïté.
+
+Pour préparer un build/config live sans démarrer les services :
+
+```bash
+./deploy.sh --mode live --config config/trident.toml
+```
+
+Le premier démarrage live réel lance Pod A + Pod C et passe par un preflight
+exchange/WS obligatoire pour chaque pod. Pod B reste exclu :
+
+```bash
+./deploy.sh --start --mode live --without-pod-b --without-funding
+```
+
+Il échoue fail-closed si les credentials, la reconciliation exchange ou le flux
+`orderUpdates` ne sont pas prêts.
+
+Pour un live Pod A seul, ajouter `--without-pod-c`.
 
 Pour démarrer tout sauf Pod C :
 
 ```bash
-./deploy.sh --start --without-pod-c
+./deploy.sh --start --mode dry-run --without-pod-c
 ```
 
 Pour démarrer tout sauf le collecteur funding/OI global :
 
 ```bash
-./deploy.sh --start --without-funding
+./deploy.sh --start --mode dry-run --without-funding
 ```
 
 Pour démarrer tout sauf Pod B :
 
 ```bash
-./deploy.sh --start --without-pod-b
+./deploy.sh --start --mode dry-run --without-pod-b
 ```
 
 Important :
@@ -180,7 +201,9 @@ Important :
 - le collecteur funding global écrit aussi `logs/funding_collector_status.json`
 - le collecteur funding Tradfi écrit `logs/tradfi_funding_collector_status.json`
 - les noms `pod-a-live`, `pod-b-live`, `pod-c-live` sont des noms de services Docker historiques
-- aujourd'hui, `Pod A`, `Pod B` et `Pod C` tournent encore en dry-run / paper trading, pas en exécution réelle exchange
+- aujourd'hui, `Pod A`, `Pod B` et `Pod C` tournent encore en dry-run / paper trading par défaut
+- le chemin live réel est préparé pour un canary `Pod A` + `Pod C`; `Pod B`
+  reste exclu du premier lancement live
 - l'UI `System` montre désormais explicitement:
   - `Data collectors` pour la santé des services funding
   - `Pod C scope visibility` pour voir quels symbols Tradfi sont configures, observes, tradables et routes
@@ -188,6 +211,25 @@ Important :
   - régime crypto global
   - régimes actifs des clusters Tradfi
   - budget cible et couverture observée/tradable par cluster
+
+### Variables live serveur
+
+Pour un canary live, garder ces variables uniquement dans
+`/opt/trident/.env.trident` côté serveur :
+
+```bash
+TRIDENT_MODE=live
+TRIDENT_ACCOUNT_ADDRESS=0x...
+TRIDENT_SECRET_KEY=0x...
+TRIDENT_VAULT_ADDRESS=
+TRIDENT_LIVE_CONFIRM=I_UNDERSTAND_REAL_ORDERS
+TRIDENT_LIVE_STATE_PATH_POD_A=
+TRIDENT_LIVE_STATE_PATH_POD_C=
+```
+
+`TRIDENT_ACCOUNT_ADDRESS` doit être l'adresse réelle du compte/subaccount à
+réconcilier. `TRIDENT_SECRET_KEY` doit être une API wallet approuvée, pas une
+clé à déplacer dans le repo.
 
 ---
 
@@ -214,46 +256,46 @@ Le script principal est :
 
 ### Commandes utiles
 
-Démarrer tout :
+Démarrer tout en dry-run :
 
 ```bash
-./scripts/trident_server.sh start
+./scripts/trident_server.sh start --mode dry-run
 ```
 
 Démarrer tout sauf Pod B :
 
 ```bash
-./scripts/trident_server.sh start --without-pod-b
+./scripts/trident_server.sh start --mode dry-run --without-pod-b
 ```
 
 Démarrer tout sauf Pod C :
 
 ```bash
-./scripts/trident_server.sh start --without-pod-c
+./scripts/trident_server.sh start --mode dry-run --without-pod-c
 ```
 
 Démarrer tout sauf funding/OI global :
 
 ```bash
-./scripts/trident_server.sh start --without-funding
+./scripts/trident_server.sh start --mode dry-run --without-funding
 ```
 
 Rebuild + redémarrage :
 
 ```bash
-./scripts/trident_server.sh update
+./scripts/trident_server.sh update --mode dry-run
 ```
 
 Rebuild + redémarrage sans Pod C :
 
 ```bash
-./scripts/trident_server.sh update --without-pod-c
+./scripts/trident_server.sh update --mode dry-run --without-pod-c
 ```
 
 Rebuild + redémarrage sans funding/OI global :
 
 ```bash
-./scripts/trident_server.sh update --without-funding
+./scripts/trident_server.sh update --mode dry-run --without-funding
 ```
 
 Arrêter :
@@ -364,7 +406,7 @@ Exemple :
 ```bash
 cd /workspaces/trident
 python3.12 -m unittest discover -s tests -v
-./deploy.sh --start
+./deploy.sh --start --mode dry-run
 ```
 
 Si tu es déjà sur le serveur et que le code est déjà synchronisé :
@@ -517,16 +559,22 @@ Déployer :
 ./deploy.sh
 ```
 
+Démarrer le dry-run préparatoire :
+
+```bash
+./deploy.sh --start --mode dry-run
+```
+
 Déployer + démarrer :
 
 ```bash
-./deploy.sh --start
+./deploy.sh --start --mode dry-run
 ```
 
 Déployer + démarrer sans Pod C :
 
 ```bash
-./deploy.sh --start --without-pod-c
+./deploy.sh --start --mode dry-run --without-pod-c
 ```
 
 Contrôler sur le serveur :
