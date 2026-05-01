@@ -166,6 +166,49 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(report["total_fill_count"], 0)
         self.assertEqual(report["realized_pnl_usd"], 0.0)
 
+    def test_build_runtime_report_counts_hip4_replacement_as_pod_b(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_b.enabled = False
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-reporting-hip4-pod-b",
+            mode="observation",
+        )
+        pod_b_runtime = {
+            "pod": "pod_b",
+            "pod_kind": "hip4_outcome_edge_pod",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "process_state": "running",
+            "poll_seconds": 4,
+            "managed_symbols": ["BTC", "HYPE"],
+            "open_positions": [{"market_id": "BTC_GT_1", "underlying": "BTC"}],
+            "total_fill_count": 3,
+            "report": {
+                "closed_trade_count": 1,
+                "realized_pnl_usd": 2.5,
+            },
+        }
+
+        def runtime_status_for(path: object) -> dict[str, object] | None:
+            if str(path).endswith("pod_b_live_status.json"):
+                return pod_b_runtime
+            return None
+
+        with patch(
+            "app.reporting.multi_pod.load_runtime_status",
+            side_effect=runtime_status_for,
+        ):
+            report = build_runtime_report(supervisor).to_dict()
+
+        pod_b = next(item for item in report["pods"] if item["pod"] == "pod_b")
+        self.assertTrue(pod_b["enabled"])
+        self.assertTrue(pod_b["healthy"])
+        self.assertEqual(pod_b["owned_symbols"], ["BTC", "HYPE"])
+        self.assertEqual(pod_b["process_state"], "running")
+        self.assertEqual(pod_b["position_count"], 1)
+        self.assertEqual(pod_b["total_fill_count"], 3)
+        self.assertEqual(pod_b["realized_pnl_usd"], 2.5)
+
     def test_build_runtime_report_merges_pod_a_and_pod_c_runtime_supervisors(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.enabled = True

@@ -78,6 +78,15 @@ def _is_supervisor_fallback_runtime(payload: dict[str, object] | None) -> bool:
     return str(payload.get("last_sync_reason", "")) == "supervisor_planned_state"
 
 
+def is_hip4_pod_b_replacement_runtime(payload: dict[str, object] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return (
+        str(payload.get("pod", "")).strip().lower() == "pod_b"
+        and str(payload.get("pod_kind", "")).strip().lower() == "hip4_outcome_edge_pod"
+    )
+
+
 def _display_process_state(payload: dict[str, object] | None) -> str | None:
     if not isinstance(payload, dict):
         return None
@@ -194,9 +203,17 @@ def build_runtime_report(
         if isinstance(runtime_owned_symbols, list):
             owned_symbols = [str(symbol) for symbol in runtime_owned_symbols]
         health = pod_health_by_name.get(pod_name.value)
+        effective_enabled = pod.enabled
+        if pod_name.value == "pod_b" and is_hip4_pod_b_replacement_runtime(pod_b_status):
+            effective_enabled = runtime_status_is_fresh(pod_b_status)
+            status_owned_symbols = (
+                pod_b_status.get("managed_symbols", []) if isinstance(pod_b_status, dict) else []
+            )
+            if isinstance(status_owned_symbols, list):
+                owned_symbols = [str(symbol) for symbol in status_owned_symbols]
         report = PodRuntimeReport(
             pod=pod_name.value,
-            enabled=pod.enabled,
+            enabled=effective_enabled,
             healthy=health.healthy if health is not None else False,
             owned_symbols=owned_symbols,
             target_pct=target_pct,
@@ -254,9 +271,10 @@ def build_runtime_report(
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
         if pod_name.value == "pod_b":
             runtime_payload = pod_b_status if isinstance(pod_b_status, dict) else None
+            pod_b_effective_enabled = report.enabled
             authoritative_payload = _authoritative_runtime_payload(
                 runtime_payload,
-                enabled=pod.enabled,
+                enabled=pod_b_effective_enabled,
                 allow_supervisor_fallback=False,
             )
             runtime_report = (
@@ -271,14 +289,22 @@ def build_runtime_report(
             report.healthy = authoritative_payload is not None
             report.process_state = _report_process_state(
                 runtime_payload,
-                enabled=pod.enabled,
+                enabled=pod_b_effective_enabled,
                 allow_supervisor_fallback=False,
             )
             report.position_count, report.total_unrealized_pnl_usd = _directional_open_position_metrics(
                 authoritative_payload
             )
             report.open_order_count = 0
-            report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
+            if is_hip4_pod_b_replacement_runtime(authoritative_payload):
+                report.total_fill_count = int(
+                    authoritative_payload.get(
+                        "total_fill_count",
+                        runtime_report.get("total_fill_count", 0),
+                    )
+                )
+            else:
+                report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
         pod_reports.append(report)
         active_position_count += report.position_count
@@ -298,10 +324,7 @@ def build_runtime_report(
         cash_usd=float(runtime_capital_plan.get("cash_usd", supervisor.capital_plan.cash_usd)),
         total_target_usd=round(sum(report.target_usd for report in pod_reports), 4),
         enabled_pod_count=(
-            len(runtime_supervisor.get("enabled_pods", []))
-            if isinstance(runtime_supervisor, dict)
-            and isinstance(runtime_supervisor.get("enabled_pods"), list)
-            else len(supervisor.state.enabled_pods)
+            sum(1 for pod in pod_reports if pod.enabled)
         ),
         healthy_pod_count=sum(1 for pod in pod_reports if pod.healthy),
         ownership_conflict_count=(

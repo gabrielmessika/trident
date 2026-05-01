@@ -1,0 +1,675 @@
+import json
+import tempfile
+import unittest
+from decimal import Decimal
+from pathlib import Path
+
+from app.trident.hip4_outcome import HIP4OutcomeEdgePod
+from app.trident.hip4_outcome.book import build_order_book, parse_side_book
+from app.trident.hip4_outcome.capital import OutcomeCapitalGuard
+from app.trident.hip4_outcome.config import Hip4OutcomeConfig, load_hip4_outcome_config
+from app.trident.hip4_outcome.edge import OutcomeEdgeDetector
+from app.trident.hip4_outcome.execution import build_order_legs
+from app.trident.hip4_outcome.external_prices import (
+    ExternalPriceAggregator,
+    ReferencePriceQuote,
+)
+from app.trident.hip4_outcome.features import (
+    ShortHorizonFeatureBuilder,
+    update_price_history_payload,
+)
+from app.trident.hip4_outcome.models import (
+    OutcomeFill,
+    OutcomeOpportunity,
+    OutcomePosition,
+    SupervisorDecision,
+    outcome_asset_id,
+    outcome_coin,
+    outcome_encoding,
+)
+from app.trident.hip4_outcome.overlap import (
+    directional_overlap_snapshot,
+    hip4_open_underlyings,
+)
+from app.trident.hip4_outcome.parser import parse_outcome_markets, parse_price_binary_outcome
+from app.trident.hip4_outcome.probability import ProbabilityModel
+from app.trident.hip4_outcome.reconciliation import (
+    OutcomeReconciler,
+    apply_reconciliation_to_positions,
+    parse_spot_balances,
+    parse_user_fills,
+)
+from app.trident.hip4_outcome.reporting import build_daily_summary_rows, replay_opportunities
+from app.trident.hip4_outcome.risk import OutcomeRiskManager
+from app.live.runtime_status import write_runtime_status
+
+
+class HIP4OutcomePodTests(unittest.TestCase):
+    def _market(self):
+        market = parse_price_binary_outcome(
+            {
+                "outcome": 5721,
+                "name": "Recurring",
+                "description": "class:priceBinary|underlying:BTC|expiry:20260502-0300|targetPrice:76775|period:1d",
+                "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+            }
+        )
+        self.assertIsNotNone(market)
+        return market
+
+    def _book(self):
+        return build_order_book(
+            market_id="BTC_GT_76775_20260502_0300",
+            yes_payload={
+                "coin": "#57210",
+                "time": 1,
+                "levels": [
+                    [{"px": "0.22", "sz": "100", "n": 1}],
+                    [{"px": "0.24", "sz": "100", "n": 1}],
+                ],
+            },
+            no_payload={
+                "coin": "#57211",
+                "time": 1,
+                "levels": [
+                    [{"px": "0.75", "sz": "100", "n": 1}],
+                    [{"px": "0.76", "sz": "100", "n": 1}],
+                ],
+            },
+            max_slippage=0.03,
+        )
+
+    def test_outcome_asset_encoding_matches_hip4_doc(self) -> None:
+        self.assertEqual(outcome_encoding(5721, 0), 57210)
+        self.assertEqual(outcome_coin(5721, 1), "#57211")
+        self.assertEqual(outcome_asset_id(5721, 0), 100057210)
+
+    def test_parses_price_binary_outcome_meta(self) -> None:
+        market = self._market()
+
+        self.assertEqual(market.outcome, 5721)
+        self.assertEqual(market.underlying, "BTC")
+        self.assertEqual(market.strike, 76775.0)
+        self.assertEqual(market.yes_coin, "#57210")
+        self.assertEqual(market.no_coin, "#57211")
+        self.assertEqual(market.expiry_iso, "2026-05-02T03:00:00Z")
+
+    def test_filters_out_non_price_binary_outcomes(self) -> None:
+        payload = {
+            "outcomes": [
+                {
+                    "outcome": 9,
+                    "name": "Who wins?",
+                    "description": "This race is yet to be scheduled.",
+                    "sideSpecs": [{"name": "A"}, {"name": "B"}],
+                },
+                {
+                    "outcome": 5789,
+                    "name": "Recurring",
+                    "description": "class:priceBinary|underlying:HYPE|expiry:20260501-2000|targetPrice:26.121|period:15m",
+                    "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+                },
+            ]
+        }
+
+        markets = parse_outcome_markets(payload, include_underlyings=["HYPE"])
+
+        self.assertEqual(len(markets), 1)
+        self.assertEqual(markets[0].underlying, "HYPE")
+        self.assertEqual(markets[0].strike, 26.121)
+
+    def test_parses_order_book_depth_within_slippage(self) -> None:
+        book = parse_side_book(
+            {
+                "coin": "#1",
+                "time": 1,
+                "levels": [
+                    [{"px": "0.49", "sz": "10", "n": 1}],
+                    [
+                        {"px": "0.50", "sz": "20", "n": 1},
+                        {"px": "0.51", "sz": "30", "n": 1},
+                        {"px": "0.60", "sz": "40", "n": 1},
+                    ],
+                ],
+            },
+            max_slippage=0.03,
+        )
+
+        self.assertEqual(book.bid, 0.49)
+        self.assertEqual(book.ask, 0.50)
+        self.assertAlmostEqual(book.ask_depth_usdc, 25.3)
+
+    def test_model_detector_finds_yes_mispricing(self) -> None:
+        market = self._market()
+        book = self._book()
+        config = Hip4OutcomeConfig(
+            mode="paper",
+            min_gross_edge=0.01,
+            min_net_edge=0.001,
+            max_position_usdc=5.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+        )
+        probability = ProbabilityModel(config).estimate(
+            market,
+            reference_price=80000.0,
+            now_ts=market.expiry_ts - 3600,
+        )
+        opportunities = OutcomeEdgeDetector(config).detect(
+            market=market,
+            order_book=book,
+            reference_price=80000.0,
+            probability=probability,
+            now_ts=market.expiry_ts - 3600,
+        )
+
+        self.assertTrue(any(item.side == "BUY_YES" for item in opportunities))
+
+    def test_short_horizon_features_compute_recent_momentum(self) -> None:
+        market = self._market()
+        now_ts = market.expiry_ts - 300
+        payload = {}
+        history = update_price_history_payload(
+            payload,
+            {"BTC": 100.0},
+            now_ts=now_ts - 65,
+            max_age_seconds=900,
+            sample_limit=20,
+        )
+        history = update_price_history_payload(
+            payload,
+            {"BTC": 101.0},
+            now_ts=now_ts,
+            max_age_seconds=900,
+            sample_limit=20,
+        )
+
+        features = ShortHorizonFeatureBuilder(
+            Hip4OutcomeConfig(
+                short_expiry_min_history_seconds=30,
+                short_expiry_momentum_windows_seconds=[60],
+            )
+        ).build(
+            market=market,
+            reference_price=101.0,
+            now_ts=now_ts,
+            history=history,
+        )
+
+        self.assertTrue(features.has_min_history)
+        self.assertEqual(features.sample_count, 2)
+        self.assertAlmostEqual(features.momentum_bps(60), 100.0)
+
+    def test_short_expiry_detector_finds_yes_opportunity(self) -> None:
+        market = self._market()
+        book = self._book()
+        now_ts = market.expiry_ts - 300
+        config = Hip4OutcomeConfig(
+            mode="paper",
+            enable_late_expiry=False,
+            enable_parity=False,
+            enable_model=False,
+            enable_short_expiry=True,
+            short_expiry_window_minutes=6,
+            short_expiry_periods=["1d"],
+            short_expiry_min_history_seconds=30,
+            short_expiry_momentum_windows_seconds=[60],
+            short_expiry_min_confidence=0.5,
+            min_gross_edge=0.01,
+            min_net_edge=0.001,
+            max_position_usdc=5.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+        )
+        history = {
+            "BTC": [
+                {"ts": float(now_ts - 70), "price": 76800.0},
+                {"ts": float(now_ts), "price": 77000.0},
+            ]
+        }
+        probability = ProbabilityModel(config).estimate(
+            market,
+            reference_price=77000.0,
+            now_ts=now_ts,
+        )
+        features = ShortHorizonFeatureBuilder(config).build(
+            market=market,
+            reference_price=77000.0,
+            now_ts=now_ts,
+            history=history,
+        )
+        detector = OutcomeEdgeDetector(config)
+
+        opportunities = detector.detect(
+            market=market,
+            order_book=book,
+            reference_price=77000.0,
+            probability=probability,
+            now_ts=now_ts,
+            short_features=features,
+        )
+
+        self.assertTrue(any(item.edge_type == "SHORT_EXPIRY" for item in opportunities))
+        self.assertTrue(any(item.side == "BUY_YES" for item in opportunities))
+
+    def test_risk_rejects_observer_mode_after_signal_logging(self) -> None:
+        market = self._market()
+        book = self._book()
+        config = Hip4OutcomeConfig(mode="observer", min_yes_depth_usdc=1, min_no_depth_usdc=1)
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_YES",
+            edge_type="MODEL",
+            gross_edge=0.2,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.18,
+            confidence=0.8,
+            requested_size_usdc=5.0,
+            max_loss_usdc=5.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={"strike": market.strike},
+        )
+
+        decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 3600,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "observer_mode_signal_only")
+
+    def test_builds_parity_order_legs_with_equal_token_qty(self) -> None:
+        market = self._market()
+        book = self._book()
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_BOTH",
+            edge_type="PARITY",
+            gross_edge=0.02,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.02,
+            confidence=0.9,
+            requested_size_usdc=5.0,
+            max_loss_usdc=5.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+        )
+
+        legs = build_order_legs(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            approved_size_usdc=5.0,
+            max_order_slippage=0.0,
+            size_decimals=0,
+        )
+
+        self.assertEqual(len(legs), 2)
+        self.assertEqual(legs[0]["token_qty"], legs[1]["token_qty"])
+
+    def test_reference_price_aggregator_uses_median_and_rejects_outlier(self) -> None:
+        config = Hip4OutcomeConfig(
+            reference_price_sources=["binance", "okx", "hyperliquid"],
+            max_source_deviation_bps=100.0,
+            min_reference_sources=2,
+        )
+        aggregator = ExternalPriceAggregator(config)
+        reference = aggregator._select_reference(  # noqa: SLF001 - targeted unit coverage
+            "BTC",
+            [
+                ReferencePriceQuote(source="binance", symbol="BTCUSDT", price=100.0),
+                ReferencePriceQuote(source="okx", symbol="BTC-USDT", price=101.0),
+                ReferencePriceQuote(source="hyperliquid", symbol="BTC", price=130.0),
+            ],
+        )
+
+        self.assertIsNotNone(reference)
+        self.assertEqual(reference.price, 100.5)
+        self.assertEqual(reference.source_count, 2)
+        self.assertEqual(reference.rejected_quotes[0].source, "hyperliquid")
+
+    def test_reference_price_aggregator_reads_public_exchange_payloads(self) -> None:
+        config = Hip4OutcomeConfig(
+            reference_price_sources=["binance", "okx", "bybit", "coinbase", "kraken", "hyperliquid"],
+            min_reference_sources=2,
+        )
+        aggregator = ExternalPriceAggregator(config)
+
+        def fake_get_json(url: str):
+            if "binance.com" in url:
+                return {"symbol": "BTCUSDT", "price": "100.0"}
+            if "okx.com" in url:
+                return {"code": "0", "data": [{"instId": "BTC-USDT", "last": "101.0"}]}
+            if "bybit.com" in url:
+                return {
+                    "retCode": 0,
+                    "result": {"list": [{"symbol": "BTCUSDT", "lastPrice": "100.25"}]},
+                }
+            if "coinbase.com" in url:
+                return {"price": "100.75", "bid": "100.7", "ask": "100.8"}
+            if "kraken.com" in url:
+                return {
+                    "error": [],
+                    "result": {"XXBTZUSD": {"c": ["100.5", "0.1"]}},
+                }
+            raise AssertionError(url)
+
+        aggregator._get_json = fake_get_json  # type: ignore[method-assign]  # noqa: SLF001
+        reference = aggregator.fetch_one("BTC", hyperliquid_mids={"BTC": 100.5})
+
+        self.assertIsNotNone(reference)
+        self.assertEqual(reference.source_count, 6)
+        self.assertEqual(reference.price, 100.5)
+
+    def test_reference_price_sources_can_be_overridden_by_underlying(self) -> None:
+        config = Hip4OutcomeConfig(
+            reference_price_sources=["binance", "hyperliquid"],
+            reference_price_sources_by_underlying={"HYPE": ["hyperliquid"]},
+            min_reference_sources=1,
+        )
+        aggregator = ExternalPriceAggregator(config)
+
+        def fake_get_json(url: str):
+            raise AssertionError(f"External venue should not be queried for HYPE: {url}")
+
+        aggregator._get_json = fake_get_json  # type: ignore[method-assign]  # noqa: SLF001
+        reference = aggregator.fetch_one("HYPE", hyperliquid_mids={"HYPE": 26.1})
+
+        self.assertIsNotNone(reference)
+        self.assertEqual(reference.price, 26.1)
+        self.assertEqual(reference.source_count, 1)
+        self.assertEqual(reference.quotes[0].source, "hyperliquid")
+
+    def test_loads_testnet_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "hip4.toml"
+            path.write_text(
+                """
+[hyperliquid]
+info_url = "https://api.hyperliquid-testnet.xyz/info"
+
+[hip4_outcome]
+mode = "paper"
+include_underlyings = ["btc"]
+allow_testnet_orders = false
+
+[hip4_outcome.annualized_vol_by_underlying]
+BTC = 0.5
+""",
+                encoding="utf-8",
+            )
+
+            config = load_hip4_outcome_config(path)
+
+            self.assertEqual(config.mode, "paper")
+            self.assertEqual(config.include_underlyings, ["BTC"])
+            self.assertEqual(config.annualized_vol_by_underlying["BTC"], 0.5)
+            self.assertTrue(config.write_pod_b_alias_status)
+            self.assertEqual(config.pod_b_alias_status_path, "./logs/pod_b_live_status.json")
+
+    def test_writes_pod_b_alias_runtime_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "hip4_status.json"),
+                pod_b_alias_status_path=str(root / "pod_b_live_status.json"),
+            )
+            pod = HIP4OutcomeEdgePod(config)
+
+            pod._write_status(  # noqa: SLF001 - verifies compatibility status output
+                {
+                    "loop_count": 1,
+                    "mode": "paper",
+                    "opportunities": 2,
+                    "approved": 1,
+                    "executed": 1,
+                }
+            )
+
+            alias = json.loads((root / "pod_b_live_status.json").read_text(encoding="utf-8"))
+            self.assertEqual(alias["pod"], "pod_b")
+            self.assertEqual(alias["pod_kind"], "hip4_outcome_edge_pod")
+            self.assertEqual(alias["process_state"], "running")
+            self.assertEqual(alias["report"]["strategy"], "HIP4OutcomeEdgePod")
+            self.assertEqual(alias["hip4_outcome_status_path"], str(root / "hip4_status.json"))
+
+    def test_capital_guard_caps_paper_size_by_pod_b_budget(self) -> None:
+        config = Hip4OutcomeConfig(mode="paper", pod_b_budget_usdc=10.0)
+        guard = OutcomeCapitalGuard(config, info_client=None)  # type: ignore[arg-type]
+        open_position = OutcomePosition(
+            position_id="pos-1",
+            market_id="BTC_GT_1",
+            outcome=1,
+            underlying="BTC",
+            edge_type="MODEL",
+            side="BUY_YES",
+            opened_at="2026-05-01T00:00:00Z",
+            expiry_ts=1,
+            cost_usdc=6.0,
+            max_loss_usdc=6.0,
+            net_edge=0.1,
+            confidence=0.9,
+        )
+        decision = SupervisorDecision(
+            approved=True,
+            approved_size_usdc=8.0,
+            reason="local_outcome_risk_ok",
+            execution_mode="PAPER",
+        )
+
+        adjusted, snapshot = guard.apply(
+            decision=decision,
+            open_positions=[open_position],
+        )
+
+        self.assertTrue(adjusted.approved)
+        self.assertEqual(adjusted.approved_size_usdc, 4.0)
+        self.assertEqual(snapshot.remaining_budget_usdc, 4.0)
+        self.assertEqual(adjusted.constraints["capital"]["budget_usdc"], 10.0)
+
+    def test_capital_guard_caps_testnet_size_by_available_usdc(self) -> None:
+        class FakeInfoClient:
+            def fetch_spot_state(self, user: str):
+                self.user = user
+                return {"balances": [{"coin": "USDC", "total": "2", "hold": "0"}]}
+
+        class FakeExecutor:
+            def resolve_account_address(self):
+                return "0x0000000000000000000000000000000000000001"
+
+        config = Hip4OutcomeConfig(
+            mode="testnet",
+            pod_b_budget_usdc=25.0,
+            testnet_balance_buffer_usdc=1.0,
+        )
+        guard = OutcomeCapitalGuard(config, info_client=FakeInfoClient())  # type: ignore[arg-type]
+        decision = SupervisorDecision(
+            approved=True,
+            approved_size_usdc=5.0,
+            reason="local_outcome_risk_ok",
+            execution_mode="TESTNET",
+        )
+
+        adjusted, snapshot = guard.apply(
+            decision=decision,
+            open_positions=[],
+            testnet_executor=FakeExecutor(),
+        )
+
+        self.assertTrue(adjusted.approved)
+        self.assertEqual(adjusted.approved_size_usdc, 1.0)
+        self.assertEqual(snapshot.testnet_available_usdc, 2.0)
+
+    def test_overlap_helpers_detect_pod_a_and_hip4_open_underlyings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pod_a_status = root / "pod_a_live_status.json"
+            pod_b_status = root / "pod_b_live_status.json"
+            write_runtime_status(
+                pod_a_status,
+                {
+                    "pod": "pod_a",
+                    "updated_at": "2999-01-01T00:00:00Z",
+                    "process_state": "running",
+                    "open_positions": [{"symbol": "BTC"}],
+                },
+            )
+            write_runtime_status(
+                pod_b_status,
+                {
+                    "pod": "pod_b",
+                    "pod_kind": "hip4_outcome_edge_pod",
+                    "updated_at": "2999-01-01T00:00:00Z",
+                    "process_state": "running",
+                    "open_positions": [{"underlying": "HYPE"}],
+                },
+            )
+
+            overlap = directional_overlap_snapshot([str(pod_a_status)])
+
+            self.assertEqual(overlap.blocked_underlyings, ["BTC"])
+            self.assertEqual(hip4_open_underlyings(pod_b_status), ["HYPE"])
+
+    def test_reconciler_matches_testnet_fills_and_balances(self) -> None:
+        class FakeInfoClient:
+            def fetch_spot_state(self, user: str):
+                self.user = user
+                return {"balances": [{"coin": "#57210", "total": "3", "hold": "0"}]}
+
+            def fetch_user_fills_by_time(
+                self,
+                *,
+                user: str,
+                start_time_ms: int,
+                end_time_ms: int | None = None,
+                aggregate_by_time: bool = False,
+            ):
+                return [
+                    {
+                        "coin": "#57210",
+                        "oid": 42,
+                        "cloid": "0xabc",
+                        "px": "0.25",
+                        "sz": "3",
+                        "time": start_time_ms + 1,
+                    }
+                ]
+
+        position = OutcomePosition(
+            position_id="pos-1",
+            market_id="BTC_GT_76775_20260502_0300",
+            outcome=5721,
+            underlying="BTC",
+            edge_type="MODEL",
+            side="BUY_YES",
+            opened_at="2026-05-01T00:00:00Z",
+            expiry_ts=1777681200,
+            cost_usdc=0.75,
+            max_loss_usdc=0.75,
+            net_edge=0.1,
+            confidence=0.8,
+            fills=[
+                OutcomeFill(
+                    coin="#57210",
+                    side_name="YES",
+                    token_qty=Decimal("3"),
+                    avg_price=0.25,
+                    cost_usdc=0.75,
+                    status="filled",
+                    oid=42,
+                    cloid="0xabc",
+                )
+            ],
+            metadata={"decision": {"execution_mode": "TESTNET"}},
+        )
+
+        report = OutcomeReconciler(
+            Hip4OutcomeConfig(mode="testnet"),
+            FakeInfoClient(),  # type: ignore[arg-type]
+        ).reconcile(
+            account_address="0x123",
+            positions=[position],
+            start_time_ms=1,
+            end_time_ms=2,
+        )
+
+        self.assertEqual(report["matched_fill_count"], 1)
+        self.assertEqual(report["tracked_balances"]["#57210"]["total"], "3")
+        self.assertTrue(apply_reconciliation_to_positions([position], report))
+        self.assertTrue(position.metadata["last_reconciliation"]["exchange_confirmed"])
+
+    def test_parses_reconciliation_payload_variants(self) -> None:
+        balances = parse_spot_balances(
+            {"spotBalances": [{"token": "+57210", "balance": "2", "hold": "0.5"}]}
+        )
+        fills = parse_user_fills(
+            {"fills": [{"coin": "+57210", "orderId": "7", "price": "0.4", "size": "2"}]}
+        )
+
+        self.assertEqual(balances["+57210"].available, Decimal("1.5"))
+        self.assertEqual(fills[0]["oid"], "7")
+        self.assertEqual(fills[0]["px"], 0.4)
+
+    def test_builds_daily_summary_rows(self) -> None:
+        position = OutcomePosition(
+            position_id="pos-1",
+            market_id="BTC_GT_76775_20260502_0300",
+            outcome=5721,
+            underlying="BTC",
+            edge_type="MODEL",
+            side="BUY_YES",
+            opened_at="2026-05-01T00:00:00Z",
+            expiry_ts=1777681200,
+            cost_usdc=1.0,
+            max_loss_usdc=1.0,
+            net_edge=0.1,
+            confidence=0.8,
+            status="estimated_settled",
+            estimated_payout_usdc=1.5,
+            estimated_pnl_usdc=0.5,
+            metadata={"decision": {"execution_mode": "PAPER"}},
+        )
+
+        rows = build_daily_summary_rows([position])
+
+        self.assertEqual(rows[0]["date"], "2026-05-01")
+        self.assertEqual(rows[0]["mode"], "PAPER")
+        self.assertEqual(rows[0]["estimated_pnl_usdc"], 0.5)
+
+    def test_replays_opportunity_log_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "opportunities.csv"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ts,underlying,edge_type,side,gross_edge,net_edge,confidence",
+                        "2026-05-01T00:00:00Z,BTC,MODEL,BUY_YES,0.10,0.08,0.7",
+                        "2026-05-01T00:00:01Z,BTC,MODEL,BUY_YES,0.20,0.18,0.9",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            rows = replay_opportunities(path)
+
+        self.assertEqual(rows[0]["opportunity_count"], 2)
+        self.assertEqual(rows[0]["avg_net_edge"], 0.13)
+        self.assertEqual(rows[0]["max_net_edge"], 0.18)
+
+
+if __name__ == "__main__":
+    unittest.main()

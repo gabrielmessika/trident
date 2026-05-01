@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import csv
 import json
 from collections import deque
 from datetime import datetime, timezone
@@ -13,7 +14,12 @@ from typing import Callable
 
 from app.observability.metrics import MetricsRegistry
 from app.version import VERSION
-from app.reporting.multi_pod import build_runtime_report, _is_supervisor_fallback_runtime
+from app.reporting.multi_pod import (
+    build_runtime_report,
+    _is_supervisor_fallback_runtime,
+    is_hip4_pod_b_replacement_runtime,
+)
+from app.trident.hip4_outcome.reporting import replay_opportunities
 from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
 from app.live.runtime_status import (
     load_runtime_status,
@@ -87,6 +93,176 @@ def _tail_jsonl_records(
             if len(records) >= limit:
                 break
     return records
+
+
+def _tail_csv_records(path: Path, *, limit: int = 20) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+    except (OSError, csv.Error):
+        return []
+    return rows[-limit:]
+
+
+def _float_or_none(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _hip4_outcome_monitor_payload(
+    *,
+    status_path: Path = Path("logs/hip4_outcome_status.json"),
+) -> dict[str, object]:
+    status = load_runtime_status(status_path)
+    summary = status.get("summary", {}) if isinstance(status, dict) else {}
+    if not isinstance(summary, dict):
+        summary = {}
+    logs_dir = Path("logs/hip4_outcome_paper")
+    if isinstance(status, dict):
+        raw_logs_dir = status.get("logs_dir")
+        if isinstance(raw_logs_dir, str) and raw_logs_dir:
+            logs_dir = Path(raw_logs_dir)
+
+    opportunities = _tail_csv_records(logs_dir / "opportunities.csv", limit=24)
+    edge_decay = _tail_csv_records(logs_dir / "edge_decay.csv", limit=24)
+    short_expiry_features = _tail_csv_records(logs_dir / "short_expiry_features.csv", limit=36)
+    latency = _tail_csv_records(logs_dir / "latency_stats.csv", limit=12)
+    daily_summary = _tail_csv_records(logs_dir / "daily_summary.csv", limit=24)
+    settlements = _tail_csv_records(logs_dir / "settlements.csv", limit=24)
+    fills = _tail_csv_records(logs_dir / "trades.csv", limit=24)
+    replay_rows = replay_opportunities(logs_dir / "opportunities.csv")
+    all_opportunity_rows = _tail_csv_records(logs_dir / "opportunities.csv", limit=5000)
+    all_short_rows = _tail_csv_records(logs_dir / "short_expiry_features.csv", limit=5000)
+    all_settlement_rows = _tail_csv_records(logs_dir / "settlements.csv", limit=5000)
+    all_fill_rows = _tail_csv_records(logs_dir / "trades.csv", limit=5000)
+    pod_b_alias_status = load_runtime_status(Path("logs/pod_b_live_status.json"))
+    pod_b_alias_report = {}
+    if (
+        isinstance(pod_b_alias_status, dict)
+        and str(pod_b_alias_status.get("pod_kind", "")).strip().lower() == "hip4_outcome_edge_pod"
+        and isinstance(pod_b_alias_status.get("report"), dict)
+    ):
+        pod_b_alias_report = pod_b_alias_status["report"]
+    best_net_edge = None
+    latest_net_edge = None
+    best_short_net_edge = None
+    latest_short_net_edge = None
+    if all_opportunity_rows:
+        best_net_edge = max(
+            (
+                value
+                for value in (_float_or_none(row.get("net_edge")) for row in all_opportunity_rows)
+                if value is not None
+            ),
+            default=None,
+        )
+    if opportunities:
+        latest_net_edge = _float_or_none(opportunities[-1].get("net_edge"))
+    if all_short_rows:
+        best_short_net_edge = max(
+            (
+                value
+                for value in (_float_or_none(row.get("best_net_edge")) for row in all_short_rows)
+                if value is not None
+            ),
+            default=None,
+        )
+    if short_expiry_features:
+        latest_short_net_edge = _float_or_none(short_expiry_features[-1].get("best_net_edge"))
+    realized_pnl_usd = sum(
+        value
+        for value in (_float_or_none(row.get("pnl_usdc")) for row in all_settlement_rows)
+        if value is not None
+    )
+    payout_usdc = sum(
+        value
+        for value in (_float_or_none(row.get("payout_usdc")) for row in all_settlement_rows)
+        if value is not None
+    )
+
+    reference_prices = summary.get("reference_prices", {})
+    if not isinstance(reference_prices, dict):
+        reference_prices = {}
+    capital = {}
+    if isinstance(status, dict) and isinstance(status.get("capital"), dict):
+        capital = status["capital"]
+    elif isinstance(summary.get("capital"), dict):
+        capital = summary["capital"]
+    directional_overlap = summary.get("directional_overlap", {})
+    if not isinstance(directional_overlap, dict):
+        directional_overlap = {}
+    reference_rows: list[dict[str, object]] = []
+    for underlying, reference in sorted(reference_prices.items()):
+        if not isinstance(reference, dict):
+            continue
+        rejected = reference.get("reference_rejected_sources", [])
+        reference_rows.append(
+            {
+                "underlying": str(underlying),
+                "price": reference.get("reference_price"),
+                "source_count": reference.get("reference_source_count", 0),
+                "rejected_count": len(rejected) if isinstance(rejected, list) else 0,
+                "max_deviation_bps": reference.get("reference_max_deviation_bps"),
+            }
+        )
+
+    status_age = runtime_status_age_seconds(status)
+    fresh = runtime_status_is_fresh(status)
+    return {
+        "pod": "hip4_outcome_edge_pod",
+        "status_path": str(status_path),
+        "logs_dir": str(logs_dir),
+        "status": status,
+        "summary": summary,
+        "fresh": fresh,
+        "status_age_seconds": status_age,
+        "process_state": (
+            str(status.get("process_state"))
+            if isinstance(status, dict) and status.get("process_state") is not None
+            else "running"
+            if fresh
+            else "missing"
+            if status is None
+            else "stale"
+        ),
+        "mode": str(summary.get("mode") or (status.get("mode") if isinstance(status, dict) else "observer")),
+        "markets_seen": int(summary.get("markets_seen", 0) or 0),
+        "markets_supported": int(summary.get("markets_supported", 0) or 0),
+        "open_positions": int(summary.get("open_positions", 0) or 0),
+        "opportunities_this_loop": int(summary.get("opportunities", 0) or 0),
+        "approved_this_loop": int(summary.get("approved", 0) or 0),
+        "executed_this_loop": int(summary.get("executed", 0) or 0),
+        "report": pod_b_alias_report,
+        "settled_position_count": int(
+            pod_b_alias_report.get("closed_trade_count", len(all_settlement_rows)) or 0
+        ),
+        "fill_count": int(pod_b_alias_report.get("total_fill_count", len(all_fill_rows)) or 0),
+        "realized_pnl_usd": float(
+            pod_b_alias_report.get("realized_pnl_usd", round(realized_pnl_usd, 8)) or 0.0
+        ),
+        "settlement_payout_usdc": round(payout_usdc, 8),
+        "best_net_edge": best_net_edge,
+        "latest_net_edge": latest_net_edge,
+        "best_short_net_edge": best_short_net_edge,
+        "latest_short_net_edge": latest_short_net_edge,
+        "reference_prices": reference_rows,
+        "capital": capital,
+        "directional_overlap": directional_overlap,
+        "opportunities": opportunities,
+        "short_expiry_features": short_expiry_features,
+        "edge_decay": edge_decay,
+        "latency": latency,
+        "daily_summary": daily_summary,
+        "settlements": settlements,
+        "fills": fills,
+        "replay": replay_rows,
+    }
 
 
 def _recent_activity_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
@@ -367,6 +543,59 @@ def _open_position_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
         for item in positions:
             if not isinstance(item, dict):
                 continue
+            if (
+                pod_name == "pod_b"
+                and str(runtime_payload.get("pod_kind", "")).lower() == "hip4_outcome_edge_pod"
+            ):
+                metadata = item.get("metadata", {})
+                signal = metadata.get("signal", {}) if isinstance(metadata, dict) else {}
+                if not isinstance(signal, dict):
+                    signal = {}
+                signal_metadata = signal.get("metadata", {})
+                if not isinstance(signal_metadata, dict):
+                    signal_metadata = {}
+                fills = item.get("fills", [])
+                first_fill = fills[0] if isinstance(fills, list) and fills and isinstance(fills[0], dict) else {}
+                rows.append(
+                    {
+                        "pod": pod_name,
+                        "symbol": str(item.get("underlying") or item.get("market_id") or "-"),
+                        "side": str(item.get("side") or signal.get("side") or "-"),
+                        "status": "open",
+                        "open_reason": str(
+                            signal.get("reason")
+                            or item.get("edge_type")
+                            or item.get("market_id")
+                            or "-"
+                        ),
+                        "close_reason": "-",
+                        "entry_price": first_fill.get("avg_price") or signal_metadata.get("yes_ask"),
+                        "current_price": None,
+                        "exit_price": None,
+                        "notional_usd": item.get("cost_usdc"),
+                        "current_notional_usd": item.get("cost_usdc"),
+                        "leverage": None,
+                        "pnl_usd": item.get("estimated_pnl_usd"),
+                        "unrealized_pnl_usd": item.get("estimated_pnl_usd"),
+                        "opened_at": item.get("opened_at"),
+                        "closed_at": None,
+                        "margin_usd": item.get("max_loss_usdc") or item.get("cost_usdc"),
+                        "risk_budget_usd": item.get("max_loss_usdc"),
+                        "expected_loss_usd": item.get("max_loss_usdc"),
+                        "invalidation_price": None,
+                        "stop_bps": None,
+                        "time_stop_hours": None,
+                        "take_profit_bps": None,
+                        "break_even_trigger_bps": None,
+                        "trailing_activation_bps": None,
+                        "trailing_distance_bps": None,
+                        "best_price_seen": None,
+                        "confidence": signal.get("confidence"),
+                        "campaign_mode_active": False,
+                        "routing_revoke_exempt": True,
+                    }
+                )
+                continue
             rows.append(
                 {
                     "pod": pod_name,
@@ -597,6 +826,10 @@ def report_payload(
     return build_runtime_report(supervisor, metrics, runtime_snapshot=snapshot).to_dict()
 
 
+def hip4_outcome_payload() -> dict[str, object]:
+    return _hip4_outcome_monitor_payload()
+
+
 def _merge_runtime_snapshot(
     snapshot: dict[str, object],
     *,
@@ -613,6 +846,10 @@ def _merge_runtime_snapshot(
             pod_b_runtime,
             include_supervisor=False,
         )
+        if is_hip4_pod_b_replacement_runtime(pod_b_runtime) and runtime_status_is_fresh(
+            pod_b_runtime
+        ):
+            _apply_hip4_pod_b_replacement(snapshot, pod_b_runtime)
     if isinstance(snapshot.get("pod_health"), list):
         merged_health: list[dict[str, object]] = []
         for health in snapshot["pod_health"]:
@@ -691,6 +928,11 @@ def _merge_runtime_snapshot(
         if key in runtime_supervisor:
             snapshot[key] = runtime_supervisor[key]
 
+    if isinstance(pod_b_runtime, dict) and is_hip4_pod_b_replacement_runtime(
+        pod_b_runtime
+    ) and runtime_status_is_fresh(pod_b_runtime):
+        _apply_hip4_pod_b_replacement(snapshot, pod_b_runtime)
+
     embedded_supervisor = _embedded_supervisor_snapshot(snapshot)
     if isinstance(pod_a_runtime, dict):
         pod_a_runtime["supervisor"] = copy.deepcopy(embedded_supervisor)
@@ -699,6 +941,52 @@ def _merge_runtime_snapshot(
     if isinstance(pod_c_runtime, dict):
         pod_c_runtime["supervisor"] = copy.deepcopy(embedded_supervisor)
     return snapshot
+
+
+def _apply_hip4_pod_b_replacement(
+    snapshot: dict[str, object],
+    pod_b_runtime: dict[str, object],
+) -> None:
+    enabled_pods = snapshot.get("enabled_pods")
+    if not isinstance(enabled_pods, list):
+        enabled_pods = []
+    if "pod_b" not in [str(item) for item in enabled_pods]:
+        enabled_pods = [*enabled_pods, "pod_b"]
+    snapshot["enabled_pods"] = enabled_pods
+
+    managed_symbols = pod_b_runtime.get("managed_symbols", [])
+    if not isinstance(managed_symbols, list):
+        managed_symbols = []
+    pods = snapshot.get("pods")
+    if not isinstance(pods, dict):
+        pods = {}
+    pod_b = dict(pods.get("pod_b", {}) if isinstance(pods.get("pod_b"), dict) else {})
+    pod_b.update(
+        {
+            "enabled": True,
+            "candidate_symbols": [str(symbol) for symbol in managed_symbols],
+            "desired_symbols": [str(symbol) for symbol in managed_symbols],
+            "owned_symbols": [str(symbol) for symbol in managed_symbols],
+            "runtime_strategy": "HIP4OutcomeEdgePod",
+            "runtime_mode": str(pod_b_runtime.get("mode", "")),
+        }
+    )
+    pods["pod_b"] = pod_b
+    snapshot["pods"] = pods
+
+    health_rows = snapshot.get("pod_health")
+    if not isinstance(health_rows, list):
+        return
+    updated_health_rows: list[object] = []
+    for row in health_rows:
+        if isinstance(row, dict) and row.get("pod") == "pod_b":
+            merged = dict(row)
+            merged["healthy"] = True
+            merged["message"] = "HIP-4 outcome replacement runtime fresh"
+            updated_health_rows.append(merged)
+        else:
+            updated_health_rows.append(row)
+    snapshot["pod_health"] = updated_health_rows
 
 
 def _pod_b_status_path_from_snapshot(snapshot: dict[str, object]) -> str:
@@ -1409,8 +1697,345 @@ def _control_center_html(
             "Les trades apparaîtront ici dès qu'un pod écrira un trade close ou un fill récent.</td></tr>"
         )
 
-    pod_b_open_rows = render_directional_open_rows("pod_b")
-    pod_b_closed_rows = render_directional_closed_rows("pod_b")
+    def render_hip4_pod_b_tab() -> str:
+        payload = _hip4_outcome_monitor_payload()
+        status = payload.get("status", {})
+        if not isinstance(status, dict):
+            status = {}
+        summary = payload.get("summary", {})
+        if not isinstance(summary, dict):
+            summary = {}
+        capital = payload.get("capital", {})
+        if not isinstance(capital, dict):
+            capital = {}
+        directional_overlap = payload.get("directional_overlap", {})
+        if not isinstance(directional_overlap, dict):
+            directional_overlap = {}
+        blocked_underlyings = directional_overlap.get("blocked_underlyings", [])
+        if not isinstance(blocked_underlyings, list):
+            blocked_underlyings = []
+        status_age = payload.get("status_age_seconds")
+        age_label = "-" if status_age is None else _format_duration_compact(float(status_age))
+        settled_position_count = int(payload.get("settled_position_count", 0) or 0)
+        fill_count = int(payload.get("fill_count", 0) or 0)
+        realized_pnl = payload.get("realized_pnl_usd")
+        latest_edge = payload.get("latest_net_edge")
+        best_edge = payload.get("best_net_edge")
+        latest_short_edge = payload.get("latest_short_net_edge")
+        best_short_edge = payload.get("best_short_net_edge")
+        tone = "good" if bool(payload.get("fresh")) else "bad"
+        open_positions = status.get("open_positions", [])
+        if not isinstance(open_positions, list):
+            open_positions = []
+
+        def fmt_hip4_number(value: object, digits: int = 4, *, fallback: str = "-") -> str:
+            parsed = _float_or_none(value)
+            if parsed is None:
+                return fallback
+            return f"{parsed:.{digits}f}"
+
+        def render_hip4_cards(cards: list[dict[str, str]]) -> str:
+            return "".join(
+                (
+                    "<article class='metric-card'>"
+                    f"<span>{escape(card['label'])}</span>"
+                    f"<strong>{escape(card['value'])}</strong>"
+                    f"<small>{escape(card['note'])}</small>"
+                    "</article>"
+                )
+                for card in cards
+            )
+
+        def render_reference_rows() -> str:
+            rows = payload.get("reference_prices", [])
+            if not isinstance(rows, list) or not rows:
+                return "<tr><td colspan='5'>Aucune référence prix visible.</td></tr>"
+            return "".join(
+                (
+                    "<tr>"
+                    f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                    f"<td>{fmt_hip4_number(row.get('price'), 6)}</td>"
+                    f"<td>{escape(str(row.get('source_count', 0)))}</td>"
+                    f"<td>{escape(str(row.get('rejected_count', 0)))}</td>"
+                    f"<td>{fmt_hip4_number(row.get('max_deviation_bps'), 2)}</td>"
+                    "</tr>"
+                )
+                for row in rows
+                if isinstance(row, dict)
+            )
+
+        def render_open_position_rows() -> str:
+            if not open_positions:
+                return "<tr><td colspan='9'>Aucune position HIP-4 ouverte visible.</td></tr>"
+            rows: list[str] = []
+            for item in open_positions:
+                if not isinstance(item, dict):
+                    continue
+                fills = item.get("fills", [])
+                first_fill = fills[0] if isinstance(fills, list) and fills and isinstance(fills[0], dict) else {}
+                rows.append(
+                    "<tr>"
+                    f"<td>{escape(str(item.get('underlying', '-')))}</td>"
+                    f"<td>{escape(str(item.get('market_id', '-')))}</td>"
+                    f"<td>{escape(str(item.get('side', '-')))}</td>"
+                    f"<td>{escape(str(first_fill.get('side_name') or '-'))}</td>"
+                    f"<td>{fmt_hip4_number(first_fill.get('avg_price'), 4)}</td>"
+                    f"<td>{fmt_hip4_number(item.get('cost_usdc'), 2)}</td>"
+                    f"<td>{fmt_hip4_number(item.get('net_edge'), 4)}</td>"
+                    f"<td>{fmt_hip4_number(item.get('confidence'), 4)}</td>"
+                    f"<td>{escape(str(item.get('opened_at') or '-'))}</td>"
+                    "</tr>"
+                )
+            return "".join(rows) or "<tr><td colspan='9'>Aucune position HIP-4 ouverte visible.</td></tr>"
+
+        def render_settlement_rows() -> str:
+            rows = payload.get("settlements", [])
+            if not isinstance(rows, list) or not rows:
+                return "<tr><td colspan='8'>Aucun settlement paper visible.</td></tr>"
+            return "".join(
+                (
+                    "<tr>"
+                    f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                    f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                    f"<td>{escape(str(row.get('market_id', '-')))}</td>"
+                    f"<td>{escape(str(row.get('side', '-')))}</td>"
+                    f"<td>{escape(str(row.get('result', '-')))}</td>"
+                    f"<td>{fmt_hip4_number(row.get('payout_usdc'), 2)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('pnl_usdc'), 2)}</td>"
+                    f"<td>{escape(str(row.get('notes', '-')))}</td>"
+                    "</tr>"
+                )
+                for row in reversed(rows[-12:])
+                if isinstance(row, dict)
+            )
+
+        def render_opportunity_rows() -> str:
+            rows = payload.get("opportunities", [])
+            if not isinstance(rows, list) or not rows:
+                return "<tr><td colspan='10'>Aucune opportunité loggée.</td></tr>"
+            return "".join(
+                (
+                    "<tr>"
+                    f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                    f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                    f"<td>{escape(str(row.get('edge_type', '-')))}</td>"
+                    f"<td>{escape(str(row.get('side', '-')))}</td>"
+                    f"<td>{fmt_hip4_number(row.get('net_edge'), 6)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('gross_edge'), 6)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('confidence'), 4)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('ref_price'), 6)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('yes_ask'), 6)}</td>"
+                    f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                    "</tr>"
+                )
+                for row in reversed(rows[-12:])
+                if isinstance(row, dict)
+            )
+
+        def render_short_expiry_rows() -> str:
+            rows = payload.get("short_expiry_features", [])
+            if not isinstance(rows, list) or not rows:
+                return "<tr><td colspan='12'>Aucun snapshot short-expiry loggé.</td></tr>"
+            return "".join(
+                (
+                    "<tr>"
+                    f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                    f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                    f"<td>{escape(str(row.get('period', '-')))}</td>"
+                    f"<td>{fmt_hip4_number(row.get('seconds_left'), 0)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('distance_bps'), 2)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('momentum_bps_60s'), 2)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('book_probability_yes'), 4)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('short_probability_yes'), 4)}</td>"
+                    f"<td>{escape(str(row.get('best_side', '-')))}</td>"
+                    f"<td>{fmt_hip4_number(row.get('best_net_edge'), 6)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('confidence'), 4)}</td>"
+                    f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                    "</tr>"
+                )
+                for row in reversed(rows[-12:])
+                if isinstance(row, dict)
+            )
+
+        def render_latency_rows() -> str:
+            rows = payload.get("latency", [])
+            if not isinstance(rows, list) or not rows:
+                return "<tr><td colspan='7'>Aucune latence loggée.</td></tr>"
+            return "".join(
+                (
+                    "<tr>"
+                    f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                    f"<td>{escape(str(row.get('loop_count', '-')))}</td>"
+                    f"<td>{fmt_hip4_number(row.get('total_ms'), 1)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('reference_prices_ms'), 1)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('books_ms'), 1)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('opportunities'), 0)}</td>"
+                    f"<td>{escape(str(row.get('error', '')))}</td>"
+                    "</tr>"
+                )
+                for row in reversed(rows[-8:])
+                if isinstance(row, dict)
+            )
+
+        cards = render_hip4_cards(
+            [
+                {
+                    "label": "Runtime",
+                    "value": str(payload.get("process_state", "-")),
+                    "note": f"status {age_label}",
+                },
+                {
+                    "label": "Mode",
+                    "value": str(payload.get("mode", "paper")),
+                    "note": "alias Pod B HIP-4",
+                },
+                {
+                    "label": "Markets",
+                    "value": f"{payload.get('markets_supported', 0)}/{payload.get('markets_seen', 0)}",
+                    "note": "supportés / vus",
+                },
+                {
+                    "label": "Positions",
+                    "value": str(len(open_positions)),
+                    "note": "positions paper HIP-4",
+                },
+                {
+                    "label": "Realized PnL",
+                    "value": f"{fmt_hip4_number(realized_pnl, 2)} USD",
+                    "note": f"{settled_position_count} settlement(s) paper",
+                },
+                {
+                    "label": "Fills",
+                    "value": str(fill_count),
+                    "note": "fills paper cumulés",
+                },
+                {
+                    "label": "Exposure",
+                    "value": f"{fmt_hip4_number(capital.get('open_exposure_usdc'), 2)} USD",
+                    "note": f"budget {fmt_hip4_number(capital.get('budget_usdc'), 2)} USD",
+                },
+                {
+                    "label": "Remaining",
+                    "value": f"{fmt_hip4_number(capital.get('remaining_budget_usdc'), 2)} USD",
+                    "note": str(capital.get("reason", "capital")),
+                },
+                {
+                    "label": "Loop edge",
+                    "value": fmt_hip4_number(latest_edge, 4),
+                    "note": f"best {fmt_hip4_number(best_edge, 4)}",
+                },
+                {
+                    "label": "Best short",
+                    "value": fmt_hip4_number(best_short_edge, 4),
+                    "note": f"latest {fmt_hip4_number(latest_short_edge, 4)}",
+                },
+                {
+                    "label": "Loop signals",
+                    "value": str(payload.get("opportunities_this_loop", 0)),
+                    "note": (
+                        f"approved {payload.get('approved_this_loop', 0)} · "
+                        f"exec {payload.get('executed_this_loop', 0)}"
+                    ),
+                },
+                {
+                    "label": "Overlap",
+                    "value": str(len(blocked_underlyings)),
+                    "note": ", ".join(str(item) for item in blocked_underlyings[:4]) or "aucun blocage Pod A",
+                },
+                {
+                    "label": "Testnet USDC",
+                    "value": f"{fmt_hip4_number(capital.get('testnet_available_usdc'), 2)} USD",
+                    "note": "non requis en paper" if capital.get("testnet_available_usdc") is None else "balance testnet",
+                },
+                {
+                    "label": "Last error",
+                    "value": "none" if not status.get("last_error") else "error",
+                    "note": str(status.get("last_error") or "runtime propre"),
+                },
+            ]
+        )
+
+        return f"""
+      <section class="tab-panel{' is-active' if active_tab == 'pod_b' else ''}" data-tab-panel="pod_b">
+        <div class="panel panel-{escape(_panel_tone(tone))}">
+          <div class="panel-header">
+            <h2>Pod B HIP-4 Outcome</h2>
+            <p>Vue native du nouveau Pod B expérimental: marchés outcome testnet, positions paper, budget, edge court terme, latence et garde anti-overlap avec Pod A.</p>
+          </div>
+          <div class="metric-grid">
+            {cards}
+          </div>
+        </div>
+
+        <div class="panel panel-{escape(_panel_tone(tone))}">
+          <div class="panel-header">
+            <h3>Positions HIP-4 ouvertes</h3>
+            <p>{escape(str(payload.get('status_path', 'logs/hip4_outcome_status.json')))}</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Market", "Identifiant interne du marché HIP-4 outcome.")}{_table_header("Signal", "Sens décidé par le pod.")}{_table_header("Token", "Token outcome acheté en paper.")}{_table_header("Avg px", "Prix moyen paper du fill.")}{_table_header("Cost USDC", "Coût paper engagé.")}{_table_header("Net edge", "Edge net estimé à l'entrée.")}{_table_header("Conf", "Confiance du signal.")}{_table_header("Opened", "Horodatage d'ouverture.")}</tr></thead>
+              <tbody>{render_open_position_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel panel-neutral">
+          <div class="panel-header">
+            <h3>Settlements paper</h3>
+            <p>PnL réalisé estimé à l'expiration des marchés outcome paper.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>{_table_header("Ts", "Horodatage du settlement paper.")}{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Market", "Identifiant du marché HIP-4 outcome.")}{_table_header("Side", "Sens acheté par le pod.")}{_table_header("Result", "Résultat outcome estimé.")}{_table_header("Payout", "Payout paper en USDC.")}{_table_header("PnL", "PnL paper réalisé, payout moins coût.")}{_table_header("Notes", "Méthode ou contexte du settlement.")}</tr></thead>
+              <tbody>{render_settlement_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="pod-detail-grid">
+          <div class="panel panel-neutral">
+            <div class="panel-header"><h3>Short-expiry</h3><p>Snapshots du modèle court terme YES/NO.</p></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Ts</th><th>Underlying</th><th>Period</th><th>T-exp s</th><th>Dist bps</th><th>Mom 60s</th><th>Book pY</th><th>Short pY</th><th>Best side</th><th>Net</th><th>Conf</th><th>Reason</th></tr></thead>
+                <tbody>{render_short_expiry_rows()}</tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel panel-neutral">
+            <div class="panel-header"><h3>Sources prix</h3><p>Références utilisées par la dernière boucle.</p></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Underlying</th><th>Price</th><th>Sources</th><th>Rejected</th><th>Max dev bps</th></tr></thead>
+                <tbody>{render_reference_rows()}</tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel panel-neutral">
+          <div class="panel-header"><h3>Opportunités récentes</h3><p>{escape(str(payload.get('logs_dir')))}</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Ts</th><th>Underlying</th><th>Edge</th><th>Side</th><th>Net</th><th>Gross</th><th>Conf</th><th>Ref</th><th>Yes ask</th><th>Reason</th></tr></thead>
+              <tbody>{render_opportunity_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel panel-neutral">
+          <div class="panel-header"><h3>Latence</h3><p>Dernières boucles du collecteur HIP-4.</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Ts</th><th>Loop</th><th>Total ms</th><th>Refs ms</th><th>Books ms</th><th>Opps</th><th>Error</th></tr></thead>
+              <tbody>{render_latency_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+      </section>"""
+
+    pod_b_tab_panel = render_hip4_pod_b_tab()
 
     runtime_report_rows = "".join(
         (
@@ -1583,7 +2208,7 @@ def _control_center_html(
     tabs = [
         ("status", "Status"),
         ("pod_a", "Pod A"),
-        ("pod_b", "Pod B"),
+        ("pod_b", "Pod B HIP-4"),
         ("pod_c", "Pod C"),
         ("activity", "Activity"),
         ("system", "System"),
@@ -2172,6 +2797,7 @@ def _control_center_html(
         <span>Last updated: {escape(refreshed_at)}</span>
         <a href="/dashboard">/dashboard</a>
         <a href="/trades">/trades</a>
+        <a href="/hip4-outcome">/hip4-outcome</a>
         <a href="/api/state">/api/state</a>
         <a href="/api/report">/api/report</a>
         <a href="/api/metrics">/api/metrics</a>
@@ -2312,69 +2938,7 @@ def _control_center_html(
         </div>
       </section>
 
-      <section class="tab-panel{' is-active' if active_tab == 'pod_b' else ''}" data-tab-panel="pod_b">
-        <div class="panel panel-{escape(_panel_tone(pod_b_summary['tone']))}">
-          <div class="panel-header">
-            <h2>Pod B</h2>
-            <p>Pod B est maintenant un pod breakout directionnel. On le lit comme Pod A: positions ouvertes, signal preview, puis trades fermés avec leur motif de sortie.</p>
-          </div>
-          <div class="metric-grid">
-            {render_stat_cards([
-                {"label": "Status", "value": str(pod_b_summary["badge"]), "note": str(pod_b_summary["comment"])},
-                {"label": "Process", "value": str(pod_b_summary["process_state"]), "note": f"Sync reason {escape(str(pod_b_status.get('last_sync_reason', '-')))}"},
-                {"label": "Managed symbols", "value": str(len(pod_b_status.get("managed_symbols", []) if isinstance(pod_b_status, dict) else [])), "note": ", ".join(str(x) for x in (pod_b_status.get("managed_symbols", []) if isinstance(pod_b_status, dict) else [])) or "-"},
-                {"label": "Open positions", "value": str(pod_b_summary['position_count']), "note": "Positions breakout actuellement ouvertes"},
-                {"label": "Signals", "value": str(pod_b_summary['preview_count']), "note": "Previews actuellement visibles"},
-                {"label": "Exec", "value": str(pod_b_summary['total_fill_count']), "note": "Trades fermés observés"},
-                {"label": "Realized PnL", "value": f"{float(pod_b_summary['realized_pnl_usd']):.4f} USD", "note": f"Unrealized {float(pod_b_summary['total_unrealized_pnl_usd']):.4f} USD"},
-            ])}
-          </div>
-        </div>
-
-        <div class="pod-detail-grid">
-          <div class="panel panel-{escape(_panel_tone(pod_b_summary['tone']))}">
-            <div class="panel-header">
-              <h3>Trades ouverts</h3>
-              <p>On lit ici les positions breakout vivantes avec les niveaux operatoires utiles: prix live, valeur, marge, TP, SL et trailing.</p>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>{_table_header("Symbol", "Marche crypto actuellement porte par Pod B.")}{_table_header("Side", "Sens de la position: long a la hausse, short a la baisse.")}{_table_header("Raison ouverture", "Setup lisible qui a motive l'ouverture initiale du trade.")}{_table_header("Prix entree", "Prix moyen d'entree retenu au moment de l'ouverture.")}{_table_header("Prix courant", "Dernier prix live vu par le runner pour ce symbole.")}{_table_header("Valeur courante USD", "Valorisation actuelle de la position au dernier prix courant.")}{_table_header("Marge utilisee", "Capital immobilise pour porter ce trade.")}{_table_header("Prix TP", "Prix theorique du take profit fixe si la cible est atteinte.")}{_table_header("Prix SL", "Prix du stop de protection actuellement applicable au trade.")}{_table_header("Unrealized PnL", "PnL latent calcule au dernier prix courant.")}{_table_header("Trailing TP", "Indique si le trailing est arme et ou se situe le stop suiveur.")}{_table_header("Ouvert le", "Horodatage d'ouverture pour juger l'anciennete du trade.")}</tr>
-                </thead>
-                <tbody>{pod_b_open_rows}</tbody>
-              </table>
-            </div>
-          </div>
-          <div class="panel panel-neutral">
-            <div class="panel-header">
-              <h3>Signal preview</h3>
-              <p>Signaux breakout vus par le superviseur mais pas encore transformés en position.</p>
-            </div>
-            {render_preview_list(snapshot.get("pod_b_signal_preview"))}
-            <div class="panel-header" style="margin-top:16px">
-              <h3>Pourquoi filtré</h3>
-              <p>Derniers breakouts vus puis rejetés par les filtres de qualité.</p>
-            </div>
-            {render_review_list(snapshot.get("pod_b_signal_review"))}
-          </div>
-        </div>
-
-        <div class="panel panel-neutral">
-          <div class="panel-header">
-            <h3>Trades fermés récents</h3>
-            <p>Les motifs d'ouverture et de fermeture sont traduits en formulation lisible pour la review operatoire de Pod B.</p>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>{_table_header("Ferme le", "Horodatage reel de sortie du trade.")}{_table_header("Symbol", "Marche crypto concerne.")}{_table_header("Side", "Sens du trade qui a ete porte.")}{_table_header("Raison ouverture", "Setup lisible qui avait motive l'ouverture du trade.")}{_table_header("Raison fermeture", "Explication lisible de la sortie: TP, trailing stop, stop, time stop, signal oppose, etc.")}{_table_header("Prix entree", "Prix moyen d'entree du trade.")}{_table_header("Prix sortie", "Prix retenu a la fermeture.")}{_table_header("Notional USD", "Notionnelle cible du trade au moment de l'ouverture.")}{_table_header("Leverage", "Levier effectif configure si disponible.")}{_table_header("PnL USD", "Resultat net final du trade, frais inclus.")}</tr>
-              </thead>
-              <tbody>{pod_b_closed_rows}</tbody>
-            </table>
-          </div>
-        </div>
-      </section>
+      {pod_b_tab_panel}
 
       <section class="tab-panel{' is-active' if active_tab == 'pod_c' else ''}" data-tab-panel="pod_c">
         <div class="panel panel-{escape(_panel_tone(pod_c_summary['tone']))}">
@@ -2923,6 +3487,443 @@ def trades_html(
     )
 
 
+def hip4_outcome_html(
+    supervisor: TridentSupervisor,
+    metrics: MetricsRegistry,
+) -> str:
+    payload = _hip4_outcome_monitor_payload()
+    refreshed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    status_age = payload.get("status_age_seconds")
+    age_label = "-" if status_age is None else _format_duration_compact(float(status_age))
+    tone = "good" if payload.get("fresh") else "bad"
+    settled_position_count = int(payload.get("settled_position_count", 0) or 0)
+    fill_count = int(payload.get("fill_count", 0) or 0)
+    realized_pnl = payload.get("realized_pnl_usd")
+    latest_edge = payload.get("latest_net_edge")
+    best_edge = payload.get("best_net_edge")
+    latest_short_edge = payload.get("latest_short_net_edge")
+    best_short_edge = payload.get("best_short_net_edge")
+    capital = payload.get("capital", {})
+    if not isinstance(capital, dict):
+        capital = {}
+    directional_overlap = payload.get("directional_overlap", {})
+    if not isinstance(directional_overlap, dict):
+        directional_overlap = {}
+    blocked_underlyings = directional_overlap.get("blocked_underlyings", [])
+    if not isinstance(blocked_underlyings, list):
+        blocked_underlyings = []
+
+    def fmt_number(value: object, digits: int = 4, *, fallback: str = "-") -> str:
+        parsed = _float_or_none(value)
+        if parsed is None:
+            return fallback
+        return f"{parsed:.{digits}f}"
+
+    def render_stat_cards(cards: list[dict[str, str]]) -> str:
+        return "".join(
+            (
+                "<article class='metric-card'>"
+                f"<span>{escape(card['label'])}</span>"
+                f"<strong>{escape(card['value'])}</strong>"
+                f"<small>{escape(card['note'])}</small>"
+                "</article>"
+            )
+            for card in cards
+        )
+
+    def render_reference_rows() -> str:
+        rows = payload.get("reference_prices", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='5'>Aucune référence prix visible.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{fmt_number(row.get('price'), 6)}</td>"
+                f"<td>{escape(str(row.get('source_count', 0)))}</td>"
+                f"<td>{escape(str(row.get('rejected_count', 0)))}</td>"
+                f"<td>{fmt_number(row.get('max_deviation_bps'), 2)}</td>"
+                "</tr>"
+            )
+            for row in rows
+            if isinstance(row, dict)
+        )
+
+    def render_opportunity_rows() -> str:
+        rows = payload.get("opportunities", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='10'>Aucune opportunité loggée.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('edge_type', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{fmt_number(row.get('net_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('gross_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('confidence'), 4)}</td>"
+                f"<td>{fmt_number(row.get('ref_price'), 6)}</td>"
+                f"<td>{fmt_number(row.get('yes_ask'), 6)}</td>"
+                f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                "</tr>"
+            )
+            for row in reversed(rows[-16:])
+            if isinstance(row, dict)
+        )
+
+    def render_settlement_rows() -> str:
+        rows = payload.get("settlements", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='8'>Aucun settlement paper visible.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('market_id', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{escape(str(row.get('result', '-')))}</td>"
+                f"<td>{fmt_number(row.get('payout_usdc'), 2)}</td>"
+                f"<td>{fmt_number(row.get('pnl_usdc'), 2)}</td>"
+                f"<td>{escape(str(row.get('notes', '-')))}</td>"
+                "</tr>"
+            )
+            for row in reversed(rows[-12:])
+            if isinstance(row, dict)
+        )
+
+    def render_short_expiry_rows() -> str:
+        rows = payload.get("short_expiry_features", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='12'>Aucun snapshot short-expiry loggé.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('period', '-')))}</td>"
+                f"<td>{fmt_number(row.get('seconds_left'), 0)}</td>"
+                f"<td>{fmt_number(row.get('distance_bps'), 2)}</td>"
+                f"<td>{fmt_number(row.get('momentum_bps_60s'), 2)}</td>"
+                f"<td>{fmt_number(row.get('book_probability_yes'), 4)}</td>"
+                f"<td>{fmt_number(row.get('short_probability_yes'), 4)}</td>"
+                f"<td>{escape(str(row.get('best_side', '-')))}</td>"
+                f"<td>{fmt_number(row.get('best_net_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('confidence'), 4)}</td>"
+                f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                "</tr>"
+            )
+            for row in reversed(rows[-16:])
+            if isinstance(row, dict)
+        )
+
+    def render_replay_rows() -> str:
+        rows = payload.get("replay", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='8'>Replay vide pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('date', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('edge_type', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{escape(str(row.get('opportunity_count', 0)))}</td>"
+                f"<td>{fmt_number(row.get('avg_net_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('max_net_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('avg_confidence'), 4)}</td>"
+                "</tr>"
+            )
+            for row in rows
+            if isinstance(row, dict)
+        )
+
+    def render_edge_decay_rows() -> str:
+        rows = payload.get("edge_decay", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='8'>Aucune dérive d'edge visible.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('edge_type', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{fmt_number(row.get('first_net_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('current_net_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('delta_net_edge'), 6)}</td>"
+                f"<td>{escape(str(row.get('elapsed_seconds', '-')))}</td>"
+                "</tr>"
+            )
+            for row in reversed(rows[-12:])
+            if isinstance(row, dict)
+        )
+
+    def render_latency_rows() -> str:
+        rows = payload.get("latency", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='7'>Aucune latence loggée.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                f"<td>{escape(str(row.get('loop_count', '-')))}</td>"
+                f"<td>{fmt_number(row.get('total_ms'), 1)}</td>"
+                f"<td>{fmt_number(row.get('reference_prices_ms'), 1)}</td>"
+                f"<td>{fmt_number(row.get('books_ms'), 1)}</td>"
+                f"<td>{fmt_number(row.get('opportunities'), 0)}</td>"
+                f"<td>{escape(str(row.get('error', '')))}</td>"
+                "</tr>"
+            )
+            for row in reversed(rows[-8:])
+            if isinstance(row, dict)
+        )
+
+    cards = render_stat_cards(
+        [
+            {
+                "label": "Runtime",
+                "value": str(payload.get("process_state", "-")),
+                "note": f"âge status {age_label}",
+            },
+            {
+                "label": "Mode",
+                "value": str(payload.get("mode", "observer")),
+                "note": "ordre désactivé",
+            },
+            {
+                "label": "Markets",
+                "value": f"{payload.get('markets_supported', 0)}/{payload.get('markets_seen', 0)}",
+                "note": "supportés / vus",
+            },
+            {
+                "label": "Realized PnL",
+                "value": f"{fmt_number(realized_pnl, 2)} USD",
+                "note": f"{settled_position_count} settlement(s) paper",
+            },
+            {
+                "label": "Fills",
+                "value": str(fill_count),
+                "note": "fills paper cumulés",
+            },
+            {
+                "label": "Loop edge",
+                "value": fmt_number(latest_edge, 4),
+                "note": "dernier net edge loggé",
+            },
+            {
+                "label": "Best short",
+                "value": fmt_number(best_short_edge, 4),
+                "note": f"latest {fmt_number(latest_short_edge, 4)}",
+            },
+            {
+                "label": "Best edge",
+                "value": fmt_number(best_edge, 4),
+                "note": "meilleur net edge récent",
+            },
+            {
+                "label": "Loop signals",
+                "value": str(payload.get("opportunities_this_loop", 0)),
+                "note": "opportunités sur la dernière boucle",
+            },
+            {
+                "label": "Budget",
+                "value": f"{fmt_number(capital.get('remaining_budget_usdc'), 2)} USD",
+                "note": f"sur {fmt_number(capital.get('budget_usdc'), 2)} USD",
+            },
+            {
+                "label": "Testnet USDC",
+                "value": f"{fmt_number(capital.get('testnet_available_usdc'), 2)} USD",
+                "note": str(capital.get("reason", "capital")),
+            },
+            {
+                "label": "Overlap",
+                "value": str(len(blocked_underlyings)),
+                "note": ", ".join(str(item) for item in blocked_underlyings[:4]) or "aucun blocage Pod A",
+            },
+        ]
+    )
+
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="10">
+  <title>TRIDENT HIP-4 Outcome</title>
+  <style>
+    :root {{
+      --bg: #f6f3ee;
+      --panel: #fffdf9;
+      --text: #1f2a33;
+      --muted: #66727c;
+      --line: #d8ccbb;
+      --accent: #145b57;
+      --accent-soft: #d8eeeb;
+      --good: #176b3a;
+      --bad: #a12d2f;
+      --warn: #9a6700;
+      --shadow: 0 18px 40px rgba(31, 42, 51, 0.08);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--text);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #fbf7ef 0%, var(--bg) 100%);
+    }}
+    main {{ max-width: 1380px; margin: 0 auto; padding: 28px 18px 48px; }}
+    h1, h2, h3 {{ margin: 0; }}
+    p {{ margin: 0; color: var(--muted); }}
+    a {{ color: var(--accent); font-weight: 700; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .hero, .panel, .metric-card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+    }}
+    .hero {{ padding: 22px; display: grid; gap: 12px; }}
+    .hero h1 {{
+      font-family: "Fraunces", "Iowan Old Style", Georgia, serif;
+      font-size: clamp(2rem, 4vw, 3.1rem);
+      line-height: 1.05;
+    }}
+    .chip-row, .hero-links {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
+    .chip {{
+      display: inline-flex;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 0.9rem;
+    }}
+    .badge-good {{ background: #ddf5e5; color: var(--good); }}
+    .badge-bad {{ background: #ffe1e1; color: var(--bad); }}
+    .badge {{
+      display: inline-flex;
+      padding: 7px 12px;
+      border-radius: 999px;
+      font-weight: 800;
+    }}
+    .grid {{ display: grid; gap: 16px; margin-top: 18px; }}
+    .metric-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }}
+    .metric-card {{ padding: 16px; display: grid; gap: 6px; }}
+    .metric-card span, .metric-card small {{ color: var(--muted); }}
+    .metric-card strong {{ font-size: 1.55rem; }}
+    .panel {{ padding: 18px; display: grid; gap: 14px; }}
+    .panel-header {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; flex-wrap: wrap; }}
+    .table-wrap {{ overflow-x: auto; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 0.92rem; }}
+    th, td {{ padding: 10px 9px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }}
+    th {{ color: var(--muted); font-size: 0.78rem; text-transform: uppercase; }}
+    td:last-child {{ white-space: normal; min-width: 220px; }}
+    .two-col {{ display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr); gap: 16px; }}
+    @media (max-width: 980px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
+  </style>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div class="chip-row">
+        <span class="chip">Version {escape(VERSION)}</span>
+        <span class="chip">Profile {escape(str(supervisor.profile))}</span>
+        <span class="chip">Mode {escape(str(supervisor.mode))}</span>
+        <span class="chip">Auto-refresh 10s</span>
+        <span class="badge badge-{tone}">{'fresh' if payload.get('fresh') else 'stale'}</span>
+      </div>
+      <h1>HIP-4 Outcome Experimental</h1>
+      <p>Pod expérimental isolé en observer/dry-run pour suivre les marchés outcome testnet et voir si un edge exploitable se dessine.</p>
+      <div class="hero-links">
+        <span>Last updated: {escape(refreshed_at)}</span>
+        <a href="/dashboard">/dashboard</a>
+        <a href="/trades">/trades</a>
+        <a href="/api/hip4-outcome">/api/hip4-outcome</a>
+      </div>
+    </header>
+
+    <div class="grid">
+      <section class="metric-grid">{cards}</section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>Settlements paper</h2><p>PnL réalisé estimé à l'expiration des marchés outcome paper.</p></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Ts</th><th>Underlying</th><th>Market</th><th>Side</th><th>Result</th><th>Payout</th><th>PnL</th><th>Notes</th></tr></thead>
+            <tbody>{render_settlement_rows()}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>Short-expiry</h2><p>Snapshots du modèle court terme YES/NO.</p></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Ts</th><th>Underlying</th><th>Period</th><th>T-exp s</th><th>Dist bps</th><th>Mom 60s</th><th>Book pY</th><th>Short pY</th><th>Best side</th><th>Net</th><th>Conf</th><th>Reason</th></tr></thead>
+            <tbody>{render_short_expiry_rows()}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="two-col">
+        <div class="panel">
+          <div class="panel-header"><h2>Opportunités récentes</h2><p>{escape(str(payload.get('logs_dir')))}</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Ts</th><th>Underlying</th><th>Edge</th><th>Side</th><th>Net</th><th>Gross</th><th>Conf</th><th>Ref</th><th>Yes ask</th><th>Reason</th></tr></thead>
+              <tbody>{render_opportunity_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>Sources prix</h2><p>Références utilisées par la dernière boucle.</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Underlying</th><th>Price</th><th>Sources</th><th>Rejected</th><th>Max dev bps</th></tr></thead>
+              <tbody>{render_reference_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>Replay signal</h2><p>Agrégation des opportunités déjà collectées.</p></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Underlying</th><th>Edge</th><th>Side</th><th>Count</th><th>Avg net</th><th>Max net</th><th>Avg conf</th></tr></thead>
+            <tbody>{render_replay_rows()}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="two-col">
+        <div class="panel">
+          <div class="panel-header"><h2>Edge decay</h2><p>Dérive des signaux réobservés.</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Ts</th><th>Underlying</th><th>Edge</th><th>Side</th><th>First</th><th>Current</th><th>Delta</th><th>Elapsed s</th></tr></thead>
+              <tbody>{render_edge_decay_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>Latence</h2><p>Dernières boucles du collecteur.</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Ts</th><th>Loop</th><th>Total ms</th><th>Refs ms</th><th>Books ms</th><th>Opps</th><th>Error</th></tr></thead>
+              <tbody>{render_latency_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>"""
+
+
 def build_handler(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry,
@@ -2934,11 +3935,13 @@ def build_handler(
                 "/api/state": lambda: state_payload(supervisor, metrics),
                 "/api/metrics": lambda: metrics_payload(supervisor, metrics),
                 "/api/report": lambda: report_payload(supervisor, metrics),
+                "/api/hip4-outcome": lambda: hip4_outcome_payload(),
             }
             html_routes: dict[str, Callable[[], str]] = {
                 "/": lambda: dashboard_html(supervisor, metrics),
                 "/dashboard": lambda: dashboard_html(supervisor, metrics),
                 "/trades": lambda: trades_html(supervisor, metrics),
+                "/hip4-outcome": lambda: hip4_outcome_html(supervisor, metrics),
             }
             if self.path in html_routes:
                 self._send_html(HTTPStatus.OK, html_routes[self.path]())
@@ -3018,19 +4021,29 @@ def build_handler(
 
         def _send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
             body = json.dumps(payload).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._write_response(
+                status,
+                body,
+                content_type="application/json",
+            )
 
         def _send_html(self, status: HTTPStatus, payload: str) -> None:
             body = payload.encode("utf-8")
+            self._write_response(
+                status,
+                body,
+                content_type="text/html; charset=utf-8",
+            )
+
+        def _write_response(self, status: HTTPStatus, body: bytes, *, content_type: str) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
     return TridentHandler
 

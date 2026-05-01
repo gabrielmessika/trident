@@ -4,7 +4,10 @@ from pathlib import Path
 
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
 from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
-from app.reporting.multi_pod import _is_supervisor_fallback_runtime
+from app.reporting.multi_pod import (
+    _is_supervisor_fallback_runtime,
+    is_hip4_pod_b_replacement_runtime,
+)
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName
 
@@ -34,18 +37,29 @@ class MetricsRegistry:
             runtime_status_is_fresh(pod_b_status)
             and not _is_supervisor_fallback_runtime(pod_b_status)
         )
+        pod_b_replacement_enabled = (
+            is_hip4_pod_b_replacement_runtime(pod_b_status)
+            and runtime_status_is_fresh(pod_b_status)
+        )
         healthy_pod_count = 0
+        seen_health_pods: set[str] = set()
         for health in pod_health:
+            seen_health_pods.add(health.pod.value)
             if health.pod.value == "pod_a" and supervisor.pods[health.pod].enabled:
                 healthy_pod_count += 1 if runtime_pod_a_healthy else 0
                 continue
-            if health.pod.value == "pod_b" and supervisor.pods[health.pod].enabled:
+            if health.pod.value == "pod_b" and (
+                supervisor.pods[health.pod].enabled or pod_b_replacement_enabled
+            ):
                 healthy_pod_count += 1 if runtime_pod_b_healthy else 0
                 continue
             if health.pod.value == "pod_c" and supervisor.pods[health.pod].enabled:
                 healthy_pod_count += 1 if runtime_pod_c_healthy else 0
                 continue
             healthy_pod_count += 1 if health.healthy else 0
+
+        if pod_b_replacement_enabled and "pod_b" not in seen_health_pods:
+            healthy_pod_count += 1 if runtime_pod_b_healthy else 0
 
         pod_a_report = pod_a_runtime.get("report", {}) if isinstance(pod_a_runtime, dict) else {}
         pod_b_report = pod_b_status.get("report", {}) if isinstance(pod_b_status, dict) else {}
@@ -69,7 +83,10 @@ class MetricsRegistry:
                     if isinstance(runtime_pods.get("pod_b", {}), dict)
                     else {}
                 )
-        pod_b_owned_symbols = pod_b_runtime_pod.get("owned_symbols")
+        if pod_b_replacement_enabled:
+            pod_b_owned_symbols = _hip4_managed_symbols(pod_b_status)
+        else:
+            pod_b_owned_symbols = pod_b_runtime_pod.get("owned_symbols")
         if not isinstance(pod_b_owned_symbols, list):
             pod_b_owned_symbols = pod_b_status.get("managed_symbols")
         if not isinstance(pod_b_owned_symbols, list):
@@ -81,7 +98,12 @@ class MetricsRegistry:
             pod_b_open_positions = []
         self._metrics = {
             "trident_bootstrap_ready": 1,
-            "enabled_pod_count": len(supervisor.state.enabled_pods),
+            "enabled_pod_count": len(supervisor.state.enabled_pods)
+            + (
+                1
+                if pod_b_replacement_enabled and PodName.POD_B not in supervisor.state.enabled_pods
+                else 0
+            ),
             "healthy_pod_count": healthy_pod_count,
             "ownership_conflict_count": len(supervisor.state.ownership_conflicts),
             "owned_symbol_count": sum(1 for item in symbol_ownership if item.owner is not None),
@@ -101,7 +123,9 @@ class MetricsRegistry:
             ),
             "pod_b_total_open_order_count": int(pod_b_status.get("total_open_order_count", 0)),
             "pod_b_total_fill_count": int(
-                pod_b_report.get("closed_trade_count", pod_b_status.get("total_fill_count", 0))
+                pod_b_status.get("total_fill_count", pod_b_report.get("closed_trade_count", 0))
+                if is_hip4_pod_b_replacement_runtime(pod_b_status)
+                else pod_b_report.get("closed_trade_count", pod_b_status.get("total_fill_count", 0))
             ),
             "pod_b_realized_pnl_usd": float(
                 pod_b_report.get("realized_pnl_usd", pod_b_status.get("realized_pnl_usd", 0.0))
@@ -127,3 +151,19 @@ class MetricsRegistry:
         if runtime_status_is_fresh(payload):
             return payload
         return supervisor.state.pod_b_status
+
+
+def _hip4_managed_symbols(payload: dict[str, object]) -> list[str]:
+    symbols = payload.get("managed_symbols")
+    if isinstance(symbols, list) and symbols:
+        return [str(symbol) for symbol in symbols]
+
+    positions = payload.get("open_positions", [])
+    if not isinstance(positions, list):
+        return []
+    underlyings = {
+        str(position.get("underlying"))
+        for position in positions
+        if isinstance(position, dict) and position.get("underlying")
+    }
+    return sorted(underlyings)

@@ -133,7 +133,7 @@ copy_if_exists() {
 
 capture_local_review_inputs() {
     local base="$1"
-    local latest_health latest_state latest_metrics latest_report
+    local latest_health latest_state latest_metrics latest_report latest_hip4
     local api_dir="${base}/api"
     local snapshot_dir="${base}/live_snapshots"
     local log_dir="${base}/logs"
@@ -144,11 +144,13 @@ capture_local_review_inputs() {
     latest_state="$(latest_local_file "${api_dir}/state-*.json")"
     latest_metrics="$(latest_local_file "${api_dir}/metrics-*.json")"
     latest_report="$(latest_local_file "${api_dir}/report-*.json")"
+    latest_hip4="$(latest_local_file "${api_dir}/hip4-outcome-*.json")"
 
     copy_if_exists "${latest_health}" "${RAW_DIR}/health.json" || : > "${RAW_DIR}/health.json"
     copy_if_exists "${latest_state}" "${RAW_DIR}/state.json" || : > "${RAW_DIR}/state.json"
     copy_if_exists "${latest_metrics}" "${RAW_DIR}/metrics.json" || : > "${RAW_DIR}/metrics.json"
     copy_if_exists "${latest_report}" "${RAW_DIR}/report.json" || : > "${RAW_DIR}/report.json"
+    copy_if_exists "${latest_hip4}" "${RAW_DIR}/hip4_outcome.json" || : > "${RAW_DIR}/hip4_outcome.json"
 
     python3 - "${snapshot_dir}" "${RAW_DIR}/snapshot_files.txt" <<'PY'
 from pathlib import Path
@@ -186,6 +188,32 @@ for name in targets:
 outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 PY
 
+    python3 - "${log_dir}" "${RAW_DIR}/hip4_files.txt" <<'PY'
+from pathlib import Path
+import sys
+
+log_dir = Path(sys.argv[1]) / "hip4_outcome_paper"
+outfile = Path(sys.argv[2])
+targets = [
+    "decisions.jsonl",
+    "opportunities.csv",
+    "short_expiry_features.csv",
+    "edge_decay.csv",
+    "latency_stats.csv",
+    "daily_summary.csv",
+    "settlements.csv",
+    "trades.csv",
+]
+lines = []
+for name in targets:
+    path = log_dir / name
+    if not path.exists():
+        continue
+    line_count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
+    lines.append(f"logs/hip4_outcome_paper/{name}|{line_count}|{int(path.stat().st_mtime)}")
+outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+PY
+
     if [ -f "${runtime_dir}/pod_b_live_status.json" ]; then
         printf 'present\n' > "${RAW_DIR}/pod_b_runtime_present.txt"
     else
@@ -194,7 +222,9 @@ PY
 
     copy_if_exists "${docker_dir}/trident-api.log" "${RAW_DIR}/api_log_tail.txt" || : > "${RAW_DIR}/api_log_tail.txt"
     copy_if_exists "${docker_dir}/pod-a-live.log" "${RAW_DIR}/pod_a_log_tail.txt" || : > "${RAW_DIR}/pod_a_log_tail.txt"
-    copy_if_exists "${docker_dir}/pod-b-live.log" "${RAW_DIR}/pod_b_log_tail.txt" || : > "${RAW_DIR}/pod_b_log_tail.txt"
+    copy_if_exists "${docker_dir}/hip4-outcome-dry-run.log" "${RAW_DIR}/pod_b_log_tail.txt" \
+        || copy_if_exists "${docker_dir}/pod-b-live.log" "${RAW_DIR}/pod_b_log_tail.txt" \
+        || : > "${RAW_DIR}/pod_b_log_tail.txt"
     copy_if_exists "${docker_dir}/pod-c-live.log" "${RAW_DIR}/pod_c_log_tail.txt" || : > "${RAW_DIR}/pod_c_log_tail.txt"
     copy_if_exists "${docker_dir}/funding-collector.log" "${RAW_DIR}/funding_collector_log_tail.txt" || : > "${RAW_DIR}/funding_collector_log_tail.txt"
     copy_if_exists "${docker_dir}/tradfi-funding-collector.log" "${RAW_DIR}/tradfi_funding_collector_log_tail.txt" || : > "${RAW_DIR}/tradfi_funding_collector_log_tail.txt"
@@ -236,7 +266,7 @@ if effective_process_state("pod_a", "pod_a_live_status.json") == "running":
     lines.append("trident-pod-a-live\tUp (derived from local runtime status)")
 
 if effective_process_state("pod_b", "pod_b_live_status.json") == "running":
-    lines.append("trident-pod-b-live\tUp (derived from local runtime status)")
+    lines.append("trident-hip4-outcome-dry-run\tUp (derived from local runtime status)")
 
 if effective_process_state("pod_c", "pod_c_live_status.json") == "running":
     lines.append("trident-pod-c-live\tUp (derived from local runtime status)")
@@ -284,12 +314,14 @@ else
     capture_remote "state.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state"
     capture_remote "metrics.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/metrics"
     capture_remote "report.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/report"
+    capture_remote "hip4_outcome.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome"
     capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && find data/live_snapshots -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
     capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
+    capture_remote "hip4_files.txt" "cd '${REMOTE_DIR}' && for f in logs/hip4_outcome_paper/decisions.jsonl logs/hip4_outcome_paper/opportunities.csv logs/hip4_outcome_paper/short_expiry_features.csv logs/hip4_outcome_paper/edge_decay.csv logs/hip4_outcome_paper/latency_stats.csv logs/hip4_outcome_paper/daily_summary.csv logs/hip4_outcome_paper/settlements.csv logs/hip4_outcome_paper/trades.csv; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
     capture_remote "pod_b_runtime_present.txt" "cd '${REMOTE_DIR}' && if [ -f logs/pod_b_live_status.json ]; then echo present; else echo missing; fi"
     capture_remote "api_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} trident-api 2>&1"
     capture_remote "pod_a_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-a-live 2>&1"
-    capture_remote "pod_b_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-b-live 2>&1"
+    capture_remote "pod_b_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} hip4-outcome-dry-run 2>&1 || docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-b-live 2>&1"
     capture_remote "pod_c_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-c-live 2>&1"
     capture_remote "funding_collector_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} funding-collector 2>&1"
     capture_remote "tradfi_funding_collector_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} tradfi-funding-collector 2>&1"
@@ -517,9 +549,11 @@ docker_ps = parse_docker_ps(read_text("docker_ps.txt"))
 state = load_json("state.json") or {}
 metrics = load_json("metrics.json") or {}
 report = load_json("report.json") or {}
+hip4_outcome = load_json("hip4_outcome.json") or {}
 health = load_json("health.json") or {}
 latest_snapshot = latest_snapshot_info(read_text("snapshot_files.txt"))
 journal_files = parse_journal_files(read_text("journal_files.txt"))
+hip4_files = parse_journal_files(read_text("hip4_files.txt"))
 pod_b_runtime_present = read_text("pod_b_runtime_present.txt").strip() == "present"
 
 api_log_patterns = count_log_patterns(read_text("api_log_tail.txt"))
@@ -533,6 +567,10 @@ tradfi_funding_collector_log_patterns = count_log_patterns(
 
 ownership_conflicts = int(metrics.get("ownership_conflict_count", 0) or 0)
 pod_b_status = state.get("pod_b_status", {}) if isinstance(state.get("pod_b_status", {}), dict) else {}
+pod_b_is_hip4 = (
+    isinstance(pod_b_status, dict)
+    and str(pod_b_status.get("pod_kind", "")).strip().lower() == "hip4_outcome_edge_pod"
+)
 pod_a_report = pod_report(report, "pod_a") or {}
 pod_b_report = pod_report(report, "pod_b") or {}
 pod_c_report = pod_report(report, "pod_c") or {}
@@ -815,8 +853,12 @@ pod_b_checks: list[str] = []
 pod_b_failures: list[str] = []
 pod_b_warnings: list[str] = []
 
-if container_is_running("trident-pod-b-live"):
+if container_is_running("trident-hip4-outcome-dry-run") or container_is_running("trident-pod-b-live"):
     pod_b_checks.append("Pod B tourne")
+    if container_is_running("trident-hip4-outcome-dry-run"):
+        pod_b_checks.append("Container HIP-4 Outcome actif pour Pod B")
+    if container_is_running("trident-pod-b-live"):
+        pod_b_failures.append("Ancien container trident-pod-b-live encore actif")
     if bool(pod_b_report.get("healthy", False)):
         pod_b_checks.append("Supervisor considere Pod B healthy")
     else:
@@ -833,6 +875,56 @@ if container_is_running("trident-pod-b-live"):
         pod_b_checks.append("Pas de conflit d'ownership")
     else:
         pod_b_failures.append(f"Conflits d'ownership detectes: {ownership_conflicts}")
+
+    if pod_b_is_hip4:
+        pod_b_checks.append("Alias runtime Pod B pointe sur HIP-4 Outcome")
+    else:
+        pod_b_failures.append("Alias runtime Pod B ne pointe pas sur HIP-4 Outcome")
+
+    if hip4_outcome:
+        if bool(hip4_outcome.get("fresh")):
+            pod_b_checks.append("Payload /api/hip4-outcome frais")
+        else:
+            pod_b_failures.append("Payload /api/hip4-outcome absent ou stale")
+        if str(hip4_outcome.get("process_state", "")) == "running":
+            pod_b_checks.append("HIP-4 process_state=running")
+        else:
+            pod_b_failures.append(
+                f"HIP-4 process_state inattendu: {hip4_outcome.get('process_state')}"
+            )
+        markets_seen = as_int(hip4_outcome.get("markets_seen"))
+        markets_supported = as_int(hip4_outcome.get("markets_supported"))
+        if markets_seen > 0 and markets_supported > 0:
+            pod_b_checks.append(
+                f"HIP-4 voit {markets_supported}/{markets_seen} marche(s) supporte(s)"
+            )
+        else:
+            pod_b_failures.append("HIP-4 ne voit pas de marche outcome exploitable")
+        capital = hip4_outcome.get("capital", {})
+        if isinstance(capital, dict):
+            pod_b_checks.append(
+                "Budget HIP-4: "
+                f"exposure={capital.get('open_exposure_usdc')} "
+                f"remaining={capital.get('remaining_budget_usdc')} "
+                f"budget={capital.get('budget_usdc')}"
+            )
+    else:
+        pod_b_failures.append("Snapshot /api/hip4-outcome absent")
+
+    for required_file in (
+        "logs/hip4_outcome_paper/decisions.jsonl",
+        "logs/hip4_outcome_paper/opportunities.csv",
+        "logs/hip4_outcome_paper/latency_stats.csv",
+    ):
+        file_info = hip4_files.get(required_file)
+        if file_info is None:
+            pod_b_failures.append(f"Artefact HIP-4 manquant: {required_file}")
+            continue
+        line_count = as_int(file_info.get("line_count"))
+        if line_count > 0:
+            pod_b_checks.append(f"Artefact HIP-4 present: {required_file} ({line_count} lignes)")
+        else:
+            pod_b_warnings.append(f"Artefact HIP-4 vide: {required_file}")
 
     if pod_b_log_patterns["traceback"] == 0:
         pod_b_checks.append("Pas de traceback recent dans les logs Pod B")
@@ -853,10 +945,11 @@ if container_is_running("trident-pod-b-live"):
     if not pod_b_failures:
         pod_b_prompt = write_prompt(
             "llm_prompt_etape_3_pod_a_plus_pod_b.md",
-            "Prompt LLM - Revue cohabitation Pod A + Pod B",
+            "Prompt LLM - Revue cohabitation Pod A + Pod B HIP-4",
             (
-                "Analyse la cohabitation dry-run Pod A + Pod B.\n\n"
-                "Objectif: verifier que la coexistence est propre et que Pod B ne montre pas un comportement de range aberrant.\n\n"
+                "Analyse la cohabitation dry-run Pod A + Pod B HIP-4 Outcome.\n\n"
+                "Objectif: verifier que la coexistence est propre, que le garde anti-overlap Pod A/HIP-4 fonctionne, "
+                "et que les opportunites outcome testnet montrent ou non un edge exploitable.\n\n"
                 f"Contexte resume:\n"
                 f"- ownership_conflict_count: {ownership_conflicts}\n"
                 f"- pod_b_process_state: {pod_b_report.get('process_state')}\n"
@@ -867,18 +960,22 @@ if container_is_running("trident-pod-b-live"):
                 f"- pod_b_total_unrealized_pnl_usd: {pod_b_report.get('total_unrealized_pnl_usd')}\n"
                 f"- pod_b_runtime_config_present: {pod_b_runtime_present}\n"
                 f"- pod_b_economics: {pod_b_economics}\n"
+                f"- hip4_outcome_summary: {hip4_outcome}\n"
+                f"- hip4_files: {hip4_files}\n"
                 f"- log patterns Pod B: {pod_b_log_patterns}\n\n"
                 "Artefacts a lire:\n"
                 f"- {raw_dir / 'state.json'}\n"
                 f"- {raw_dir / 'metrics.json'}\n"
                 f"- {raw_dir / 'report.json'}\n"
+                f"- {raw_dir / 'hip4_outcome.json'}\n"
+                f"- {raw_dir / 'hip4_files.txt'}\n"
                 f"- {raw_dir / 'pod_b_log_tail.txt'}\n"
                 f"- {raw_dir / 'journal_files.txt'}\n\n"
                 "Questions:\n"
-                "1. La cohabitation Pod A / Pod B parait-elle saine?\n"
-                "2. Y a-t-il des signes d'inventory runaway, de churn de fills, ou d'utilisation incoherente du capital?\n"
-                "3. Le PnL et les ordres ouverts de Pod B te paraissent-ils plausibles pour un dry-run encore court?\n"
-                "4. Verdict: go pour continuer Pod B, ou no-go avec raisons precises?\n"
+                "1. La cohabitation Pod A / Pod B HIP-4 parait-elle saine?\n"
+                "2. Les positions paper, edges, latences et fichiers d'opportunites HIP-4 sont-ils coherents?\n"
+                "3. Voit-on un edge outcome exploitable ou seulement du bruit/mauvais pricing apparent?\n"
+                "4. Verdict: go pour continuer Pod B HIP-4, ou no-go avec raisons precises?\n"
             ),
         )
 
@@ -894,7 +991,7 @@ if container_is_running("trident-pod-b-live"):
         append_stage(
             stage="etape_3_pod_a_plus_pod_b",
             status="WARN",
-            summary="Pod B reste globalement defendable, mais quelques signaux operationnels meritent surveillance.",
+            summary="Pod B HIP-4 reste globalement defendable, mais quelques signaux operationnels meritent surveillance.",
             deterministic=False,
             checks=pod_b_checks + pod_b_warnings,
             prompt_file=pod_b_prompt,
@@ -903,7 +1000,7 @@ if container_is_running("trident-pod-b-live"):
         append_stage(
             stage="etape_3_pod_a_plus_pod_b",
             status="PASS",
-            summary="Les checks mecaniques de cohabitation sont verts; une revue qualitative est recommandee.",
+            summary="Les checks mecaniques de cohabitation Pod A / Pod B HIP-4 sont verts; une revue qualitative est recommandee.",
             deterministic=False,
             checks=pod_b_checks,
             prompt_file=pod_b_prompt,
@@ -914,7 +1011,7 @@ else:
         status="SKIPPED",
         summary="Pod B n'est pas lance; cette etape n'est pas encore evaluable.",
         deterministic=True,
-        checks=["Container pod-b-live absent ou arrete"],
+        checks=["Container hip4-outcome-dry-run absent ou arrete"],
     )
 
 
@@ -1050,6 +1147,25 @@ fresh_active_pods = 0
 stale_active_pods = 0
 for label, payload, day_metrics in freshness_specs:
     if not latest_business_date:
+        continue
+    if label == "Pod B" and pod_b_is_hip4:
+        open_positions = as_int(hip4_outcome.get("open_positions"))
+        opportunities = as_int(hip4_outcome.get("opportunities_this_loop"))
+        decisions = as_int(
+            hip4_files.get("logs/hip4_outcome_paper/decisions.jsonl", {}).get("line_count")
+        )
+        best_edge = as_float(hip4_outcome.get("best_net_edge"))
+        if bool(hip4_outcome.get("fresh")) and (open_positions > 0 or opportunities > 0 or decisions > 1):
+            fresh_active_pods += 1
+            strategic_checks.append(
+                "Pod B HIP-4 actif "
+                f"(positions={open_positions}, opps_loop={opportunities}, decisions={decisions}, best_edge={best_edge:.4f})"
+            )
+        else:
+            stale_active_pods += 1
+            strategic_warnings.append(
+                "Pod B HIP-4 est actif comme pod, mais ne montre pas encore d'activite outcome exploitable"
+            )
         continue
     target_usd = as_float(payload.get("target_usd"))
     if target_usd <= 0.0:

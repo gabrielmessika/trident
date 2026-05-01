@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--fresh-start]
+Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--fresh-start]
 
 Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
@@ -26,19 +26,20 @@ Déploie TRIDENT sur le serveur :
 Par défaut :
 - host SSH : trident-hetzner
 - mode : dry-run
-- démarrage avec `--start` : API + Pod A + Pod B + Pod C + funding
-- `--without-pod-b` retire Pod B
+- démarrage avec `--start` : API + Pod A + Pod B HIP-4 + Pod C + funding en dry-run
+- `--without-pod-b` retire le Pod B HIP-4
 - `--without-pod-c` retire Pod C
 - `--without-funding` retire le collecteur funding/OI global
+- `--without-hip4-outcome` est conservé comme alias de `--without-pod-b`
 
 Sécurité live :
-- `--mode live` lance Pod A + Pod C par défaut et refuse Pod B.
+- `--mode live` lance Pod A + Pod C par défaut et refuse Pod B HIP-4.
 - pour démarrer en live, utilisez aussi `--without-pod-b`;
   le serveur lance un preflight par pod: credentials + reconciliation + orderUpdates.
 - pour un live Pod A seul, ajoutez aussi `--without-pod-c`.
 
 Compatibilité :
-- `--with-pod-b`, `--with-pod-c`, `--with-funding` restent acceptés mais sont désormais redondants
+- `--with-pod-b`, `--with-pod-c`, `--with-funding`, `--with-hip4-outcome` restent acceptés mais sont désormais redondants
 EOF
 }
 
@@ -53,12 +54,13 @@ CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
 ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
+ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
 FRESH_START=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 selected_pods_label() {
     local pods=("API" "Pod A")
-    [ -n "$ENABLE_POD_B" ] && pods+=("Pod B")
+    [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && pods+=("Pod B HIP-4")
     [ -n "$ENABLE_POD_C" ] && pods+=("Pod C" "Tradfi Funding Collector")
     [ -n "$ENABLE_FUNDING" ] && pods+=("Funding Collector")
     local joined=""
@@ -83,6 +85,7 @@ selected_server_flags() {
     [ -z "$ENABLE_POD_B" ] && flags="${flags} --without-pod-b"
     [ -z "$ENABLE_POD_C" ] && flags="${flags} --without-pod-c"
     [ -z "$ENABLE_FUNDING" ] && flags="${flags} --without-funding"
+    [ -z "$ENABLE_HIP4_OUTCOME" ] && [ "$MODE" != "live" ] && flags="${flags} --without-hip4-outcome"
     [ -n "$FRESH_START" ] && flags="${flags} --fresh-start"
     printf '%s' "$flags"
 }
@@ -125,8 +128,14 @@ while [ $# -gt 0 ]; do
             ENABLE_FUNDING="true"
             shift
             ;;
+        --with-hip4-outcome)
+            ENABLE_HIP4_OUTCOME="true"
+            ENABLE_POD_B="true"
+            shift
+            ;;
         --without-pod-b)
             ENABLE_POD_B=""
+            ENABLE_HIP4_OUTCOME=""
             shift
             ;;
         --without-pod-c)
@@ -135,6 +144,11 @@ while [ $# -gt 0 ]; do
             ;;
         --without-funding)
             ENABLE_FUNDING=""
+            shift
+            ;;
+        --without-hip4-outcome)
+            ENABLE_HIP4_OUTCOME=""
+            ENABLE_POD_B=""
             shift
             ;;
         --fresh-start)
@@ -161,6 +175,10 @@ case "$MODE" in
         exit 1
         ;;
 esac
+
+if [ "$MODE" = "live" ]; then
+    ENABLE_HIP4_OUTCOME=""
+fi
 
 if [ ! -f "$IDENTITY_FILE" ]; then
     error "Clé SSH introuvable: $IDENTITY_FILE"
@@ -227,7 +245,7 @@ deploy_code() {
 build_remote() {
     info "Build Docker sur le serveur..."
     local profile_args=""
-    [ -n "$ENABLE_POD_B" ] && profile_args="${profile_args} --profile pod_b"
+    [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && profile_args="${profile_args} --profile pod_b"
     [ -n "$ENABLE_POD_C" ] && profile_args="${profile_args} --profile pod_c"
     [ -n "$ENABLE_FUNDING" ] && profile_args="${profile_args} --profile funding"
     ssh_remote "cd ${DEPLOY_DIR} && docker compose -f docker-compose.trident.yml${profile_args} build"

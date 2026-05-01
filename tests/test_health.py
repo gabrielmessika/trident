@@ -8,6 +8,8 @@ from app.observability.api import (
     _humanize_setup_reason,
     dashboard_html,
     health_payload,
+    hip4_outcome_html,
+    hip4_outcome_payload,
     metrics_payload,
     report_payload,
     state_payload,
@@ -273,6 +275,58 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["pod_b_total_position_count"], 1)
         self.assertEqual(payload["pod_b_total_fill_count"], 14)
         self.assertEqual(payload["pod_b_realized_pnl_usd"], 12.12)
+
+    def test_metrics_payload_counts_hip4_replacement_as_pod_b(self) -> None:
+        pod_a_runtime = {
+            "pod": "pod_a",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "process_state": "running",
+            "report": {},
+        }
+        pod_b_runtime = {
+            "pod": "pod_b",
+            "pod_kind": "hip4_outcome_edge_pod",
+            "strategy": "HIP4OutcomeEdgePod",
+            "updated_at": "2999-01-01T00:00:01Z",
+            "process_state": "running",
+            "managed_symbols": ["BTC", "HYPE"],
+            "open_positions": [
+                {"underlying": "BTC", "cost_usdc": 4.75},
+                {"underlying": "HYPE", "cost_usdc": 4.8},
+            ],
+            "total_fill_count": 2,
+            "total_position_count": 2,
+            "report": {},
+        }
+        pod_c_runtime = {
+            "pod": "pod_c",
+            "updated_at": "2999-01-01T00:00:02Z",
+            "process_state": "running",
+            "report": {},
+        }
+
+        def _metrics_runtime_loader(path):
+            path_str = str(path)
+            if "pod_a_live_status.json" in path_str:
+                return pod_a_runtime
+            if "pod_b_live_status.json" in path_str:
+                return pod_b_runtime
+            if "pod_c_live_status.json" in path_str:
+                return pod_c_runtime
+            return None
+
+        with patch(
+            "app.observability.metrics.load_runtime_status",
+            side_effect=_metrics_runtime_loader,
+        ):
+            payload = metrics_payload(self.supervisor, self.metrics)
+
+        self.assertEqual(payload["enabled_pod_count"], 3)
+        self.assertEqual(payload["healthy_pod_count"], 3)
+        self.assertEqual(payload["pod_b_process_running"], 1)
+        self.assertEqual(payload["pod_b_managed_symbol_count"], 2)
+        self.assertEqual(payload["pod_b_total_position_count"], 2)
+        self.assertEqual(payload["pod_b_total_fill_count"], 2)
 
     def test_state_payload_sanitizes_nested_pod_b_supervisor(self) -> None:
         pod_b_runtime = {
@@ -561,7 +615,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("TRIDENT Control Center", html)
         self.assertIn(">Status</button>", html)
         self.assertIn(">Pod A</button>", html)
-        self.assertIn(">Pod B</button>", html)
+        self.assertIn(">Pod B HIP-4</button>", html)
         self.assertIn(">Pod C</button>", html)
         self.assertIn(">Activity</button>", html)
         self.assertIn(">System</button>", html)
@@ -603,8 +657,27 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("Last updated:", html)
         self.assertIn("/api/state", html)
         self.assertIn("/api/report", html)
+        self.assertIn("/hip4-outcome", html)
         self.assertIn("/trades", html)
         self.assertIn('data-tab-panel="status"', html)
+        self.assertIn('data-tab-panel="pod_b"', html)
+        self.assertIn("Pod B HIP-4 Outcome", html)
+        self.assertIn("Positions HIP-4 ouvertes", html)
+        self.assertNotIn("pod breakout directionnel", html)
+
+    def test_hip4_outcome_page_and_payload_are_renderable(self) -> None:
+        payload = hip4_outcome_payload()
+        self.assertEqual(payload["pod"], "hip4_outcome_edge_pod")
+        self.assertIn("opportunities", payload)
+        self.assertIn("settlements", payload)
+        self.assertIn("realized_pnl_usd", payload)
+
+        html = hip4_outcome_html(self.supervisor, self.metrics)
+        self.assertIn("HIP-4 Outcome Experimental", html)
+        self.assertIn("/api/hip4-outcome", html)
+        self.assertIn("Opportunités récentes", html)
+        self.assertIn("Realized PnL", html)
+        self.assertIn("Settlements paper", html)
 
     def test_trades_html_contains_trade_sections(self) -> None:
         html = trades_html(self.supervisor, self.metrics)

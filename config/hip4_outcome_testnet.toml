@@ -1,0 +1,112 @@
+[hyperliquid]
+info_url = "https://api.hyperliquid-testnet.xyz/info"
+ws_url = "wss://api.hyperliquid-testnet.xyz/ws"
+
+[hip4_outcome]
+mode = "paper" # observer | paper | testnet
+allow_testnet_orders = false
+require_testnet_url = true
+
+logs_dir = "./logs/hip4_outcome_paper"
+state_path = "./runtime/hip4_outcome_paper_state.json"
+status_path = "./logs/hip4_outcome_status.json"
+write_pod_b_alias_status = true
+pod_b_alias_status_path = "./logs/pod_b_live_status.json"
+block_directional_overlap = true
+directional_overlap_status_paths = ["./logs/pod_a_live_status.json"]
+rate_limit_state_path = "./runtime/hip4_outcome_rate_limits.json"
+
+loop_interval_seconds = 4
+request_timeout_seconds = 10
+info_requests_per_minute = 240
+
+# Empty list = accept every priceBinary outcome returned by testnet outcomeMeta.
+include_underlyings = []
+# In testnet, stay settlement-aligned. External venues can diverge from testnet mids.
+reference_price_sources = ["hyperliquid"]
+max_source_deviation_bps = 50
+min_reference_sources = 1
+external_price_timeout_seconds = 5
+external_price_user_agent = "trident-hip4-outcome/0.1"
+max_markets_per_loop = 6
+max_opportunities_per_loop = 2
+min_time_to_expiry_seconds = 20
+max_time_to_expiry_minutes = 1440
+
+enable_late_expiry = true
+enable_parity = true
+enable_model = true
+enable_short_expiry = true
+late_expiry_window_minutes = 20
+strike_buffer_bps = 8
+max_late_yes_price = 0.97
+max_late_no_price = 0.97
+
+short_expiry_window_minutes = 6
+short_expiry_periods = ["5m", "15m"]
+short_expiry_history_seconds = 900
+short_expiry_min_history_seconds = 45
+short_expiry_price_history_limit = 720
+short_expiry_momentum_windows_seconds = [30, 60, 180]
+short_expiry_primary_momentum_seconds = 60
+short_expiry_min_abs_momentum_bps = 1.0
+short_expiry_momentum_scale_bps = 12
+short_expiry_distance_scale_bps = 30
+short_expiry_distance_weight = 0.22
+short_expiry_momentum_weight = 0.22
+short_expiry_microstructure_weight = 0.16
+short_expiry_book_imbalance_weight = 0.08
+short_expiry_static_model_weight = 0.32
+short_expiry_min_confidence = 0.55
+short_expiry_max_yes_price = 0.92
+short_expiry_max_no_price = 0.92
+short_expiry_require_momentum_alignment = true
+
+estimated_fees = 0.002
+estimated_slippage = 0.005
+safety_margin = 0.01
+min_gross_edge = 0.025
+min_net_edge = 0.015
+
+default_annualized_vol = 0.85
+max_position_usdc = 5
+pod_b_budget_usdc = 25
+max_total_outcome_exposure_usdc = 25
+max_per_underlying_outcome_exposure_usdc = 10
+max_outcome_markets_open = 3
+
+min_yes_depth_usdc = 2
+min_no_depth_usdc = 2
+max_spread = 0.60
+max_order_slippage = 0.03
+outcome_size_decimals = 0
+order_tif = "Ioc"
+enforce_testnet_balance_check = true
+testnet_balance_coin = "USDC"
+testnet_balance_buffer_usdc = 1
+settlement_grace_seconds = 300
+fills_lookback_hours = 24
+reconcile_after_execution = true
+reconcile_every_loops = 1
+enable_latency_log = true
+enable_edge_decay_log = true
+enable_daily_summary = true
+edge_decay_state_limit = 1000
+
+[hip4_outcome.annualized_vol_by_underlying]
+BTC = 0.65
+ETH = 0.75
+SOL = 0.95
+HYPE = 1.25
+DOGE = 1.20
+XRP = 1.05
+SUI = 1.20
+AVAX = 1.05
+LINK = 1.00
+ARB = 1.20
+ADA = 1.05
+BNB = 0.75
+LTC = 0.85
+AAVE = 1.05
+NEAR = 1.15
+ZRO = 1.35

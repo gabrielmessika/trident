@@ -97,10 +97,12 @@ API_DIR="${LOCAL_DIR}/api"
 RUNTIME_DIR="${LOCAL_DIR}/runtime"
 DOCKER_DIR="${LOCAL_DIR}/docker"
 HYDRA_DOCS_DIR="${LOCAL_DIR}/hydra_docs"
+CONFIG_DIR="${LOCAL_DIR}/config"
+HIP4_LOG_DIR="${LOG_DIR}/hip4_outcome_paper"
 REPLAY_INPUT_DIR="${LOCAL_DIR}/replay_inputs"
 FULL_BOT_REPLAY_INPUT="${REPLAY_INPUT_DIR}/full_bot_latest_fetch.jsonl"
 
-mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${FUNDING_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${HYDRA_DOCS_DIR}" "${REPLAY_INPUT_DIR}" "${OUTPUT_DIR}"
+mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${FUNDING_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${HYDRA_DOCS_DIR}" "${CONFIG_DIR}" "${HIP4_LOG_DIR}" "${REPLAY_INPUT_DIR}" "${OUTPUT_DIR}"
 
 SSH_CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/trident-fetch-XXXXXX")"
 SSH_CONTROL_PATH="${SSH_CONTROL_DIR}/cm-%C"
@@ -293,7 +295,7 @@ if ! install_rsync_if_missing; then
     exit 1
 fi
 
-if [[ "${REVIEW_ONLY}" != "true" ]]; then
+if [[ "${REVIEW_ONLY}" != "true" && "${DRY_RUN}" != "true" ]]; then
     if ! retry_command 2 1 start_ssh_master; then
         error "Impossible d'ouvrir une connexion SSH persistante vers ${SSH_TARGET}."
         exit 1
@@ -349,12 +351,14 @@ fetch_api_snapshot() {
         "curl -fsS http://127.0.0.1:3000/api/state"
         "curl -fsS http://127.0.0.1:3000/api/metrics"
         "curl -fsS http://127.0.0.1:3000/api/report"
+        "curl -fsS http://127.0.0.1:3000/api/hip4-outcome"
     )
     local names=(
         "health-${ts}.json"
         "state-${ts}.json"
         "metrics-${ts}.json"
         "report-${ts}.json"
+        "hip4-outcome-${ts}.json"
     )
 
     if [[ "${DRY_RUN}" == "true" ]]; then
@@ -422,6 +426,28 @@ fetch_optional_remote_file() {
     fi
 }
 
+fetch_optional_remote_dir() {
+    local remote_path="$1"
+    local local_path="$2"
+    local label="$3"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        printf '  [dry-run] %s/ -> %s/\n' "${remote_path}" "${local_path}"
+        return
+    fi
+
+    mkdir -p "${local_path}"
+    if ssh_remote "test -d '${REMOTE_DIR}/${remote_path}'" 2>/dev/null; then
+        if retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}/" "${local_path}/"; then
+            ok "${label} rapatrie"
+        else
+            warn "Impossible de rapatrier ${label} (${remote_path})"
+        fi
+    else
+        info "${label} absent sur le serveur (${remote_path}, optionnel)"
+    fi
+}
+
 fetch_snapshots() {
     info "Rapatriement des snapshots live..."
     local remote_snapshot_dir="${REMOTE_DIR}/data/live_snapshots/"
@@ -432,14 +458,7 @@ fetch_snapshots() {
     fi
 
     if [[ "${DRY_RUN}" == "true" ]]; then
-        local filter_file
-        if [[ "${MODE}" == "all" ]]; then
-            printf '  [dry-run] %s -> %s\n' "${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
-        else
-            filter_file="$(build_snapshot_filter)"
-            rsync_remote -azP -n --filter="merge ${filter_file}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
-            rm -f "${filter_file}"
-        fi
+        printf '  [dry-run] %s -> %s/ (mode=%s)\n' "${remote_snapshot_dir}" "${SNAPSHOT_DIR}" "${MODE}"
         return
     fi
 
@@ -504,11 +523,16 @@ prepare_backtest_inputs() {
 fetch_logs_and_runtime() {
     info "Rapatriement des logs runtime et statuses..."
     fetch_remote_file "logs/pod_a_live.jsonl" "${LOG_DIR}/pod_a_live.jsonl" "Journal Pod A"
-    fetch_remote_file "logs/pod_b_live.jsonl" "${LOG_DIR}/pod_b_live.jsonl" "Journal Pod B"
+    fetch_optional_remote_file "logs/pod_b_live.jsonl" "${LOG_DIR}/pod_b_live.jsonl" "Journal Pod B legacy"
     fetch_remote_file "logs/pod_c_live.jsonl" "${LOG_DIR}/pod_c_live.jsonl" "Journal Pod C"
     fetch_remote_file "logs/pod_a_live_status.json" "${RUNTIME_DIR}/pod_a_live_status.json" "Runtime status Pod A"
     fetch_remote_file "logs/pod_b_live_status.json" "${RUNTIME_DIR}/pod_b_live_status.json" "Runtime status Pod B"
     fetch_remote_file "logs/pod_c_live_status.json" "${RUNTIME_DIR}/pod_c_live_status.json" "Runtime status Pod C"
+    fetch_optional_remote_file "logs/hip4_outcome_status.json" "${RUNTIME_DIR}/hip4_outcome_status.json" "Runtime status HIP-4 Outcome"
+    fetch_optional_remote_file "runtime/hip4_outcome_paper_state.json" "${RUNTIME_DIR}/hip4_outcome_paper_state.json" "State HIP-4 Outcome paper"
+    fetch_optional_remote_dir "logs/hip4_outcome_paper" "${HIP4_LOG_DIR}" "Logs HIP-4 Outcome paper"
+    fetch_optional_remote_file "config/hip4_outcome_testnet.toml" "${CONFIG_DIR}/hip4_outcome_testnet.toml" "Config HIP-4 Outcome testnet"
+    fetch_optional_remote_file "config/trident.toml" "${CONFIG_DIR}/trident.toml" "Config TRIDENT"
     fetch_remote_file "logs/funding_collector_status.json" "${RUNTIME_DIR}/funding_collector_status.json" "Runtime status Funding Collector"
     fetch_remote_file "logs/tradfi_funding_collector_status.json" "${RUNTIME_DIR}/tradfi_funding_collector_status.json" "Runtime status Tradfi Funding Collector"
     fetch_optional_remote_file "docs/pod_funding_research_latest.json" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.json" "Research funding JSON"
@@ -519,8 +543,8 @@ fetch_logs_and_runtime() {
 
 fetch_docker_logs() {
     info "Rapatriement des tails de logs Docker..."
-    local services=("trident-api" "pod-a-live" "pod-b-live" "pod-c-live" "tradfi-funding-collector" "funding-collector")
-    local files=("trident-api.log" "pod-a-live.log" "pod-b-live.log" "pod-c-live.log" "tradfi-funding-collector.log" "funding-collector.log")
+    local services=("trident-api" "pod-a-live" "hip4-outcome-dry-run" "pod-c-live" "tradfi-funding-collector" "funding-collector")
+    local files=("trident-api.log" "pod-a-live.log" "hip4-outcome-dry-run.log" "pod-c-live.log" "tradfi-funding-collector.log" "funding-collector.log")
     local i
 
     for i in "${!services[@]}"; do
@@ -619,7 +643,9 @@ if [[ "${DRY_RUN}" != "true" ]]; then
     echo "    - snapshots live : ${SNAPSHOT_DIR}"
     echo "    - funding history : ${FUNDING_DIR}"
     echo "    - logs applicatifs : ${LOG_DIR}"
+    echo "    - logs HIP-4 paper : ${HIP4_LOG_DIR}"
     echo "    - runtime statuses : ${RUNTIME_DIR}"
+    echo "    - configs serveur : ${CONFIG_DIR}"
     echo "    - hydra docs : ${HYDRA_DOCS_DIR}"
     echo "    - API snapshots : ${API_DIR}"
     echo "    - docker logs : ${DOCKER_DIR}"

@@ -14,10 +14,10 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--fresh-start] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--fresh-start] [service]
 
 Actions:
-  start     démarre l'API + Pod A + Pod B + Pod C + funding par défaut
+  start     démarre l'API + Pod A + Pod B HIP-4 + Pod C + funding par défaut en dry-run
   stop      arrête les services sélectionnés
   restart   redémarre les services sélectionnés
   update    rebuild + redémarre les services sélectionnés
@@ -28,10 +28,11 @@ Actions:
 
 Compatibilité :
   --with-pod-b / --with-pod-c / --with-funding restent acceptés mais sont redondants.
+  --with-hip4-outcome / --without-hip4-outcome sont des alias du Pod B HIP-4.
 
 Sécurité live :
   --mode dry-run est le défaut. --mode live lance Pod A + Pod C par défaut,
-  refuse Pod B, puis lance un preflight credentials + reconciliation + orderUpdates.
+  refuse Pod B HIP-4, puis lance un preflight credentials + reconciliation + orderUpdates.
 EOF
 }
 
@@ -51,6 +52,7 @@ shift
 ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
+ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
 FRESH_START=""
 MODE="${TRIDENT_MODE:-dry-run}"
 CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
@@ -70,6 +72,11 @@ while [ $# -gt 0 ]; do
             ENABLE_FUNDING="true"
             shift
             ;;
+        --with-hip4-outcome)
+            ENABLE_HIP4_OUTCOME="true"
+            ENABLE_POD_B="true"
+            shift
+            ;;
         --config)
             CONFIG_PATH="$2"
             shift 2
@@ -80,6 +87,7 @@ while [ $# -gt 0 ]; do
             ;;
         --without-pod-b)
             ENABLE_POD_B=""
+            ENABLE_HIP4_OUTCOME=""
             shift
             ;;
         --without-pod-c)
@@ -88,6 +96,11 @@ while [ $# -gt 0 ]; do
             ;;
         --without-funding)
             ENABLE_FUNDING=""
+            shift
+            ;;
+        --without-hip4-outcome)
+            ENABLE_HIP4_OUTCOME=""
+            ENABLE_POD_B=""
             shift
             ;;
         --fresh-start)
@@ -117,11 +130,15 @@ case "$MODE" in
         ;;
 esac
 
+if [ "$MODE" = "live" ]; then
+    ENABLE_HIP4_OUTCOME=""
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PROFILE_ARGS=()
-[ -n "$ENABLE_POD_B" ] && PROFILE_ARGS+=(--profile pod_b)
+[ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && PROFILE_ARGS+=(--profile pod_b)
 [ -n "$ENABLE_POD_C" ] && PROFILE_ARGS+=(--profile pod_c)
 [ -n "$ENABLE_FUNDING" ] && PROFILE_ARGS+=(--profile funding)
 
@@ -132,8 +149,9 @@ fi
 
 compose() {
     TRIDENT_ENABLE_POD_A="true" \
-    TRIDENT_ENABLE_POD_B="${ENABLE_POD_B:+true}" \
+    TRIDENT_ENABLE_POD_B="" \
     TRIDENT_ENABLE_POD_C="${ENABLE_POD_C:+true}" \
+    TRIDENT_ENABLE_HIP4_OUTCOME="${ENABLE_HIP4_OUTCOME:+true}" \
     TRIDENT_MODE="${MODE}" \
     TRIDENT_CONFIG_PATH="${CONFIG_PATH}" \
     docker compose "${COMPOSE_ENV_ARGS[@]}" -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"
@@ -145,8 +163,8 @@ compose_all() {
 
 default_services() {
     local services=(trident-api pod-a-live)
-    if [ -n "$ENABLE_POD_B" ]; then
-        services+=(pod-b-live)
+    if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ]; then
+        services+=(hip4-outcome-dry-run)
     fi
     if [ -n "$ENABLE_POD_C" ]; then
         services+=(pod-c-live tradfi-funding-collector)
@@ -163,6 +181,7 @@ all_managed_services() {
         pod-a-live \
         pod-b-live \
         pod-c-live \
+        hip4-outcome-dry-run \
         tradfi-funding-collector \
         funding-collector
 }
@@ -200,9 +219,15 @@ fresh_start_cleanup() {
         logs/pod_a_live_status.json \
         logs/pod_b_live_status.json \
         logs/pod_c_live_status.json \
+        logs/hip4_outcome_status.json \
         logs/pod_a_live_report.json \
         logs/pod_b_live_report.json \
-        logs/pod_c_live_report.json
+        logs/pod_c_live_report.json \
+        runtime/hip4_outcome_state.json \
+        runtime/hip4_outcome_paper_state.json
+    rm -rf \
+        logs/hip4_outcome \
+        logs/hip4_outcome_paper
     ok "Artefacts live réinitialisés"
 }
 
@@ -215,7 +240,7 @@ guard_live_start() {
         return 0
     fi
     if [ -n "$ENABLE_POD_B" ]; then
-        error "Mode live refuse: Pod B n'est pas valide pour ce lancement. Relance avec --without-pod-b."
+        error "Mode live refuse: Pod B HIP-4 est réservé au dry-run/testnet. Relance avec --without-pod-b."
         exit 1
     fi
 
