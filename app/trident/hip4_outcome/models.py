@@ -268,6 +268,8 @@ class OutcomePosition:
     status: str = "open"
     settled_at: str | None = None
     estimated_payout_usdc: float = 0.0
+    estimated_fee_usdc: float = 0.0
+    estimated_gross_pnl_usdc: float = 0.0
     estimated_pnl_usdc: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -314,6 +316,13 @@ class OutcomePosition:
                 None if payload.get("settled_at") in (None, "") else str(payload.get("settled_at"))
             ),
             estimated_payout_usdc=float(payload.get("estimated_payout_usdc", 0.0)),
+            estimated_fee_usdc=float(payload.get("estimated_fee_usdc", payload.get("fee_usdc", 0.0))),
+            estimated_gross_pnl_usdc=float(
+                payload.get(
+                    "estimated_gross_pnl_usdc",
+                    payload.get("gross_pnl_usdc", payload.get("estimated_pnl_usdc", 0.0)),
+                )
+            ),
             estimated_pnl_usdc=float(payload.get("estimated_pnl_usdc", 0.0)),
             metadata=dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {},
         )

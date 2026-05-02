@@ -416,6 +416,8 @@ BTC = 0.5
             self.assertEqual(config.annualized_vol_by_underlying["BTC"], 0.5)
             self.assertTrue(config.write_pod_b_alias_status)
             self.assertEqual(config.pod_b_alias_status_path, "./logs/pod_b_live_status.json")
+            self.assertEqual(config.outcome_open_fee_rate, 0.0)
+            self.assertEqual(config.outcome_settlement_fee_rate, config.estimated_fees)
 
     def test_writes_pod_b_alias_runtime_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -639,7 +641,9 @@ BTC = 0.5
             confidence=0.8,
             status="estimated_settled",
             estimated_payout_usdc=1.5,
-            estimated_pnl_usdc=0.5,
+            estimated_fee_usdc=0.003,
+            estimated_gross_pnl_usdc=0.5,
+            estimated_pnl_usdc=0.497,
             metadata={"decision": {"execution_mode": "PAPER"}},
         )
 
@@ -647,7 +651,70 @@ BTC = 0.5
 
         self.assertEqual(rows[0]["date"], "2026-05-01")
         self.assertEqual(rows[0]["mode"], "PAPER")
-        self.assertEqual(rows[0]["estimated_pnl_usdc"], 0.5)
+        self.assertEqual(rows[0]["estimated_fee_usdc"], 0.003)
+        self.assertEqual(rows[0]["estimated_gross_pnl_usdc"], 0.5)
+        self.assertEqual(rows[0]["estimated_pnl_usdc"], 0.497)
+
+    def test_paper_settlement_charges_hip4_fee_only_on_payout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "hip4_status.json"),
+                outcome_open_fee_rate=0.0,
+                outcome_settlement_fee_rate=0.002,
+                settlement_grace_seconds=0,
+            )
+            position = OutcomePosition(
+                position_id="pos-1",
+                market_id="BTC_GT_100_20260501_0000",
+                outcome=1,
+                underlying="BTC",
+                edge_type="LATE_EXPIRY",
+                side="BUY_YES",
+                opened_at="2026-05-01T00:00:00Z",
+                expiry_ts=1,
+                cost_usdc=4.8,
+                max_loss_usdc=4.8,
+                net_edge=0.1,
+                confidence=0.9,
+                fills=[
+                    OutcomeFill(
+                        coin="#10",
+                        side_name="YES",
+                        token_qty=Decimal("10"),
+                        avg_price=0.48,
+                        cost_usdc=4.8,
+                        status="paper_filled",
+                    )
+                ],
+                metadata={
+                    "decision": {"execution_mode": "PAPER"},
+                    "signal": {"metadata": {"strike": 100.0}},
+                },
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            pod.positions = [position]
+
+            reference = type("Reference", (), {"price": 101.0})()
+            pod._settle_expired_positions(  # noqa: SLF001 - targeted settlement accounting coverage
+                now_ts=2,
+                reference_prices={"BTC": reference},
+            )
+
+            self.assertEqual(position.estimated_payout_usdc, 10.0)
+            self.assertEqual(position.estimated_gross_pnl_usdc, 5.2)
+            self.assertEqual(position.estimated_fee_usdc, 0.02)
+            self.assertEqual(position.estimated_pnl_usdc, 5.18)
+            self.assertEqual(position.metadata["settlement"]["fee_model"]["open_fee_rate"], 0.0)
+
+            settlement_log = (root / "logs" / "settlements.csv").read_text(encoding="utf-8")
+            self.assertIn("fee_usdc", settlement_log)
+            self.assertIn("gross_pnl_usdc", settlement_log)
+            self.assertIn("net_pnl_usdc", settlement_log)
+            self.assertIn(",0.02,5.2,5.18,5.18,", settlement_log)
 
     def test_replays_opportunity_log_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

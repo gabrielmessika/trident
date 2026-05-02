@@ -30,6 +30,14 @@ def build_daily_summary_rows(positions: list[OutcomePosition]) -> list[dict[str,
                     sum(item.estimated_payout_usdc for item in items),
                     8,
                 ),
+                "estimated_fee_usdc": round(
+                    sum(item.estimated_fee_usdc for item in items),
+                    8,
+                ),
+                "estimated_gross_pnl_usdc": round(
+                    sum(item.estimated_gross_pnl_usdc for item in items),
+                    8,
+                ),
                 "estimated_pnl_usdc": round(
                     sum(item.estimated_pnl_usdc for item in items),
                     8,

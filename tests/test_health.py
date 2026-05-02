@@ -671,12 +671,16 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("opportunities", payload)
         self.assertIn("settlements", payload)
         self.assertIn("realized_pnl_usd", payload)
+        self.assertIn("fees_usd", payload)
+        self.assertIn("gross_pnl_usd", payload)
 
         html = hip4_outcome_html(self.supervisor, self.metrics)
         self.assertIn("HIP-4 Outcome Experimental", html)
         self.assertIn("/api/hip4-outcome", html)
         self.assertIn("Opportunités récentes", html)
         self.assertIn("Realized PnL", html)
+        self.assertIn("Gross/Fees", html)
+        self.assertIn("Net PnL", html)
         self.assertIn("Settlements paper", html)
 
     def test_trades_html_contains_trade_sections(self) -> None:

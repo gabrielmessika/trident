@@ -189,11 +189,17 @@ class OutcomeEdgeDetector:
         if yes_gross >= no_gross:
             best_side = "BUY_YES"
             best_gross = yes_gross
-            best_net = self._net_edge(best_gross)
+            best_net = self._net_edge(
+                best_gross,
+                settlement_probability=short_probability,
+            )
         else:
             best_side = "BUY_NO"
             best_gross = no_gross
-            best_net = self._net_edge(best_gross)
+            best_net = self._net_edge(
+                best_gross,
+                settlement_probability=1.0 - short_probability,
+            )
         reason = "Short-expiry model probability above visible ask"
         if best_gross < 0:
             reason = "short_expiry_no_executable_ask"
@@ -218,14 +224,24 @@ class OutcomeEdgeDetector:
             metadata=metadata,
         )
 
-    def _net_edge(self, gross_edge: float, *, legs: int = 1) -> float:
+    def _net_edge(
+        self,
+        gross_edge: float,
+        *,
+        settlement_probability: float = 1.0,
+        slippage_legs: int = 1,
+    ) -> float:
         return round(
             gross_edge
-            - self.config.estimated_fees * legs
-            - self.config.estimated_slippage * legs
+            - self._estimated_settlement_fee(settlement_probability)
+            - self.config.estimated_slippage * slippage_legs
             - self.config.safety_margin,
             8,
         )
+
+    def _estimated_settlement_fee(self, settlement_probability: float) -> float:
+        probability = _clamp(float(settlement_probability), 0.0, 1.0)
+        return round(probability * max(float(self.config.outcome_settlement_fee_rate), 0.0), 8)
 
     def _size_for_side(self, order_book: OutcomeOrderBook, side: str) -> float:
         if side == "BUY_YES":
@@ -336,7 +352,8 @@ class OutcomeEdgeDetector:
         if reference_price > market.strike * (1.0 + buffer) and order_book.yes.ask is not None:
             if order_book.yes.ask <= self.config.max_late_yes_price:
                 gross = round(1.0 - order_book.yes.ask, 8)
-                net = self._net_edge(gross)
+                estimated_fee = self._estimated_settlement_fee(1.0)
+                net = self._net_edge(gross, settlement_probability=1.0)
                 confidence = min(0.95, 0.62 + gross * 0.25)
                 return [
                     OutcomeOpportunity(
@@ -346,7 +363,7 @@ class OutcomeEdgeDetector:
                         side="BUY_YES",
                         edge_type="LATE_EXPIRY",
                         gross_edge=gross,
-                        estimated_fees=self.config.estimated_fees,
+                        estimated_fees=estimated_fee,
                         estimated_slippage=self.config.estimated_slippage,
                         net_edge=net,
                         confidence=round(confidence, 4),
@@ -360,7 +377,8 @@ class OutcomeEdgeDetector:
         if reference_price < market.strike * (1.0 - buffer) and order_book.no.ask is not None:
             if order_book.no.ask <= self.config.max_late_no_price:
                 gross = round(1.0 - order_book.no.ask, 8)
-                net = self._net_edge(gross)
+                estimated_fee = self._estimated_settlement_fee(1.0)
+                net = self._net_edge(gross, settlement_probability=1.0)
                 confidence = min(0.95, 0.62 + gross * 0.25)
                 return [
                     OutcomeOpportunity(
@@ -370,7 +388,7 @@ class OutcomeEdgeDetector:
                         side="BUY_NO",
                         edge_type="LATE_EXPIRY",
                         gross_edge=gross,
-                        estimated_fees=self.config.estimated_fees,
+                        estimated_fees=estimated_fee,
                         estimated_slippage=self.config.estimated_slippage,
                         net_edge=net,
                         confidence=round(confidence, 4),
@@ -393,7 +411,8 @@ class OutcomeEdgeDetector:
             return None
         cost = order_book.yes.ask + order_book.no.ask
         gross = round(1.0 - cost, 8)
-        net = self._net_edge(gross, legs=2)
+        estimated_fee = self._estimated_settlement_fee(1.0)
+        net = self._net_edge(gross, settlement_probability=1.0, slippage_legs=2)
         return OutcomeOpportunity(
             market_id=market.market_id,
             outcome=market.outcome,
@@ -401,7 +420,7 @@ class OutcomeEdgeDetector:
             side="BUY_BOTH",
             edge_type="PARITY",
             gross_edge=gross,
-            estimated_fees=self.config.estimated_fees * 2,
+            estimated_fees=estimated_fee,
             estimated_slippage=self.config.estimated_slippage * 2,
             net_edge=net,
             confidence=0.9,
@@ -441,6 +460,7 @@ class OutcomeEdgeDetector:
         }
         if order_book.yes.ask is not None:
             gross = round(probability.probability_yes - order_book.yes.ask, 8)
+            estimated_fee = self._estimated_settlement_fee(probability.probability_yes)
             opportunities.append(
                 OutcomeOpportunity(
                     market_id=market.market_id,
@@ -449,9 +469,12 @@ class OutcomeEdgeDetector:
                     side="BUY_YES",
                     edge_type="MODEL",
                     gross_edge=gross,
-                    estimated_fees=self.config.estimated_fees,
+                    estimated_fees=estimated_fee,
                     estimated_slippage=self.config.estimated_slippage,
-                    net_edge=self._net_edge(gross),
+                    net_edge=self._net_edge(
+                        gross,
+                        settlement_probability=probability.probability_yes,
+                    ),
                     confidence=probability.confidence,
                     requested_size_usdc=self._size_for_side(order_book, "BUY_YES"),
                     max_loss_usdc=self._size_for_side(order_book, "BUY_YES"),
@@ -463,6 +486,7 @@ class OutcomeEdgeDetector:
         if order_book.no.ask is not None:
             probability_no = 1.0 - probability.probability_yes
             gross = round(probability_no - order_book.no.ask, 8)
+            estimated_fee = self._estimated_settlement_fee(probability_no)
             opportunities.append(
                 OutcomeOpportunity(
                     market_id=market.market_id,
@@ -471,9 +495,12 @@ class OutcomeEdgeDetector:
                     side="BUY_NO",
                     edge_type="MODEL",
                     gross_edge=gross,
-                    estimated_fees=self.config.estimated_fees,
+                    estimated_fees=estimated_fee,
                     estimated_slippage=self.config.estimated_slippage,
-                    net_edge=self._net_edge(gross),
+                    net_edge=self._net_edge(
+                        gross,
+                        settlement_probability=probability_no,
+                    ),
                     confidence=probability.confidence,
                     requested_size_usdc=self._size_for_side(order_book, "BUY_NO"),
                     max_loss_usdc=self._size_for_side(order_book, "BUY_NO"),
@@ -511,6 +538,11 @@ class OutcomeEdgeDetector:
             return []
         if short_assessment.confidence < self.config.short_expiry_min_confidence:
             return []
+        settlement_probability = (
+            short_assessment.probability_yes
+            if short_assessment.best_side == "BUY_YES"
+            else 1.0 - short_assessment.probability_yes
+        )
         return [
             OutcomeOpportunity(
                 market_id=market.market_id,
@@ -519,7 +551,7 @@ class OutcomeEdgeDetector:
                 side=short_assessment.best_side,
                 edge_type="SHORT_EXPIRY",
                 gross_edge=short_assessment.best_gross_edge,
-                estimated_fees=self.config.estimated_fees,
+                estimated_fees=self._estimated_settlement_fee(settlement_probability),
                 estimated_slippage=self.config.estimated_slippage,
                 net_edge=short_assessment.best_net_edge,
                 confidence=short_assessment.confidence,

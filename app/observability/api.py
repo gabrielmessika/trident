@@ -115,6 +115,32 @@ def _float_or_none(value: object) -> float | None:
         return None
 
 
+def _first_float(row: dict[str, object], *keys: str) -> float | None:
+    for key in keys:
+        value = _float_or_none(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _settlement_fee(row: dict[str, object]) -> float:
+    return _first_float(row, "fee_usdc", "fees_usdc") or 0.0
+
+
+def _settlement_net_pnl(row: dict[str, object]) -> float | None:
+    return _first_float(row, "net_pnl_usdc", "pnl_usdc", "estimated_pnl_usdc")
+
+
+def _settlement_gross_pnl(row: dict[str, object]) -> float | None:
+    gross = _first_float(row, "gross_pnl_usdc", "estimated_gross_pnl_usdc")
+    if gross is not None:
+        return gross
+    net = _settlement_net_pnl(row)
+    if net is None:
+        return None
+    return net + _settlement_fee(row)
+
+
 def _hip4_outcome_monitor_payload(
     *,
     status_path: Path = Path("logs/hip4_outcome_status.json"),
@@ -175,11 +201,17 @@ def _hip4_outcome_monitor_payload(
         )
     if short_expiry_features:
         latest_short_net_edge = _float_or_none(short_expiry_features[-1].get("best_net_edge"))
-    realized_pnl_usd = sum(
+    net_pnl_usd = sum(
         value
-        for value in (_float_or_none(row.get("pnl_usdc")) for row in all_settlement_rows)
+        for value in (_settlement_net_pnl(row) for row in all_settlement_rows)
         if value is not None
     )
+    gross_pnl_usd = sum(
+        value
+        for value in (_settlement_gross_pnl(row) for row in all_settlement_rows)
+        if value is not None
+    )
+    fees_usd = sum(_settlement_fee(row) for row in all_settlement_rows)
     payout_usdc = sum(
         value
         for value in (_float_or_none(row.get("payout_usdc")) for row in all_settlement_rows)
@@ -244,9 +276,22 @@ def _hip4_outcome_monitor_payload(
         ),
         "fill_count": int(pod_b_alias_report.get("total_fill_count", len(all_fill_rows)) or 0),
         "realized_pnl_usd": float(
-            pod_b_alias_report.get("realized_pnl_usd", round(realized_pnl_usd, 8)) or 0.0
+            pod_b_alias_report.get("realized_pnl_usd", round(net_pnl_usd, 8)) or 0.0
         ),
-        "settlement_payout_usdc": round(payout_usdc, 8),
+        "gross_pnl_usd": float(
+            pod_b_alias_report.get("gross_pnl_usd", round(gross_pnl_usd, 8)) or 0.0
+        ),
+        "fees_usd": float(pod_b_alias_report.get("fees_usd", round(fees_usd, 8)) or 0.0),
+        "settlement_payout_usdc": float(
+            pod_b_alias_report.get("settlement_payout_usdc", round(payout_usdc, 8)) or 0.0
+        ),
+        "fee_model": (
+            pod_b_alias_status.get("fee_model")
+            if isinstance(pod_b_alias_status, dict) and isinstance(pod_b_alias_status.get("fee_model"), dict)
+            else status.get("fee_model")
+            if isinstance(status, dict) and isinstance(status.get("fee_model"), dict)
+            else {}
+        ),
         "best_net_edge": best_net_edge,
         "latest_net_edge": latest_net_edge,
         "best_short_net_edge": best_short_net_edge,
@@ -1719,6 +1764,8 @@ def _control_center_html(
         settled_position_count = int(payload.get("settled_position_count", 0) or 0)
         fill_count = int(payload.get("fill_count", 0) or 0)
         realized_pnl = payload.get("realized_pnl_usd")
+        gross_pnl = payload.get("gross_pnl_usd")
+        fees_usd = payload.get("fees_usd")
         latest_edge = payload.get("latest_net_edge")
         best_edge = payload.get("best_net_edge")
         latest_short_edge = payload.get("latest_short_net_edge")
@@ -1791,7 +1838,7 @@ def _control_center_html(
         def render_settlement_rows() -> str:
             rows = payload.get("settlements", [])
             if not isinstance(rows, list) or not rows:
-                return "<tr><td colspan='8'>Aucun settlement paper visible.</td></tr>"
+                return "<tr><td colspan='10'>Aucun settlement paper visible.</td></tr>"
             return "".join(
                 (
                     "<tr>"
@@ -1801,7 +1848,9 @@ def _control_center_html(
                     f"<td>{escape(str(row.get('side', '-')))}</td>"
                     f"<td>{escape(str(row.get('result', '-')))}</td>"
                     f"<td>{fmt_hip4_number(row.get('payout_usdc'), 2)}</td>"
-                    f"<td>{fmt_hip4_number(row.get('pnl_usdc'), 2)}</td>"
+                    f"<td>{fmt_hip4_number(_settlement_fee(row), 4)}</td>"
+                    f"<td>{fmt_hip4_number(_settlement_gross_pnl(row), 2)}</td>"
+                    f"<td>{fmt_hip4_number(_settlement_net_pnl(row), 2)}</td>"
                     f"<td>{escape(str(row.get('notes', '-')))}</td>"
                     "</tr>"
                 )
@@ -1902,7 +1951,12 @@ def _control_center_html(
                 {
                     "label": "Realized PnL",
                     "value": f"{fmt_hip4_number(realized_pnl, 2)} USD",
-                    "note": f"{settled_position_count} settlement(s) paper",
+                    "note": f"net fees · {settled_position_count} settlement(s)",
+                },
+                {
+                    "label": "Gross/Fees",
+                    "value": f"{fmt_hip4_number(gross_pnl, 2)} USD",
+                    "note": f"fees {fmt_hip4_number(fees_usd, 4)} USD",
                 },
                 {
                     "label": "Fills",
@@ -1987,7 +2041,7 @@ def _control_center_html(
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr>{_table_header("Ts", "Horodatage du settlement paper.")}{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Market", "Identifiant du marché HIP-4 outcome.")}{_table_header("Side", "Sens acheté par le pod.")}{_table_header("Result", "Résultat outcome estimé.")}{_table_header("Payout", "Payout paper en USDC.")}{_table_header("PnL", "PnL paper réalisé, payout moins coût.")}{_table_header("Notes", "Méthode ou contexte du settlement.")}</tr></thead>
+              <thead><tr>{_table_header("Ts", "Horodatage du settlement paper.")}{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Market", "Identifiant du marché HIP-4 outcome.")}{_table_header("Side", "Sens acheté par le pod.")}{_table_header("Result", "Résultat outcome estimé.")}{_table_header("Payout", "Payout paper en USDC.")}{_table_header("Fees", "Fees HIP-4 paper appliqués au settlement.")}{_table_header("Gross PnL", "Payout moins coût, avant fees.")}{_table_header("Net PnL", "PnL paper réalisé net de fees HIP-4.")}{_table_header("Notes", "Méthode ou contexte du settlement.")}</tr></thead>
               <tbody>{render_settlement_rows()}</tbody>
             </table>
           </div>
@@ -3499,6 +3553,8 @@ def hip4_outcome_html(
     settled_position_count = int(payload.get("settled_position_count", 0) or 0)
     fill_count = int(payload.get("fill_count", 0) or 0)
     realized_pnl = payload.get("realized_pnl_usd")
+    gross_pnl = payload.get("gross_pnl_usd")
+    fees_usd = payload.get("fees_usd")
     latest_edge = payload.get("latest_net_edge")
     best_edge = payload.get("best_net_edge")
     latest_short_edge = payload.get("latest_short_net_edge")
@@ -3575,7 +3631,7 @@ def hip4_outcome_html(
     def render_settlement_rows() -> str:
         rows = payload.get("settlements", [])
         if not isinstance(rows, list) or not rows:
-            return "<tr><td colspan='8'>Aucun settlement paper visible.</td></tr>"
+            return "<tr><td colspan='10'>Aucun settlement paper visible.</td></tr>"
         return "".join(
             (
                 "<tr>"
@@ -3585,7 +3641,9 @@ def hip4_outcome_html(
                 f"<td>{escape(str(row.get('side', '-')))}</td>"
                 f"<td>{escape(str(row.get('result', '-')))}</td>"
                 f"<td>{fmt_number(row.get('payout_usdc'), 2)}</td>"
-                f"<td>{fmt_number(row.get('pnl_usdc'), 2)}</td>"
+                f"<td>{fmt_number(_settlement_fee(row), 4)}</td>"
+                f"<td>{fmt_number(_settlement_gross_pnl(row), 2)}</td>"
+                f"<td>{fmt_number(_settlement_net_pnl(row), 2)}</td>"
                 f"<td>{escape(str(row.get('notes', '-')))}</td>"
                 "</tr>"
             )
@@ -3700,7 +3758,12 @@ def hip4_outcome_html(
             {
                 "label": "Realized PnL",
                 "value": f"{fmt_number(realized_pnl, 2)} USD",
-                "note": f"{settled_position_count} settlement(s) paper",
+                "note": f"net fees · {settled_position_count} settlement(s)",
+            },
+            {
+                "label": "Gross/Fees",
+                "value": f"{fmt_number(gross_pnl, 2)} USD",
+                "note": f"fees {fmt_number(fees_usd, 4)} USD",
             },
             {
                 "label": "Fills",
@@ -3851,7 +3914,7 @@ def hip4_outcome_html(
         <div class="panel-header"><h2>Settlements paper</h2><p>PnL réalisé estimé à l'expiration des marchés outcome paper.</p></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Ts</th><th>Underlying</th><th>Market</th><th>Side</th><th>Result</th><th>Payout</th><th>PnL</th><th>Notes</th></tr></thead>
+            <thead><tr><th>Ts</th><th>Underlying</th><th>Market</th><th>Side</th><th>Result</th><th>Payout</th><th>Fees</th><th>Gross PnL</th><th>Net PnL</th><th>Notes</th></tr></thead>
             <tbody>{render_settlement_rows()}</tbody>
           </table>
         </div>

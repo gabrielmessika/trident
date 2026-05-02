@@ -71,17 +71,7 @@ class OutcomeEventLogger:
     def log_settlement(self, row: dict[str, Any]) -> None:
         self._append_csv(
             self.settlements_path,
-            [
-                "ts",
-                "market_id",
-                "outcome",
-                "underlying",
-                "side",
-                "result",
-                "payout_usdc",
-                "pnl_usdc",
-                "notes",
-            ],
+            _settlement_fieldnames(),
             row,
         )
 
@@ -186,12 +176,17 @@ class OutcomeEventLogger:
                 "settled_positions",
                 "cost_usdc",
                 "estimated_payout_usdc",
+                "estimated_fee_usdc",
+                "estimated_gross_pnl_usdc",
                 "estimated_pnl_usdc",
                 "avg_net_edge",
                 "avg_confidence",
             ],
             rows,
         )
+
+    def write_settlements(self, rows: list[dict[str, Any]]) -> None:
+        self._write_csv(self.settlements_path, _settlement_fieldnames(), rows)
 
     def _append_jsonl(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,3 +208,20 @@ class OutcomeEventLogger:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
+
+
+def _settlement_fieldnames() -> list[str]:
+    return [
+        "ts",
+        "market_id",
+        "outcome",
+        "underlying",
+        "side",
+        "result",
+        "payout_usdc",
+        "fee_usdc",
+        "gross_pnl_usdc",
+        "net_pnl_usdc",
+        "pnl_usdc",
+        "notes",
+    ]

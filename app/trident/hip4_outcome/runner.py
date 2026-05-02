@@ -63,6 +63,7 @@ class HIP4OutcomeEdgePod:
         self.state_store = OutcomeStateStore(config.state_path)
         self.event_logger = OutcomeEventLogger(config.logs_dir)
         self.positions = self.state_store.load_positions()
+        self._sync_settlement_accounting()
         self.paper_executor = PaperOutcomeExecutor(config)
         self.testnet_executor: TestnetOutcomeExecutor | None = None
         self.loop_count = 0
@@ -564,23 +565,19 @@ class HIP4OutcomeEdgePod:
             position.status = "estimated_settled"
             position.settled_at = utc_now_iso()
             position.estimated_payout_usdc = round(payout, 8)
-            position.estimated_pnl_usdc = round(payout - position.cost_usdc, 8)
-            self.event_logger.log_settlement(
-                {
-                    "ts": position.settled_at,
-                    "market_id": position.market_id,
-                    "outcome": position.outcome,
-                    "underlying": position.underlying,
-                    "side": position.side,
-                    "result": "YES" if result_yes else "NO",
-                    "payout_usdc": position.estimated_payout_usdc,
-                    "pnl_usdc": position.estimated_pnl_usdc,
-                    "notes": "estimated_from_reference_price",
-                }
-            )
+            position.metadata["settlement"] = {
+                "result": "YES" if result_yes else "NO",
+                "reference_price": reference_price,
+                "strike": strike,
+                "fee_model": self._fee_model_payload(),
+                "notes": "estimated_from_reference_price",
+            }
+            _apply_settlement_accounting(position, self.config)
+            self.event_logger.log_settlement(_settlement_row_from_position(position))
             changed = True
         if changed:
             self.state_store.save_positions(self.positions)
+            self._write_settlement_summary()
 
     def _log_opportunity(
         self,
@@ -779,9 +776,39 @@ class HIP4OutcomeEdgePod:
             self.state_store.save_positions(self.positions)
         return report
 
+    def _sync_settlement_accounting(self) -> None:
+        changed = False
+        for position in self.positions:
+            if position.status not in {"estimated_settled", "settled"}:
+                continue
+            changed = _apply_settlement_accounting(position, self.config) or changed
+        if changed:
+            self.state_store.save_positions(self.positions)
+        self._write_settlement_summary()
+
+    def _write_settlement_summary(self) -> None:
+        rows = [
+            _settlement_row_from_position(position)
+            for position in self.positions
+            if position.status in {"estimated_settled", "settled"}
+        ]
+        if not rows and self.event_logger.settlements_path.exists():
+            return
+        rows.sort(key=lambda row: str(row.get("ts", "")))
+        self.event_logger.write_settlements(rows)
+
+    def _fee_model_payload(self) -> dict[str, Any]:
+        return {
+            "open_fee_rate": float(self.config.outcome_open_fee_rate),
+            "settlement_fee_rate": float(self.config.outcome_settlement_fee_rate),
+            "estimated_edge_fee_rate": float(self.config.estimated_fees),
+            "fee_timing": "open_fee_zero_settlement_fee_on_payout",
+        }
+
     def _write_daily_summary(self) -> None:
         if not self.config.enable_daily_summary:
             return
+        self._write_settlement_summary()
         self.event_logger.write_daily_summary(build_daily_summary_rows(self.positions))
 
     def _log_latency(self, *, summary: dict[str, Any], timings: dict[str, float]) -> None:
@@ -824,6 +851,13 @@ class HIP4OutcomeEdgePod:
             "capital": self.last_capital_snapshot,
             "last_error": self.last_error,
             "open_positions": [position.to_dict() for position in open_positions],
+            "settled_positions": [
+                position.to_dict()
+                for position in self.positions
+                if position.status in {"estimated_settled", "settled"}
+                and _position_execution_mode(position) == self.config.mode.upper()
+            ],
+            "fee_model": self._fee_model_payload(),
             "logs_dir": str(Path(self.config.logs_dir)),
             "state_path": self.config.state_path,
         }
@@ -855,6 +889,18 @@ class HIP4OutcomeEdgePod:
             for position in mode_positions
             if position.status in {"estimated_settled", "settled"}
         ]
+        settlement_payout_usdc = round(
+            sum(float(position.estimated_payout_usdc) for position in settled_positions),
+            8,
+        )
+        fees_usd = round(
+            sum(float(position.estimated_fee_usdc) for position in settled_positions),
+            8,
+        )
+        gross_pnl_usd = round(
+            sum(float(position.estimated_gross_pnl_usdc) for position in settled_positions),
+            8,
+        )
         realized_pnl_usd = round(
             sum(float(position.estimated_pnl_usdc) for position in settled_positions),
             8,
@@ -885,6 +931,7 @@ class HIP4OutcomeEdgePod:
             "state_path": self.config.state_path,
             "managed_symbols": managed_symbols,
             "open_positions": position_payloads,
+            "settled_positions": [position.to_dict() for position in settled_positions],
             "position_count": len(position_payloads),
             "total_position_count": len(position_payloads),
             "open_order_count": 0,
@@ -892,16 +939,23 @@ class HIP4OutcomeEdgePod:
             "total_fill_count": total_fill_count,
             "recent_fill_count": int(summary.get("executed", 0) or 0),
             "realized_pnl_usd": realized_pnl_usd,
+            "gross_pnl_usd": gross_pnl_usd,
+            "fees_usd": fees_usd,
+            "settlement_payout_usdc": settlement_payout_usdc,
             "total_unrealized_pnl_usd": 0.0,
             "healthy": self.last_error is None,
             "last_error": self.last_error,
             "summary": summary,
             "capital": self.last_capital_snapshot,
+            "fee_model": self._fee_model_payload(),
             "report": {
                 "strategy": "HIP4OutcomeEdgePod",
                 "closed_trade_count": len(settled_positions),
                 "total_fill_count": total_fill_count,
                 "realized_pnl_usd": realized_pnl_usd,
+                "gross_pnl_usd": gross_pnl_usd,
+                "fees_usd": fees_usd,
+                "settlement_payout_usdc": settlement_payout_usdc,
                 "open_position_count": len(position_payloads),
                 "loop_count": summary.get("loop_count", 0),
                 "opportunities": summary.get("opportunities", 0),
@@ -939,6 +993,71 @@ def _position_execution_mode(position: OutcomePosition) -> str:
         if mode:
             return mode
     return ""
+
+
+def _apply_settlement_accounting(
+    position: OutcomePosition,
+    config: Hip4OutcomeConfig,
+) -> bool:
+    payout = max(float(position.estimated_payout_usdc or 0.0), 0.0)
+    gross_pnl = round(payout - float(position.cost_usdc or 0.0), 8)
+    fee = round(payout * max(float(config.outcome_settlement_fee_rate), 0.0), 8)
+    net_pnl = round(gross_pnl - fee, 8)
+    changed = (
+        position.estimated_fee_usdc != fee
+        or position.estimated_gross_pnl_usdc != gross_pnl
+        or position.estimated_pnl_usdc != net_pnl
+    )
+    position.estimated_fee_usdc = fee
+    position.estimated_gross_pnl_usdc = gross_pnl
+    position.estimated_pnl_usdc = net_pnl
+    settlement = position.metadata.get("settlement")
+    if not isinstance(settlement, dict):
+        settlement = {}
+    expected_fee_model = {
+        "open_fee_rate": float(config.outcome_open_fee_rate),
+        "settlement_fee_rate": float(config.outcome_settlement_fee_rate),
+        "estimated_edge_fee_rate": float(config.estimated_fees),
+        "fee_timing": "open_fee_zero_settlement_fee_on_payout",
+    }
+    if settlement.get("fee_model") != expected_fee_model:
+        settlement["fee_model"] = expected_fee_model
+        position.metadata["settlement"] = settlement
+        changed = True
+    return changed
+
+
+def _settlement_row_from_position(position: OutcomePosition) -> dict[str, Any]:
+    settlement = position.metadata.get("settlement", {})
+    if not isinstance(settlement, dict):
+        settlement = {}
+    result = str(settlement.get("result") or _infer_settlement_result(position))
+    notes = str(settlement.get("notes") or "estimated_from_reference_price")
+    fee_model = settlement.get("fee_model", {})
+    if isinstance(fee_model, dict) and fee_model.get("fee_timing"):
+        notes = f"{notes}; {fee_model['fee_timing']}"
+    return {
+        "ts": position.settled_at or position.opened_at,
+        "market_id": position.market_id,
+        "outcome": position.outcome,
+        "underlying": position.underlying,
+        "side": position.side,
+        "result": result,
+        "payout_usdc": position.estimated_payout_usdc,
+        "fee_usdc": position.estimated_fee_usdc,
+        "gross_pnl_usdc": position.estimated_gross_pnl_usdc,
+        "net_pnl_usdc": position.estimated_pnl_usdc,
+        "pnl_usdc": position.estimated_pnl_usdc,
+        "notes": notes,
+    }
+
+
+def _infer_settlement_result(position: OutcomePosition) -> str:
+    if position.side == "BUY_YES":
+        return "YES" if position.estimated_payout_usdc > 0 else "NO"
+    if position.side == "BUY_NO":
+        return "NO" if position.estimated_payout_usdc > 0 else "YES"
+    return "-"
 
 
 def _elapsed_ms(started: float) -> float:

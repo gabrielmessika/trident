@@ -62,6 +62,9 @@ short_expiry_max_yes_price = 0.92
 short_expiry_max_no_price = 0.92
 short_expiry_require_momentum_alignment = true
 
+# HIP-4 outcome docs: opening positions is fee-free; fees apply when closing/settling.
+outcome_open_fee_rate = 0.0
+outcome_settlement_fee_rate = 0.002
 estimated_fees = 0.002
 estimated_slippage = 0.005
 safety_margin = 0.01

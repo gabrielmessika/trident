@@ -104,6 +104,8 @@ class Hip4OutcomeConfig:
     min_time_to_expiry_seconds: int = 20
     max_time_to_expiry_minutes: int = 1440
     estimated_fees: float = 0.002
+    outcome_open_fee_rate: float = 0.0
+    outcome_settlement_fee_rate: float = 0.002
     estimated_slippage: float = 0.005
     safety_margin: float = 0.01
     min_gross_edge: float = 0.025
@@ -196,6 +198,10 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
     if not isinstance(hyperliquid, dict):
         hyperliquid = {}
 
+    configured_settlement_fee = float(
+        section.get("outcome_settlement_fee_rate", section.get("estimated_fees", 0.002))
+    )
+
     return Hip4OutcomeConfig(
         mode=str(os.getenv("HIP4_OUTCOME_MODE", section.get("mode", "observer"))).strip().lower(),
         info_url=str(
@@ -260,7 +266,15 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         max_opportunities_per_loop=int(section.get("max_opportunities_per_loop", 2)),
         min_time_to_expiry_seconds=int(section.get("min_time_to_expiry_seconds", 20)),
         max_time_to_expiry_minutes=int(section.get("max_time_to_expiry_minutes", 1440)),
-        estimated_fees=float(section.get("estimated_fees", 0.002)),
+        estimated_fees=float(section.get("estimated_fees", configured_settlement_fee)),
+        outcome_open_fee_rate=_env_float(
+            "HIP4_OUTCOME_OPEN_FEE_RATE",
+            float(section.get("outcome_open_fee_rate", 0.0)),
+        ),
+        outcome_settlement_fee_rate=_env_float(
+            "HIP4_OUTCOME_SETTLEMENT_FEE_RATE",
+            configured_settlement_fee,
+        ),
         estimated_slippage=float(section.get("estimated_slippage", 0.005)),
         safety_margin=float(section.get("safety_margin", 0.01)),
         min_gross_edge=float(section.get("min_gross_edge", 0.025)),
