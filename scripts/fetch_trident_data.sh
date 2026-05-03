@@ -99,10 +99,11 @@ DOCKER_DIR="${LOCAL_DIR}/docker"
 HYDRA_DOCS_DIR="${LOCAL_DIR}/hydra_docs"
 CONFIG_DIR="${LOCAL_DIR}/config"
 HIP4_LOG_DIR="${LOG_DIR}/hip4_outcome_paper"
+HIP4_TESTNET_LOG_DIR="${LOG_DIR}/hip4_outcome_testnet"
 REPLAY_INPUT_DIR="${LOCAL_DIR}/replay_inputs"
 FULL_BOT_REPLAY_INPUT="${REPLAY_INPUT_DIR}/full_bot_latest_fetch.jsonl"
 
-mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${FUNDING_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${HYDRA_DOCS_DIR}" "${CONFIG_DIR}" "${HIP4_LOG_DIR}" "${REPLAY_INPUT_DIR}" "${OUTPUT_DIR}"
+mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${FUNDING_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${HYDRA_DOCS_DIR}" "${CONFIG_DIR}" "${HIP4_LOG_DIR}" "${HIP4_TESTNET_LOG_DIR}" "${REPLAY_INPUT_DIR}" "${OUTPUT_DIR}"
 
 SSH_CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/trident-fetch-XXXXXX")"
 SSH_CONTROL_PATH="${SSH_CONTROL_DIR}/cm-%C"
@@ -522,15 +523,19 @@ prepare_backtest_inputs() {
 
 fetch_logs_and_runtime() {
     info "Rapatriement des logs runtime et statuses..."
+    rm -f \
+        "${LOG_DIR}/pod_b_live.jsonl" \
+        "${LOG_DIR}/pod_b_live_report.json"
     fetch_remote_file "logs/pod_a_live.jsonl" "${LOG_DIR}/pod_a_live.jsonl" "Journal Pod A"
-    fetch_optional_remote_file "logs/pod_b_live.jsonl" "${LOG_DIR}/pod_b_live.jsonl" "Journal Pod B legacy"
     fetch_remote_file "logs/pod_c_live.jsonl" "${LOG_DIR}/pod_c_live.jsonl" "Journal Pod C"
     fetch_remote_file "logs/pod_a_live_status.json" "${RUNTIME_DIR}/pod_a_live_status.json" "Runtime status Pod A"
     fetch_remote_file "logs/pod_b_live_status.json" "${RUNTIME_DIR}/pod_b_live_status.json" "Runtime status Pod B"
     fetch_remote_file "logs/pod_c_live_status.json" "${RUNTIME_DIR}/pod_c_live_status.json" "Runtime status Pod C"
     fetch_optional_remote_file "logs/hip4_outcome_status.json" "${RUNTIME_DIR}/hip4_outcome_status.json" "Runtime status HIP-4 Outcome"
     fetch_optional_remote_file "runtime/hip4_outcome_paper_state.json" "${RUNTIME_DIR}/hip4_outcome_paper_state.json" "State HIP-4 Outcome paper"
+    fetch_optional_remote_file "runtime/hip4_outcome_testnet_state.json" "${RUNTIME_DIR}/hip4_outcome_testnet_state.json" "State HIP-4 Outcome testnet"
     fetch_optional_remote_dir "logs/hip4_outcome_paper" "${HIP4_LOG_DIR}" "Logs HIP-4 Outcome paper"
+    fetch_optional_remote_dir "logs/hip4_outcome_testnet" "${HIP4_TESTNET_LOG_DIR}" "Logs HIP-4 Outcome testnet"
     fetch_optional_remote_file "config/hip4_outcome_testnet.toml" "${CONFIG_DIR}/hip4_outcome_testnet.toml" "Config HIP-4 Outcome testnet"
     fetch_optional_remote_file "config/trident.toml" "${CONFIG_DIR}/trident.toml" "Config TRIDENT"
     fetch_remote_file "logs/funding_collector_status.json" "${RUNTIME_DIR}/funding_collector_status.json" "Runtime status Funding Collector"
@@ -644,6 +649,7 @@ if [[ "${DRY_RUN}" != "true" ]]; then
     echo "    - funding history : ${FUNDING_DIR}"
     echo "    - logs applicatifs : ${LOG_DIR}"
     echo "    - logs HIP-4 paper : ${HIP4_LOG_DIR}"
+    echo "    - logs HIP-4 testnet : ${HIP4_TESTNET_LOG_DIR}"
     echo "    - runtime statuses : ${RUNTIME_DIR}"
     echo "    - configs serveur : ${CONFIG_DIR}"
     echo "    - hydra docs : ${HYDRA_DOCS_DIR}"

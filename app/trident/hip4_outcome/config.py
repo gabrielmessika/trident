@@ -95,6 +95,7 @@ class Hip4OutcomeConfig:
         default_factory=lambda: ["binance", "okx", "bybit", "coinbase", "kraken", "hyperliquid"]
     )
     reference_price_sources_by_underlying: dict[str, list[str]] = field(default_factory=dict)
+    anchor_reference_to_hyperliquid: bool = True
     max_source_deviation_bps: float = 50.0
     min_reference_sources: int = 1
     external_price_timeout_seconds: float = 5.0
@@ -150,12 +151,15 @@ class Hip4OutcomeConfig:
     min_no_depth_usdc: float = 2.0
     max_spread: float = 0.60
     max_order_slippage: float = 0.03
+    min_order_value_usdc: float = 10.0
     outcome_size_decimals: int = 0
     order_tif: str = "Ioc"
     allow_testnet_orders: bool = False
     enforce_testnet_balance_check: bool = True
     testnet_balance_coin: str = "USDC"
     testnet_balance_buffer_usdc: float = 1.0
+    auto_transfer_testnet_spot_usdc: bool = False
+    testnet_spot_transfer_target_usdc: float = 0.0
     require_testnet_url: bool = True
     settlement_grace_seconds: int = 300
     fills_lookback_hours: float = 24.0
@@ -255,6 +259,10 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         ),
         reference_price_sources_by_underlying=_str_list_map(
             section.get("reference_price_sources_by_underlying", {})
+        ),
+        anchor_reference_to_hyperliquid=_env_bool(
+            "HIP4_OUTCOME_ANCHOR_REFERENCE_TO_HYPERLIQUID",
+            bool(section.get("anchor_reference_to_hyperliquid", True)),
         ),
         max_source_deviation_bps=float(section.get("max_source_deviation_bps", 50.0)),
         min_reference_sources=int(section.get("min_reference_sources", 1)),
@@ -365,6 +373,7 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         min_no_depth_usdc=float(section.get("min_no_depth_usdc", 2.0)),
         max_spread=float(section.get("max_spread", 0.60)),
         max_order_slippage=float(section.get("max_order_slippage", 0.03)),
+        min_order_value_usdc=float(section.get("min_order_value_usdc", 10.0)),
         outcome_size_decimals=int(section.get("outcome_size_decimals", 0)),
         order_tif=str(section.get("order_tif", "Ioc")),
         allow_testnet_orders=_env_bool(
@@ -379,6 +388,14 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         testnet_balance_buffer_usdc=_env_float(
             "HIP4_OUTCOME_TESTNET_BALANCE_BUFFER_USDC",
             float(section.get("testnet_balance_buffer_usdc", 1.0)),
+        ),
+        auto_transfer_testnet_spot_usdc=_env_bool(
+            "HIP4_OUTCOME_AUTO_TRANSFER_TESTNET_SPOT_USDC",
+            bool(section.get("auto_transfer_testnet_spot_usdc", False)),
+        ),
+        testnet_spot_transfer_target_usdc=_env_float(
+            "HIP4_OUTCOME_TESTNET_SPOT_TRANSFER_TARGET_USDC",
+            float(section.get("testnet_spot_transfer_target_usdc", 0.0)),
         ),
         require_testnet_url=bool(section.get("require_testnet_url", True)),
         settlement_grace_seconds=int(section.get("settlement_grace_seconds", 300)),

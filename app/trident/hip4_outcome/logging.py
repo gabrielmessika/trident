@@ -13,6 +13,7 @@ class OutcomeEventLogger:
         self.opportunities_path = self.logs_dir / "opportunities.csv"
         self.decisions_path = self.logs_dir / "decisions.jsonl"
         self.trades_path = self.logs_dir / "trades.csv"
+        self.execution_results_path = self.logs_dir / "execution_results.jsonl"
         self.settlements_path = self.logs_dir / "settlements.csv"
         self.latency_path = self.logs_dir / "latency_stats.csv"
         self.edge_decay_path = self.logs_dir / "edge_decay.csv"
@@ -67,6 +68,9 @@ class OutcomeEventLogger:
             ],
             row,
         )
+
+    def log_execution_result(self, payload: dict[str, Any]) -> None:
+        self._append_jsonl(self.execution_results_path, payload)
 
     def log_settlement(self, row: dict[str, Any]) -> None:
         self._append_csv(

@@ -7,8 +7,8 @@ mode = "paper" # observer | paper | testnet
 allow_testnet_orders = false
 require_testnet_url = true
 
-logs_dir = "./logs/hip4_outcome_paper"
-state_path = "./runtime/hip4_outcome_paper_state.json"
+logs_dir = "./logs/hip4_outcome_testnet"
+state_path = "./runtime/hip4_outcome_testnet_state.json"
 status_path = "./logs/hip4_outcome_status.json"
 write_pod_b_alias_status = true
 pod_b_alias_status_path = "./logs/pod_b_live_status.json"
@@ -22,8 +22,10 @@ info_requests_per_minute = 240
 
 # Empty list = accept every priceBinary outcome returned by testnet outcomeMeta.
 include_underlyings = []
-# In testnet, stay settlement-aligned. External venues can diverge from testnet mids.
-reference_price_sources = ["hyperliquid"]
+# Use public venues where they stay close to the testnet mark, while allowing
+# mainnet/testnet divergence to be observed and rejected instead of hidden.
+reference_price_sources = ["binance", "okx", "bybit", "coinbase", "kraken", "hyperliquid"]
+anchor_reference_to_hyperliquid = true
 max_source_deviation_bps = 50
 min_reference_sources = 1
 external_price_timeout_seconds = 5
@@ -72,21 +74,27 @@ min_gross_edge = 0.025
 min_net_edge = 0.015
 
 default_annualized_vol = 0.85
-max_position_usdc = 5
-pod_b_budget_usdc = 25
-max_total_outcome_exposure_usdc = 25
-max_per_underlying_outcome_exposure_usdc = 10
+max_position_usdc = 12
+pod_b_budget_usdc = 36
+max_total_outcome_exposure_usdc = 36
+max_per_underlying_outcome_exposure_usdc = 12
 max_outcome_markets_open = 3
 
-min_yes_depth_usdc = 2
-min_no_depth_usdc = 2
+min_yes_depth_usdc = 12
+min_no_depth_usdc = 12
 max_spread = 0.60
 max_order_slippage = 0.03
+min_order_value_usdc = 10
 outcome_size_decimals = 0
 order_tif = "Ioc"
 enforce_testnet_balance_check = true
 testnet_balance_coin = "USDC"
 testnet_balance_buffer_usdc = 1
+# API wallets can place orders for the account address, but USD class transfers
+# must be done by the funded wallet in the HL UI. Keep this off unless the
+# secret key is a funded wallet key dedicated to the pod.
+auto_transfer_testnet_spot_usdc = false
+testnet_spot_transfer_target_usdc = 37
 settlement_grace_seconds = 300
 fills_lookback_hours = 24
 reconcile_after_execution = true

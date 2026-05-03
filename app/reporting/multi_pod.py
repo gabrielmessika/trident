@@ -42,6 +42,8 @@ class RuntimeServiceReport:
     records_written: int = 0
     last_collected_at: str | None = None
     output_path: str | None = None
+    error_count: int = 0
+    last_error: str | None = None
     comment: str | None = None
 
 
@@ -399,10 +401,11 @@ def _runtime_service_report(
             output_path=None,
             comment="Runtime status absent.",
         )
-    healthy = runtime_status_is_fresh(payload)
+    process_state = str(payload.get("process_state") or "unknown")
+    healthy = runtime_status_is_fresh(payload) and process_state != "degraded"
     polls_completed = int(payload.get("polls_completed", 0))
     records_written = int(payload.get("records_written", 0))
-    process_state = str(payload.get("process_state") or "unknown")
+    last_error = str(payload.get("last_error")) if payload.get("last_error") else None
     return RuntimeServiceReport(
         service=str(payload.get("service") or service),
         label=str(payload.get("label") or label),
@@ -416,9 +419,13 @@ def _runtime_service_report(
             str(payload.get("last_collected_at")) if payload.get("last_collected_at") else None
         ),
         output_path=str(payload.get("output_path")) if payload.get("output_path") else None,
+        error_count=int(payload.get("error_count", 0)),
+        last_error=last_error,
         comment=(
             "Collector healthy."
             if healthy
+            else f"Collector degraded: {last_error}"
+            if process_state == "degraded" and last_error
             else "Runtime status stale."
             if payload.get("updated_at")
             else "Runtime status absent."

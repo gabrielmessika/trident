@@ -231,6 +231,7 @@ class OutcomeFill:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["token_qty"] = str(self.token_qty)
+        payload["raw"] = _json_safe(self.raw)
         return payload
 
 
@@ -248,6 +249,16 @@ class OutcomeExecutionResult:
     @property
     def total_cost_usdc(self) -> float:
         return round(sum(fill.cost_usdc for fill in self.fills), 8)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "filled": self.filled,
+            "total_cost_usdc": self.total_cost_usdc,
+            "error": self.error,
+            "fills": [fill.to_dict() for fill in self.fills],
+            "raw": _json_safe(self.raw),
+        }
 
 
 @dataclass(slots=True)
@@ -277,6 +288,18 @@ class OutcomePosition:
         payload = asdict(self)
         payload["fills"] = [fill.to_dict() for fill in self.fills]
         return payload
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "OutcomePosition":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ from pathlib import Path
 from app.hyperliquid.funding_client import HyperliquidFundingClient, FundingMarketSnapshot
 from app.live.runtime_status import write_runtime_status
 from app.settings import AppConfig, load_config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -20,6 +23,9 @@ class FundingCollectorStats:
     status_path: str | None = None
     last_collected_at: str | None = None
     symbol_count: int = 0
+    error_count: int = 0
+    last_error: str | None = None
+    last_error_at: str | None = None
 
 
 class FundingHistoryCollector:
@@ -98,6 +104,9 @@ class FundingHistoryCollector:
                 "polls_completed": stats.polls_completed,
                 "records_written": stats.records_written,
                 "last_collected_at": stats.last_collected_at,
+                "error_count": stats.error_count,
+                "last_error": stats.last_error,
+                "last_error_at": stats.last_error_at,
             },
         )
 
@@ -135,28 +144,46 @@ class FundingHistoryCollector:
         )
         remaining = iterations
         while remaining is None or remaining > 0:
-            records = self.collect_once(
-                output_path=output_path,
-                symbols=selected_symbols,
-                include_delisted=include_delisted,
-            )
-            stats.polls_completed += 1
-            stats.records_written += len(records)
-            stats.last_collected_at = (
-                str(records[-1].get("timestamp"))
-                if records
-                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            )
-            self._write_runtime_status(
-                status_path=status_path,
-                collector_name=collector_name,
-                collector_label=collector_label,
-                process_state="running",
-                output_path=output_path,
-                poll_seconds=poll_seconds,
-                selected_symbols=selected_symbols,
-                stats=stats,
-            )
+            try:
+                records = self.collect_once(
+                    output_path=output_path,
+                    symbols=selected_symbols,
+                    include_delisted=include_delisted,
+                )
+            except Exception as exc:
+                stats.error_count += 1
+                stats.last_error = f"{type(exc).__name__}: {exc}"
+                stats.last_error_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                logger.warning("%s poll failed: %s", collector_label, stats.last_error)
+                self._write_runtime_status(
+                    status_path=status_path,
+                    collector_name=collector_name,
+                    collector_label=collector_label,
+                    process_state="degraded",
+                    output_path=output_path,
+                    poll_seconds=poll_seconds,
+                    selected_symbols=selected_symbols,
+                    stats=stats,
+                )
+            else:
+                stats.polls_completed += 1
+                stats.records_written += len(records)
+                stats.last_collected_at = (
+                    str(records[-1].get("timestamp"))
+                    if records
+                    else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
+                stats.last_error = None
+                self._write_runtime_status(
+                    status_path=status_path,
+                    collector_name=collector_name,
+                    collector_label=collector_label,
+                    process_state="running",
+                    output_path=output_path,
+                    poll_seconds=poll_seconds,
+                    selected_symbols=selected_symbols,
+                    stats=stats,
+                )
             if remaining is not None:
                 remaining -= 1
                 if remaining <= 0:

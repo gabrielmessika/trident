@@ -224,10 +224,34 @@ fresh_start_cleanup() {
         logs/pod_b_live_report.json \
         logs/pod_c_live_report.json \
         runtime/hip4_outcome_state.json \
-        runtime/hip4_outcome_paper_state.json
+        runtime/hip4_outcome_paper_state.json \
+        runtime/hip4_outcome_testnet_state.json \
+        2>/dev/null || true
     rm -rf \
         logs/hip4_outcome \
-        logs/hip4_outcome_paper
+        logs/hip4_outcome_paper \
+        logs/hip4_outcome_testnet \
+        2>/dev/null || true
+    compose_all run --rm --no-deps --entrypoint sh trident-api -c '
+        rm -f \
+            /app/logs/pod_a_live.jsonl \
+            /app/logs/pod_b_live.jsonl \
+            /app/logs/pod_c_live.jsonl \
+            /app/logs/pod_a_live_status.json \
+            /app/logs/pod_b_live_status.json \
+            /app/logs/pod_c_live_status.json \
+            /app/logs/hip4_outcome_status.json \
+            /app/logs/pod_a_live_report.json \
+            /app/logs/pod_b_live_report.json \
+            /app/logs/pod_c_live_report.json \
+            /app/runtime/hip4_outcome_state.json \
+            /app/runtime/hip4_outcome_paper_state.json \
+            /app/runtime/hip4_outcome_testnet_state.json
+        rm -rf \
+            /app/logs/hip4_outcome \
+            /app/logs/hip4_outcome_paper \
+            /app/logs/hip4_outcome_testnet
+    ' >/dev/null
     ok "Artefacts live réinitialisés"
 }
 

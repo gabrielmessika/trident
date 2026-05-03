@@ -64,6 +64,13 @@ class UnderlyingOverlapLock:
         path = self.path
         if not path.exists():
             return
+        payload = self._read_payload()
+        if self._is_dead_owner_lock(payload):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            return
         try:
             age = time.time() - path.stat().st_mtime
         except OSError:
@@ -74,3 +81,27 @@ class UnderlyingOverlapLock:
             path.unlink()
         except FileNotFoundError:
             pass
+
+    def _read_payload(self) -> dict[str, object]:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _is_dead_owner_lock(self, payload: dict[str, object]) -> bool:
+        if str(payload.get("owner")) != self.owner:
+            return False
+        try:
+            pid = int(payload.get("pid", 0))
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0 or pid == os.getpid():
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        return False

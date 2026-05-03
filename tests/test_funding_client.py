@@ -120,6 +120,47 @@ class FundingClientTests(unittest.TestCase):
             self.assertEqual(payload["process_state"], "completed")
             self.assertEqual(payload["symbol_count"], 1)
             self.assertEqual(payload["records_written"], 1)
+            self.assertEqual(payload["error_count"], 0)
+            self.assertIsNone(payload["last_error"])
+
+    def test_funding_collector_keeps_running_after_transient_error(self) -> None:
+        config = load_config("config/trident.toml")
+
+        class _FlakyClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def fetch_current_funding(self, **_: object):
+                self.calls += 1
+                if self.calls == 1:
+                    raise TimeoutError("temporary read timeout")
+                return extract_current_funding(
+                    [
+                        {"universe": [{"name": "BTC"}]},
+                        [{"funding": "-0.0001", "openInterest": "10", "markPx": "70000"}],
+                    ]
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "funding.jsonl"
+            status_path = Path(tmpdir) / "funding_status.json"
+            stats = FundingHistoryCollector(config, client=_FlakyClient()).run(
+                output_path=output_path,
+                status_path=status_path,
+                poll_seconds=0.0,
+                iterations=2,
+                symbols=["BTC"],
+            )
+
+            self.assertEqual(stats.error_count, 1)
+            self.assertEqual(stats.polls_completed, 1)
+            self.assertEqual(stats.records_written, 1)
+            payload = load_runtime_status(status_path)
+            self.assertIsNotNone(payload)
+            assert payload is not None
+            self.assertEqual(payload["process_state"], "completed")
+            self.assertEqual(payload["error_count"], 1)
+            self.assertIsNone(payload["last_error"])
 
     def test_fetch_current_funding_merges_builder_dex_symbols(self) -> None:
         config = load_config("config/trident.toml").hyperliquid

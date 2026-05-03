@@ -100,14 +100,14 @@ class ExternalPriceAggregator:
         underlying: str,
         quotes: list[ReferencePriceQuote],
     ) -> ReferencePrice | None:
-        median = statistics.median([quote.price for quote in quotes])
-        if median <= 0:
+        anchor = self._selection_anchor(quotes)
+        if anchor <= 0:
             return None
         kept: list[ReferencePriceQuote] = []
         rejected: list[ReferencePriceQuote] = []
         max_deviation = 0.0
         for quote in quotes:
-            deviation = abs(quote.price - median) / median * 10_000.0
+            deviation = abs(quote.price - anchor) / anchor * 10_000.0
             max_deviation = max(max_deviation, deviation)
             if deviation <= self.config.max_source_deviation_bps:
                 kept.append(quote)
@@ -124,6 +124,13 @@ class ExternalPriceAggregator:
             rejected_quotes=rejected,
             max_deviation_bps=round(max_deviation, 4),
         )
+
+    def _selection_anchor(self, quotes: list[ReferencePriceQuote]) -> float:
+        if self.config.anchor_reference_to_hyperliquid:
+            for quote in quotes:
+                if quote.source == "hyperliquid" and quote.price > 0:
+                    return quote.price
+        return float(statistics.median([quote.price for quote in quotes]))
 
     def _fetch_binance(self, underlying: str) -> ReferencePriceQuote | None:
         symbol = f"{underlying.upper()}USDT"

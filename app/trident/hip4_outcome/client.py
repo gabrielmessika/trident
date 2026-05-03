@@ -61,6 +61,12 @@ class HIP4OutcomeInfoClient:
             timeout=self.config.request_timeout_seconds,
         )
 
+    def fetch_clearinghouse_state(self, user: str) -> object:
+        return self.inner.post_info(
+            {"type": "clearinghouseState", "user": user},
+            timeout=self.config.request_timeout_seconds,
+        )
+
     def fetch_user_fills_by_time(
         self,
         *,

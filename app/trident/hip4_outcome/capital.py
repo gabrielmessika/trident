@@ -20,7 +20,11 @@ class OutcomeCapitalSnapshot:
     approved_size_after_usdc: float = 0.0
     testnet_balance_coin: str = "USDC"
     testnet_available_usdc: float | None = None
+    testnet_balance_source: str | None = None
+    testnet_perp_withdrawable_usdc: float | None = None
     testnet_balance_buffer_usdc: float = 0.0
+    testnet_spot_transfer_usdc: float = 0.0
+    testnet_spot_transfer_status: str | None = None
     account_address: str | None = None
     reason: str = "capital_ok"
     error: str | None = None
@@ -142,6 +146,17 @@ class OutcomeCapitalGuard:
             ),
         )
 
+    def testnet_balance_snapshot(
+        self,
+        *,
+        open_positions: list[OutcomePosition],
+        testnet_executor: Any | None,
+    ) -> OutcomeCapitalSnapshot:
+        return self._testnet_balance_snapshot(
+            snapshot=self.local_snapshot(open_positions=open_positions),
+            testnet_executor=testnet_executor,
+        )
+
     def _testnet_balance_snapshot(
         self,
         *,
@@ -157,13 +172,85 @@ class OutcomeCapitalGuard:
                 balances,
                 coin=self.config.testnet_balance_coin,
             )
+            source = "spotClearinghouseState"
+            transfer_usdc = Decimal("0")
+            transfer_status: str | None = None
+            clearinghouse_available = self._fetch_clearinghouse_withdrawable(account_address)
+            if self.config.auto_transfer_testnet_spot_usdc:
+                transfer_target = Decimal(str(self._spot_transfer_target_usdc(snapshot)))
+                if available < transfer_target and clearinghouse_available is not None:
+                    transfer_usdc = min(
+                        max(transfer_target - available, Decimal("0")),
+                        max(
+                            clearinghouse_available - Decimal(str(self.config.testnet_balance_buffer_usdc)),
+                            Decimal("0"),
+                        ),
+                    )
+                    if transfer_usdc > 0:
+                        transferer = getattr(testnet_executor, "transfer_usd_to_spot", None)
+                        if transferer is None:
+                            transfer_status = "transfer_method_unavailable"
+                        else:
+                            raw = transferer(float(transfer_usdc))
+                            transfer_status = _transfer_status(raw)
+                            source = "spotClearinghouseState_after_usdClassTransfer"
+                            balances = parse_spot_balances(
+                                self.info_client.fetch_spot_state(account_address)
+                            )
+                            available = _available_balance_usdc(
+                                balances,
+                                coin=self.config.testnet_balance_coin,
+                            )
+            elif available <= 0 and clearinghouse_available is not None and clearinghouse_available > 0:
+                transfer_status = "manual_usd_class_transfer_required"
             return replace(
                 snapshot,
                 account_address=account_address,
                 testnet_available_usdc=round(float(available), 8),
+                testnet_balance_source=source,
+                testnet_perp_withdrawable_usdc=(
+                    None
+                    if clearinghouse_available is None
+                    else round(float(clearinghouse_available), 8)
+                ),
+                testnet_spot_transfer_usdc=round(float(transfer_usdc), 8),
+                testnet_spot_transfer_status=transfer_status,
             )
         except Exception as exc:
             return replace(snapshot, error=str(exc))
+
+    def _spot_transfer_target_usdc(self, snapshot: OutcomeCapitalSnapshot) -> float:
+        configured = float(self.config.testnet_spot_transfer_target_usdc)
+        if configured > 0:
+            return round(configured, 8)
+        budget_target = min(
+            float(snapshot.remaining_budget_usdc),
+            self._budget_usdc(),
+        )
+        return round(
+            max(
+                budget_target + float(self.config.testnet_balance_buffer_usdc),
+                float(self.config.min_order_value_usdc) + float(self.config.testnet_balance_buffer_usdc),
+            ),
+            8,
+        )
+
+    def _fetch_clearinghouse_withdrawable(self, account_address: str) -> Decimal | None:
+        fetcher = getattr(self.info_client, "fetch_clearinghouse_state", None)
+        if fetcher is None:
+            return None
+        payload = fetcher(account_address)
+        if not isinstance(payload, dict):
+            return None
+        withdrawable = _decimal_or_none(payload.get("withdrawable"))
+        if withdrawable is not None:
+            return max(withdrawable, Decimal("0"))
+        margin_summary = payload.get("marginSummary", {})
+        if isinstance(margin_summary, dict):
+            account_value = _decimal_or_none(margin_summary.get("accountValue"))
+            if account_value is not None:
+                return max(account_value, Decimal("0"))
+        return None
 
     def _budget_usdc(self) -> float:
         configured = float(self.config.pod_b_budget_usdc)
@@ -208,3 +295,24 @@ def _available_balance_usdc(
         if normalized == target:
             return Decimal(balance.available)
     return Decimal("0")
+
+
+def _decimal_or_none(value: object) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _transfer_status(raw: object) -> str:
+    if not isinstance(raw, dict):
+        return str(raw)
+    status = str(raw.get("status", "unknown"))
+    response = raw.get("response")
+    if status.lower() != "ok":
+        return f"{status}:{response}"
+    if isinstance(response, dict) and response.get("type"):
+        return f"ok:{response.get('type')}"
+    return status

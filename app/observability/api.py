@@ -115,6 +115,24 @@ def _float_or_none(value: object) -> float | None:
         return None
 
 
+def _execution_fill_statuses(row: dict[str, object]) -> str:
+    fills = row.get("fills")
+    if not isinstance(fills, list) or not fills:
+        return "-"
+    statuses: list[str] = []
+    for fill in fills:
+        if not isinstance(fill, dict):
+            continue
+        side = str(fill.get("side_name") or fill.get("coin") or "leg")
+        status = str(fill.get("status") or "-")
+        qty = fill.get("token_qty")
+        if qty not in (None, ""):
+            statuses.append(f"{side}:{status}:{qty}")
+        else:
+            statuses.append(f"{side}:{status}")
+    return " | ".join(statuses) if statuses else "-"
+
+
 def _first_float(row: dict[str, object], *keys: str) -> float | None:
     for key in keys:
         value = _float_or_none(row.get(key))
@@ -159,6 +177,7 @@ def _hip4_outcome_monitor_payload(
     edge_decay = _tail_csv_records(logs_dir / "edge_decay.csv", limit=24)
     short_expiry_features = _tail_csv_records(logs_dir / "short_expiry_features.csv", limit=36)
     latency = _tail_csv_records(logs_dir / "latency_stats.csv", limit=12)
+    execution_results = _tail_jsonl_records(logs_dir / "execution_results.jsonl", limit=24, scan_lines=1000)
     daily_summary = _tail_csv_records(logs_dir / "daily_summary.csv", limit=24)
     settlements = _tail_csv_records(logs_dir / "settlements.csv", limit=24)
     fills = _tail_csv_records(logs_dir / "trades.csv", limit=24)
@@ -303,6 +322,12 @@ def _hip4_outcome_monitor_payload(
         "short_expiry_features": short_expiry_features,
         "edge_decay": edge_decay,
         "latency": latency,
+        "execution_results": execution_results,
+        "last_execution_results": (
+            status.get("last_execution_results")
+            if isinstance(status, dict) and isinstance(status.get("last_execution_results"), list)
+            else []
+        ),
         "daily_summary": daily_summary,
         "settlements": settlements,
         "fills": fills,
@@ -574,6 +599,207 @@ def _recent_directional_trade_rows(runtime_payload: dict[str, object] | None, *,
             }
         )
     return rows
+
+
+def _normalized_trade_side(value: object) -> str:
+    raw = str(value or "").strip()
+    normalized = raw.lower()
+    if normalized in {"long", "buy", "buy_yes", "yes"} or normalized.endswith("_long"):
+        return "long"
+    if normalized in {"short", "sell", "buy_no", "no"} or normalized.endswith("_short"):
+        return "short"
+    if "long" in normalized and "short" not in normalized:
+        return "long"
+    if "short" in normalized:
+        return "short"
+    return normalized or "-"
+
+
+def _trade_summary_key(pod: str, symbol: object, side: object) -> tuple[str, str, str]:
+    normalized_symbol = str(symbol or "-").strip().upper() or "-"
+    return (str(pod), normalized_symbol, _normalized_trade_side(side))
+
+
+def _add_trade_summary_row(
+    rows: dict[tuple[str, str, str], dict[str, object]],
+    *,
+    pod: str,
+    symbol: object,
+    side: object,
+    closed_trades: int = 0,
+    open_positions: int = 0,
+    realized_pnl_usd: object = None,
+    unrealized_pnl_usd: object = None,
+) -> None:
+    key = _trade_summary_key(pod, symbol, side)
+    if key not in rows:
+        rows[key] = {
+            "pod": key[0],
+            "symbol": key[1],
+            "side": key[2],
+            "closed_trade_count": 0,
+            "open_position_count": 0,
+            "realized_pnl_usd": 0.0,
+            "unrealized_pnl_usd": 0.0,
+            "total_pnl_usd": 0.0,
+        }
+    row = rows[key]
+    row["closed_trade_count"] = int(row["closed_trade_count"]) + int(closed_trades)
+    row["open_position_count"] = int(row["open_position_count"]) + int(open_positions)
+    realized = _float_or_none(realized_pnl_usd)
+    if realized is not None:
+        row["realized_pnl_usd"] = round(float(row["realized_pnl_usd"]) + realized, 8)
+    unrealized = _float_or_none(unrealized_pnl_usd)
+    if unrealized is not None:
+        row["unrealized_pnl_usd"] = round(float(row["unrealized_pnl_usd"]) + unrealized, 8)
+    row["total_pnl_usd"] = round(
+        float(row["realized_pnl_usd"]) + float(row["unrealized_pnl_usd"]),
+        8,
+    )
+
+
+def _sorted_trade_summary(rows: dict[tuple[str, str, str], dict[str, object]]) -> list[dict[str, object]]:
+    return sorted(
+        rows.values(),
+        key=lambda item: (
+            str(item.get("pod", "")),
+            str(item.get("symbol", "")),
+            str(item.get("side", "")),
+        ),
+    )
+
+
+def _directional_pod_trade_summary(
+    runtime_payload: dict[str, object] | None,
+    *,
+    pod: str,
+) -> list[dict[str, object]]:
+    if not isinstance(runtime_payload, dict):
+        return []
+    rows: dict[tuple[str, str, str], dict[str, object]] = {}
+    report = runtime_payload.get("report", {})
+    if not isinstance(report, dict):
+        report = {}
+    closed_trade_log = report.get("closed_trade_log", [])
+    if isinstance(closed_trade_log, list) and closed_trade_log:
+        for item in closed_trade_log:
+            if not isinstance(item, dict):
+                continue
+            _add_trade_summary_row(
+                rows,
+                pod=pod,
+                symbol=item.get("symbol"),
+                side=item.get("side"),
+                closed_trades=1,
+                realized_pnl_usd=item.get("pnl_usd"),
+            )
+    else:
+        trades_by_symbol = report.get("trades_by_symbol", {})
+        pnl_by_symbol = report.get("pnl_by_symbol", {})
+        if isinstance(trades_by_symbol, dict):
+            for symbol, count in trades_by_symbol.items():
+                pnl = pnl_by_symbol.get(symbol) if isinstance(pnl_by_symbol, dict) else None
+                _add_trade_summary_row(
+                    rows,
+                    pod=pod,
+                    symbol=symbol,
+                    side="mixed",
+                    closed_trades=int(count or 0),
+                    realized_pnl_usd=pnl,
+                )
+    open_positions = runtime_payload.get("open_positions", [])
+    if isinstance(open_positions, list):
+        for item in open_positions:
+            if not isinstance(item, dict):
+                continue
+            _add_trade_summary_row(
+                rows,
+                pod=pod,
+                symbol=item.get("symbol"),
+                side=item.get("side"),
+                open_positions=1,
+                unrealized_pnl_usd=item.get("unrealized_pnl_usd"),
+            )
+    return _sorted_trade_summary(rows)
+
+
+def _hip4_pod_trade_summary(runtime_payload: dict[str, object] | None) -> list[dict[str, object]]:
+    if not isinstance(runtime_payload, dict):
+        return []
+    rows: dict[tuple[str, str, str], dict[str, object]] = {}
+    settled_positions = runtime_payload.get("settled_positions", [])
+    if isinstance(settled_positions, list):
+        for item in settled_positions:
+            if not isinstance(item, dict):
+                continue
+            _add_trade_summary_row(
+                rows,
+                pod="pod_b",
+                symbol=item.get("underlying") or item.get("symbol"),
+                side=item.get("side"),
+                closed_trades=1,
+                realized_pnl_usd=_first_float(
+                    item,
+                    "estimated_pnl_usdc",
+                    "net_pnl_usdc",
+                    "pnl_usdc",
+                ),
+            )
+    open_positions = runtime_payload.get("open_positions", [])
+    if isinstance(open_positions, list):
+        for item in open_positions:
+            if not isinstance(item, dict):
+                continue
+            _add_trade_summary_row(
+                rows,
+                pod="pod_b",
+                symbol=item.get("underlying") or item.get("symbol"),
+                side=item.get("side"),
+                open_positions=1,
+                unrealized_pnl_usd=_first_float(
+                    item,
+                    "estimated_pnl_usdc",
+                    "unrealized_pnl_usd",
+                    "estimated_gross_pnl_usdc",
+                ),
+            )
+    return _sorted_trade_summary(rows)
+
+
+def _pod_trade_summary(
+    runtime_payload: dict[str, object] | None,
+    *,
+    pod: str,
+) -> list[dict[str, object]]:
+    if pod == "pod_b" and is_hip4_pod_b_replacement_runtime(runtime_payload):
+        return _hip4_pod_trade_summary(runtime_payload)
+    return _directional_pod_trade_summary(runtime_payload, pod=pod)
+
+
+def _global_trade_summary(
+    pod_rows: dict[str, list[dict[str, object]]],
+) -> list[dict[str, object]]:
+    rows: dict[tuple[str, str, str], dict[str, object]] = {}
+    pods_by_key: dict[tuple[str, str, str], set[str]] = {}
+    for pod, summary_rows in pod_rows.items():
+        for item in summary_rows:
+            key = _trade_summary_key("global", item.get("symbol"), item.get("side"))
+            _add_trade_summary_row(
+                rows,
+                pod="global",
+                symbol=item.get("symbol"),
+                side=item.get("side"),
+                closed_trades=int(item.get("closed_trade_count", 0) or 0),
+                open_positions=int(item.get("open_position_count", 0) or 0),
+                realized_pnl_usd=item.get("realized_pnl_usd"),
+                unrealized_pnl_usd=item.get("unrealized_pnl_usd"),
+            )
+            pods_by_key.setdefault(key, set()).add(pod)
+    merged = _sorted_trade_summary(rows)
+    for item in merged:
+        key = _trade_summary_key("global", item.get("symbol"), item.get("side"))
+        item["pods"] = sorted(pods_by_key.get(key, set()))
+    return merged
 
 
 def _open_position_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
@@ -1168,6 +1394,14 @@ def _control_center_html(
     recent_activity = _recent_activity_rows(snapshot)
     open_rows = _open_position_rows(snapshot)
     event_rows = _trade_event_rows(snapshot)
+    pod_trade_summary_rows = {
+        pod_name: _pod_trade_summary(
+            snapshot.get(f"{pod_name}_runtime"),
+            pod=pod_name,
+        )
+        for pod_name in ("pod_a", "pod_b", "pod_c")
+    }
+    global_trade_summary_rows = _global_trade_summary(pod_trade_summary_rows)
     pod_b_status = snapshot.get("pod_b_status", {})
     health_map = {
         str(item.get("pod")): item
@@ -1279,6 +1513,70 @@ def _control_center_html(
                 "</article>"
             )
             for card in cards
+        )
+
+    def render_coin_trade_summary_rows(
+        rows: list[dict[str, object]],
+        *,
+        include_pods: bool = False,
+    ) -> str:
+        if not rows:
+            colspan = 8 if include_pods else 7
+            return f"<tr><td colspan='{colspan}'>Aucun trade par coin visible pour le moment.</td></tr>"
+        rendered_rows: list[str] = []
+        for item in rows:
+            pods = item.get("pods", [])
+            pods_label = (
+                ", ".join(_pod_label(str(pod)) for pod in pods)
+                if isinstance(pods, list) and pods
+                else "-"
+            )
+            pod_cell = f"<td>{escape(pods_label)}</td>" if include_pods else ""
+            rendered_rows.append(
+                "<tr>"
+                f"<td>{escape(str(item.get('symbol', '-')))}</td>"
+                f"<td>{escape(str(item.get('side', '-')))}</td>"
+                f"{pod_cell}"
+                f"<td>{int(item.get('closed_trade_count', 0) or 0)}</td>"
+                f"<td>{int(item.get('open_position_count', 0) or 0)}</td>"
+                f"<td>{fmt_signed_usd(item.get('realized_pnl_usd'))}</td>"
+                f"<td>{fmt_signed_usd(item.get('unrealized_pnl_usd'))}</td>"
+                f"<td>{fmt_signed_usd(item.get('total_pnl_usd'))}</td>"
+                "</tr>"
+            )
+        return "".join(rendered_rows)
+
+    def render_coin_trade_summary_panel(
+        *,
+        title: str,
+        description: str,
+        rows: list[dict[str, object]],
+        include_pods: bool = False,
+        tone: object = "neutral",
+    ) -> str:
+        pod_header = _table_header("Pods", "Pods qui ont eu une activité visible sur ce coin et ce sens.") if include_pods else ""
+        return (
+            f"<div class='panel panel-{escape(_panel_tone(tone))}'>"
+            "<div class='panel-header'>"
+            f"<h3>{escape(title)}</h3>"
+            f"<p>{escape(description)}</p>"
+            "</div>"
+            "<div class='table-wrap'>"
+            "<table>"
+            "<thead><tr>"
+            f"{_table_header('Coin', 'Sous-jacent ou symbole tradé.')}"
+            f"{_table_header('Sens', 'Lecture normalisée: long, short ou mixed quand les vieux agrégats ne donnent pas le sens.')}"
+            f"{pod_header}"
+            f"{_table_header('Trades', 'Nombre de trades fermés visibles pour ce coin et ce sens.')}"
+            f"{_table_header('Ouvert', 'Nombre de positions encore ouvertes pour ce coin et ce sens.')}"
+            f"{_table_header('PnL réalisé', 'PnL des trades fermés, net de fees quand le pod les modélise.')}"
+            f"{_table_header('PnL latent', 'PnL non réalisé des positions encore ouvertes, quand disponible.')}"
+            f"{_table_header('PnL visible', 'Somme du PnL réalisé et du PnL latent visible dans le runtime.')}"
+            "</tr></thead>"
+            f"<tbody>{render_coin_trade_summary_rows(rows, include_pods=include_pods)}</tbody>"
+            "</table>"
+            "</div>"
+            "</div>"
         )
 
     def render_preview_list(items: object) -> str:
@@ -2020,6 +2318,13 @@ def _control_center_html(
             {cards}
           </div>
         </div>
+
+        {render_coin_trade_summary_panel(
+            title="Performance par coin",
+            description="Settlements paper HIP-4 et positions encore ouvertes, regroupés par underlying et par sens normalisé.",
+            rows=pod_trade_summary_rows["pod_b"],
+            tone=tone,
+        )}
 
         <div class="panel panel-{escape(_panel_tone(tone))}">
           <div class="panel-header">
@@ -2927,6 +3232,14 @@ def _control_center_html(
             {pod_cards}
           </div>
         </div>
+
+        {render_coin_trade_summary_panel(
+            title="Performance globale par coin",
+            description="Synthèse tous pods confondus, agrégée par coin et par sens. Le Pod B HIP-4 est normalisé en long pour BUY_YES et short pour BUY_NO.",
+            rows=global_trade_summary_rows,
+            include_pods=True,
+            tone=global_tone,
+        )}
       </section>
 
       <section class="tab-panel{' is-active' if active_tab == 'pod_a' else ''}" data-tab-panel="pod_a">
@@ -2948,6 +3261,27 @@ def _control_center_html(
         </div>
 
         <div class="pod-detail-grid">
+          {render_coin_trade_summary_panel(
+            title="Performance par coin",
+            description="Trades Pod A fermés et positions encore ouvertes, regroupés par coin et par sens.",
+            rows=pod_trade_summary_rows["pod_a"],
+            tone=pod_a_summary["tone"],
+        )}
+          <div class="panel panel-neutral">
+            <div class="panel-header">
+              <h3>Signal preview</h3>
+              <p>Signaux vus par le superviseur mais pas encore forcément convertis en position.</p>
+            </div>
+            {render_preview_list(snapshot.get("pod_a_signal_preview"))}
+            <div class="panel-header" style="margin-top:16px">
+              <h3>Pourquoi filtré</h3>
+              <p>Derniers symboles vus mais bloqués avant émission de signal.</p>
+            </div>
+            {render_review_list(snapshot.get("pod_a_signal_review"))}
+          </div>
+        </div>
+
+        <div class="pod-detail-grid">
           <div class="panel panel-{escape(_panel_tone(pod_a_summary['tone']))}">
             <div class="panel-header">
               <h3>Trades ouverts</h3>
@@ -2961,18 +3295,6 @@ def _control_center_html(
                 <tbody>{render_directional_open_rows("pod_a")}</tbody>
               </table>
             </div>
-          </div>
-          <div class="panel panel-neutral">
-            <div class="panel-header">
-              <h3>Signal preview</h3>
-              <p>Signaux vus par le superviseur mais pas encore forcément convertis en position.</p>
-            </div>
-            {render_preview_list(snapshot.get("pod_a_signal_preview"))}
-            <div class="panel-header" style="margin-top:16px">
-              <h3>Pourquoi filtré</h3>
-              <p>Derniers symboles vus mais bloqués avant émission de signal.</p>
-            </div>
-            {render_review_list(snapshot.get("pod_a_signal_review"))}
           </div>
         </div>
 
@@ -3013,6 +3335,22 @@ def _control_center_html(
         </div>
 
         <div class="pod-detail-grid">
+          {render_coin_trade_summary_panel(
+            title="Performance par coin",
+            description="Trades Pod C fermés et positions event encore ouvertes, regroupés par coin et par sens.",
+            rows=pod_trade_summary_rows["pod_c"],
+            tone=pod_c_summary["tone"],
+        )}
+          <div class="panel panel-neutral">
+            <div class="panel-header">
+              <h3>Signal preview</h3>
+              <p>Signaux event / lead-lag vus mais pas encore transformés en position.</p>
+            </div>
+            {render_preview_list(snapshot.get("pod_c_signal_preview"))}
+          </div>
+        </div>
+
+        <div class="pod-detail-grid">
           <div class="panel panel-{escape(_panel_tone(pod_c_summary['tone']))}">
             <div class="panel-header">
               <h3>Trades ouverts</h3>
@@ -3026,13 +3364,6 @@ def _control_center_html(
                 <tbody>{render_directional_open_rows("pod_c")}</tbody>
               </table>
             </div>
-          </div>
-          <div class="panel panel-neutral">
-            <div class="panel-header">
-              <h3>Signal preview</h3>
-              <p>Signaux event / lead-lag vus mais pas encore transformés en position.</p>
-            </div>
-            {render_preview_list(snapshot.get("pod_c_signal_preview"))}
           </div>
         </div>
 
@@ -3546,6 +3877,10 @@ def hip4_outcome_html(
     metrics: MetricsRegistry,
 ) -> str:
     payload = _hip4_outcome_monitor_payload()
+    status = payload.get("status", {})
+    if not isinstance(status, dict):
+        status = {}
+    coin_summary_rows = _hip4_pod_trade_summary(status)
     refreshed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     status_age = payload.get("status_age_seconds")
     age_label = "-" if status_age is None else _format_duration_compact(float(status_age))
@@ -3575,6 +3910,12 @@ def hip4_outcome_html(
             return fallback
         return f"{parsed:.{digits}f}"
 
+    def fmt_signed_number(value: object, digits: int = 4) -> str:
+        parsed = _float_or_none(value)
+        if parsed is None:
+            return "-"
+        return f"{parsed:+.{digits}f}"
+
     def render_stat_cards(cards: list[dict[str, str]]) -> str:
         return "".join(
             (
@@ -3585,6 +3926,24 @@ def hip4_outcome_html(
                 "</article>"
             )
             for card in cards
+        )
+
+    def render_coin_summary_rows() -> str:
+        if not coin_summary_rows:
+            return "<tr><td colspan='7'>Aucun trade par coin visible pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('symbol', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{int(row.get('closed_trade_count', 0) or 0)}</td>"
+                f"<td>{int(row.get('open_position_count', 0) or 0)}</td>"
+                f"<td>{fmt_signed_number(row.get('realized_pnl_usd'))}</td>"
+                f"<td>{fmt_signed_number(row.get('unrealized_pnl_usd'))}</td>"
+                f"<td>{fmt_signed_number(row.get('total_pnl_usd'))}</td>"
+                "</tr>"
+            )
+            for row in coin_summary_rows
         )
 
     def render_reference_rows() -> str:
@@ -3676,6 +4035,29 @@ def hip4_outcome_html(
             if isinstance(row, dict)
         )
 
+    def render_execution_rows() -> str:
+        rows = payload.get("execution_results", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='10'>Aucune tentative d'exécution persistée pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('edge_type', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{fmt_number(row.get('approved_size_usdc'), 2)}</td>"
+                f"<td>{escape(str(row.get('status', '-')))}</td>"
+                f"<td>{'yes' if row.get('filled') else 'no'}</td>"
+                f"<td>{fmt_number(row.get('total_cost_usdc'), 4)}</td>"
+                f"<td>{escape(_execution_fill_statuses(row))}</td>"
+                f"<td>{escape(str(row.get('error') or '-'))}</td>"
+                "</tr>"
+            )
+            for row in reversed(rows[-16:])
+            if isinstance(row, dict)
+        )
+
     def render_replay_rows() -> str:
         rows = payload.get("replay", [])
         if not isinstance(rows, list) or not rows:
@@ -3748,7 +4130,11 @@ def hip4_outcome_html(
             {
                 "label": "Mode",
                 "value": str(payload.get("mode", "observer")),
-                "note": "ordre désactivé",
+                "note": (
+                    "ordres testnet actifs"
+                    if str(payload.get("mode", "")).lower() == "testnet"
+                    else "ordre désactivé"
+                ),
             },
             {
                 "label": "Markets",
@@ -3768,7 +4154,12 @@ def hip4_outcome_html(
             {
                 "label": "Fills",
                 "value": str(fill_count),
-                "note": "fills paper cumulés",
+                "note": "fills cumulés",
+            },
+            {
+                "label": "Exec attempts",
+                "value": str(len(payload.get("execution_results", []) or [])),
+                "note": "dernières tentatives persistées",
             },
             {
                 "label": "Loop edge",
@@ -3798,7 +4189,11 @@ def hip4_outcome_html(
             {
                 "label": "Testnet USDC",
                 "value": f"{fmt_number(capital.get('testnet_available_usdc'), 2)} USD",
-                "note": str(capital.get("reason", "capital")),
+                "note": str(
+                    capital.get("testnet_spot_transfer_status")
+                    or capital.get("testnet_balance_source")
+                    or capital.get("reason", "capital")
+                ),
             },
             {
                 "label": "Overlap",
@@ -3909,6 +4304,26 @@ def hip4_outcome_html(
 
     <div class="grid">
       <section class="metric-grid">{cards}</section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>Exécutions testnet</h2><p>Réponses persistées après les décisions approuvées.</p></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Ts</th><th>Underlying</th><th>Edge</th><th>Side</th><th>Approved</th><th>Status</th><th>Filled</th><th>Cost</th><th>Fill statuses</th><th>Error</th></tr></thead>
+            <tbody>{render_execution_rows()}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>Performance par coin</h2><p>Settlements paper HIP-4 et positions encore ouvertes, regroupés par underlying et par sens normalisé.</p></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Coin</th><th>Sens</th><th>Trades</th><th>Ouvert</th><th>PnL réalisé</th><th>PnL latent</th><th>PnL visible</th></tr></thead>
+            <tbody>{render_coin_summary_rows()}</tbody>
+          </table>
+        </div>
+      </section>
 
       <section class="panel">
         <div class="panel-header"><h2>Settlements paper</h2><p>PnL réalisé estimé à l'expiration des marchés outcome paper.</p></div>

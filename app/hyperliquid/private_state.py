@@ -76,6 +76,26 @@ class HyperliquidCredentials:
             live_confirm=live_confirm or None,
         )
 
+    @classmethod
+    def from_hip4_outcome_env(cls) -> "HyperliquidCredentials":
+        account_address = (
+            os.getenv("HIP4_OUTCOME_ACCOUNT_ADDRESS")
+            or ""
+        ).strip()
+        secret_key = (
+            os.getenv("HIP4_OUTCOME_SECRET_KEY")
+            or ""
+        ).strip()
+        vault_address = (
+            os.getenv("HIP4_OUTCOME_VAULT_ADDRESS")
+            or ""
+        ).strip()
+        return cls(
+            account_address=account_address,
+            secret_key=secret_key or None,
+            vault_address=vault_address or None,
+        )
+
     def validate_for_readonly(self) -> list[str]:
         errors: list[str] = []
         if not self._looks_like_address(self.account_address):

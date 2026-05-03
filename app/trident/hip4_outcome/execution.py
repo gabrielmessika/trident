@@ -36,6 +36,7 @@ class PaperOutcomeExecutor:
             market=market,
             order_book=order_book,
             approved_size_usdc=approved_size_usdc,
+            min_order_value_usdc=self.config.min_order_value_usdc,
             size_decimals=self.config.outcome_size_decimals,
         )
         return OutcomeExecutionResult(status="paper_filled" if fills else "paper_no_fill", fills=fills)
@@ -44,7 +45,7 @@ class PaperOutcomeExecutor:
 class TestnetOutcomeExecutor:
     def __init__(self, config: Hip4OutcomeConfig, credentials: HyperliquidCredentials | None = None) -> None:
         self.config = config
-        self.credentials = credentials or HyperliquidCredentials.from_env()
+        self.credentials = credentials or HyperliquidCredentials.from_hip4_outcome_env()
         self._exchange_client: Any | None = None
         self.account_address: str | None = None
         self._validate_config()
@@ -65,6 +66,7 @@ class TestnetOutcomeExecutor:
             order_book=order_book,
             approved_size_usdc=approved_size_usdc,
             max_order_slippage=self.config.max_order_slippage,
+            min_order_value_usdc=self.config.min_order_value_usdc,
             size_decimals=self.config.outcome_size_decimals,
         )
         if not leg_specs:
@@ -124,7 +126,9 @@ class TestnetOutcomeExecutor:
         if self.config.require_testnet_url and "hyperliquid-testnet" not in self.config.info_url:
             raise HyperliquidAPIError("HIP-4 outcome testnet executor refuses non-testnet info_url")
         if not self.credentials.secret_key:
-            raise HyperliquidAPIError("TRIDENT_SECRET_KEY or HYPERLIQUID_SECRET_KEY is required for testnet orders")
+            raise HyperliquidAPIError(
+                "HIP4_OUTCOME_SECRET_KEY is required for HIP-4 testnet orders"
+            )
         if not (self.credentials.secret_key.startswith("0x") and len(self.credentials.secret_key) == 66):
             raise HyperliquidAPIError("Testnet secret key must be a 0x-prefixed 32-byte private key")
 
@@ -165,6 +169,13 @@ class TestnetOutcomeExecutor:
         self.account_address = wallet.address
         return self.account_address
 
+    def transfer_usd_to_spot(self, amount_usdc: float) -> object:
+        amount = round(max(float(amount_usdc), 0.0), 6)
+        if amount <= 0:
+            return {"status": "skipped", "response": "non_positive_amount"}
+        exchange = self._exchange()
+        return exchange.usd_class_transfer(amount, to_perp=False)
+
     def _register_outcome_assets(self, exchange: Any, market: OutcomeMarket) -> None:
         for side, coin in ((0, market.yes_coin), (1, market.no_coin)):
             asset = outcome_asset_id(market.outcome, side)
@@ -184,7 +195,8 @@ def build_paper_fills(
     market: OutcomeMarket,
     order_book: OutcomeOrderBook,
     approved_size_usdc: float,
-    size_decimals: int,
+    min_order_value_usdc: float = 0.0,
+    size_decimals: int = 0,
 ) -> list[OutcomeFill]:
     fills: list[OutcomeFill] = []
     for leg in build_order_legs(
@@ -193,6 +205,7 @@ def build_paper_fills(
         order_book=order_book,
         approved_size_usdc=approved_size_usdc,
         max_order_slippage=0.0,
+        min_order_value_usdc=min_order_value_usdc,
         size_decimals=size_decimals,
     ):
         price = float(leg["reference_price"])
@@ -217,7 +230,8 @@ def build_order_legs(
     order_book: OutcomeOrderBook,
     approved_size_usdc: float,
     max_order_slippage: float,
-    size_decimals: int,
+    min_order_value_usdc: float = 0.0,
+    size_decimals: int = 0,
 ) -> list[dict[str, object]]:
     approved_size_usdc = max(float(approved_size_usdc), 0.0)
     if approved_size_usdc <= 0:
@@ -229,6 +243,7 @@ def build_order_legs(
             ask=order_book.yes.ask,
             spend_usdc=approved_size_usdc,
             max_order_slippage=max_order_slippage,
+            min_order_value_usdc=min_order_value_usdc,
             size_decimals=size_decimals,
         )
     if opportunity.side == "BUY_NO":
@@ -238,6 +253,7 @@ def build_order_legs(
             ask=order_book.no.ask,
             spend_usdc=approved_size_usdc,
             max_order_slippage=max_order_slippage,
+            min_order_value_usdc=min_order_value_usdc,
             size_decimals=size_decimals,
         )
     if opportunity.side != "BUY_BOTH":
@@ -252,6 +268,9 @@ def build_order_legs(
     qty = _quantize_size(Decimal(str(approved_size_usdc / unit_cost)), size_decimals)
     if qty <= 0:
         return []
+    if min_order_value_usdc > 0:
+        if float(qty) * yes_limit < min_order_value_usdc or float(qty) * no_limit < min_order_value_usdc:
+            return []
     return [
         {
             "coin": market.yes_coin,
@@ -277,6 +296,7 @@ def _single_leg(
     ask: float | None,
     spend_usdc: float,
     max_order_slippage: float,
+    min_order_value_usdc: float,
     size_decimals: int,
 ) -> list[dict[str, object]]:
     if ask is None or ask <= 0:
@@ -284,6 +304,8 @@ def _single_leg(
     limit_price = min(ask * (1.0 + max_order_slippage), 0.99999)
     qty = _quantize_size(Decimal(str(spend_usdc / limit_price)), size_decimals)
     if qty <= 0:
+        return []
+    if min_order_value_usdc > 0 and float(qty) * limit_price < min_order_value_usdc:
         return []
     return [
         {

@@ -68,6 +68,7 @@ class HIP4OutcomeEdgePod:
         self.testnet_executor: TestnetOutcomeExecutor | None = None
         self.loop_count = 0
         self.last_error: str | None = None
+        self.last_execution_results: list[dict[str, Any]] = []
         self.last_summary: dict[str, Any] = {}
         self.last_capital_snapshot: dict[str, Any] = self.capital_guard.local_snapshot(
             open_positions=self._active_positions_for_mode()
@@ -93,6 +94,7 @@ class HIP4OutcomeEdgePod:
 
     def run_once(self) -> dict[str, Any]:
         self.loop_count += 1
+        self.last_execution_results = []
         now_ts = int(time.time())
         loop_started = time.monotonic()
         timings: dict[str, float] = {
@@ -265,6 +267,12 @@ class HIP4OutcomeEdgePod:
                         order_book=order_book,
                         decision=decision,
                     )
+                    self._record_execution_result(
+                        market=market,
+                        opportunity=opportunity,
+                        decision=decision,
+                        result=result,
+                    )
                     timings["execution_ms"] += _elapsed_ms(stage_started)
 
                     if result.filled:
@@ -370,11 +378,16 @@ class HIP4OutcomeEdgePod:
         return decision
 
     def _refresh_capital_snapshot(self) -> None:
-        local = self.capital_guard.local_snapshot(
-            open_positions=self._active_positions_for_mode()
-        ).to_dict()
-        for key in ("account_address", "testnet_available_usdc", "error"):
-            if self.last_capital_snapshot.get(key) is not None:
+        open_positions = self._active_positions_for_mode()
+        if self.config.mode == "testnet" and self.config.enforce_testnet_balance_check:
+            local = self.capital_guard.testnet_balance_snapshot(
+                open_positions=open_positions,
+                testnet_executor=self._testnet_executor_for_capital(),
+            ).to_dict()
+        else:
+            local = self.capital_guard.local_snapshot(open_positions=open_positions).to_dict()
+        for key in ("account_address", "testnet_available_usdc", "testnet_balance_source", "error"):
+            if local.get(key) is None and self.last_capital_snapshot.get(key) is not None:
                 local[key] = self.last_capital_snapshot[key]
         local["reason"] = self.last_capital_snapshot.get("reason", local.get("reason"))
         self.last_capital_snapshot = local
@@ -692,6 +705,33 @@ class HIP4OutcomeEdgePod:
                 }
             )
 
+    def _record_execution_result(
+        self,
+        *,
+        market: OutcomeMarket,
+        opportunity: OutcomeOpportunity,
+        decision: SupervisorDecision,
+        result: OutcomeExecutionResult,
+    ) -> None:
+        payload = {
+            "ts": utc_now_iso(),
+            "market_id": market.market_id,
+            "outcome": market.outcome,
+            "underlying": market.underlying,
+            "edge_type": opportunity.edge_type,
+            "side": opportunity.side,
+            "approved_size_usdc": decision.approved_size_usdc,
+            "status": result.status,
+            "filled": result.filled,
+            "total_cost_usdc": result.total_cost_usdc,
+            "error": result.error,
+            "fills": [fill.to_dict() for fill in result.fills],
+            "raw": result.to_dict().get("raw"),
+        }
+        self.event_logger.log_execution_result(payload)
+        self.last_execution_results.append(payload)
+        self.last_execution_results = self.last_execution_results[-20:]
+
     def _record_edge_decay(
         self,
         *,
@@ -850,6 +890,7 @@ class HIP4OutcomeEdgePod:
             "summary": summary,
             "capital": self.last_capital_snapshot,
             "last_error": self.last_error,
+            "last_execution_results": self.last_execution_results,
             "open_positions": [position.to_dict() for position in open_positions],
             "settled_positions": [
                 position.to_dict()
@@ -945,6 +986,7 @@ class HIP4OutcomeEdgePod:
             "total_unrealized_pnl_usd": 0.0,
             "healthy": self.last_error is None,
             "last_error": self.last_error,
+            "last_execution_results": self.last_execution_results,
             "summary": summary,
             "capital": self.last_capital_snapshot,
             "fee_model": self._fee_model_payload(),

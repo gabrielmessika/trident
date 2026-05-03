@@ -1,15 +1,17 @@
 import json
+import os
 import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from app.trident.hip4_outcome import HIP4OutcomeEdgePod
 from app.trident.hip4_outcome.book import build_order_book, parse_side_book
 from app.trident.hip4_outcome.capital import OutcomeCapitalGuard
 from app.trident.hip4_outcome.config import Hip4OutcomeConfig, load_hip4_outcome_config
 from app.trident.hip4_outcome.edge import OutcomeEdgeDetector
-from app.trident.hip4_outcome.execution import build_order_legs
+from app.trident.hip4_outcome.execution import TestnetOutcomeExecutor, build_order_legs
 from app.trident.hip4_outcome.external_prices import (
     ExternalPriceAggregator,
     ReferencePriceQuote,
@@ -19,6 +21,7 @@ from app.trident.hip4_outcome.features import (
     update_price_history_payload,
 )
 from app.trident.hip4_outcome.models import (
+    OutcomeExecutionResult,
     OutcomeFill,
     OutcomeOpportunity,
     OutcomePosition,
@@ -27,6 +30,7 @@ from app.trident.hip4_outcome.models import (
     outcome_coin,
     outcome_encoding,
 )
+from app.trident.hip4_outcome.locks import UnderlyingOverlapLock
 from app.trident.hip4_outcome.overlap import (
     directional_overlap_snapshot,
     hip4_open_underlyings,
@@ -317,9 +321,52 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertEqual(len(legs), 2)
         self.assertEqual(legs[0]["token_qty"], legs[1]["token_qty"])
 
+    def test_order_legs_respect_min_order_value_after_rounding(self) -> None:
+        market = self._market()
+        book = self._book()
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_YES",
+            edge_type="MODEL",
+            gross_edge=0.2,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.18,
+            confidence=0.8,
+            requested_size_usdc=5.0,
+            max_loss_usdc=5.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+        )
+
+        too_small = build_order_legs(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            approved_size_usdc=2.5,
+            max_order_slippage=0.03,
+            min_order_value_usdc=10.0,
+            size_decimals=0,
+        )
+        large_enough = build_order_legs(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            approved_size_usdc=12.0,
+            max_order_slippage=0.03,
+            min_order_value_usdc=10.0,
+            size_decimals=0,
+        )
+
+        self.assertEqual(too_small, [])
+        self.assertEqual(len(large_enough), 1)
+
     def test_reference_price_aggregator_uses_median_and_rejects_outlier(self) -> None:
         config = Hip4OutcomeConfig(
             reference_price_sources=["binance", "okx", "hyperliquid"],
+            anchor_reference_to_hyperliquid=False,
             max_source_deviation_bps=100.0,
             min_reference_sources=2,
         )
@@ -371,6 +418,28 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertEqual(reference.source_count, 6)
         self.assertEqual(reference.price, 100.5)
 
+    def test_reference_price_aggregator_observes_and_rejects_external_divergence(self) -> None:
+        config = Hip4OutcomeConfig(
+            reference_price_sources=["binance", "okx", "hyperliquid"],
+            anchor_reference_to_hyperliquid=True,
+            max_source_deviation_bps=50.0,
+            min_reference_sources=1,
+        )
+        aggregator = ExternalPriceAggregator(config)
+        reference = aggregator._select_reference(  # noqa: SLF001 - targeted unit coverage
+            "HYPE",
+            [
+                ReferencePriceQuote(source="binance", symbol="HYPEUSDT", price=23.0),
+                ReferencePriceQuote(source="okx", symbol="HYPE-USDT", price=23.1),
+                ReferencePriceQuote(source="hyperliquid", symbol="HYPE", price=58.5),
+            ],
+        )
+
+        self.assertIsNotNone(reference)
+        self.assertEqual(reference.price, 58.5)
+        self.assertEqual(reference.source_count, 1)
+        self.assertEqual([quote.source for quote in reference.rejected_quotes], ["binance", "okx"])
+
     def test_reference_price_sources_can_be_overridden_by_underlying(self) -> None:
         config = Hip4OutcomeConfig(
             reference_price_sources=["binance", "hyperliquid"],
@@ -418,6 +487,37 @@ BTC = 0.5
             self.assertEqual(config.pod_b_alias_status_path, "./logs/pod_b_live_status.json")
             self.assertEqual(config.outcome_open_fee_rate, 0.0)
             self.assertEqual(config.outcome_settlement_fee_rate, config.estimated_fees)
+
+    def test_testnet_config_keeps_external_price_sources_visible(self) -> None:
+        config = load_hip4_outcome_config("config/hip4_outcome_testnet.toml")
+
+        self.assertIn("binance", config.reference_price_sources)
+        self.assertIn("okx", config.reference_price_sources)
+        self.assertIn("hyperliquid", config.reference_price_sources)
+        self.assertTrue(config.anchor_reference_to_hyperliquid)
+        self.assertNotIn("HYPE", config.reference_price_sources_by_underlying)
+
+    def test_testnet_executor_prefers_dedicated_hip4_credentials(self) -> None:
+        env = {
+            "TRIDENT_ACCOUNT_ADDRESS": "0x0000000000000000000000000000000000000001",
+            "TRIDENT_SECRET_KEY": "0x" + "1" * 64,
+            "TRIDENT_VAULT_ADDRESS": "0x0000000000000000000000000000000000000002",
+            "HIP4_OUTCOME_ACCOUNT_ADDRESS": "0x0000000000000000000000000000000000000003",
+            "HIP4_OUTCOME_SECRET_KEY": "0x" + "2" * 64,
+            "HIP4_OUTCOME_VAULT_ADDRESS": "0x0000000000000000000000000000000000000004",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            executor = TestnetOutcomeExecutor(Hip4OutcomeConfig(mode="testnet"))
+
+        self.assertEqual(
+            executor.credentials.account_address,
+            "0x0000000000000000000000000000000000000003",
+        )
+        self.assertEqual(executor.credentials.secret_key, "0x" + "2" * 64)
+        self.assertEqual(
+            executor.credentials.vault_address,
+            "0x0000000000000000000000000000000000000004",
+        )
 
     def test_writes_pod_b_alias_runtime_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -514,6 +614,133 @@ BTC = 0.5
         self.assertTrue(adjusted.approved)
         self.assertEqual(adjusted.approved_size_usdc, 1.0)
         self.assertEqual(snapshot.testnet_available_usdc, 2.0)
+        self.assertEqual(snapshot.testnet_balance_source, "spotClearinghouseState")
+
+    def test_capital_guard_transfers_testnet_withdrawable_to_spot_when_empty(self) -> None:
+        class FakeInfoClient:
+            def __init__(self) -> None:
+                self.spot_calls = 0
+
+            def fetch_spot_state(self, user: str):
+                self.spot_user = user
+                self.spot_calls += 1
+                if self.spot_calls == 1:
+                    return {"balances": []}
+                return {"balances": [{"coin": "USDC", "total": "26", "hold": "0"}]}
+
+            def fetch_clearinghouse_state(self, user: str):
+                self.clearinghouse_user = user
+                return {"withdrawable": "999.0", "marginSummary": {"accountValue": "999.0"}}
+
+        class FakeExecutor:
+            transfer_amount = None
+
+            def resolve_account_address(self):
+                return "0x0000000000000000000000000000000000000001"
+
+            def transfer_usd_to_spot(self, amount_usdc: float):
+                self.transfer_amount = amount_usdc
+                return {"status": "ok", "response": {"type": "default"}}
+
+        config = Hip4OutcomeConfig(
+            mode="testnet",
+            pod_b_budget_usdc=25.0,
+            testnet_balance_buffer_usdc=1.0,
+            auto_transfer_testnet_spot_usdc=True,
+        )
+        fake_executor = FakeExecutor()
+        guard = OutcomeCapitalGuard(config, info_client=FakeInfoClient())  # type: ignore[arg-type]
+        decision = SupervisorDecision(
+            approved=True,
+            approved_size_usdc=5.0,
+            reason="local_outcome_risk_ok",
+            execution_mode="TESTNET",
+        )
+
+        adjusted, snapshot = guard.apply(
+            decision=decision,
+            open_positions=[],
+            testnet_executor=fake_executor,
+        )
+
+        self.assertTrue(adjusted.approved)
+        self.assertEqual(adjusted.approved_size_usdc, 5.0)
+        self.assertEqual(snapshot.testnet_available_usdc, 26.0)
+        self.assertEqual(snapshot.testnet_perp_withdrawable_usdc, 999.0)
+        self.assertEqual(snapshot.testnet_balance_source, "spotClearinghouseState_after_usdClassTransfer")
+        self.assertEqual(snapshot.testnet_spot_transfer_usdc, 26.0)
+        self.assertEqual(fake_executor.transfer_amount, 26.0)
+
+    def test_capital_guard_does_not_use_perp_withdrawable_without_spot_transfer(self) -> None:
+        class FakeInfoClient:
+            def fetch_spot_state(self, user: str):
+                return {"balances": []}
+
+            def fetch_clearinghouse_state(self, user: str):
+                return {"withdrawable": "999.0"}
+
+        class FakeExecutor:
+            def resolve_account_address(self):
+                return "0x0000000000000000000000000000000000000001"
+
+        guard = OutcomeCapitalGuard(
+            Hip4OutcomeConfig(
+                mode="testnet",
+                auto_transfer_testnet_spot_usdc=False,
+            ),
+            info_client=FakeInfoClient(),  # type: ignore[arg-type]
+        )
+        decision = SupervisorDecision(
+            approved=True,
+            approved_size_usdc=5.0,
+            reason="local_outcome_risk_ok",
+            execution_mode="TESTNET",
+        )
+
+        adjusted, snapshot = guard.apply(
+            decision=decision,
+            open_positions=[],
+            testnet_executor=FakeExecutor(),
+        )
+
+        self.assertFalse(adjusted.approved)
+        self.assertEqual(adjusted.reason, "insufficient_testnet_usdc")
+        self.assertEqual(snapshot.testnet_available_usdc, 0.0)
+        self.assertEqual(snapshot.testnet_perp_withdrawable_usdc, 999.0)
+        self.assertEqual(snapshot.testnet_balance_source, "spotClearinghouseState")
+        self.assertEqual(snapshot.testnet_spot_transfer_status, "manual_usd_class_transfer_required")
+
+    def test_capital_guard_can_refresh_testnet_balance_without_decision(self) -> None:
+        class FakeInfoClient:
+            def __init__(self) -> None:
+                self.spot_calls = 0
+
+            def fetch_spot_state(self, user: str):
+                self.spot_calls += 1
+                if self.spot_calls == 1:
+                    return {"balances": []}
+                return {"balances": [{"coin": "USDC", "total": "26", "hold": "0"}]}
+
+            def fetch_clearinghouse_state(self, user: str):
+                return {"withdrawable": "999.0"}
+
+        class FakeExecutor:
+            def resolve_account_address(self):
+                return "0x0000000000000000000000000000000000000001"
+
+            def transfer_usd_to_spot(self, amount_usdc: float):
+                return {"status": "ok", "response": {"type": "default"}}
+
+        snapshot = OutcomeCapitalGuard(
+            Hip4OutcomeConfig(mode="testnet", auto_transfer_testnet_spot_usdc=True),
+            info_client=FakeInfoClient(),  # type: ignore[arg-type]
+        ).testnet_balance_snapshot(
+            open_positions=[],
+            testnet_executor=FakeExecutor(),
+        )
+
+        self.assertEqual(snapshot.testnet_available_usdc, 26.0)
+        self.assertEqual(snapshot.testnet_balance_source, "spotClearinghouseState_after_usdClassTransfer")
 
     def test_overlap_helpers_detect_pod_a_and_hip4_open_underlyings(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -544,6 +771,28 @@ BTC = 0.5
 
             self.assertEqual(overlap.blocked_underlyings, ["BTC"])
             self.assertEqual(hip4_open_underlyings(pod_b_status), ["HYPE"])
+
+    def test_overlap_lock_reclaims_dead_same_owner_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lock = UnderlyingOverlapLock(
+                underlying="BTC",
+                owner="pod_a",
+                lock_dir=Path(tmpdir),
+            )
+            lock.path.write_text(
+                json.dumps(
+                    {
+                        "underlying": "BTC",
+                        "owner": "pod_a",
+                        "pid": 999999999,
+                        "created_at": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(lock.acquire())
+            lock.release()
 
     def test_reconciler_matches_testnet_fills_and_balances(self) -> None:
         class FakeInfoClient:
@@ -715,6 +964,90 @@ BTC = 0.5
             self.assertIn("gross_pnl_usdc", settlement_log)
             self.assertIn("net_pnl_usdc", settlement_log)
             self.assertIn(",0.02,5.2,5.18,5.18,", settlement_log)
+
+    def test_execution_result_to_dict_is_json_safe(self) -> None:
+        result = OutcomeExecutionResult(
+            status="testnet_no_fill",
+            fills=[
+                OutcomeFill(
+                    coin="#57210",
+                    side_name="YES",
+                    token_qty=Decimal("0"),
+                    avg_price=0.0,
+                    cost_usdc=0.0,
+                    status="Order must have minimum value of 10 USDH",
+                    raw={"nested": {"qty": Decimal("1.2")}},
+                )
+            ],
+            raw=[{"status": "ok", "qty": Decimal("1.2")}],
+        )
+
+        payload = result.to_dict()
+
+        self.assertFalse(payload["filled"])
+        self.assertEqual(payload["fills"][0]["raw"]["nested"]["qty"], "1.2")
+        self.assertEqual(payload["raw"][0]["qty"], "1.2")
+        json.dumps(payload)
+
+    def test_runner_persists_execution_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="testnet",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "hip4_status.json"),
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            market = self._market()
+            opportunity = OutcomeOpportunity(
+                market_id=market.market_id,
+                outcome=market.outcome,
+                underlying=market.underlying,
+                edge_type="MODEL",
+                side="BUY_YES",
+                gross_edge=0.1,
+                estimated_fees=0.002,
+                estimated_slippage=0.005,
+                net_edge=0.08,
+                confidence=0.9,
+                requested_size_usdc=12.0,
+                max_loss_usdc=12.0,
+                expiry_ts=market.expiry_ts,
+                reason="test_signal",
+            )
+            decision = SupervisorDecision(
+                approved=True,
+                approved_size_usdc=12.0,
+                reason="local_outcome_risk_ok",
+                execution_mode="TESTNET",
+            )
+            result = OutcomeExecutionResult(
+                status="testnet_no_fill",
+                fills=[
+                    OutcomeFill(
+                        coin=market.yes_coin,
+                        side_name="YES",
+                        token_qty=Decimal("0"),
+                        avg_price=0.0,
+                        cost_usdc=0.0,
+                        status="Order must have minimum value of 10 USDH",
+                    )
+                ],
+            )
+
+            pod._record_execution_result(  # noqa: SLF001 - verifies the persisted execution audit trail
+                market=market,
+                opportunity=opportunity,
+                decision=decision,
+                result=result,
+            )
+
+            path = root / "logs" / "execution_results.jsonl"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "testnet_no_fill")
+            self.assertEqual(payload["fills"][0]["status"], "Order must have minimum value of 10 USDH")
+            self.assertEqual(pod.last_execution_results[0]["market_id"], market.market_id)
 
     def test_replays_opportunity_log_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

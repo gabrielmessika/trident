@@ -3,8 +3,10 @@ import unittest
 from unittest.mock import patch
 
 from app.observability.api import (
+    _global_trade_summary,
     _humanize_close_reason,
     _open_position_rows,
+    _pod_trade_summary,
     _humanize_setup_reason,
     dashboard_html,
     health_payload,
@@ -451,6 +453,53 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(rows[0]["trailing_distance_bps"], 30.0)
         self.assertEqual(rows[0]["best_price_seen"], 3162.0)
 
+    def test_trade_summary_aggregates_by_coin_side_and_pnl(self) -> None:
+        pod_a_rows = _pod_trade_summary(
+            {
+                "pod": "pod_a",
+                "report": {
+                    "closed_trade_log": [
+                        {"symbol": "ETH", "side": "long", "pnl_usd": 1.5},
+                        {"symbol": "ETH", "side": "short", "pnl_usd": -0.4},
+                    ],
+                },
+                "open_positions": [
+                    {"symbol": "ETH", "side": "long", "unrealized_pnl_usd": 0.25},
+                ],
+            },
+            pod="pod_a",
+        )
+        pod_b_rows = _pod_trade_summary(
+            {
+                "pod": "pod_b",
+                "pod_kind": "hip4_outcome_edge_pod",
+                "settled_positions": [
+                    {"underlying": "HYPE", "side": "BUY_NO", "estimated_pnl_usdc": 2.156},
+                    {"underlying": "BTC", "side": "BUY_YES", "estimated_pnl_usdc": 5.23},
+                ],
+                "open_positions": [
+                    {"underlying": "HYPE", "side": "BUY_NO", "estimated_pnl_usdc": 0.0},
+                ],
+            },
+            pod="pod_b",
+        )
+
+        eth_long = next(row for row in pod_a_rows if row["symbol"] == "ETH" and row["side"] == "long")
+        self.assertEqual(eth_long["closed_trade_count"], 1)
+        self.assertEqual(eth_long["open_position_count"], 1)
+        self.assertEqual(eth_long["realized_pnl_usd"], 1.5)
+        self.assertEqual(eth_long["unrealized_pnl_usd"], 0.25)
+
+        hype_short = next(row for row in pod_b_rows if row["symbol"] == "HYPE" and row["side"] == "short")
+        self.assertEqual(hype_short["closed_trade_count"], 1)
+        self.assertEqual(hype_short["open_position_count"], 1)
+        self.assertAlmostEqual(float(hype_short["total_pnl_usd"]), 2.156)
+
+        global_rows = _global_trade_summary({"pod_a": pod_a_rows, "pod_b": pod_b_rows})
+        global_eth = next(row for row in global_rows if row["symbol"] == "ETH" and row["side"] == "long")
+        self.assertEqual(global_eth["pods"], ["pod_a"])
+        self.assertEqual(global_eth["closed_trade_count"], 1)
+
     def test_metrics_payload_uses_runtime_status_when_present(self) -> None:
         pod_a_runtime = {
             "pod": "pod_a",
@@ -622,6 +671,9 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("À faire maintenant", html)
         self.assertIn("En un coup d’œil", html)
         self.assertIn("Régimes par cluster", html)
+        self.assertIn("Performance globale par coin", html)
+        self.assertIn("Performance par coin", html)
+        self.assertIn("PnL visible", html)
         self.assertIn("Crypto", html)
         self.assertIn("Index", html)
         self.assertIn("Runtime pod report", html)
@@ -681,6 +733,8 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("Realized PnL", html)
         self.assertIn("Gross/Fees", html)
         self.assertIn("Net PnL", html)
+        self.assertIn("Performance par coin", html)
+        self.assertIn("PnL visible", html)
         self.assertIn("Settlements paper", html)
 
     def test_trades_html_contains_trade_sections(self) -> None:

@@ -500,6 +500,43 @@ class ReportingTests(unittest.TestCase):
         self.assertTrue(funding_service["healthy"])
         self.assertEqual(funding_service["comment"], "Collector healthy.")
 
+    def test_build_runtime_report_marks_degraded_service_unhealthy(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c.enabled = False
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-reporting",
+            mode="observation",
+        )
+        funding_runtime = {
+            "service": "funding_collector",
+            "label": "Funding Collector",
+            "process_state": "degraded",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "poll_seconds": 300,
+            "symbol_count": 22,
+            "polls_completed": 245,
+            "records_written": 4410,
+            "last_collected_at": "2999-01-01T00:00:00Z",
+            "error_count": 2,
+            "last_error": "TimeoutError: temporary read timeout",
+        }
+
+        def runtime_status_for(path: object) -> dict[str, object] | None:
+            if str(path).endswith("funding_collector_status.json"):
+                return funding_runtime
+            return None
+
+        with patch("app.reporting.multi_pod.load_runtime_status", side_effect=runtime_status_for):
+            report = build_runtime_report(supervisor).to_dict()
+
+        funding_service = next(
+            item for item in report["services"] if item["service"] == "funding_collector"
+        )
+        self.assertFalse(funding_service["healthy"])
+        self.assertEqual(funding_service["error_count"], 2)
+        self.assertIn("TimeoutError", funding_service["comment"])
+
 
 if __name__ == "__main__":
     unittest.main()
