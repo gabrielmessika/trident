@@ -133,7 +133,7 @@ copy_if_exists() {
 
 capture_local_review_inputs() {
     local base="$1"
-    local latest_health latest_state latest_metrics latest_report latest_hip4
+    local latest_health latest_state latest_metrics latest_report latest_hip4 latest_hip4_mainnet
     local api_dir="${base}/api"
     local snapshot_dir="${base}/live_snapshots"
     local log_dir="${base}/logs"
@@ -144,13 +144,15 @@ capture_local_review_inputs() {
     latest_state="$(latest_local_file "${api_dir}/state-*.json")"
     latest_metrics="$(latest_local_file "${api_dir}/metrics-*.json")"
     latest_report="$(latest_local_file "${api_dir}/report-*.json")"
-    latest_hip4="$(latest_local_file "${api_dir}/hip4-outcome-*.json")"
+    latest_hip4="$(latest_local_file "${api_dir}/hip4-outcome-20*.json")"
+    latest_hip4_mainnet="$(latest_local_file "${api_dir}/hip4-outcome-mainnet-*.json")"
 
     copy_if_exists "${latest_health}" "${RAW_DIR}/health.json" || : > "${RAW_DIR}/health.json"
     copy_if_exists "${latest_state}" "${RAW_DIR}/state.json" || : > "${RAW_DIR}/state.json"
     copy_if_exists "${latest_metrics}" "${RAW_DIR}/metrics.json" || : > "${RAW_DIR}/metrics.json"
     copy_if_exists "${latest_report}" "${RAW_DIR}/report.json" || : > "${RAW_DIR}/report.json"
     copy_if_exists "${latest_hip4}" "${RAW_DIR}/hip4_outcome.json" || : > "${RAW_DIR}/hip4_outcome.json"
+    copy_if_exists "${latest_hip4_mainnet}" "${RAW_DIR}/hip4_outcome_mainnet.json" || : > "${RAW_DIR}/hip4_outcome_mainnet.json"
 
     python3 - "${snapshot_dir}" "${RAW_DIR}/snapshot_files.txt" <<'PY'
 from pathlib import Path
@@ -192,7 +194,7 @@ PY
 from pathlib import Path
 import sys
 
-log_dir = Path(sys.argv[1]) / "hip4_outcome_paper"
+log_root = Path(sys.argv[1])
 outfile = Path(sys.argv[2])
 targets = [
     "decisions.jsonl",
@@ -205,12 +207,14 @@ targets = [
     "trades.csv",
 ]
 lines = []
-for name in targets:
-    path = log_dir / name
-    if not path.exists():
-        continue
-    line_count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
-    lines.append(f"logs/hip4_outcome_paper/{name}|{line_count}|{int(path.stat().st_mtime)}")
+for directory in ("hip4_outcome_testnet", "hip4_outcome_mainnet"):
+    log_dir = log_root / directory
+    for name in targets:
+        path = log_dir / name
+        if not path.exists():
+            continue
+        line_count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
+        lines.append(f"logs/{directory}/{name}|{line_count}|{int(path.stat().st_mtime)}")
 outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 PY
 
@@ -225,6 +229,8 @@ PY
     copy_if_exists "${docker_dir}/hip4-outcome-dry-run.log" "${RAW_DIR}/pod_b_log_tail.txt" \
         || copy_if_exists "${docker_dir}/pod-b-live.log" "${RAW_DIR}/pod_b_log_tail.txt" \
         || : > "${RAW_DIR}/pod_b_log_tail.txt"
+    copy_if_exists "${docker_dir}/hip4-outcome-mainnet-observer.log" "${RAW_DIR}/hip4_mainnet_log_tail.txt" \
+        || : > "${RAW_DIR}/hip4_mainnet_log_tail.txt"
     copy_if_exists "${docker_dir}/pod-c-live.log" "${RAW_DIR}/pod_c_log_tail.txt" || : > "${RAW_DIR}/pod_c_log_tail.txt"
     copy_if_exists "${docker_dir}/funding-collector.log" "${RAW_DIR}/funding_collector_log_tail.txt" || : > "${RAW_DIR}/funding_collector_log_tail.txt"
     copy_if_exists "${docker_dir}/tradfi-funding-collector.log" "${RAW_DIR}/tradfi_funding_collector_log_tail.txt" || : > "${RAW_DIR}/tradfi_funding_collector_log_tail.txt"
@@ -315,13 +321,15 @@ else
     capture_remote "metrics.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/metrics"
     capture_remote "report.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/report"
     capture_remote "hip4_outcome.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome"
+    capture_remote "hip4_outcome_mainnet.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome-mainnet"
     capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && find data/live_snapshots -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
     capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
-    capture_remote "hip4_files.txt" "cd '${REMOTE_DIR}' && for f in logs/hip4_outcome_paper/decisions.jsonl logs/hip4_outcome_paper/opportunities.csv logs/hip4_outcome_paper/short_expiry_features.csv logs/hip4_outcome_paper/edge_decay.csv logs/hip4_outcome_paper/latency_stats.csv logs/hip4_outcome_paper/daily_summary.csv logs/hip4_outcome_paper/settlements.csv logs/hip4_outcome_paper/trades.csv; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
+    capture_remote "hip4_files.txt" "cd '${REMOTE_DIR}' && for d in logs/hip4_outcome_testnet logs/hip4_outcome_mainnet; do for f in \"\$d\"/decisions.jsonl \"\$d\"/opportunities.csv \"\$d\"/short_expiry_features.csv \"\$d\"/edge_decay.csv \"\$d\"/latency_stats.csv \"\$d\"/daily_summary.csv \"\$d\"/settlements.csv \"\$d\"/trades.csv; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done; done"
     capture_remote "pod_b_runtime_present.txt" "cd '${REMOTE_DIR}' && if [ -f logs/pod_b_live_status.json ]; then echo present; else echo missing; fi"
     capture_remote "api_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} trident-api 2>&1"
     capture_remote "pod_a_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-a-live 2>&1"
     capture_remote "pod_b_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} hip4-outcome-dry-run 2>&1 || docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-b-live 2>&1"
+    capture_remote "hip4_mainnet_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} hip4-outcome-mainnet-observer 2>&1"
     capture_remote "pod_c_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-c-live 2>&1"
     capture_remote "funding_collector_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} funding-collector 2>&1"
     capture_remote "tradfi_funding_collector_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} tradfi-funding-collector 2>&1"
@@ -912,9 +920,9 @@ if container_is_running("trident-hip4-outcome-dry-run") or container_is_running(
         pod_b_failures.append("Snapshot /api/hip4-outcome absent")
 
     for required_file in (
-        "logs/hip4_outcome_paper/decisions.jsonl",
-        "logs/hip4_outcome_paper/opportunities.csv",
-        "logs/hip4_outcome_paper/latency_stats.csv",
+        "logs/hip4_outcome_testnet/decisions.jsonl",
+        "logs/hip4_outcome_testnet/opportunities.csv",
+        "logs/hip4_outcome_testnet/latency_stats.csv",
     ):
         file_info = hip4_files.get(required_file)
         if file_info is None:
@@ -1152,7 +1160,7 @@ for label, payload, day_metrics in freshness_specs:
         open_positions = as_int(hip4_outcome.get("open_positions"))
         opportunities = as_int(hip4_outcome.get("opportunities_this_loop"))
         decisions = as_int(
-            hip4_files.get("logs/hip4_outcome_paper/decisions.jsonl", {}).get("line_count")
+            hip4_files.get("logs/hip4_outcome_testnet/decisions.jsonl", {}).get("line_count")
         )
         best_edge = as_float(hip4_outcome.get("best_net_edge"))
         if bool(hip4_outcome.get("fresh")) and (open_positions > 0 or opportunities > 0 or decisions > 1):

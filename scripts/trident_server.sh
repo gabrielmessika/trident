@@ -14,10 +14,10 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--fresh-start] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--without-hip4-mainnet-observer] [--fresh-start] [service]
 
 Actions:
-  start     démarre l'API + Pod A + Pod B HIP-4 + Pod C + funding par défaut en dry-run
+  start     démarre l'API + Pod A + Pod B HIP-4 testnet + observateur HIP-4 mainnet + Pod C + funding par défaut en dry-run
   stop      arrête les services sélectionnés
   restart   redémarre les services sélectionnés
   update    rebuild + redémarre les services sélectionnés
@@ -29,6 +29,7 @@ Actions:
 Compatibilité :
   --with-pod-b / --with-pod-c / --with-funding restent acceptés mais sont redondants.
   --with-hip4-outcome / --without-hip4-outcome sont des alias du Pod B HIP-4.
+  --with-hip4-mainnet-observer / --without-hip4-mainnet-observer contrôle seulement l'observateur mainnet.
 
 Sécurité live :
   --mode dry-run est le défaut. --mode live lance Pod A + Pod C par défaut,
@@ -53,6 +54,7 @@ ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
 ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
+ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-true}"
 FRESH_START=""
 MODE="${TRIDENT_MODE:-dry-run}"
 CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
@@ -77,6 +79,11 @@ while [ $# -gt 0 ]; do
             ENABLE_POD_B="true"
             shift
             ;;
+        --with-hip4-mainnet-observer)
+            ENABLE_HIP4_MAINNET_OBSERVER="true"
+            ENABLE_POD_B="true"
+            shift
+            ;;
         --config)
             CONFIG_PATH="$2"
             shift 2
@@ -88,6 +95,7 @@ while [ $# -gt 0 ]; do
         --without-pod-b)
             ENABLE_POD_B=""
             ENABLE_HIP4_OUTCOME=""
+            ENABLE_HIP4_MAINNET_OBSERVER=""
             shift
             ;;
         --without-pod-c)
@@ -101,6 +109,11 @@ while [ $# -gt 0 ]; do
         --without-hip4-outcome)
             ENABLE_HIP4_OUTCOME=""
             ENABLE_POD_B=""
+            ENABLE_HIP4_MAINNET_OBSERVER=""
+            shift
+            ;;
+        --without-hip4-mainnet-observer)
+            ENABLE_HIP4_MAINNET_OBSERVER=""
             shift
             ;;
         --fresh-start)
@@ -132,6 +145,7 @@ esac
 
 if [ "$MODE" = "live" ]; then
     ENABLE_HIP4_OUTCOME=""
+    ENABLE_HIP4_MAINNET_OBSERVER=""
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -139,6 +153,7 @@ cd "$ROOT_DIR"
 
 PROFILE_ARGS=()
 [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && PROFILE_ARGS+=(--profile pod_b)
+[ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && PROFILE_ARGS+=(--profile hip4_mainnet_observer)
 [ -n "$ENABLE_POD_C" ] && PROFILE_ARGS+=(--profile pod_c)
 [ -n "$ENABLE_FUNDING" ] && PROFILE_ARGS+=(--profile funding)
 
@@ -152,6 +167,7 @@ compose() {
     TRIDENT_ENABLE_POD_B="" \
     TRIDENT_ENABLE_POD_C="${ENABLE_POD_C:+true}" \
     TRIDENT_ENABLE_HIP4_OUTCOME="${ENABLE_HIP4_OUTCOME:+true}" \
+    TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER="${ENABLE_HIP4_MAINNET_OBSERVER:+true}" \
     TRIDENT_MODE="${MODE}" \
     TRIDENT_CONFIG_PATH="${CONFIG_PATH}" \
     docker compose "${COMPOSE_ENV_ARGS[@]}" -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"
@@ -165,6 +181,9 @@ default_services() {
     local services=(trident-api pod-a-live)
     if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ]; then
         services+=(hip4-outcome-dry-run)
+    fi
+    if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ]; then
+        services+=(hip4-outcome-mainnet-observer)
     fi
     if [ -n "$ENABLE_POD_C" ]; then
         services+=(pod-c-live tradfi-funding-collector)
@@ -182,6 +201,7 @@ all_managed_services() {
         pod-b-live \
         pod-c-live \
         hip4-outcome-dry-run \
+        hip4-outcome-mainnet-observer \
         tradfi-funding-collector \
         funding-collector
 }
@@ -220,17 +240,21 @@ fresh_start_cleanup() {
         logs/pod_b_live_status.json \
         logs/pod_c_live_status.json \
         logs/hip4_outcome_status.json \
+        logs/hip4_outcome_mainnet_status.json \
         logs/pod_a_live_report.json \
         logs/pod_b_live_report.json \
         logs/pod_c_live_report.json \
         runtime/hip4_outcome_state.json \
         runtime/hip4_outcome_paper_state.json \
         runtime/hip4_outcome_testnet_state.json \
+        runtime/hip4_outcome_mainnet_state.json \
+        runtime/hip4_outcome_mainnet_rate_limits.json \
         2>/dev/null || true
     rm -rf \
         logs/hip4_outcome \
         logs/hip4_outcome_paper \
         logs/hip4_outcome_testnet \
+        logs/hip4_outcome_mainnet \
         2>/dev/null || true
     compose_all run --rm --no-deps --entrypoint sh trident-api -c '
         rm -f \
@@ -241,16 +265,20 @@ fresh_start_cleanup() {
             /app/logs/pod_b_live_status.json \
             /app/logs/pod_c_live_status.json \
             /app/logs/hip4_outcome_status.json \
+            /app/logs/hip4_outcome_mainnet_status.json \
             /app/logs/pod_a_live_report.json \
             /app/logs/pod_b_live_report.json \
             /app/logs/pod_c_live_report.json \
             /app/runtime/hip4_outcome_state.json \
             /app/runtime/hip4_outcome_paper_state.json \
-            /app/runtime/hip4_outcome_testnet_state.json
+            /app/runtime/hip4_outcome_testnet_state.json \
+            /app/runtime/hip4_outcome_mainnet_state.json \
+            /app/runtime/hip4_outcome_mainnet_rate_limits.json
         rm -rf \
             /app/logs/hip4_outcome \
             /app/logs/hip4_outcome_paper \
-            /app/logs/hip4_outcome_testnet
+            /app/logs/hip4_outcome_testnet \
+            /app/logs/hip4_outcome_mainnet
     ' >/dev/null
     ok "Artefacts live réinitialisés"
 }

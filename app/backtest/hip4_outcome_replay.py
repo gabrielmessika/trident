@@ -9,15 +9,26 @@ from app.trident.hip4_outcome.reporting import replay_opportunities
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Replay HIP-4 outcome opportunity logs")
-    parser.add_argument("--logs-dir", default="logs/hip4_outcome_paper")
+    parser.add_argument(
+        "--profile",
+        choices=["testnet", "mainnet"],
+        default="testnet",
+        help="Default logs directory profile when --logs-dir is omitted.",
+    )
+    parser.add_argument("--logs-dir", default=None)
     parser.add_argument("--output", default=None)
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    logs_dir = Path(args.logs_dir)
+    default_logs_dir = {
+        "testnet": "logs/hip4_outcome_testnet",
+        "mainnet": "logs/hip4_outcome_mainnet",
+    }[args.profile]
+    logs_dir = Path(args.logs_dir or default_logs_dir)
     payload = {
+        "profile": args.profile,
         "logs_dir": str(logs_dir),
         "opportunities": replay_opportunities(logs_dir / "opportunities.csv"),
     }

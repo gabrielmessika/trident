@@ -162,12 +162,13 @@ def _settlement_gross_pnl(row: dict[str, object]) -> float | None:
 def _hip4_outcome_monitor_payload(
     *,
     status_path: Path = Path("logs/hip4_outcome_status.json"),
+    include_pod_b_alias_report: bool = True,
 ) -> dict[str, object]:
     status = load_runtime_status(status_path)
     summary = status.get("summary", {}) if isinstance(status, dict) else {}
     if not isinstance(summary, dict):
         summary = {}
-    logs_dir = Path("logs/hip4_outcome_paper")
+    logs_dir = Path("logs/hip4_outcome_testnet")
     if isinstance(status, dict):
         raw_logs_dir = status.get("logs_dir")
         if isinstance(raw_logs_dir, str) and raw_logs_dir:
@@ -186,7 +187,11 @@ def _hip4_outcome_monitor_payload(
     all_short_rows = _tail_csv_records(logs_dir / "short_expiry_features.csv", limit=5000)
     all_settlement_rows = _tail_csv_records(logs_dir / "settlements.csv", limit=5000)
     all_fill_rows = _tail_csv_records(logs_dir / "trades.csv", limit=5000)
-    pod_b_alias_status = load_runtime_status(Path("logs/pod_b_live_status.json"))
+    pod_b_alias_status = (
+        load_runtime_status(Path("logs/pod_b_live_status.json"))
+        if include_pod_b_alias_report
+        else None
+    )
     pod_b_alias_report = {}
     if (
         isinstance(pod_b_alias_status, dict)
@@ -1094,7 +1099,16 @@ def report_payload(
 
 
 def hip4_outcome_payload() -> dict[str, object]:
-    return _hip4_outcome_monitor_payload()
+    payload = _hip4_outcome_monitor_payload()
+    payload["mainnet_observer"] = hip4_outcome_mainnet_payload()
+    return payload
+
+
+def hip4_outcome_mainnet_payload() -> dict[str, object]:
+    return _hip4_outcome_monitor_payload(
+        status_path=Path("logs/hip4_outcome_mainnet_status.json"),
+        include_pod_b_alias_report=False,
+    )
 
 
 def _merge_runtime_snapshot(
@@ -3863,6 +3877,7 @@ def hip4_outcome_html(
     metrics: MetricsRegistry,
 ) -> str:
     payload = _hip4_outcome_monitor_payload()
+    mainnet_payload = hip4_outcome_mainnet_payload()
     status = payload.get("status", {})
     if not isinstance(status, dict):
         status = {}
@@ -3871,6 +3886,12 @@ def hip4_outcome_html(
     status_age = payload.get("status_age_seconds")
     age_label = "-" if status_age is None else _format_duration_compact(float(status_age))
     tone = "good" if payload.get("fresh") else "bad"
+    mainnet_status_age = mainnet_payload.get("status_age_seconds")
+    mainnet_age_label = (
+        "-"
+        if mainnet_status_age is None
+        else _format_duration_compact(float(mainnet_status_age))
+    )
     settled_position_count = int(payload.get("settled_position_count", 0) or 0)
     fill_count = int(payload.get("fill_count", 0) or 0)
     realized_pnl = payload.get("realized_pnl_usd")
@@ -3884,6 +3905,7 @@ def hip4_outcome_html(
     if not isinstance(capital, dict):
         capital = {}
     balance_coin = str(capital.get("testnet_balance_coin") or "USDH")
+
     def fmt_number(value: object, digits: int = 4, *, fallback: str = "-") -> str:
         parsed = _float_or_none(value)
         if parsed is None:
@@ -4100,6 +4122,88 @@ def hip4_outcome_html(
             if isinstance(row, dict)
         )
 
+    def render_mainnet_reference_rows() -> str:
+        rows = mainnet_payload.get("reference_prices", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='5'>Aucune référence mainnet visible.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{fmt_number(row.get('price'), 6)}</td>"
+                f"<td>{escape(str(row.get('source_count', 0)))}</td>"
+                f"<td>{escape(str(row.get('rejected_count', 0)))}</td>"
+                f"<td>{fmt_number(row.get('max_deviation_bps'), 2)}</td>"
+                "</tr>"
+            )
+            for row in rows
+            if isinstance(row, dict)
+        )
+
+    def render_mainnet_opportunity_rows() -> str:
+        rows = mainnet_payload.get("opportunities", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='10'>Aucune opportunité mainnet loggée.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('edge_type', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{fmt_number(row.get('net_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('gross_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('confidence'), 4)}</td>"
+                f"<td>{fmt_number(row.get('ref_price'), 6)}</td>"
+                f"<td>{fmt_number(row.get('yes_ask'), 6)}</td>"
+                f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                "</tr>"
+            )
+            for row in reversed(rows[-16:])
+            if isinstance(row, dict)
+        )
+
+    def render_mainnet_replay_rows() -> str:
+        rows = mainnet_payload.get("replay", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='8'>Replay mainnet vide pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('date', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('edge_type', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{escape(str(row.get('opportunity_count', 0)))}</td>"
+                f"<td>{fmt_number(row.get('avg_net_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('max_net_edge'), 6)}</td>"
+                f"<td>{fmt_number(row.get('avg_confidence'), 4)}</td>"
+                "</tr>"
+            )
+            for row in rows
+            if isinstance(row, dict)
+        )
+
+    def render_mainnet_latency_rows() -> str:
+        rows = mainnet_payload.get("latency", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='7'>Aucune latence mainnet loggée.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                f"<td>{escape(str(row.get('loop_count', '-')))}</td>"
+                f"<td>{fmt_number(row.get('total_ms'), 1)}</td>"
+                f"<td>{fmt_number(row.get('reference_prices_ms'), 1)}</td>"
+                f"<td>{fmt_number(row.get('books_ms'), 1)}</td>"
+                f"<td>{fmt_number(row.get('opportunities'), 0)}</td>"
+                f"<td>{escape(str(row.get('error', '')))}</td>"
+                "</tr>"
+            )
+            for row in reversed(rows[-8:])
+            if isinstance(row, dict)
+        )
+
     cards = render_stat_cards(
         [
             {
@@ -4174,6 +4278,45 @@ def hip4_outcome_html(
                     or capital.get("testnet_balance_source")
                     or capital.get("reason", "capital")
                 ),
+            },
+        ]
+    )
+    mainnet_cards = render_stat_cards(
+        [
+            {
+                "label": "Mainnet observer",
+                "value": str(mainnet_payload.get("process_state", "-")),
+                "note": f"âge status {mainnet_age_label}",
+            },
+            {
+                "label": "Mode",
+                "value": str(mainnet_payload.get("mode", "observer")),
+                "note": "ordre impossible",
+            },
+            {
+                "label": "Markets",
+                "value": f"{mainnet_payload.get('markets_supported', 0)}/{mainnet_payload.get('markets_seen', 0)}",
+                "note": "supportés / vus",
+            },
+            {
+                "label": "Loop edge",
+                "value": fmt_number(mainnet_payload.get("latest_net_edge"), 4),
+                "note": "dernier net edge mainnet",
+            },
+            {
+                "label": "Best edge",
+                "value": fmt_number(mainnet_payload.get("best_net_edge"), 4),
+                "note": "meilleur net edge mainnet",
+            },
+            {
+                "label": "Signals",
+                "value": str(mainnet_payload.get("opportunities_this_loop", 0)),
+                "note": "opportunités dernière boucle",
+            },
+            {
+                "label": "Logs",
+                "value": "mainnet",
+                "note": str(mainnet_payload.get("logs_dir", "logs/hip4_outcome_mainnet")),
             },
         ]
     )
@@ -4268,17 +4411,68 @@ def hip4_outcome_html(
         <span class="badge badge-{tone}">{'fresh' if payload.get('fresh') else 'stale'}</span>
       </div>
       <h1>HIP-4 Outcome Experimental</h1>
-      <p>Pod expérimental isolé en observer/dry-run pour suivre les marchés outcome testnet et voir si un edge exploitable se dessine.</p>
+      <p>Pod expérimental isolé: exécution testnet dédiée et observation mainnet en parallèle, sans ordre mainnet.</p>
       <div class="hero-links">
         <span>Last updated: {escape(refreshed_at)}</span>
         <a href="/dashboard">/dashboard</a>
         <a href="/trades">/trades</a>
         <a href="/api/hip4-outcome">/api/hip4-outcome</a>
+        <a href="/api/hip4-outcome-mainnet">/api/hip4-outcome-mainnet</a>
       </div>
     </header>
 
     <div class="grid">
       <section class="metric-grid">{cards}</section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Mainnet observer</h2>
+          <p>{escape(str(mainnet_payload.get('status_path', 'logs/hip4_outcome_mainnet_status.json')))} · {escape(str(mainnet_payload.get('logs_dir', 'logs/hip4_outcome_mainnet')))}</p>
+        </div>
+      </section>
+      <section class="metric-grid">{mainnet_cards}</section>
+
+      <section class="two-col">
+        <div class="panel">
+          <div class="panel-header"><h2>Opportunités mainnet</h2><p>Observation pure: décisions rejetées en mode observer, aucune exécution.</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Ts</th><th>Underlying</th><th>Edge</th><th>Side</th><th>Net</th><th>Gross</th><th>Conf</th><th>Ref</th><th>Yes ask</th><th>Reason</th></tr></thead>
+              <tbody>{render_mainnet_opportunity_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>Sources prix mainnet</h2><p>Références de la dernière boucle mainnet.</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Underlying</th><th>Price</th><th>Sources</th><th>Rejected</th><th>Max dev bps</th></tr></thead>
+              <tbody>{render_mainnet_reference_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="two-col">
+        <div class="panel">
+          <div class="panel-header"><h2>Replay mainnet</h2><p>Agrégation des opportunités mainnet déjà collectées.</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Date</th><th>Underlying</th><th>Edge</th><th>Side</th><th>Count</th><th>Avg net</th><th>Max net</th><th>Avg conf</th></tr></thead>
+              <tbody>{render_mainnet_replay_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>Latence mainnet</h2><p>Dernières boucles de l'observateur mainnet.</p></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Ts</th><th>Loop</th><th>Total ms</th><th>Refs ms</th><th>Books ms</th><th>Opps</th><th>Error</th></tr></thead>
+              <tbody>{render_mainnet_latency_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+      </section>
 
       <section class="panel">
         <div class="panel-header"><h2>Exécutions testnet</h2><p>Réponses persistées après les décisions approuvées.</p></div>
@@ -4389,6 +4583,7 @@ def build_handler(
                 "/api/metrics": lambda: metrics_payload(supervisor, metrics),
                 "/api/report": lambda: report_payload(supervisor, metrics),
                 "/api/hip4-outcome": lambda: hip4_outcome_payload(),
+                "/api/hip4-outcome-mainnet": lambda: hip4_outcome_mainnet_payload(),
             }
             html_routes: dict[str, Callable[[], str]] = {
                 "/": lambda: dashboard_html(supervisor, metrics),

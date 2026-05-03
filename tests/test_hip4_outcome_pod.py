@@ -1272,6 +1272,20 @@ BTC = 0.5
         self.assertEqual(rows[0]["avg_net_edge"], 0.13)
         self.assertEqual(rows[0]["max_net_edge"], 0.18)
 
+    def test_mainnet_observer_config_is_observer_only(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = load_hip4_outcome_config("config/hip4_outcome_mainnet_observer.toml")
+
+        self.assertEqual(config.mode, "observer")
+        self.assertEqual(config.info_url, "https://api.hyperliquid.xyz/info")
+        self.assertEqual(config.ws_url, "wss://api.hyperliquid.xyz/ws")
+        self.assertFalse(config.allow_testnet_orders)
+        self.assertFalse(config.require_testnet_url)
+        self.assertFalse(config.write_pod_b_alias_status)
+        self.assertFalse(config.enforce_testnet_balance_check)
+        self.assertIn("hip4_outcome_mainnet", config.logs_dir)
+        self.assertIn("hip4_outcome_mainnet", config.status_path)
+
 
 if __name__ == "__main__":
     unittest.main()

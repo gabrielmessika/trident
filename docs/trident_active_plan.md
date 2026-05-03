@@ -105,15 +105,17 @@ Fichiers principaux:
 - `app/live/hip4_outcome_runner.py`
 - `app/backtest/hip4_outcome_replay.py`
 - `config/hip4_outcome_testnet.toml`
+- `config/hip4_outcome_mainnet_observer.toml`
 - `tests/test_hip4_outcome_pod.py`
 
 Integration bot complet:
 
 - `app/live/trident_dry_run_launcher.py` lance HIP-4 comme resultat `pod_b`; l'ancien runner directionnel n'est plus lance.
-- `scripts/trident_server.sh` mappe le profil `pod_b` vers le service `hip4-outcome-dry-run`.
-- `docker-compose.trident.yml` met `hip4-outcome-dry-run` sous profils `pod_b` et `hip4`; l'ancien `pod-b-live` est sous `legacy_pod_b`.
+- `scripts/trident_server.sh` mappe le profil `pod_b` vers le service `hip4-outcome-dry-run` et lance aussi `hip4-outcome-mainnet-observer` par defaut.
+- `docker-compose.trident.yml` met `hip4-outcome-dry-run` et `hip4-outcome-mainnet-observer` dans le meme deploiement dry-run; l'ancien `pod-b-live` est sous `legacy_pod_b`.
 - HIP-4 ecrit aussi `logs/pod_b_live_status.json`, ce qui rend le reporting/UI Pod B compatible avec le nouveau pod.
-- Le pod ne modifie pas le routing Pod A/Pod C et n'envoie aucun ordre mainnet.
+- Le pod ne modifie pas le routing Pod A/Pod C.
+- Aucun ordre mainnet n'est possible dans l'etat courant: le mainnet ne tourne qu'en `observer`, sans credentials, sans alias Pod B, sans execution.
 
 Modes:
 
@@ -147,6 +149,21 @@ Activation serveur testnet:
 - `HIP4_OUTCOME_VAULT_ADDRESS=` vide sauf sous-compte explicite.
 - Le lancement complet se fait sans `--without-pod-b`; `--without-pod-b` coupe aussi le nouveau Pod B.
 - Le Pod B utilise le spot outcome quote `USDH`. Avoir seulement du `USDC` spot ne suffit pas.
+
+Observation mainnet dans le meme deploiement:
+
+- Service: `hip4-outcome-mainnet-observer`.
+- Config: `config/hip4_outcome_mainnet_observer.toml`.
+- Mode force: `observer`.
+- Endpoint: `https://api.hyperliquid.xyz/info`.
+- Statut: `logs/hip4_outcome_mainnet_status.json`.
+- Logs: `logs/hip4_outcome_mainnet/`.
+- State: `runtime/hip4_outcome_mainnet_state.json`.
+- API UI: `/api/hip4-outcome-mainnet`, et resume integre dans `/hip4-outcome`.
+- `write_pod_b_alias_status = false`: l'observateur mainnet ne doit jamais ecraser `logs/pod_b_live_status.json`.
+- `allow_testnet_orders = false`, `require_testnet_url = false`, `enforce_testnet_balance_check = false`: c'est strictement de l'observation publique, pas une execution.
+- Le start serveur standard lance testnet + mainnet observer ensemble; pour retirer uniquement l'observateur: `--without-hip4-mainnet-observer`.
+- Verification initiale mainnet `2026-05-03`: `outcomeMeta` expose un BTC `priceBinary` daily (`outcome=1`, `#10/#11`) avec books et mids actifs.
 
 Sources de prix / observation:
 
@@ -205,6 +222,8 @@ Mode `SHORT_EXPIRY`:
 
 Sorties principales:
 
+Testnet Pod B:
+
 - `logs/hip4_outcome_testnet/opportunities.csv`
 - `logs/hip4_outcome_testnet/decisions.jsonl`
 - `logs/hip4_outcome_testnet/trades.csv`
@@ -216,6 +235,17 @@ Sorties principales:
 - `logs/hip4_outcome_status.json`
 - `logs/pod_b_live_status.json` (alias runtime Pod B pour l'UI/reporting)
 - `runtime/hip4_outcome_testnet_state.json`
+
+Mainnet observer:
+
+- `logs/hip4_outcome_mainnet/opportunities.csv`
+- `logs/hip4_outcome_mainnet/decisions.jsonl`
+- `logs/hip4_outcome_mainnet/latency_stats.csv`
+- `logs/hip4_outcome_mainnet/edge_decay.csv`
+- `logs/hip4_outcome_mainnet/short_expiry_features.csv`
+- `logs/hip4_outcome_mainnet/daily_summary.csv`
+- `logs/hip4_outcome_mainnet_status.json`
+- `runtime/hip4_outcome_mainnet_state.json`
 
 Note: les anciens chemins `logs/hip4_outcome_paper/` et `runtime/hip4_outcome_paper_state.json` peuvent exister dans les archives locales; l'exploitation courante doit privilegier le `logs_dir` et `state_path` de `config/hip4_outcome_testnet.toml`.
 
@@ -257,8 +287,16 @@ uv run python -m app.live.hip4_outcome_runner \
 
 ```bash
 uv run python -m app.backtest.hip4_outcome_replay \
-  --logs-dir logs/hip4_outcome_testnet \
+  --profile testnet \
   --output logs/hip4_outcome_testnet/replay_latest.json
+```
+
+Replay observer mainnet:
+
+```bash
+uv run python -m app.backtest.hip4_outcome_replay \
+  --profile mainnet \
+  --output logs/hip4_outcome_mainnet/replay_latest.json
 ```
 
 Pour de vrais ordres testnet:
@@ -271,6 +309,13 @@ Pour de vrais ordres testnet:
 - Verifier que le solde `USDH` est visible via `spotClearinghouseState`.
 - Garder les caps internes actifs meme si le compte testnet contient plus de capital.
 
+Preparation mainnet:
+
+- Accumuler d'abord les logs mainnet observer via le deploiement standard.
+- Rejouer `logs/hip4_outcome_mainnet/opportunities.csv` avec `--profile mainnet`.
+- Comparer mainnet observer vs testnet execution: edge decay, spreads, profondeur, fills theoriques, reference prices, horaires d'expiry.
+- Aucune execution mainnet ne doit etre ajoutee sans nouveau mode explicite `mainnet`, credentials mainnet dedies, preflight mainnet, caps tiny-size et confirmation manuelle.
+
 Ce qui manque encore pour se rapprocher d'un bot type OpenClaw performant:
 
 - WebSocket ou streaming plus bas-latence pour mids et order books.
@@ -280,6 +325,7 @@ Ce qui manque encore pour se rapprocher d'un bot type OpenClaw performant:
 - Une politique de sizing dynamique uniquement apres preuve paper/testnet.
 - Une calibration probabiliste serieuse avant tout Kelly ou ML.
 - Une base de snapshots complete pour rejouer decisions, books, references, fills, settlements et edge decay.
+- Un mode mainnet execution explicite et separe de `testnet`, seulement apres validation de l'observateur mainnet.
 
 ## Idees A Garder: Bot Prediction Market / Post Crypto_Jargon
 
@@ -336,10 +382,14 @@ uv run python -m unittest tests.test_hip4_outcome_pod tests.test_pod_a_live_runn
 
 Resultat courant `2026-05-03`:
 
-- `uv run python -m unittest tests.test_hip4_outcome_pod`: `35` tests OK.
+- `uv run python -m unittest tests.test_hip4_outcome_pod`: `36` tests OK.
 - `uv run python -m unittest tests.test_pod_a_live_runner`: `3` tests OK.
-- `uv run python -m py_compile app/trident/hip4_outcome/models.py app/trident/hip4_outcome/state.py app/trident/hip4_outcome/runner.py app/live/pod_a_live_runner.py app/observability/api.py`: OK.
-- Serveur verifie apres redeploiement: `trident-pod-a-live`, `trident-pod-c-live`, `trident-hip4-outcome-dry-run`, `trident-api` et collectors actifs.
+- `uv run python -m unittest tests.test_trident_dry_run_launcher`: `1` test OK.
+- `uv run python -m py_compile app/backtest/hip4_outcome_replay.py app/live/hip4_outcome_runner.py app/observability/api.py app/trident/hip4_outcome/config.py`: OK.
+- `bash -n deploy.sh scripts/trident_server.sh scripts/fetch_trident_data.sh scripts/trident_dry_run_review.sh`: OK.
+- `uv run python -m app.live.hip4_outcome_runner --config config/hip4_outcome_mainnet_observer.toml --mode observer --once`: OK, `markets_seen=1`, `markets_supported=1`, `opportunities=1`, aucune execution.
+- `uv run python -m app.backtest.hip4_outcome_replay --profile mainnet`: OK.
+- Derniere verification serveur avant ajout de l'observateur mainnet: `trident-pod-a-live`, `trident-pod-c-live`, `trident-hip4-outcome-dry-run`, `trident-api` et collectors actifs.
 - API `/api/hip4-outcome` OK, statut Pod B HIP-4 frais, pas de cle d'overlap fantome.
 - Fix important: `OutcomePosition.from_dict` et le state reload HIP-4 sont couverts par test de round-trip.
 
@@ -386,6 +436,7 @@ Ces pistes ne doivent plus apparaitre comme roadmap active. Elles restent seulem
 
 - Lancer le bot complet sans `--without-pod-b`.
 - Verifier que le service actif est `hip4-outcome-dry-run`, pas `pod-b-live`.
+- Verifier que `hip4-outcome-mainnet-observer` tourne dans le meme deploiement.
 - Verifier que l'env serveur active bien `HIP4_OUTCOME_MODE=testnet` et `HIP4_OUTCOME_ALLOW_TESTNET_ORDERS=true` seulement pour le compte testnet dedie.
 - Verifier que le capital visible est en `USDH`, pas seulement en `USDC`.
 - Suivre `/hip4-outcome`:
@@ -395,6 +446,7 @@ Ces pistes ne doivent plus apparaitre comme roadmap active. Elles restent seulem
   - settlements estimes
   - PnL paper par underlying
   - PnL testnet net fees par underlying
+  - bloc mainnet observer: markets, references, opportunities, replay mainnet
 - Suivre aussi `/dashboard` et `/api/report`: Pod B doit pointer vers `pod_kind = hip4_outcome_edge_pod`.
 - Ne pas conclure sur un seul signal; attendre plusieurs expiries.
 
@@ -403,7 +455,7 @@ Ces pistes ne doivent plus apparaitre comme roadmap active. Elles restent seulem
 Prerequis:
 
 - fetch serveur complet apres quelques heures.
-- logs `opportunities`, `decisions`, `trades`, `settlements`, `edge_decay`, `short_expiry_features`, `daily_summary`.
+- logs testnet et mainnet observer: `opportunities`, `decisions`, `trades`, `settlements`, `edge_decay`, `short_expiry_features`, `daily_summary`.
 - statut API et UI coherents.
 
 Action:
@@ -412,6 +464,7 @@ Action:
 - calculer PnL net fees par coin, cote, type d'edge, horizon d'expiry et heure.
 - mesurer win rate, profit factor, drawdown, edge decay et fill quality. Le win rate seul ne suffit pas.
 - comparer paper vs testnet quand les deux sources existent.
+- comparer mainnet observer vs testnet: reference price, spread, depth, edge decay, et frequence des signaux.
 
 ### 3. Calibration Avant Sizing Dynamique
 
@@ -422,7 +475,7 @@ Action:
 
 ### 4. Ameliorer La Latence HIP-4 Seulement Si Necessaire
 
-Priorite apres plusieurs runs testnet:
+Priorite apres plusieurs runs testnet/mainnet observer:
 
 - remplacer le polling critique par streaming/WS si l'edge decay montre que les signaux disparaissent trop vite.
 - ajouter book cache / allMids cache pour eviter de dependre de REST a chaque boucle.
@@ -437,17 +490,18 @@ Priorite apres plusieurs runs testnet:
 ### 6. Deploiement / Rollback
 
 - S'assurer que le serveur utilise `config/trident.toml`.
-- Verifier que le dry-run lance bien HIP-4 comme Pod B, et que les seuls ordres reels possibles sont testnet sur compte dedie.
+- Verifier que le dry-run lance bien HIP-4 comme Pod B, plus l'observateur mainnet, et que les seuls ordres reels possibles sont testnet sur compte dedie.
 - Garder un rollback simple:
   - couper le Pod B HIP-4 avec `--without-pod-b`
   - `--without-hip4-outcome` reste accepte comme alias historique
+  - couper seulement l'observateur mainnet avec `--without-hip4-mainnet-observer`
   - ou laisser `allow_testnet_orders = false`
 
 ## Regles De Promotion
 
 - Une idee validee seulement en candles/research ne passe pas en prod.
 - Une idee positive en standalone mais negative en full-bot ne passe pas en prod.
-- Une idee HIP-4 paper ne passe pas en mainnet sans testnet tiny-order.
+- Une idee HIP-4 paper/testnet ne passe pas en mainnet sans observation mainnet replayable, testnet tiny-order, puis preflight mainnet separe.
 - Une nouvelle logique doit etre lisible dans l'UI et dans les logs avant toute activation durable.
 - Les documents historiques peuvent expliquer une decision, mais ne rouvrent pas automatiquement une piste rejetee.
 
