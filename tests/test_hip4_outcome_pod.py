@@ -30,11 +30,6 @@ from app.trident.hip4_outcome.models import (
     outcome_coin,
     outcome_encoding,
 )
-from app.trident.hip4_outcome.locks import UnderlyingOverlapLock
-from app.trident.hip4_outcome.overlap import (
-    directional_overlap_snapshot,
-    hip4_open_underlyings,
-)
 from app.trident.hip4_outcome.parser import parse_outcome_markets, parse_price_binary_outcome
 from app.trident.hip4_outcome.probability import ProbabilityModel
 from app.trident.hip4_outcome.reconciliation import (
@@ -45,7 +40,7 @@ from app.trident.hip4_outcome.reconciliation import (
 )
 from app.trident.hip4_outcome.reporting import build_daily_summary_rows, replay_opportunities
 from app.trident.hip4_outcome.risk import OutcomeRiskManager
-from app.live.runtime_status import write_runtime_status
+from app.trident.hip4_outcome.state import OutcomeStateStore
 
 
 class HIP4OutcomePodTests(unittest.TestCase):
@@ -289,6 +284,124 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertEqual(decision.reason, "observer_mode_signal_only")
 
+    def test_risk_rejects_testnet_order_below_effective_hl_minimum(self) -> None:
+        market = self._market()
+        book = build_order_book(
+            market_id=market.market_id,
+            yes_payload={
+                "coin": market.yes_coin,
+                "time": 1,
+                "levels": [
+                    [],
+                    [{"px": "0.71", "sz": "40", "n": 1}],
+                ],
+            },
+            no_payload={
+                "coin": market.no_coin,
+                "time": 1,
+                "levels": [[], []],
+            },
+            max_slippage=0.03,
+        )
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_YES",
+            edge_type="MODEL",
+            gross_edge=0.3,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.28,
+            confidence=0.9,
+            requested_size_usdc=25.0,
+            max_loss_usdc=25.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={"strike": market.strike},
+        )
+        config = Hip4OutcomeConfig(
+            mode="testnet",
+            allow_testnet_orders=True,
+            max_position_usdc=25.0,
+            max_total_outcome_exposure_usdc=100.0,
+            max_per_underlying_outcome_exposure_usdc=100.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+            min_order_value_usdc=10.0,
+            outcome_size_decimals=0,
+        )
+
+        decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 3600,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "below_exchange_min_order_value_yes")
+
+    def test_risk_approves_testnet_order_once_effective_hl_minimum_is_met(self) -> None:
+        market = self._market()
+        book = build_order_book(
+            market_id=market.market_id,
+            yes_payload={
+                "coin": market.yes_coin,
+                "time": 1,
+                "levels": [
+                    [],
+                    [{"px": "0.71", "sz": "40", "n": 1}],
+                ],
+            },
+            no_payload={
+                "coin": market.no_coin,
+                "time": 1,
+                "levels": [[], []],
+            },
+            max_slippage=0.03,
+        )
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_YES",
+            edge_type="MODEL",
+            gross_edge=0.3,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.28,
+            confidence=0.9,
+            requested_size_usdc=28.4,
+            max_loss_usdc=28.4,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={"strike": market.strike},
+        )
+        config = Hip4OutcomeConfig(
+            mode="testnet",
+            allow_testnet_orders=True,
+            max_position_usdc=50.0,
+            max_total_outcome_exposure_usdc=100.0,
+            max_per_underlying_outcome_exposure_usdc=100.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+            min_order_value_usdc=10.0,
+            outcome_size_decimals=0,
+        )
+
+        decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 3600,
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.approved_size_usdc, 28.4)
+
     def test_builds_parity_order_legs_with_equal_token_qty(self) -> None:
         market = self._market()
         book = self._book()
@@ -362,6 +475,62 @@ class HIP4OutcomePodTests(unittest.TestCase):
 
         self.assertEqual(too_small, [])
         self.assertEqual(len(large_enough), 1)
+
+    def test_order_legs_use_outcome_effective_min_value(self) -> None:
+        market = self._market()
+        book = build_order_book(
+            market_id=market.market_id,
+            yes_payload={
+                "coin": market.yes_coin,
+                "time": 1,
+                "levels": [[{"px": "0.29", "sz": "40", "n": 1}], []],
+            },
+            no_payload={
+                "coin": market.no_coin,
+                "time": 1,
+                "levels": [[], [{"px": "0.69", "sz": "40", "n": 1}]],
+            },
+            max_slippage=0.03,
+        )
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_NO",
+            edge_type="MODEL",
+            gross_edge=0.2,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.18,
+            confidence=0.8,
+            requested_size_usdc=25.0,
+            max_loss_usdc=25.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+        )
+
+        too_small = build_order_legs(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            approved_size_usdc=12.0,
+            max_order_slippage=0.03,
+            min_order_value_usdc=10.0,
+            size_decimals=0,
+        )
+        large_enough = build_order_legs(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            approved_size_usdc=25.0,
+            max_order_slippage=0.03,
+            min_order_value_usdc=10.0,
+            size_decimals=0,
+        )
+
+        self.assertEqual(too_small, [])
+        self.assertEqual(len(large_enough), 1)
+        self.assertGreaterEqual(float(large_enough[0]["expected_order_value_usdc"]), 10.0)
 
     def test_reference_price_aggregator_uses_median_and_rejects_outlier(self) -> None:
         config = Hip4OutcomeConfig(
@@ -596,6 +765,7 @@ BTC = 0.5
             mode="testnet",
             pod_b_budget_usdc=25.0,
             testnet_balance_buffer_usdc=1.0,
+            testnet_balance_coin="USDC",
         )
         guard = OutcomeCapitalGuard(config, info_client=FakeInfoClient())  # type: ignore[arg-type]
         decision = SupervisorDecision(
@@ -615,6 +785,42 @@ BTC = 0.5
         self.assertEqual(adjusted.approved_size_usdc, 1.0)
         self.assertEqual(snapshot.testnet_available_usdc, 2.0)
         self.assertEqual(snapshot.testnet_balance_source, "spotClearinghouseState")
+
+    def test_capital_guard_defaults_to_usdh_for_outcome_quote_balance(self) -> None:
+        class FakeInfoClient:
+            def fetch_spot_state(self, user: str):
+                return {
+                    "balances": [
+                        {"coin": "USDC", "total": "50", "hold": "0"},
+                        {"coin": "USDH", "total": "12", "hold": "2"},
+                    ]
+                }
+
+        class FakeExecutor:
+            def resolve_account_address(self):
+                return "0x0000000000000000000000000000000000000001"
+
+        guard = OutcomeCapitalGuard(
+            Hip4OutcomeConfig(mode="testnet", testnet_balance_buffer_usdc=1.0),
+            info_client=FakeInfoClient(),  # type: ignore[arg-type]
+        )
+        decision = SupervisorDecision(
+            approved=True,
+            approved_size_usdc=20.0,
+            reason="local_outcome_risk_ok",
+            execution_mode="TESTNET",
+        )
+
+        adjusted, snapshot = guard.apply(
+            decision=decision,
+            open_positions=[],
+            testnet_executor=FakeExecutor(),
+        )
+
+        self.assertTrue(adjusted.approved)
+        self.assertEqual(snapshot.testnet_balance_coin, "USDH")
+        self.assertEqual(snapshot.testnet_available_usdc, 10.0)
+        self.assertEqual(adjusted.approved_size_usdc, 9.0)
 
     def test_capital_guard_transfers_testnet_withdrawable_to_spot_when_empty(self) -> None:
         class FakeInfoClient:
@@ -646,6 +852,7 @@ BTC = 0.5
             mode="testnet",
             pod_b_budget_usdc=25.0,
             testnet_balance_buffer_usdc=1.0,
+            testnet_balance_coin="USDC",
             auto_transfer_testnet_spot_usdc=True,
         )
         fake_executor = FakeExecutor()
@@ -686,6 +893,7 @@ BTC = 0.5
         guard = OutcomeCapitalGuard(
             Hip4OutcomeConfig(
                 mode="testnet",
+                testnet_balance_coin="USDC",
                 auto_transfer_testnet_spot_usdc=False,
             ),
             info_client=FakeInfoClient(),  # type: ignore[arg-type]
@@ -704,7 +912,7 @@ BTC = 0.5
         )
 
         self.assertFalse(adjusted.approved)
-        self.assertEqual(adjusted.reason, "insufficient_testnet_usdc")
+        self.assertEqual(adjusted.reason, "insufficient_testnet_quote_balance")
         self.assertEqual(snapshot.testnet_available_usdc, 0.0)
         self.assertEqual(snapshot.testnet_perp_withdrawable_usdc, 999.0)
         self.assertEqual(snapshot.testnet_balance_source, "spotClearinghouseState")
@@ -732,7 +940,11 @@ BTC = 0.5
                 return {"status": "ok", "response": {"type": "default"}}
 
         snapshot = OutcomeCapitalGuard(
-            Hip4OutcomeConfig(mode="testnet", auto_transfer_testnet_spot_usdc=True),
+            Hip4OutcomeConfig(
+                mode="testnet",
+                testnet_balance_coin="USDC",
+                auto_transfer_testnet_spot_usdc=True,
+            ),
             info_client=FakeInfoClient(),  # type: ignore[arg-type]
         ).testnet_balance_snapshot(
             open_positions=[],
@@ -741,58 +953,6 @@ BTC = 0.5
 
         self.assertEqual(snapshot.testnet_available_usdc, 26.0)
         self.assertEqual(snapshot.testnet_balance_source, "spotClearinghouseState_after_usdClassTransfer")
-
-    def test_overlap_helpers_detect_pod_a_and_hip4_open_underlyings(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            pod_a_status = root / "pod_a_live_status.json"
-            pod_b_status = root / "pod_b_live_status.json"
-            write_runtime_status(
-                pod_a_status,
-                {
-                    "pod": "pod_a",
-                    "updated_at": "2999-01-01T00:00:00Z",
-                    "process_state": "running",
-                    "open_positions": [{"symbol": "BTC"}],
-                },
-            )
-            write_runtime_status(
-                pod_b_status,
-                {
-                    "pod": "pod_b",
-                    "pod_kind": "hip4_outcome_edge_pod",
-                    "updated_at": "2999-01-01T00:00:00Z",
-                    "process_state": "running",
-                    "open_positions": [{"underlying": "HYPE"}],
-                },
-            )
-
-            overlap = directional_overlap_snapshot([str(pod_a_status)])
-
-            self.assertEqual(overlap.blocked_underlyings, ["BTC"])
-            self.assertEqual(hip4_open_underlyings(pod_b_status), ["HYPE"])
-
-    def test_overlap_lock_reclaims_dead_same_owner_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            lock = UnderlyingOverlapLock(
-                underlying="BTC",
-                owner="pod_a",
-                lock_dir=Path(tmpdir),
-            )
-            lock.path.write_text(
-                json.dumps(
-                    {
-                        "underlying": "BTC",
-                        "owner": "pod_a",
-                        "pid": 999999999,
-                        "created_at": 1,
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            self.assertTrue(lock.acquire())
-            lock.release()
 
     def test_reconciler_matches_testnet_fills_and_balances(self) -> None:
         class FakeInfoClient:
@@ -988,6 +1148,48 @@ BTC = 0.5
         self.assertEqual(payload["fills"][0]["raw"]["nested"]["qty"], "1.2")
         self.assertEqual(payload["raw"][0]["qty"], "1.2")
         json.dumps(payload)
+
+    def test_state_store_round_trips_positions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = OutcomeStateStore(Path(tmpdir) / "state.json")
+            position = OutcomePosition(
+                position_id="pos-1",
+                market_id="HYPE_GT_58.5_20260503_0800",
+                outcome=5935,
+                underlying="HYPE",
+                edge_type="LATE_EXPIRY",
+                side="BUY_YES",
+                opened_at="2026-05-03T07:50:44Z",
+                expiry_ts=1777795200,
+                cost_usdc=26.98,
+                max_loss_usdc=26.98,
+                net_edge=0.273,
+                confidence=0.6925,
+                fills=[
+                    OutcomeFill(
+                        coin="#59350",
+                        side_name="YES",
+                        token_qty=Decimal("38.0"),
+                        avg_price=0.71,
+                        cost_usdc=26.98,
+                        status="filled",
+                        oid=52407686267,
+                        cloid="0xabc",
+                        raw={"qty": Decimal("38")},
+                    )
+                ],
+                status="estimated_settled",
+                estimated_pnl_usdc=10.944,
+                metadata={"settlement": {"result": "YES"}},
+            )
+
+            store.save_positions([position])
+            loaded = store.load_positions()
+
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].position_id, "pos-1")
+            self.assertEqual(loaded[0].fills[0].token_qty, Decimal("38.0"))
+            self.assertEqual(loaded[0].metadata["settlement"]["result"], "YES")
 
     def test_runner_persists_execution_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

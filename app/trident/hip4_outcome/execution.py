@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import secrets
 import time
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any
 
 from app.execution.live import parse_order_result
@@ -89,7 +89,8 @@ class TestnetOutcomeExecutor:
                 reduce_only=False,
                 cloid=Cloid.from_str(cloid),
             )
-            raw_responses.append(raw)
+            raw_payload = {"request": dict(leg), "response": raw}
+            raw_responses.append(raw_payload)
             parsed = parse_order_result(raw, cloid=cloid)
             if parsed.filled:
                 fills.append(
@@ -102,7 +103,7 @@ class TestnetOutcomeExecutor:
                         status=parsed.status,
                         oid=parsed.oid,
                         cloid=cloid,
-                        raw=raw,
+                        raw=raw_payload,
                     )
                 )
             else:
@@ -116,7 +117,7 @@ class TestnetOutcomeExecutor:
                         status=parsed.error or parsed.status,
                         oid=parsed.oid,
                         cloid=cloid,
-                        raw=raw,
+                        raw=raw_payload,
                     )
                 )
         status = "testnet_filled" if any(fill.token_qty > 0 for fill in fills) else "testnet_no_fill"
@@ -269,7 +270,10 @@ def build_order_legs(
     if qty <= 0:
         return []
     if min_order_value_usdc > 0:
-        if float(qty) * yes_limit < min_order_value_usdc or float(qty) * no_limit < min_order_value_usdc:
+        min_value = Decimal(str(min_order_value_usdc))
+        yes_min_price = _outcome_min_value_price(yes_limit)
+        no_min_price = _outcome_min_value_price(no_limit)
+        if Decimal(str(qty)) * yes_min_price < min_value or Decimal(str(qty)) * no_min_price < min_value:
             return []
     return [
         {
@@ -278,6 +282,8 @@ def build_order_legs(
             "token_qty": qty,
             "reference_price": order_book.yes.ask,
             "limit_price": round(yes_limit, 8),
+            "min_order_value_price": str(_outcome_min_value_price(yes_limit)),
+            "expected_order_value_usdc": str((Decimal(str(qty)) * _outcome_min_value_price(yes_limit)).quantize(Decimal("0.00000001"))),
         },
         {
             "coin": market.no_coin,
@@ -285,6 +291,8 @@ def build_order_legs(
             "token_qty": qty,
             "reference_price": order_book.no.ask,
             "limit_price": round(no_limit, 8),
+            "min_order_value_price": str(_outcome_min_value_price(no_limit)),
+            "expected_order_value_usdc": str((Decimal(str(qty)) * _outcome_min_value_price(no_limit)).quantize(Decimal("0.00000001"))),
         },
     ]
 
@@ -305,8 +313,14 @@ def _single_leg(
     qty = _quantize_size(Decimal(str(spend_usdc / limit_price)), size_decimals)
     if qty <= 0:
         return []
-    if min_order_value_usdc > 0 and float(qty) * limit_price < min_order_value_usdc:
-        return []
+    min_value_price = _outcome_min_value_price(limit_price)
+    if min_order_value_usdc > 0:
+        min_qty = _quantize_size_up(
+            Decimal(str(min_order_value_usdc)) / min_value_price,
+            size_decimals,
+        )
+        if qty < min_qty:
+            return []
     return [
         {
             "coin": coin,
@@ -314,11 +328,25 @@ def _single_leg(
             "token_qty": qty,
             "reference_price": ask,
             "limit_price": round(limit_price, 8),
+            "min_order_value_price": str(min_value_price),
+            "expected_order_value_usdc": str((Decimal(str(qty)) * min_value_price).quantize(Decimal("0.00000001"))),
         }
     ]
+
+
+def _outcome_min_value_price(limit_price: float) -> Decimal:
+    price = Decimal(str(limit_price))
+    complement = Decimal("1") - price
+    return max(min(price, complement), Decimal("0.00000001"))
 
 
 def _quantize_size(value: Decimal, size_decimals: int) -> Decimal:
     decimals = max(int(size_decimals), 0)
     quantum = Decimal("1") if decimals == 0 else Decimal("1").scaleb(-decimals)
     return value.quantize(quantum, rounding=ROUND_DOWN)
+
+
+def _quantize_size_up(value: Decimal, size_decimals: int) -> Decimal:
+    decimals = max(int(size_decimals), 0)
+    quantum = Decimal("1") if decimals == 0 else Decimal("1").scaleb(-decimals)
+    return value.quantize(quantum, rounding=ROUND_UP)

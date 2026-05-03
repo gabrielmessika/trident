@@ -83,10 +83,6 @@ class Hip4OutcomeConfig:
     status_path: str = "./logs/hip4_outcome_status.json"
     write_pod_b_alias_status: bool = True
     pod_b_alias_status_path: str = "./logs/pod_b_live_status.json"
-    block_directional_overlap: bool = True
-    directional_overlap_status_paths: list[str] = field(
-        default_factory=lambda: ["./logs/pod_a_live_status.json"]
-    )
     loop_interval_seconds: float = 15.0
     request_timeout_seconds: float = 10.0
     info_requests_per_minute: int = 90
@@ -156,7 +152,7 @@ class Hip4OutcomeConfig:
     order_tif: str = "Ioc"
     allow_testnet_orders: bool = False
     enforce_testnet_balance_check: bool = True
-    testnet_balance_coin: str = "USDC"
+    testnet_balance_coin: str = "USDH"
     testnet_balance_buffer_usdc: float = 1.0
     auto_transfer_testnet_spot_usdc: bool = False
     testnet_spot_transfer_target_usdc: float = 0.0
@@ -232,16 +228,6 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         ),
         pod_b_alias_status_path=str(
             section.get("pod_b_alias_status_path", "./logs/pod_b_live_status.json")
-        ),
-        block_directional_overlap=_env_bool(
-            "HIP4_OUTCOME_BLOCK_DIRECTIONAL_OVERLAP",
-            bool(section.get("block_directional_overlap", True)),
-        ),
-        directional_overlap_status_paths=_str_list(
-            section.get(
-                "directional_overlap_status_paths",
-                ["./logs/pod_a_live_status.json"],
-            )
         ),
         loop_interval_seconds=float(section.get("loop_interval_seconds", 15.0)),
         request_timeout_seconds=float(section.get("request_timeout_seconds", 10.0)),
@@ -384,7 +370,12 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
             "HIP4_OUTCOME_ENFORCE_TESTNET_BALANCE_CHECK",
             bool(section.get("enforce_testnet_balance_check", True)),
         ),
-        testnet_balance_coin=str(section.get("testnet_balance_coin", "USDC")).strip().upper(),
+        testnet_balance_coin=str(
+            os.getenv(
+                "HIP4_OUTCOME_TESTNET_BALANCE_COIN",
+                section.get("testnet_balance_coin", "USDH"),
+            )
+        ).strip().upper(),
         testnet_balance_buffer_usdc=_env_float(
             "HIP4_OUTCOME_TESTNET_BALANCE_BUFFER_USDC",
             float(section.get("testnet_balance_buffer_usdc", 1.0)),

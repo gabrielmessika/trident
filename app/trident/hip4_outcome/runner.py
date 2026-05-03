@@ -19,7 +19,6 @@ from app.trident.hip4_outcome.features import (
     update_price_history_payload,
 )
 from app.trident.hip4_outcome.logging import OutcomeEventLogger
-from app.trident.hip4_outcome.locks import UnderlyingOverlapLock
 from app.trident.hip4_outcome.models import (
     OutcomeExecutionResult,
     OutcomeMarket,
@@ -30,7 +29,6 @@ from app.trident.hip4_outcome.models import (
     SupervisorDecision,
     utc_now_iso,
 )
-from app.trident.hip4_outcome.overlap import directional_overlap_snapshot
 from app.trident.hip4_outcome.parser import parse_outcome_markets
 from app.trident.hip4_outcome.probability import ProbabilityModel
 from app.trident.hip4_outcome.reconciliation import (
@@ -73,7 +71,6 @@ class HIP4OutcomeEdgePod:
         self.last_capital_snapshot: dict[str, Any] = self.capital_guard.local_snapshot(
             open_positions=self._active_positions_for_mode()
         ).to_dict()
-        self._overlap_locks: dict[str, UnderlyingOverlapLock] = {}
         self._last_markets_seen = 0
         self._last_supported_underlyings: list[str] = []
 
@@ -125,7 +122,6 @@ class HIP4OutcomeEdgePod:
             "capital": self.capital_guard.local_snapshot(
                 open_positions=self._active_positions_for_mode()
             ).to_dict(),
-            "directional_overlap": {},
         }
         try:
             stage_started = time.monotonic()
@@ -152,11 +148,6 @@ class HIP4OutcomeEdgePod:
 
             summary["markets_seen"] = self._last_markets_seen
             summary["markets_supported"] = len(markets)
-            overlap_snapshot = directional_overlap_snapshot(
-                self.config.directional_overlap_status_paths,
-                enabled=self.config.block_directional_overlap,
-            )
-            summary["directional_overlap"] = overlap_snapshot.to_dict()
             summary["reference_prices"] = {
                 underlying: reference.to_metadata()
                 for underlying, reference in reference_prices.items()
@@ -232,28 +223,15 @@ class HIP4OutcomeEdgePod:
                         reference_price=reference_price,
                         now_ts=now_ts,
                     )
-                    if market.underlying.upper() in overlap_snapshot.blocked_underlyings:
-                        decision = SupervisorDecision(
-                            approved=False,
-                            approved_size_usdc=0.0,
-                            reason="directional_pod_overlap",
-                            execution_mode=self.config.mode.upper(),
-                            constraints={
-                                "overlap": overlap_snapshot.to_dict(),
-                            },
-                        )
-                    else:
-                        decision = self.risk_manager.evaluate(
-                            opportunity=opportunity,
-                            market=market,
-                            order_book=order_book,
-                            open_positions=self._active_positions_for_mode(),
-                            now_ts=now_ts,
-                        )
-                        if decision.approved:
-                            decision = self._apply_overlap_lock(market, decision)
-                        if decision.approved:
-                            decision = self._apply_capital_guard(decision)
+                    decision = self.risk_manager.evaluate(
+                        opportunity=opportunity,
+                        market=market,
+                        order_book=order_book,
+                        open_positions=self._active_positions_for_mode(),
+                        now_ts=now_ts,
+                    )
+                    if decision.approved:
+                        decision = self._apply_capital_guard(decision)
                     self._log_decision(opportunity=opportunity, decision=decision)
                     if not decision.approved:
                         continue
@@ -299,7 +277,6 @@ class HIP4OutcomeEdgePod:
 
             self._write_daily_summary()
             summary["open_positions"] = len(self._active_positions_for_mode())
-            self._release_closed_overlap_locks()
             self._refresh_capital_snapshot()
             summary["capital"] = self.last_capital_snapshot
             self.last_error = None
@@ -314,34 +291,6 @@ class HIP4OutcomeEdgePod:
         timings["status_ms"] = _elapsed_ms(stage_started)
         self._log_latency(summary=summary, timings=timings)
         return summary
-
-    def _apply_overlap_lock(
-        self,
-        market: OutcomeMarket,
-        decision: SupervisorDecision,
-    ) -> SupervisorDecision:
-        if not self.config.block_directional_overlap:
-            return decision
-        underlying = market.underlying.upper()
-        if underlying in self._overlap_locks and self._overlap_locks[underlying].acquired:
-            return decision
-        lock = UnderlyingOverlapLock(underlying=underlying, owner="hip4_outcome")
-        if lock.acquire():
-            self._overlap_locks[underlying] = lock
-            return decision
-        return SupervisorDecision(
-            approved=False,
-            approved_size_usdc=0.0,
-            reason="overlap_lock_busy",
-            execution_mode=decision.execution_mode,
-            constraints={
-                **decision.constraints,
-                "overlap_lock": {
-                    "underlying": underlying,
-                    "owner": "other_pod",
-                },
-            },
-        )
 
     def _apply_capital_guard(self, decision: SupervisorDecision) -> SupervisorDecision:
         try:
@@ -391,16 +340,6 @@ class HIP4OutcomeEdgePod:
                 local[key] = self.last_capital_snapshot[key]
         local["reason"] = self.last_capital_snapshot.get("reason", local.get("reason"))
         self.last_capital_snapshot = local
-
-    def _release_closed_overlap_locks(self) -> None:
-        open_underlyings = {
-            position.underlying.upper()
-            for position in self._active_positions_for_mode()
-        }
-        for underlying, lock in list(self._overlap_locks.items()):
-            if underlying not in open_underlyings:
-                lock.release()
-                self._overlap_locks.pop(underlying, None)
 
     def _testnet_executor_for_capital(self) -> TestnetOutcomeExecutor | None:
         if self.config.mode != "testnet" or not self.config.enforce_testnet_balance_check:
@@ -798,17 +737,20 @@ class HIP4OutcomeEdgePod:
         ):
             return None
         open_positions = self._active_positions_for_mode()
-        if not open_positions or self.testnet_executor is None:
+        testnet_executor = self._testnet_executor_for_capital()
+        if testnet_executor is None:
             return None
-        account_address = self.testnet_executor.account_address
-        if not account_address:
-            return None
+        account_address = testnet_executor.resolve_account_address()
         report = self.reconciler.reconcile(
             account_address=account_address,
             positions=open_positions,
-            start_time_ms=_fills_start_time_ms(
-                open_positions,
-                lookback_hours=self.config.fills_lookback_hours,
+            start_time_ms=(
+                _fills_start_time_ms(
+                    open_positions,
+                    lookback_hours=self.config.fills_lookback_hours,
+                )
+                if open_positions
+                else None
             ),
         )
         self.event_logger.log_reconciliation(report)

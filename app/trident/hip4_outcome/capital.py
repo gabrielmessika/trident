@@ -18,7 +18,7 @@ class OutcomeCapitalSnapshot:
     remaining_budget_usdc: float
     approved_size_before_usdc: float = 0.0
     approved_size_after_usdc: float = 0.0
-    testnet_balance_coin: str = "USDC"
+    testnet_balance_coin: str = "USDH"
     testnet_available_usdc: float | None = None
     testnet_balance_source: str | None = None
     testnet_perp_withdrawable_usdc: float | None = None
@@ -107,7 +107,7 @@ class OutcomeCapitalGuard:
             spendable = max(available - float(self.config.testnet_balance_buffer_usdc), 0.0)
             approved_after = min(approved_after, spendable)
             if approved_after <= 0:
-                reason = "insufficient_testnet_usdc"
+                reason = "insufficient_testnet_quote_balance"
 
         if approved_after <= 0:
             return (

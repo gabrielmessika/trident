@@ -948,7 +948,7 @@ if container_is_running("trident-hip4-outcome-dry-run") or container_is_running(
             "Prompt LLM - Revue cohabitation Pod A + Pod B HIP-4",
             (
                 "Analyse la cohabitation dry-run Pod A + Pod B HIP-4 Outcome.\n\n"
-                "Objectif: verifier que la coexistence est propre, que le garde anti-overlap Pod A/HIP-4 fonctionne, "
+                "Objectif: verifier que la coexistence est propre avec comptes separes, "
                 "et que les opportunites outcome testnet montrent ou non un edge exploitable.\n\n"
                 f"Contexte resume:\n"
                 f"- ownership_conflict_count: {ownership_conflicts}\n"

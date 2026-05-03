@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import math
 
 from app.trident.hip4_outcome.config import Hip4OutcomeConfig
 from app.trident.hip4_outcome.models import (
@@ -71,6 +72,14 @@ class OutcomeRiskManager:
         )
         if approved_size <= 0:
             return self._reject("approved_size_zero")
+        if self.config.mode != "observer":
+            exchange_min_reason = self._exchange_min_order_reject_reason(
+                opportunity=opportunity,
+                order_book=order_book,
+                approved_size_usdc=approved_size,
+            )
+            if exchange_min_reason:
+                return self._reject(exchange_min_reason)
 
         if self.config.mode == "observer":
             return SupervisorDecision(
@@ -115,6 +124,58 @@ class OutcomeRiskManager:
             if order_book.no.spread is not None and order_book.no.spread > self.config.max_spread:
                 return "no_spread_too_wide"
         return None
+
+    def _exchange_min_order_reject_reason(
+        self,
+        *,
+        opportunity: OutcomeOpportunity,
+        order_book: OutcomeOrderBook,
+        approved_size_usdc: float,
+    ) -> str | None:
+        min_order_value = max(float(self.config.min_order_value_usdc), 0.0)
+        if min_order_value <= 0:
+            return None
+        checks: list[tuple[str, float | None, float]] = []
+        if opportunity.side == "BUY_YES":
+            checks.append(("yes", order_book.yes.ask, approved_size_usdc))
+        elif opportunity.side == "BUY_NO":
+            checks.append(("no", order_book.no.ask, approved_size_usdc))
+        elif opportunity.side == "BUY_BOTH":
+            if order_book.yes.ask is None or order_book.no.ask is None:
+                return None
+            yes_limit = min(order_book.yes.ask * (1.0 + self.config.max_order_slippage), 0.99999)
+            no_limit = min(order_book.no.ask * (1.0 + self.config.max_order_slippage), 0.99999)
+            unit_cost = yes_limit + no_limit
+            if unit_cost <= 0:
+                return "below_exchange_min_order_value"
+            qty = self._floor_size(approved_size_usdc / unit_cost)
+            if qty <= 0:
+                return "below_exchange_min_order_value"
+            for side_name, limit_price in (("yes", yes_limit), ("no", no_limit)):
+                if qty * self._min_value_price(limit_price) < min_order_value:
+                    return f"below_exchange_min_order_value_{side_name}"
+            return None
+        else:
+            return None
+
+        for side_name, ask, spend_usdc in checks:
+            if ask is None or ask <= 0:
+                continue
+            limit_price = min(ask * (1.0 + self.config.max_order_slippage), 0.99999)
+            qty = self._floor_size(spend_usdc / limit_price)
+            if qty <= 0 or qty * self._min_value_price(limit_price) < min_order_value:
+                return f"below_exchange_min_order_value_{side_name}"
+        return None
+
+    def _floor_size(self, value: float) -> float:
+        decimals = max(int(self.config.outcome_size_decimals), 0)
+        scale = 10**decimals
+        return math.floor(max(value, 0.0) * scale) / scale
+
+    @staticmethod
+    def _min_value_price(limit_price: float) -> float:
+        price = max(min(float(limit_price), 0.99999), 0.00001)
+        return max(min(price, 1.0 - price), 0.00001)
 
     def _reject(self, reason: str) -> SupervisorDecision:
         return SupervisorDecision(

@@ -289,18 +289,6 @@ class OutcomePosition:
         payload["fills"] = [fill.to_dict() for fill in self.fills]
         return payload
 
-
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
-
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "OutcomePosition":
         fills: list[OutcomeFill] = []
@@ -349,3 +337,15 @@ def _json_safe(value: Any) -> Any:
             estimated_pnl_usdc=float(payload.get("estimated_pnl_usdc", 0.0)),
             metadata=dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {},
         )
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)

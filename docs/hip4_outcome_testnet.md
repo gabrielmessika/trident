@@ -65,6 +65,11 @@ uv run python -m app.live.hip4_outcome_runner \
   --preflight
 ```
 
+Funding note: current HIP-4 outcome testnet execution requires quote balance in
+`USDH`. A spot `USDC` balance is useful to buy `USDH` on testnet, but the Pod B
+capital guard must see `USDH` in `spotClearinghouseState` before it approves
+real outcome orders.
+
 Replay the logged signals after a run:
 
 ```bash

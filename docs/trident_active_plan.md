@@ -147,17 +147,18 @@ Sources de prix:
 Capital guard:
 
 - Avant tout fill paper/testnet, `OutcomeCapitalGuard` plafonne la taille par budget Pod B et exposition ouverte.
-- En `testnet`, il verifie aussi le solde spot `USDC` disponible via `spotClearinghouseState` avant d'envoyer un ordre.
+- En `testnet`, il verifie aussi le solde spot quote outcome disponible via `spotClearinghouseState` avant d'envoyer un ordre.
+- Sur le testnet courant, les outcomes demandent `USDH`: du `USDC` spot seul ne suffit pas, il faut convertir ou deposer du `USDH`.
 - Le statut expose `capital` dans `logs/hip4_outcome_status.json` et dans l'alias `logs/pod_b_live_status.json`.
 
-Overlap Pod A / Pod B:
+Isolation Pod A / Pod B:
 
-- Hyperliquid represente les perps et les outcomes comme des assets differents; techniquement un compte peut donc avoir un perp BTC et un outcome BTC.
-- Pour eviter une double exposition TRIDENT, `block_directional_overlap = true`.
-- Pod B HIP-4 refuse un market BTC/HYPE/etc. si `logs/pod_a_live_status.json` montre deja une position ouverte sur le meme underlying.
-- Pod A lit l'alias `logs/pod_b_live_status.json` et retire de ses nouvelles entrees tout symbole qui a deja une position HIP-4 ouverte.
-- Les deux pods utilisent aussi un lock atomique par underlying dans `runtime/hip4_overlap_locks/` pour reduire le risque de double entree simultanee entre deux boucles.
-- L'UI HIP-4 affiche maintenant le budget, le solde testnet disponible, et le nombre d'underlyings bloques par overlap.
+- Pod B HIP-4 utilise un compte Hyperliquid testnet dedie et un budget USDH dedie.
+- Pod A et Pod B ne partagent donc plus ni capital, ni marge, ni budget de risque.
+- Un perp Pod A BTC/HYPE/etc. ne bloque plus un outcome HIP-4 sur le meme underlying.
+- Les locks atomiques `runtime/hip4_overlap_locks/` ne sont plus utilises par Pod A ou Pod B.
+- Les garde-fous conserves sont internes au Pod B: budget, exposition max, `market_already_open`, minimum d'ordre HL, reconciliation/fills/settlement.
+- L'UI HIP-4 affiche le budget, le solde testnet disponible, les positions et les executions, sans carte d'overlap Pod A.
 
 Edge types implementes:
 

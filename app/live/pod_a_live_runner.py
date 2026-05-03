@@ -30,8 +30,6 @@ from app.persistence.journal import (
 )
 from app.risk.pod_a_gate import PodARiskGate
 from app.settings import AppConfig, load_config
-from app.trident.hip4_outcome.locks import UnderlyingOverlapLock
-from app.trident.hip4_outcome.overlap import hip4_open_underlyings
 from app.trident.market_clusters import cluster_for_symbol
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
@@ -127,8 +125,6 @@ class PodALiveRunner:
         self._info_client = HyperliquidInfoClient(self.config.hyperliquid)
         self._last_record_monotonic = time.monotonic()
         self._last_market_data_refresh_monotonic = 0.0
-        self._hip4_overlap_blocked_symbols: list[str] = []
-        self._overlap_locks: dict[str, UnderlyingOverlapLock] = {}
 
     async def run(
         self,
@@ -383,20 +379,6 @@ class PodALiveRunner:
         if self.mode == "live" and not self._live_ready_for_entries():
             risk_decisions = []
         entry_allowed_symbols = self.supervisor.opening_symbols_for(PodName.POD_A)
-        self._hip4_overlap_blocked_symbols = hip4_open_underlyings()
-        if self._hip4_overlap_blocked_symbols:
-            blocked = set(self._hip4_overlap_blocked_symbols)
-            entry_allowed_symbols = {
-                symbol
-                for symbol in entry_allowed_symbols
-                if str(symbol).upper() not in blocked
-            }
-            risk_decisions = [
-                decision
-                for decision in risk_decisions
-                if decision.trade_plan.symbol.upper() not in blocked
-            ]
-        risk_decisions = self._reserve_overlap_locks_for_entries(risk_decisions)
         managed_symbols = self.supervisor.managed_symbols_for(
             PodName.POD_A,
             {
@@ -412,7 +394,6 @@ class PodALiveRunner:
             entry_allowed_symbols=entry_allowed_symbols,
             managed_symbols=managed_symbols,
         )
-        self._release_unused_overlap_locks(execution.opened_symbols)
 
         snapshot_by_symbol = {
             item["symbol"]: item for item in symbols if isinstance(item, dict) and "symbol" in item
@@ -834,7 +815,6 @@ class PodALiveRunner:
                     else None
                 ),
                 "live_trading_paused": self._live_trading_paused,
-                "hip4_overlap_blocked_symbols": list(self._hip4_overlap_blocked_symbols),
                 "user_order_updates": (
                     self._live_user_stream.stats.to_dict()
                     if self._live_user_stream is not None
@@ -845,52 +825,6 @@ class PodALiveRunner:
                 "supervisor": self.supervisor.snapshot(),
             },
         )
-
-    def _reserve_overlap_locks_for_entries(
-        self,
-        risk_decisions: list[RiskDecision],
-    ) -> list[RiskDecision]:
-        if not risk_decisions:
-            self._release_closed_overlap_locks()
-            return risk_decisions
-        allowed: list[RiskDecision] = []
-        blocked: set[str] = set(self._hip4_overlap_blocked_symbols)
-        for decision in risk_decisions:
-            symbol = decision.trade_plan.symbol.upper()
-            if not decision.accepted or symbol in self.executor.portfolio.open_positions:
-                allowed.append(decision)
-                continue
-            lock = self._overlap_locks.get(symbol)
-            if lock is None or not lock.acquired:
-                lock = UnderlyingOverlapLock(underlying=symbol, owner="pod_a")
-                if not lock.acquire():
-                    blocked.add(symbol)
-                    continue
-            self._overlap_locks[symbol] = lock
-            allowed.append(decision)
-        self._hip4_overlap_blocked_symbols = sorted(blocked)
-        return allowed
-
-    def _release_unused_overlap_locks(self, opened_symbols: set[str]) -> None:
-        open_symbols = {
-            symbol.upper()
-            for symbol in self.executor.portfolio.open_positions
-        }
-        open_symbols.update(symbol.upper() for symbol in opened_symbols)
-        for symbol, lock in list(self._overlap_locks.items()):
-            if symbol not in open_symbols:
-                lock.release()
-                self._overlap_locks.pop(symbol, None)
-
-    def _release_closed_overlap_locks(self) -> None:
-        open_symbols = {
-            symbol.upper()
-            for symbol in self.executor.portfolio.open_positions
-        }
-        for symbol, lock in list(self._overlap_locks.items()):
-            if symbol not in open_symbols:
-                lock.release()
-                self._overlap_locks.pop(symbol, None)
 
     def _backfill_missing_position_snapshots(
         self,

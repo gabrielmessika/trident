@@ -245,9 +245,6 @@ def _hip4_outcome_monitor_payload(
         capital = status["capital"]
     elif isinstance(summary.get("capital"), dict):
         capital = summary["capital"]
-    directional_overlap = summary.get("directional_overlap", {})
-    if not isinstance(directional_overlap, dict):
-        directional_overlap = {}
     reference_rows: list[dict[str, object]] = []
     for underlying, reference in sorted(reference_prices.items()):
         if not isinstance(reference, dict):
@@ -317,7 +314,6 @@ def _hip4_outcome_monitor_payload(
         "latest_short_net_edge": latest_short_net_edge,
         "reference_prices": reference_rows,
         "capital": capital,
-        "directional_overlap": directional_overlap,
         "opportunities": opportunities,
         "short_expiry_features": short_expiry_features,
         "edge_decay": edge_decay,
@@ -2051,12 +2047,7 @@ def _control_center_html(
         capital = payload.get("capital", {})
         if not isinstance(capital, dict):
             capital = {}
-        directional_overlap = payload.get("directional_overlap", {})
-        if not isinstance(directional_overlap, dict):
-            directional_overlap = {}
-        blocked_underlyings = directional_overlap.get("blocked_underlyings", [])
-        if not isinstance(blocked_underlyings, list):
-            blocked_underlyings = []
+        balance_coin = str(capital.get("testnet_balance_coin") or "USDH")
         status_age = payload.get("status_age_seconds")
         age_label = "-" if status_age is None else _format_duration_compact(float(status_age))
         settled_position_count = int(payload.get("settled_position_count", 0) or 0)
@@ -2290,13 +2281,8 @@ def _control_center_html(
                     ),
                 },
                 {
-                    "label": "Overlap",
-                    "value": str(len(blocked_underlyings)),
-                    "note": ", ".join(str(item) for item in blocked_underlyings[:4]) or "aucun blocage Pod A",
-                },
-                {
-                    "label": "Testnet USDC",
-                    "value": f"{fmt_hip4_number(capital.get('testnet_available_usdc'), 2)} USD",
+                    "label": f"Testnet {balance_coin}",
+                    "value": f"{fmt_hip4_number(capital.get('testnet_available_usdc'), 2)} {balance_coin}",
                     "note": "non requis en paper" if capital.get("testnet_available_usdc") is None else "balance testnet",
                 },
                 {
@@ -2312,7 +2298,7 @@ def _control_center_html(
         <div class="panel panel-{escape(_panel_tone(tone))}">
           <div class="panel-header">
             <h2>Pod B HIP-4 Outcome</h2>
-            <p>Vue native du nouveau Pod B expérimental: marchés outcome testnet, positions paper, budget, edge court terme, latence et garde anti-overlap avec Pod A.</p>
+            <p>Vue native du nouveau Pod B expérimental: marchés outcome testnet, positions, budget, edge court terme, latence et exécutions.</p>
           </div>
           <div class="metric-grid">
             {cards}
@@ -2333,7 +2319,7 @@ def _control_center_html(
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr>{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Market", "Identifiant interne du marché HIP-4 outcome.")}{_table_header("Signal", "Sens décidé par le pod.")}{_table_header("Token", "Token outcome acheté en paper.")}{_table_header("Avg px", "Prix moyen paper du fill.")}{_table_header("Cost USDC", "Coût paper engagé.")}{_table_header("Net edge", "Edge net estimé à l'entrée.")}{_table_header("Conf", "Confiance du signal.")}{_table_header("Opened", "Horodatage d'ouverture.")}</tr></thead>
+              <thead><tr>{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Market", "Identifiant interne du marché HIP-4 outcome.")}{_table_header("Signal", "Sens décidé par le pod.")}{_table_header("Token", "Token outcome acheté en paper.")}{_table_header("Avg px", "Prix moyen paper du fill.")}{_table_header("Cost quote", "Coût engagé dans la devise quote outcome.")}{_table_header("Net edge", "Edge net estimé à l'entrée.")}{_table_header("Conf", "Confiance du signal.")}{_table_header("Opened", "Horodatage d'ouverture.")}</tr></thead>
               <tbody>{render_open_position_rows()}</tbody>
             </table>
           </div>
@@ -2346,7 +2332,7 @@ def _control_center_html(
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr>{_table_header("Ts", "Horodatage du settlement paper.")}{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Market", "Identifiant du marché HIP-4 outcome.")}{_table_header("Side", "Sens acheté par le pod.")}{_table_header("Result", "Résultat outcome estimé.")}{_table_header("Payout", "Payout paper en USDC.")}{_table_header("Fees", "Fees HIP-4 paper appliqués au settlement.")}{_table_header("Gross PnL", "Payout moins coût, avant fees.")}{_table_header("Net PnL", "PnL paper réalisé net de fees HIP-4.")}{_table_header("Notes", "Méthode ou contexte du settlement.")}</tr></thead>
+              <thead><tr>{_table_header("Ts", "Horodatage du settlement paper.")}{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Market", "Identifiant du marché HIP-4 outcome.")}{_table_header("Side", "Sens acheté par le pod.")}{_table_header("Result", "Résultat outcome estimé.")}{_table_header("Payout", "Payout paper dans la devise quote outcome.")}{_table_header("Fees", "Fees HIP-4 paper appliqués au settlement.")}{_table_header("Gross PnL", "Payout moins coût, avant fees.")}{_table_header("Net PnL", "PnL paper réalisé net de fees HIP-4.")}{_table_header("Notes", "Méthode ou contexte du settlement.")}</tr></thead>
               <tbody>{render_settlement_rows()}</tbody>
             </table>
           </div>
@@ -3897,13 +3883,7 @@ def hip4_outcome_html(
     capital = payload.get("capital", {})
     if not isinstance(capital, dict):
         capital = {}
-    directional_overlap = payload.get("directional_overlap", {})
-    if not isinstance(directional_overlap, dict):
-        directional_overlap = {}
-    blocked_underlyings = directional_overlap.get("blocked_underlyings", [])
-    if not isinstance(blocked_underlyings, list):
-        blocked_underlyings = []
-
+    balance_coin = str(capital.get("testnet_balance_coin") or "USDH")
     def fmt_number(value: object, digits: int = 4, *, fallback: str = "-") -> str:
         parsed = _float_or_none(value)
         if parsed is None:
@@ -4187,18 +4167,13 @@ def hip4_outcome_html(
                 "note": f"sur {fmt_number(capital.get('budget_usdc'), 2)} USD",
             },
             {
-                "label": "Testnet USDC",
-                "value": f"{fmt_number(capital.get('testnet_available_usdc'), 2)} USD",
+                "label": f"Testnet {balance_coin}",
+                "value": f"{fmt_number(capital.get('testnet_available_usdc'), 2)} {balance_coin}",
                 "note": str(
                     capital.get("testnet_spot_transfer_status")
                     or capital.get("testnet_balance_source")
                     or capital.get("reason", "capital")
                 ),
-            },
-            {
-                "label": "Overlap",
-                "value": str(len(blocked_underlyings)),
-                "note": ", ".join(str(item) for item in blocked_underlyings[:4]) or "aucun blocage Pod A",
             },
         ]
     )
