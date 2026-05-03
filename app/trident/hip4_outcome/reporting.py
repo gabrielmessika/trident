@@ -17,6 +17,10 @@ def build_daily_summary_rows(positions: list[OutcomePosition]) -> list[dict[str,
 
     rows: list[dict[str, Any]] = []
     for (date, mode, underlying), items in sorted(groups.items()):
+        settled_items = [item for item in items if item.status != "open"]
+        win_count = len([item for item in settled_items if item.estimated_pnl_usdc >= 0])
+        loss_count = len([item for item in settled_items if item.estimated_pnl_usdc < 0])
+        closed_count = win_count + loss_count
         rows.append(
             {
                 "date": date,
@@ -24,7 +28,7 @@ def build_daily_summary_rows(positions: list[OutcomePosition]) -> list[dict[str,
                 "underlying": underlying,
                 "positions": len(items),
                 "open_positions": len([item for item in items if item.status == "open"]),
-                "settled_positions": len([item for item in items if item.status != "open"]),
+                "settled_positions": len(settled_items),
                 "cost_usdc": round(sum(item.cost_usdc for item in items), 8),
                 "estimated_payout_usdc": round(
                     sum(item.estimated_payout_usdc for item in items),
@@ -42,6 +46,9 @@ def build_daily_summary_rows(positions: list[OutcomePosition]) -> list[dict[str,
                     sum(item.estimated_pnl_usdc for item in items),
                     8,
                 ),
+                "win_count": win_count,
+                "loss_count": loss_count,
+                "win_rate": round(win_count / closed_count, 8) if closed_count else "",
                 "avg_net_edge": round(
                     sum(item.net_edge for item in items) / len(items),
                     8,

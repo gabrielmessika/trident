@@ -708,6 +708,7 @@ class PodALiveRunner:
             "gross_pnl_usd": trade.gross_pnl_usd,
             "fees_usd": trade.fees_usd,
             "pnl_usd": trade.pnl_usd,
+            "is_win": trade.pnl_usd >= 0,
             "close_reason": trade.close_reason,
             "hold_hours": self._hold_hours(trade),
             "opened_at": trade.opened_at.isoformat() if trade.opened_at else None,

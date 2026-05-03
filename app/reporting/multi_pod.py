@@ -28,6 +28,9 @@ class PodRuntimeReport:
     total_fill_count: int = 0
     realized_pnl_usd: float = 0.0
     total_unrealized_pnl_usd: float = 0.0
+    win_count: int = 0
+    loss_count: int = 0
+    win_rate: float | None = None
 
 
 @dataclass(slots=True)
@@ -185,6 +188,19 @@ def build_runtime_report(
             unrealized_pnl_usd += float(position.get("unrealized_pnl_usd", 0.0))
         return position_count, round(unrealized_pnl_usd, 4)
 
+    def _apply_trade_outcome_metrics(
+        report: PodRuntimeReport,
+        runtime_report: dict[str, object],
+    ) -> None:
+        report.win_count = int(runtime_report.get("win_count", 0) or 0)
+        report.loss_count = int(runtime_report.get("loss_count", 0) or 0)
+        raw_win_rate = runtime_report.get("win_rate")
+        if raw_win_rate not in (None, ""):
+            report.win_rate = float(raw_win_rate)
+            return
+        closed_count = report.win_count + report.loss_count
+        report.win_rate = round(report.win_count / closed_count, 4) if closed_count else None
+
     for pod_name, pod in supervisor.pods.items():
         runtime_pod_state = (
             runtime_pods.get(pod_name.value, {}) if isinstance(runtime_pods, dict) else {}
@@ -246,6 +262,7 @@ def build_runtime_report(
             )
             report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
+            _apply_trade_outcome_metrics(report, runtime_report)
         if pod_name.value == "pod_c":
             runtime_payload = pod_c_runtime if isinstance(pod_c_runtime, dict) else None
             authoritative_payload = _authoritative_runtime_payload(
@@ -271,6 +288,7 @@ def build_runtime_report(
             )
             report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
+            _apply_trade_outcome_metrics(report, runtime_report)
         if pod_name.value == "pod_b":
             runtime_payload = pod_b_status if isinstance(pod_b_status, dict) else None
             pod_b_effective_enabled = report.enabled
@@ -308,6 +326,7 @@ def build_runtime_report(
             else:
                 report.total_fill_count = int(runtime_report.get("closed_trade_count", 0))
             report.realized_pnl_usd = float(runtime_report.get("realized_pnl_usd", 0.0))
+            _apply_trade_outcome_metrics(report, runtime_report)
         pod_reports.append(report)
         active_position_count += report.position_count
         active_open_order_count += report.open_order_count

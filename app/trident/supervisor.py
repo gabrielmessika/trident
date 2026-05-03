@@ -928,6 +928,15 @@ class TridentSupervisor:
         )
         signals = self.pod_c_service.evaluate_many(contexts)
         previews = [self._build_signal_preview(signal) for signal in signals]
+        signal_by_symbol = {signal.symbol: signal for signal in signals}
+        self.state.pod_c_signal_review = [
+            self._build_signal_review(
+                self._build_signal_preview(signal_by_symbol[context.symbol])
+                if context.symbol in signal_by_symbol
+                else self.pod_c_service.review_context(context)
+            )
+            for context in contexts
+        ]
         self.state.pod_c_signal_preview = previews
         return previews
 
@@ -1488,6 +1497,7 @@ class TridentSupervisor:
             ],
             "pod_a_signal_review": [dict(item) for item in self.state.pod_a_signal_review],
             "pod_b_signal_review": [dict(item) for item in self.state.pod_b_signal_review],
+            "pod_c_signal_review": [dict(item) for item in self.state.pod_c_signal_review],
             "symbol_routing": [
                 {
                     "symbol": decision.symbol,

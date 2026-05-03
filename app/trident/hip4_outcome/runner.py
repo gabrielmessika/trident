@@ -495,6 +495,8 @@ class HIP4OutcomeEdgePod:
         )
 
     def _settle_expired_positions(self, *, now_ts: int, reference_prices: dict[str, Any]) -> None:
+        if self.config.mode == "testnet":
+            return
         changed = False
         for position in self.positions:
             if position.status != "open":
@@ -736,20 +738,23 @@ class HIP4OutcomeEdgePod:
             reconcile_every <= 0 or self.loop_count % reconcile_every != 0
         ):
             return None
-        open_positions = self._active_positions_for_mode()
+        positions_to_reconcile = self._positions_for_mode()
+        open_positions = [
+            position for position in positions_to_reconcile if position.status == "open"
+        ]
         testnet_executor = self._testnet_executor_for_capital()
         if testnet_executor is None:
             return None
         account_address = testnet_executor.resolve_account_address()
         report = self.reconciler.reconcile(
             account_address=account_address,
-            positions=open_positions,
+            positions=positions_to_reconcile,
             start_time_ms=(
                 _fills_start_time_ms(
-                    open_positions,
+                    positions_to_reconcile,
                     lookback_hours=self.config.fills_lookback_hours,
                 )
-                if open_positions
+                if positions_to_reconcile
                 else None
             ),
         )
@@ -762,6 +767,8 @@ class HIP4OutcomeEdgePod:
         changed = False
         for position in self.positions:
             if position.status not in {"estimated_settled", "settled"}:
+                continue
+            if _is_exchange_settlement(position):
                 continue
             changed = _apply_settlement_accounting(position, self.config) or changed
         if changed:
@@ -863,9 +870,7 @@ class HIP4OutcomeEdgePod:
         updated_at: str,
     ) -> dict[str, Any]:
         mode_positions = [
-            position
-            for position in self.positions
-            if _position_execution_mode(position) == self.config.mode.upper()
+            position for position in self._positions_for_mode()
         ]
         settled_positions = [
             position
@@ -887,6 +892,21 @@ class HIP4OutcomeEdgePod:
         realized_pnl_usd = round(
             sum(float(position.estimated_pnl_usdc) for position in settled_positions),
             8,
+        )
+        win_count = sum(
+            1
+            for position in settled_positions
+            if float(position.estimated_pnl_usdc) >= 0
+        )
+        loss_count = sum(
+            1
+            for position in settled_positions
+            if float(position.estimated_pnl_usdc) < 0
+        )
+        win_rate = (
+            round(win_count / (win_count + loss_count), 4)
+            if (win_count + loss_count) > 0
+            else None
         )
         total_fill_count = sum(
             1
@@ -924,6 +944,9 @@ class HIP4OutcomeEdgePod:
             "realized_pnl_usd": realized_pnl_usd,
             "gross_pnl_usd": gross_pnl_usd,
             "fees_usd": fees_usd,
+            "win_count": win_count,
+            "loss_count": loss_count,
+            "win_rate": win_rate,
             "settlement_payout_usdc": settlement_payout_usdc,
             "total_unrealized_pnl_usd": 0.0,
             "healthy": self.last_error is None,
@@ -939,6 +962,9 @@ class HIP4OutcomeEdgePod:
                 "realized_pnl_usd": realized_pnl_usd,
                 "gross_pnl_usd": gross_pnl_usd,
                 "fees_usd": fees_usd,
+                "win_count": win_count,
+                "loss_count": loss_count,
+                "win_rate": win_rate,
                 "settlement_payout_usdc": settlement_payout_usdc,
                 "open_position_count": len(position_payloads),
                 "loop_count": summary.get("loop_count", 0),
@@ -954,6 +980,13 @@ class HIP4OutcomeEdgePod:
             for position in self.positions
             if position.status == "open"
             and _position_execution_mode(position) == self.config.mode.upper()
+        ]
+
+    def _positions_for_mode(self) -> list[OutcomePosition]:
+        return [
+            position
+            for position in self.positions
+            if _position_execution_mode(position) == self.config.mode.upper()
         ]
 
 
@@ -983,6 +1016,8 @@ def _apply_settlement_accounting(
     position: OutcomePosition,
     config: Hip4OutcomeConfig,
 ) -> bool:
+    if _is_exchange_settlement(position):
+        return False
     payout = max(float(position.estimated_payout_usdc or 0.0), 0.0)
     gross_pnl = round(payout - float(position.cost_usdc or 0.0), 8)
     fee = round(payout * max(float(config.outcome_settlement_fee_rate), 0.0), 8)
@@ -1032,8 +1067,14 @@ def _settlement_row_from_position(position: OutcomePosition) -> dict[str, Any]:
         "gross_pnl_usdc": position.estimated_gross_pnl_usdc,
         "net_pnl_usdc": position.estimated_pnl_usdc,
         "pnl_usdc": position.estimated_pnl_usdc,
+        "is_win": position.estimated_pnl_usdc >= 0,
         "notes": notes,
     }
+
+
+def _is_exchange_settlement(position: OutcomePosition) -> bool:
+    settlement = position.metadata.get("settlement")
+    return isinstance(settlement, dict) and settlement.get("source") == "hyperliquid_user_fills"
 
 
 def _infer_settlement_result(position: OutcomePosition) -> str:

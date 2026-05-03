@@ -23,7 +23,12 @@ from app.live.replay_capture import (
 from app.live.runtime_status import write_runtime_status
 from app.live.state_store import LiveStateStore, live_state_path_for_pod
 from app.live.user_stream import UserOrderUpdateMonitor, check_order_updates_subscription
-from app.persistence.journal import JsonlJournal, build_signal_journal_record, build_trade_journal_record
+from app.persistence.journal import (
+    JsonlJournal,
+    build_signal_journal_record,
+    build_signal_review_journal_record,
+    build_trade_journal_record,
+)
 from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import AppConfig, load_config
 from app.trident.market_clusters import (
@@ -424,6 +429,22 @@ class PodCLiveRunner:
                     )
                 )
 
+        if journal is not None:
+            for review in self.supervisor.state.pod_c_signal_review:
+                if str(review.get("status")) != "filtered":
+                    continue
+                journal.append(
+                    build_signal_review_journal_record(
+                        timestamp=timestamp,
+                        record_index=self.report.records_processed,
+                        regime=current_regime,
+                        regime_snapshot=regime_snapshot,
+                        symbol_snapshot=snapshot_by_symbol.get(str(review.get("symbol", ""))),
+                        source="pod_c_live_filtered",
+                        review=review,
+                    )
+                )
+
         for decision in risk_decisions:
             self.report.add_decision(
                 date_key=date_key,
@@ -574,6 +595,7 @@ class PodCLiveRunner:
             "gross_pnl_usd": getattr(trade, "gross_pnl_usd"),
             "fees_usd": getattr(trade, "fees_usd"),
             "pnl_usd": getattr(trade, "pnl_usd"),
+            "is_win": getattr(trade, "pnl_usd") >= 0,
             "close_reason": getattr(trade, "close_reason"),
             "opened_at": getattr(trade, "opened_at").isoformat() if getattr(trade, "opened_at") else None,
             "closed_at": getattr(trade, "closed_at").isoformat() if getattr(trade, "closed_at") else None,

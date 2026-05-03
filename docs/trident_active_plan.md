@@ -123,7 +123,7 @@ Modes:
 |---|---|
 | `observer` | lit les marches, calcule les signaux, loggue, aucun fill |
 | `paper` | simule les fills au visible ask, estime le settlement |
-| `testnet` | peut envoyer de vrais ordres testnet IOC si credentials et garde-fous sont actifs |
+| `testnet` | peut envoyer de vrais ordres testnet IOC si credentials et garde-fous sont actifs; le PnL settled vient des fills `Settlement` Hyperliquid |
 
 Defaults repo:
 
@@ -187,7 +187,9 @@ Frais / PnL:
 
 - Ouverture outcome: `outcome_open_fee_rate = 0.0`.
 - Settlement/close outcome: `outcome_settlement_fee_rate = 0.002`.
-- Le paper et le testnet estiment le PnL net apres frais de settlement.
+- En `paper`, le bot estime le settlement depuis la reference locale et applique les frais configures.
+- En `testnet`, le bot ne settle plus localement depuis la reference: il attend les fills `Settlement` Hyperliquid, lit `closedPnl`/`fee`, puis corrige l'etat, les CSV et l'alias Pod B avec cette source exchange.
+- Les anciens settlements testnet estimes localement doivent etre consideres invalides si Hyperliquid renvoie un fill `Settlement` contradictoire.
 - Le statut global et la page HIP-4 doivent lire la meme source d'agregation par coin, pour eviter un PnL Pod B visible sur `/dashboard` mais absent de `/hip4-outcome`.
 
 Isolation Pod A / Pod B:
@@ -254,9 +256,9 @@ Etat d'observation et execution:
 - Un signal BTC `MODEL` propre a ete observe en paper autour de `net_edge ~0.36-0.38`.
 - Un signal HYPE `SHORT_EXPIRY` a ete observe autour de `best_net_edge ~0.152`.
 - Premier ordre testnet valide le `2026-05-03`: `HYPE_GT_58.5_20260503_0800`, `BUY_YES`, `38` tokens a `0.71`, cout `26.98 USDH`, oid `52407686267`.
-- Settlement estime: position fermee, PnL net estime autour de `+10.94 USDH`.
+- Correction settlement testnet `2026-05-03`: les premiers HYPE qui semblaient gagnants localement ont ete settles perdants par Hyperliquid (`Settlement.closedPnl`), donc le PnL testnet doit suivre l'exchange et non la reference locale.
 - Les premiers gros edges HYPE vus avec reference externe ne doivent pas etre consideres comme edge mainnet fiable: le prix HYPE testnet Hyperliquid divergeait fortement des venues externes.
-- Conclusion courante: l'execution testnet, la reconciliation et le PnL net fonctionnent; l'existence d'un edge durable reste a prouver sur plusieurs marches/expiries.
+- Conclusion courante: l'execution testnet, la reconciliation exchange et le PnL net refletent maintenant la realite HL; l'existence d'un edge durable reste a prouver sur plusieurs marches/expiries.
 
 Commandes utiles:
 
@@ -382,7 +384,7 @@ uv run python -m unittest tests.test_hip4_outcome_pod tests.test_pod_a_live_runn
 
 Resultat courant `2026-05-03`:
 
-- `uv run python -m unittest tests.test_hip4_outcome_pod`: `36` tests OK.
+- `uv run python -m unittest tests.test_hip4_outcome_pod`: `38` tests OK.
 - `uv run python -m unittest tests.test_pod_a_live_runner`: `3` tests OK.
 - `uv run python -m unittest tests.test_trident_dry_run_launcher`: `1` test OK.
 - `uv run python -m py_compile app/backtest/hip4_outcome_replay.py app/live/hip4_outcome_runner.py app/observability/api.py app/trident/hip4_outcome/config.py`: OK.

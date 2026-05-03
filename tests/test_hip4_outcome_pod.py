@@ -1022,17 +1022,125 @@ BTC = 0.5
         self.assertTrue(apply_reconciliation_to_positions([position], report))
         self.assertTrue(position.metadata["last_reconciliation"]["exchange_confirmed"])
 
+    def test_reconciliation_overrides_testnet_estimated_settlement_with_exchange_closed_pnl(self) -> None:
+        class FakeInfoClient:
+            def fetch_spot_state(self, user: str):
+                return {"balances": [{"coin": "USDH", "total": "285.5", "hold": "0"}]}
+
+            def fetch_user_fills_by_time(
+                self,
+                *,
+                user: str,
+                start_time_ms: int,
+                end_time_ms: int | None = None,
+                aggregate_by_time: bool = False,
+            ):
+                return [
+                    {
+                        "coin": "#59450",
+                        "oid": 52412557964,
+                        "cloid": "0xabc",
+                        "px": "0.5",
+                        "sz": "97",
+                        "side": "B",
+                        "dir": "Buy",
+                        "fee": "0",
+                        "closedPnl": "0.0",
+                        "time": start_time_ms + 1,
+                    },
+                    {
+                        "coin": "#59450",
+                        "oid": 52412782934,
+                        "px": "0.0",
+                        "sz": "97",
+                        "side": "A",
+                        "dir": "Settlement",
+                        "fee": "0",
+                        "closedPnl": "-48.5",
+                        "time": start_time_ms + 2,
+                    },
+                ]
+
+        position = OutcomePosition(
+            position_id="pos-1",
+            market_id="HYPE_GT_55.983_20260503_1030",
+            outcome=5945,
+            underlying="HYPE",
+            edge_type="LATE_EXPIRY",
+            side="BUY_YES",
+            opened_at="2026-05-03T10:22:29.457348Z",
+            expiry_ts=1777804200,
+            cost_usdc=48.5,
+            max_loss_usdc=48.5,
+            net_edge=0.1,
+            confidence=0.8,
+            fills=[
+                OutcomeFill(
+                    coin="#59450",
+                    side_name="YES",
+                    token_qty=Decimal("97"),
+                    avg_price=0.5,
+                    cost_usdc=48.5,
+                    status="filled",
+                    oid=52412557964,
+                    cloid="0xabc",
+                )
+            ],
+            status="estimated_settled",
+            estimated_payout_usdc=97.0,
+            estimated_gross_pnl_usdc=48.5,
+            estimated_fee_usdc=0.194,
+            estimated_pnl_usdc=48.306,
+            metadata={
+                "decision": {"execution_mode": "TESTNET"},
+                "settlement": {"source": "estimated_from_reference_price", "result": "YES"},
+            },
+        )
+
+        report = OutcomeReconciler(
+            Hip4OutcomeConfig(mode="testnet"),
+            FakeInfoClient(),  # type: ignore[arg-type]
+        ).reconcile(
+            account_address="0x123",
+            positions=[position],
+            start_time_ms=1777803749000,
+            end_time_ms=1777804210000,
+        )
+
+        self.assertTrue(apply_reconciliation_to_positions([position], report))
+        self.assertEqual(position.status, "settled")
+        self.assertEqual(position.estimated_payout_usdc, 0.0)
+        self.assertEqual(position.estimated_gross_pnl_usdc, -48.5)
+        self.assertEqual(position.estimated_fee_usdc, 0.0)
+        self.assertEqual(position.estimated_pnl_usdc, -48.5)
+        self.assertEqual(position.metadata["settlement"]["source"], "hyperliquid_user_fills")
+        self.assertEqual(position.metadata["settlement"]["result"], "NO")
+        self.assertTrue(position.metadata["last_reconciliation"]["exchange_settled"])
+
     def test_parses_reconciliation_payload_variants(self) -> None:
         balances = parse_spot_balances(
             {"spotBalances": [{"token": "+57210", "balance": "2", "hold": "0.5"}]}
         )
         fills = parse_user_fills(
-            {"fills": [{"coin": "+57210", "orderId": "7", "price": "0.4", "size": "2"}]}
+            {
+                "fills": [
+                    {
+                        "coin": "+57210",
+                        "orderId": "7",
+                        "price": "0.4",
+                        "size": "2",
+                        "dir": "Settlement",
+                        "closedPnl": "-1.2",
+                    }
+                ]
+            }
         )
 
         self.assertEqual(balances["+57210"].available, Decimal("1.5"))
         self.assertEqual(fills[0]["oid"], "7")
         self.assertEqual(fills[0]["px"], 0.4)
+        self.assertEqual(fills[0]["dir"], "Settlement")
+        self.assertEqual(fills[0]["closed_pnl"], "-1.2")
 
     def test_builds_daily_summary_rows(self) -> None:
         position = OutcomePosition(
@@ -1124,6 +1232,56 @@ BTC = 0.5
             self.assertIn("gross_pnl_usdc", settlement_log)
             self.assertIn("net_pnl_usdc", settlement_log)
             self.assertIn(",0.02,5.2,5.18,5.18,", settlement_log)
+
+    def test_testnet_does_not_settle_from_local_reference_price(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="testnet",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "hip4_status.json"),
+                settlement_grace_seconds=0,
+            )
+            position = OutcomePosition(
+                position_id="pos-1",
+                market_id="BTC_GT_100_20260501_0000",
+                outcome=1,
+                underlying="BTC",
+                edge_type="LATE_EXPIRY",
+                side="BUY_YES",
+                opened_at="2026-05-01T00:00:00Z",
+                expiry_ts=1,
+                cost_usdc=4.8,
+                max_loss_usdc=4.8,
+                net_edge=0.1,
+                confidence=0.9,
+                fills=[
+                    OutcomeFill(
+                        coin="#10",
+                        side_name="YES",
+                        token_qty=Decimal("10"),
+                        avg_price=0.48,
+                        cost_usdc=4.8,
+                        status="filled",
+                    )
+                ],
+                metadata={
+                    "decision": {"execution_mode": "TESTNET"},
+                    "signal": {"metadata": {"strike": 100.0}},
+                },
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            pod.positions = [position]
+
+            reference = type("Reference", (), {"price": 101.0})()
+            pod._settle_expired_positions(  # noqa: SLF001 - testnet must wait for HL settlement
+                now_ts=2,
+                reference_prices={"BTC": reference},
+            )
+
+            self.assertEqual(position.status, "open")
+            self.assertEqual(position.estimated_pnl_usdc, 0.0)
 
     def test_execution_result_to_dict_is_json_safe(self) -> None:
         result = OutcomeExecutionResult(

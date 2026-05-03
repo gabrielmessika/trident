@@ -183,6 +183,9 @@ class OutcomeEventLogger:
                 "estimated_fee_usdc",
                 "estimated_gross_pnl_usdc",
                 "estimated_pnl_usdc",
+                "win_count",
+                "loss_count",
+                "win_rate",
                 "avg_net_edge",
                 "avg_confidence",
             ],
@@ -227,5 +230,6 @@ def _settlement_fieldnames() -> list[str]:
         "gross_pnl_usdc",
         "net_pnl_usdc",
         "pnl_usdc",
+        "is_win",
         "notes",
     ]

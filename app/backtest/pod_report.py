@@ -255,6 +255,7 @@ class PodABacktestReport:
                 "trailing_activation_bps": trailing_activation_bps,
                 "trailing_distance_bps": trailing_distance_bps,
                 "pnl_usd": pnl_usd,
+                "is_win": pnl_usd >= 0,
                 "gross_pnl_usd": gross_pnl_usd,
                 "fees_usd": fees_usd,
                 "close_reason": close_reason,
@@ -277,6 +278,13 @@ class PodABacktestReport:
             return 0.0
         return round(self.hold_hours_total / self.hold_samples, 4)
 
+    @property
+    def win_rate(self) -> float | None:
+        closed_count = self.win_count + self.loss_count
+        if closed_count <= 0:
+            return None
+        return round(self.win_count / closed_count, 4)
+
     def to_dict(self) -> dict[str, object]:
         return {
             "records_processed": self.records_processed,
@@ -288,6 +296,7 @@ class PodABacktestReport:
             "closed_trade_count": self.closed_trade_count,
             "win_count": self.win_count,
             "loss_count": self.loss_count,
+            "win_rate": self.win_rate,
             "realized_pnl_usd": self.realized_pnl_usd,
             "gross_pnl_usd": self.gross_pnl_usd,
             "fees_usd": self.fees_usd,

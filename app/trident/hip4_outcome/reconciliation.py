@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -72,10 +73,12 @@ def parse_user_fills(payload: object) -> list[dict[str, Any]]:
                 "coin": coin,
                 "oid": None if oid in (None, "") else str(oid),
                 "cloid": None if cloid in (None, "") else str(cloid),
-                "side": str(item.get("side", item.get("dir", ""))),
+                "side": str(item.get("side", "")),
+                "dir": str(item.get("dir", "")),
                 "px": px,
                 "sz": str(sz),
                 "fee": str(_decimal_from_any(item.get("fee", "0"))),
+                "closed_pnl": str(_decimal_from_any(item.get("closedPnl", item.get("closed_pnl", "0")))),
                 "time": _int_from_any(item.get("time", item.get("timestamp", 0))),
                 "raw": dict(item),
             }
@@ -164,11 +167,15 @@ def apply_reconciliation_to_positions(
             "matched_fill_count": position_report.get("matched_fill_count", 0),
             "expected_fill_count": position_report.get("expected_fill_count", 0),
             "exchange_confirmed": bool(position_report.get("exchange_confirmed")),
+            "exchange_settled": bool(position_report.get("exchange_settled")),
             "balances": position_report.get("balances", {}),
         }
         if current != summary:
             position.metadata["last_reconciliation"] = summary
             changed = True
+        settlement_fill = position_report.get("settlement_fill")
+        if isinstance(settlement_fill, dict):
+            changed = _apply_exchange_settlement(position, settlement_fill) or changed
     return changed
 
 
@@ -195,6 +202,7 @@ def _position_report(
             if balance_coin in balances:
                 position_balances[balance_coin] = balances[balance_coin].to_dict()
                 break
+    settlement_fill = _find_exchange_settlement(position, recent_fills)
     return {
         "position_id": position.position_id,
         "market_id": position.market_id,
@@ -203,9 +211,64 @@ def _position_report(
         "expected_fill_count": len(expected),
         "matched_fill_count": len(matched),
         "exchange_confirmed": len(expected) > 0 and len(matched) == len(expected),
+        "exchange_settled": settlement_fill is not None,
+        "settlement_fill": settlement_fill,
         "balances": position_balances,
         "matched_fills": matched,
     }
+
+
+def _apply_exchange_settlement(
+    position: OutcomePosition,
+    settlement_fill: dict[str, Any],
+) -> bool:
+    closed_pnl = _decimal_from_any(settlement_fill.get("closed_pnl", "0"))
+    fee = _decimal_from_any(settlement_fill.get("fee", "0"))
+    gross_pnl = closed_pnl
+    net_pnl = closed_pnl - fee
+    payout = max(Decimal(str(position.cost_usdc)) + gross_pnl, Decimal("0"))
+    settled_at = _iso_from_epoch_ms(_int_from_any(settlement_fill.get("time", 0))) or utc_now_iso()
+    result = _exchange_result_from_payout(position, payout)
+    settlement = {
+        "result": result,
+        "source": "hyperliquid_user_fills",
+        "closed_pnl_usdc": str(closed_pnl),
+        "fee_usdc": str(fee),
+        "fill": settlement_fill,
+        "notes": "exchange_settlement_closed_pnl",
+    }
+    changed = (
+        position.status != "settled"
+        or position.settled_at != settled_at
+        or Decimal(str(position.estimated_payout_usdc)) != payout
+        or Decimal(str(position.estimated_fee_usdc)) != fee
+        or Decimal(str(position.estimated_gross_pnl_usdc)) != gross_pnl
+        or Decimal(str(position.estimated_pnl_usdc)) != net_pnl
+        or position.metadata.get("settlement") != settlement
+    )
+    if not changed:
+        return False
+    position.status = "settled"
+    position.settled_at = settled_at
+    position.estimated_payout_usdc = float(payout)
+    position.estimated_fee_usdc = float(fee)
+    position.estimated_gross_pnl_usdc = float(gross_pnl)
+    position.estimated_pnl_usdc = float(net_pnl)
+    position.metadata["settlement"] = settlement
+    return True
+
+
+def _exchange_result_from_payout(position: OutcomePosition, payout: Decimal) -> str:
+    if payout > 0:
+        if position.side == "BUY_YES":
+            return "YES"
+        if position.side == "BUY_NO":
+            return "NO"
+    if position.side == "BUY_YES":
+        return "NO"
+    if position.side == "BUY_NO":
+        return "YES"
+    return "EXCHANGE"
 
 
 def _find_matching_exchange_fill(
@@ -226,6 +289,28 @@ def _find_matching_exchange_fill(
         if cloid_str and fill.get("cloid") == cloid_str:
             return fill
     return None
+
+
+def _find_exchange_settlement(
+    position: OutcomePosition,
+    recent_fills: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    allowed_coins = _tracked_coins([position])
+    opened_ms = _iso_to_epoch_ms(position.opened_at)
+    settlement_fills: list[dict[str, Any]] = []
+    for fill in recent_fills:
+        if fill.get("coin") not in allowed_coins:
+            continue
+        raw_dir = str(fill.get("dir") or fill.get("side") or "").strip().lower()
+        if raw_dir != "settlement":
+            continue
+        fill_time = _int_from_any(fill.get("time", 0))
+        if opened_ms is not None and fill_time and fill_time + 1_000 < opened_ms:
+            continue
+        settlement_fills.append(fill)
+    if not settlement_fills:
+        return None
+    return max(settlement_fills, key=lambda item: _int_from_any(item.get("time", 0)))
 
 
 def _tracked_coins(positions: list[OutcomePosition]) -> set[str]:
@@ -317,3 +402,19 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _iso_to_epoch_ms(value: str) -> int | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def _iso_from_epoch_ms(value: int) -> str | None:
+    if value <= 0:
+        return None
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value / 1000.0))

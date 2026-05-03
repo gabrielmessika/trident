@@ -128,24 +128,126 @@ class TradfiTrendService:
                 signals.append(signal)
         return sorted(signals, key=lambda item: item.confidence, reverse=True)
 
+    def review_context(self, context: TradfiTrendContext) -> dict[str, object]:
+        direction = self._aligned_direction(context)
+        filter_reasons = self._filter_reasons(context)
+        setup_details = self._review_setup_details(context, preferred_side=direction)
+        if filter_reasons:
+            return {
+                "symbol": context.symbol,
+                "status": "filtered",
+                "preferred_side": direction or "neutral",
+                "reason_summary": "; ".join(filter_reasons),
+                "setup_details": setup_details,
+                "confidence_components": {},
+            }
+
+        candidates = [
+            signal
+            for signal in (
+                self._build_continuation_signal(context),
+                self._build_reclaim_signal(context),
+            )
+            if signal is not None
+        ]
+        if not candidates:
+            return {
+                "symbol": context.symbol,
+                "status": "filtered",
+                "preferred_side": direction or "neutral",
+                "reason_summary": "no_continuation_or_reclaim_setup",
+                "setup_details": setup_details,
+                "confidence_components": {},
+            }
+
+        best = max(candidates, key=lambda item: item.confidence)
+        setup_details.update(
+            {
+                "candidate_setup": best.setup,
+                "candidate_side": best.side,
+                "candidate_confidence": best.confidence,
+                "cluster_strategy": self._cluster_strategy_name(
+                    context,
+                    setup=best.setup,
+                    side=best.side,
+                ),
+            }
+        )
+        if not self._passes_cluster_strategy(context, best):
+            return {
+                "symbol": context.symbol,
+                "status": "filtered",
+                "preferred_side": best.side,
+                "setup": best.setup,
+                "confidence": best.confidence,
+                "reason_summary": "cluster_strategy_not_matched",
+                "setup_details": setup_details,
+                "confidence_components": dict(best.confidence_components),
+            }
+        if best.confidence < self.config.min_confidence:
+            return {
+                "symbol": context.symbol,
+                "status": "filtered",
+                "preferred_side": best.side,
+                "setup": best.setup,
+                "confidence": best.confidence,
+                "reason_summary": (
+                    f"confidence_below_min {best.confidence:.3f} < "
+                    f"{self.config.min_confidence:.3f}"
+                ),
+                "setup_details": setup_details,
+                "confidence_components": dict(best.confidence_components),
+            }
+        return {
+            "symbol": context.symbol,
+            "status": "signaled",
+            "side": best.side,
+            "setup": best.setup,
+            "confidence": best.confidence,
+            "reason_summary": "signal_ready",
+            "setup_details": dict(best.setup_details),
+            "confidence_components": dict(best.confidence_components),
+        }
+
     def _passes_filters(self, context: TradfiTrendContext) -> bool:
+        return not self._filter_reasons(context)
+
+    def _filter_reasons(self, context: TradfiTrendContext) -> list[str]:
+        reasons: list[str] = []
         if not self.is_eligible_symbol(context.symbol, context.market_cluster):
-            return False
+            reasons.append(f"cluster_not_allowed:{context.market_cluster}")
         if not context.cluster_aligned:
-            return False
+            reasons.append("cluster_not_aligned")
         if context.spread_bps > self.config.max_spread_bps:
-            return False
+            reasons.append(
+                f"spread_too_wide {context.spread_bps:.2f}>{self.config.max_spread_bps:.2f}"
+            )
         if abs(context.funding_rate) > self.config.max_abs_funding_rate:
-            return False
+            reasons.append(
+                f"funding_too_large {abs(context.funding_rate):.6f}>"
+                f"{self.config.max_abs_funding_rate:.6f}"
+            )
         if context.bucket_notional_usd < self.config.min_bucket_notional_usd:
-            return False
+            reasons.append(
+                f"bucket_notional_below_min {context.bucket_notional_usd:.2f}<"
+                f"{self.config.min_bucket_notional_usd:.2f}"
+            )
         if context.bucket_trade_count < self.config.min_bucket_trade_count:
-            return False
+            reasons.append(
+                f"bucket_trade_count_below_min {context.bucket_trade_count}<"
+                f"{self.config.min_bucket_trade_count}"
+            )
         if abs(context.vwap_distance_bps) > self.config.max_vwap_distance_bps:
-            return False
+            reasons.append(
+                f"vwap_distance_too_far {abs(context.vwap_distance_bps):.2f}>"
+                f"{self.config.max_vwap_distance_bps:.2f}"
+            )
         if context.activity_ratio < self.config.min_activity_ratio:
-            return False
-        return True
+            reasons.append(
+                f"activity_below_min {context.activity_ratio:.2f}<"
+                f"{self.config.min_activity_ratio:.2f}"
+            )
+        return reasons
 
     def _build_continuation_signal(
         self,
@@ -431,6 +533,48 @@ class TradfiTrendService:
             "structure_direction": _direction_label(structure_direction),
             "flow_direction": _direction_label(flow_direction),
             "flow_alignment": flow_alignment,
+            "trend_bucket": _trend_bucket(context.trend_bps),
+            "structure_bucket": _structure_bucket(context.structure_score),
+            "vwap_bucket": _vwap_bucket(context.vwap_distance_bps),
+            "activity_bucket": _activity_bucket(context.activity_ratio),
+            "trade_count_bucket": _activity_bucket(context.trade_count_ratio),
+            "flow_bucket": _flow_bucket(flow_support_score),
+        }
+
+    def _review_setup_details(
+        self,
+        context: TradfiTrendContext,
+        *,
+        preferred_side: str | None,
+    ) -> dict[str, float | str | bool]:
+        trend_direction, structure_direction, flow_direction = self._direction_components(context)
+        alignment_score = trend_direction + structure_direction + flow_direction
+        flow_support_score = context.trade_flow_bias + context.book_imbalance
+        return {
+            "global_regime": context.global_regime or context.regime,
+            "cluster_regime": context.cluster_regime or context.regime,
+            "market_cluster": context.market_cluster,
+            "cluster_leader": context.cluster_leader,
+            "cluster_aligned": context.cluster_aligned,
+            "btc_aligned": context.btc_aligned,
+            "preferred_side": preferred_side or "neutral",
+            "trend_bps": round(context.trend_bps, 4),
+            "structure_score": round(context.structure_score, 4),
+            "vwap_distance_bps": round(context.vwap_distance_bps, 4),
+            "spread_bps": round(context.spread_bps, 4),
+            "funding_rate": round(context.funding_rate, 8),
+            "bucket_range_bps": round(context.bucket_range_bps, 4),
+            "bucket_trade_count": float(context.bucket_trade_count),
+            "bucket_notional_usd": round(context.bucket_notional_usd, 4),
+            "activity_ratio": round(context.activity_ratio, 4),
+            "trade_count_ratio": round(context.trade_count_ratio, 4),
+            "book_imbalance": round(context.book_imbalance, 4),
+            "trade_flow_bias": round(context.trade_flow_bias, 4),
+            "flow_support_score": round(flow_support_score, 4),
+            "alignment_score": float(alignment_score),
+            "trend_direction": _direction_label(trend_direction),
+            "structure_direction": _direction_label(structure_direction),
+            "flow_direction": _direction_label(flow_direction),
             "trend_bucket": _trend_bucket(context.trend_bps),
             "structure_bucket": _structure_bucket(context.structure_score),
             "vwap_bucket": _vwap_bucket(context.vwap_distance_bps),

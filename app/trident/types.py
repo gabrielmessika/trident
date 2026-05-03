@@ -306,4 +306,5 @@ class SupervisorState:
     pod_c_signal_preview: list[SignalPreview] = field(default_factory=list)
     pod_a_signal_review: list[dict[str, object]] = field(default_factory=list)
     pod_b_signal_review: list[dict[str, object]] = field(default_factory=list)
+    pod_c_signal_review: list[dict[str, object]] = field(default_factory=list)
     pod_b_status: dict[str, object] = field(default_factory=dict)
