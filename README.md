@@ -405,6 +405,7 @@ Rapatriement et analyse locale:
 - `./scripts/fetch_trident_data.sh`
   - rapatrie les snapshots live, logs runtime, statuses, snapshots API et logs Docker
   - rapatrie le vrai runtime Pod B depuis `logs/pod_b_live_status.json` (plus les anciens artefacts `passivbot`)
+  - genere aussi une review HIP-4 outcome depuis les logs `paper/testnet/mainnet`
   - installe automatiquement `rsync` localement si le binaire est absent et qu'un gestionnaire de paquets supporte est disponible
   - traite les artefacts Hydra research `docs/pod_*_research_latest.*` comme **optionnels**
   - peut ensuite relancer automatiquement `trident_dry_run_review.sh`
@@ -421,6 +422,19 @@ Exemples:
 ./scripts/fetch_trident_data.sh --logs-only
 ./scripts/fetch_trident_data.sh --review-only
 ```
+
+La review HIP-4 est ecrite dans le dossier de review timestampé et en alias latest:
+
+```text
+server-data/replay_reports/hip4_outcome_run_review_latest.md
+server-data/replay_reports/hip4_outcome_run_review_latest.json
+```
+
+Elle inclut aussi une simulation de candidats guardrails: slices a exclure,
+impact PnL/PF/Brier apres exclusion, et distinction entre regles entry-time
+actionnables et diagnostics post-trade.
+Le guardrail testnet actif se configure via `blocked_opportunity_slices` dans
+`config/hip4_outcome_testnet.toml`.
 
 Validation recente:
 

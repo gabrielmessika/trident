@@ -284,6 +284,79 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertEqual(decision.reason, "observer_mode_signal_only")
 
+    def test_risk_rejects_blocked_opportunity_slice_before_execution(self) -> None:
+        market = parse_price_binary_outcome(
+            {
+                "outcome": 5789,
+                "name": "Recurring",
+                "description": "class:priceBinary|underlying:HYPE|expiry:20260502-0300|targetPrice:26.121|period:15m",
+                "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+            }
+        )
+        self.assertIsNotNone(market)
+        book = build_order_book(
+            market_id=market.market_id,
+            yes_payload={
+                "coin": market.yes_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.22", "sz": "100", "n": 1}],
+                    [{"px": "0.24", "sz": "100", "n": 1}],
+                ],
+            },
+            no_payload={
+                "coin": market.no_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.75", "sz": "100", "n": 1}],
+                    [{"px": "0.76", "sz": "100", "n": 1}],
+                ],
+            },
+            max_slippage=0.03,
+        )
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_YES",
+            edge_type="LATE_EXPIRY",
+            gross_edge=0.3,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.28,
+            confidence=0.9,
+            requested_size_usdc=25.0,
+            max_loss_usdc=25.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={"strike": market.strike},
+        )
+        config = Hip4OutcomeConfig(
+            mode="testnet",
+            allow_testnet_orders=True,
+            blocked_opportunity_slices=["hype/late_expiry/buy_yes"],
+            max_position_usdc=50.0,
+            max_total_outcome_exposure_usdc=100.0,
+            max_per_underlying_outcome_exposure_usdc=100.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+        )
+
+        decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 300,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "blocked_outcome_slice")
+        self.assertEqual(
+            decision.constraints["blocked_slice"],
+            "HYPE:LATE_EXPIRY:BUY_YES",
+        )
+
     def test_risk_rejects_testnet_order_below_effective_hl_minimum(self) -> None:
         market = self._market()
         book = build_order_book(
@@ -656,6 +729,36 @@ BTC = 0.5
             self.assertEqual(config.pod_b_alias_status_path, "./logs/pod_b_live_status.json")
             self.assertEqual(config.outcome_open_fee_rate, 0.0)
             self.assertEqual(config.outcome_settlement_fee_rate, config.estimated_fees)
+            self.assertEqual(config.blocked_opportunity_slices, [])
+
+    def test_loads_blocked_opportunity_slices_from_config_and_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "hip4.toml"
+            path.write_text(
+                """
+[hip4_outcome]
+blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "bad"]
+""",
+                encoding="utf-8",
+            )
+
+            config = load_hip4_outcome_config(path)
+
+            self.assertEqual(
+                config.blocked_opportunity_slices,
+                ["HYPE:LATE_EXPIRY:BUY_YES", "BTC:MODEL:BUY_NO"],
+            )
+
+            with patch.dict(
+                os.environ,
+                {"HIP4_OUTCOME_BLOCKED_OPPORTUNITY_SLICES": "ETH:MODEL:BUY_YES"},
+            ):
+                overridden = load_hip4_outcome_config(path)
+
+            self.assertEqual(
+                overridden.blocked_opportunity_slices,
+                ["ETH:MODEL:BUY_YES"],
+            )
 
     def test_testnet_config_keeps_external_price_sources_visible(self) -> None:
         config = load_hip4_outcome_config("config/hip4_outcome_testnet.toml")
@@ -665,6 +768,10 @@ BTC = 0.5
         self.assertIn("hyperliquid", config.reference_price_sources)
         self.assertTrue(config.anchor_reference_to_hyperliquid)
         self.assertNotIn("HYPE", config.reference_price_sources_by_underlying)
+        self.assertIn(
+            "HYPE:LATE_EXPIRY:BUY_YES",
+            config.blocked_opportunity_slices,
+        )
 
     def test_testnet_executor_prefers_dedicated_hip4_credentials(self) -> None:
         env = {
@@ -697,6 +804,7 @@ BTC = 0.5
                 state_path=str(root / "state.json"),
                 status_path=str(root / "hip4_status.json"),
                 pod_b_alias_status_path=str(root / "pod_b_live_status.json"),
+                blocked_opportunity_slices=["HYPE:LATE_EXPIRY:BUY_YES"],
             )
             pod = HIP4OutcomeEdgePod(config)
 
@@ -716,6 +824,7 @@ BTC = 0.5
             self.assertEqual(alias["process_state"], "running")
             self.assertEqual(alias["report"]["strategy"], "HIP4OutcomeEdgePod")
             self.assertEqual(alias["hip4_outcome_status_path"], str(root / "hip4_status.json"))
+            self.assertEqual(alias["blocked_opportunity_slices"], ["HYPE:LATE_EXPIRY:BUY_YES"])
 
     def test_capital_guard_caps_paper_size_by_pod_b_budget(self) -> None:
         config = Hip4OutcomeConfig(mode="paper", pod_b_budget_usdc=10.0)

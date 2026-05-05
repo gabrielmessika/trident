@@ -280,6 +280,17 @@ def _hip4_outcome_monitor_payload(
         capital = status["capital"]
     elif isinstance(summary.get("capital"), dict):
         capital = summary["capital"]
+    blocked_opportunity_slices: list[object] = []
+    if (
+        isinstance(pod_b_alias_status, dict)
+        and isinstance(pod_b_alias_status.get("blocked_opportunity_slices"), list)
+    ):
+        blocked_opportunity_slices = pod_b_alias_status["blocked_opportunity_slices"]
+    elif (
+        isinstance(status, dict)
+        and isinstance(status.get("blocked_opportunity_slices"), list)
+    ):
+        blocked_opportunity_slices = status["blocked_opportunity_slices"]
     reference_rows: list[dict[str, object]] = []
     for underlying, reference in sorted(reference_prices.items()):
         if not isinstance(reference, dict):
@@ -343,6 +354,7 @@ def _hip4_outcome_monitor_payload(
             if isinstance(status, dict) and isinstance(status.get("fee_model"), dict)
             else {}
         ),
+        "blocked_opportunity_slices": blocked_opportunity_slices,
         "best_net_edge": best_net_edge,
         "latest_net_edge": latest_net_edge,
         "best_short_net_edge": best_short_net_edge,

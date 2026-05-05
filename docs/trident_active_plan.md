@@ -19,6 +19,8 @@ Date: `2026-05-05`
   - dashboard principal: `/dashboard`
   - monitoring HIP-4: `/hip4-outcome`
   - API HIP-4: `/api/hip4-outcome`
+- `/api/hip4-outcome` expose aussi `blocked_opportunity_slices`, afin de verifier
+  les guardrails testnet actifs sans ouvrir le fichier TOML serveur.
 - Regle de promotion: aucune logique HIP-4 ne passe en mainnet sans dataset complet, calibration, replay comparable, dry-run propre et testnet concluant sur plusieurs expiries.
 
 ## Reference Prod Courante
@@ -213,6 +215,18 @@ Edge types implementes:
 - `PARITY`: achat YES+NO si le cout combine est sous 1.
 - `SHORT_EXPIRY`: chemin OpenClaw-like pour marches tres courts.
 
+Guardrail testnet actif:
+
+- `blocked_opportunity_slices = ["HYPE:LATE_EXPIRY:BUY_YES"]` dans
+  `config/hip4_outcome_testnet.toml`.
+- Derive de la review testnet du `2026-05-05`: cette slice excluait `36` trades,
+  passait le PnL simule apres exclusion a `787.9492`, le profit factor a `3.3724`
+  et le Brier a `0.1578`.
+- Le rejet runtime est explicite: `reason = "blocked_outcome_slice"` avec
+  `constraints.blocked_slice = "HYPE:LATE_EXPIRY:BUY_YES"`.
+- Le status HIP-4 et l'alias Pod B exposent `blocked_opportunity_slices`; l'API
+  `/api/hip4-outcome` relaie ce champ.
+
 Mode `SHORT_EXPIRY`:
 
 - Priorise les marches dans `short_expiry_window_minutes`.
@@ -303,6 +317,34 @@ Replay observer mainnet:
 uv run python -m app.backtest.hip4_outcome_replay \
   --profile mainnet \
   --output logs/hip4_outcome_mainnet/replay_latest.json
+```
+
+Review post-fetch paper / testnet / mainnet observer:
+
+```bash
+uv run python -m app.backtest.hip4_outcome_run_review \
+  --output-json server-data/replay_reports/hip4_outcome_run_review_latest.json \
+  --output-md server-data/replay_reports/hip4_outcome_run_review_latest.md
+```
+
+Note: `scripts/fetch_trident_data.sh` lance maintenant cette review automatiquement via
+`scripts/trident_dry_run_review.sh` quand les logs HIP-4 ont ete rapatries.
+Le rapport inclut une simulation de candidats guardrails: impact PnL/PF/Brier apres
+exclusion, verdict `keep/watch/park/kill`, et separation entre slices entry-time
+actionnables et categories de pertes post-trade.
+Le candidat garde en config testnet est `HYPE:LATE_EXPIRY:BUY_YES`; revalider
+apres la prochaine fenetre de collecte avant d'ajouter d'autres slices.
+
+Verification serveur apres deploiement:
+
+```bash
+ssh trident-hetzner "cd /opt/trident && curl -fsS http://127.0.0.1:3000/api/hip4-outcome | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"blocked_opportunity_slices\"))'"
+```
+
+Attendu:
+
+```text
+['HYPE:LATE_EXPIRY:BUY_YES']
 ```
 
 Pour de vrais ordres testnet:
@@ -440,11 +482,14 @@ Ces pistes ne doivent plus apparaitre comme roadmap active. Elles restent seulem
 
 ### 1. Operer Pod B HIP-4 En Testnet Dedie
 
+- Deployer les changements via `./deploy.sh --start --mode dry-run` depuis le poste local.
 - Lancer le bot complet sans `--without-pod-b`.
 - Verifier que le service actif est `hip4-outcome-dry-run`, pas `pod-b-live`.
 - Verifier que `hip4-outcome-mainnet-observer` tourne dans le meme deploiement.
 - Verifier que l'env serveur active bien `HIP4_OUTCOME_MODE=testnet` et `HIP4_OUTCOME_ALLOW_TESTNET_ORDERS=true` seulement pour le compte testnet dedie.
 - Verifier que le capital visible est en `USDH`, pas seulement en `USDC`.
+- Verifier que `/api/hip4-outcome.blocked_opportunity_slices` contient
+  `HYPE:LATE_EXPIRY:BUY_YES`.
 - Suivre `/hip4-outcome`:
   - edges par type
   - short-expiry features
@@ -471,6 +516,10 @@ Action:
 - mesurer win rate, profit factor, drawdown, edge decay et fill quality. Le win rate seul ne suffit pas.
 - comparer paper vs testnet quand les deux sources existent.
 - comparer mainnet observer vs testnet: reference price, spread, depth, edge decay, et frequence des signaux.
+- produire `hip4_outcome_run_review_latest.{json,md}` apres chaque fetch serveur complet.
+- utiliser la section `Guardrail Candidates` pour choisir les prochaines restrictions testnet.
+- Ne pas ajouter d'autre slice tant que la fenetre post-guardrail n'a pas confirme
+  un Brier testnet `<= 0.23` avec un volume encore exploitable.
 
 ### 3. Calibration Avant Sizing Dynamique
 

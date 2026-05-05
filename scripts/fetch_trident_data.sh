@@ -668,6 +668,14 @@ if [[ "${DRY_RUN}" != "true" ]]; then
     if [[ "${SKIP_REVIEW}" != "true" ]]; then
         echo "    - review summary : ${OUTPUT_DIR}/review_summary.md"
         echo "    - review json : ${OUTPUT_DIR}/review_summary.json"
+        if [[ -f "${OUTPUT_DIR}/hip4_outcome_run_review.md" ]]; then
+            echo "    - review HIP-4 : ${OUTPUT_DIR}/hip4_outcome_run_review.md"
+            echo "    - review HIP-4 json : ${OUTPUT_DIR}/hip4_outcome_run_review.json"
+        fi
+        if [[ -f "${LOCAL_DIR}/replay_reports/hip4_outcome_run_review_latest.md" ]]; then
+            echo "    - review HIP-4 latest : ${LOCAL_DIR}/replay_reports/hip4_outcome_run_review_latest.md"
+            echo "    - review HIP-4 latest json : ${LOCAL_DIR}/replay_reports/hip4_outcome_run_review_latest.json"
+        fi
     fi
     echo
     if [[ -f "${FULL_BOT_REPLAY_INPUT}" ]]; then

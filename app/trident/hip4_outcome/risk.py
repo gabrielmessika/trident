@@ -16,6 +16,11 @@ from app.trident.hip4_outcome.models import (
 class OutcomeRiskManager:
     def __init__(self, config: Hip4OutcomeConfig) -> None:
         self.config = config
+        self._blocked_opportunity_slices: set[str] = set()
+        for value in config.blocked_opportunity_slices:
+            slice_key = self._normalize_slice_key(value)
+            if slice_key is not None:
+                self._blocked_opportunity_slices.add(slice_key)
 
     def evaluate(
         self,
@@ -39,6 +44,12 @@ class OutcomeRiskManager:
             return self._reject("expiry_too_far")
         if not market.settlement_source:
             return self._reject("missing_settlement_source")
+        blocked_slice = self._opportunity_slice_key(opportunity=opportunity, market=market)
+        if blocked_slice in self._blocked_opportunity_slices:
+            return self._reject(
+                "blocked_outcome_slice",
+                constraints={"blocked_slice": blocked_slice},
+            )
         if any(position.market_id == market.market_id and position.status == "open" for position in open_positions):
             return self._reject("market_already_open")
 
@@ -177,11 +188,37 @@ class OutcomeRiskManager:
         price = max(min(float(limit_price), 0.99999), 0.00001)
         return max(min(price, 1.0 - price), 0.00001)
 
-    def _reject(self, reason: str) -> SupervisorDecision:
+    @staticmethod
+    def _opportunity_slice_key(
+        *,
+        opportunity: OutcomeOpportunity,
+        market: OutcomeMarket,
+    ) -> str:
+        return ":".join(
+            [
+                str(market.underlying or opportunity.underlying).strip().upper(),
+                str(opportunity.edge_type).strip().upper(),
+                str(opportunity.side).strip().upper(),
+            ]
+        )
+
+    @staticmethod
+    def _normalize_slice_key(value: object) -> str | None:
+        parts = [part.strip().upper() for part in str(value).replace("/", ":").split(":")]
+        if len(parts) != 3 or not all(parts):
+            return None
+        return ":".join(parts)
+
+    def _reject(
+        self,
+        reason: str,
+        *,
+        constraints: dict[str, object] | None = None,
+    ) -> SupervisorDecision:
         return SupervisorDecision(
             approved=False,
             approved_size_usdc=0.0,
             reason=reason,
             execution_mode=self.config.mode.upper(),
-            constraints={},
+            constraints=constraints or {},
         )

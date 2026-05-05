@@ -848,6 +848,7 @@ class HIP4OutcomeEdgePod:
                 and _position_execution_mode(position) == self.config.mode.upper()
             ],
             "fee_model": self._fee_model_payload(),
+            "blocked_opportunity_slices": list(self.config.blocked_opportunity_slices),
             "logs_dir": str(Path(self.config.logs_dir)),
             "state_path": self.config.state_path,
         }
@@ -955,6 +956,7 @@ class HIP4OutcomeEdgePod:
             "summary": summary,
             "capital": self.last_capital_snapshot,
             "fee_model": self._fee_model_payload(),
+            "blocked_opportunity_slices": list(self.config.blocked_opportunity_slices),
             "report": {
                 "strategy": "HIP4OutcomeEdgePod",
                 "closed_trade_count": len(settled_positions),

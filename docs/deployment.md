@@ -471,9 +471,15 @@ Ce script :
 - récupère l'état courant (`/health`, `/api/state`, `/api/metrics`, `/api/report`)
 - récupère les tails de logs Docker
 - vérifie la fraîcheur des snapshots
+- si un cache local est fourni, génère aussi la review HIP-4 outcome complète
 - génère :
   - `review_summary.md`
-  - `review_summary.json`
+- `review_summary.json`
+- `hip4_outcome_run_review.md`
+- `hip4_outcome_run_review.json`
+
+La review HIP-4 contient aussi une section `Guardrail Candidates` pour simuler
+l'effet des exclusions avant de les transformer en regles live.
   - des prompts LLM quand un jugement qualitatif est utile
 
 ### Fetch complet
@@ -496,6 +502,7 @@ Il rapatrie localement :
 - `logs/pod_c_live_status.json`
 - snapshots API courants
 - tails de logs Docker
+- logs HIP-4 `paper`, `testnet`, `mainnet observer`
 
 Point utile :
 
@@ -503,6 +510,7 @@ Point utile :
 - si le dashboard affiche `Supervisor fallback` pour Pod B, le fetch te permet maintenant de verifier directement si `logs/pod_b_live_status.json` est frais ou non
 
 Puis il peut relancer automatiquement la revue locale avec suggestions de prompts.
+La review HIP-4 est aussi copiée en alias latest sous `server-data/replay_reports/hip4_outcome_run_review_latest.{md,json}`.
 
 Exemples :
 

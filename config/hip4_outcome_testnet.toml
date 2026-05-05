@@ -37,6 +37,9 @@ enable_late_expiry = true
 enable_parity = true
 enable_model = true
 enable_short_expiry = true
+# Format: UNDERLYING:EDGE_TYPE:SIDE. First guardrail comes from the
+# 2026-05-05 testnet review; keep mainnet observer unblocked for comparison.
+blocked_opportunity_slices = ["HYPE:LATE_EXPIRY:BUY_YES"]
 late_expiry_window_minutes = 20
 strike_buffer_bps = 8
 max_late_yes_price = 0.97

@@ -7,6 +7,8 @@ from pathlib import Path
 
 
 def _str_list(raw: object, *, upper: bool = False) -> list[str]:
+    if isinstance(raw, str):
+        raw = [item for item in raw.split(",")]
     if not isinstance(raw, list):
         return []
     parsed: list[str] = []
@@ -15,6 +17,16 @@ def _str_list(raw: object, *, upper: bool = False) -> list[str]:
         if not value:
             continue
         parsed.append(value.upper() if upper else value)
+    return parsed
+
+
+def _slice_list(raw: object) -> list[str]:
+    parsed: list[str] = []
+    for item in _str_list(raw, upper=False):
+        parts = [part.strip().upper() for part in item.replace("/", ":").split(":")]
+        if len(parts) != 3 or not all(parts):
+            continue
+        parsed.append(":".join(parts))
     return parsed
 
 
@@ -115,6 +127,7 @@ class Hip4OutcomeConfig:
     enable_parity: bool = True
     enable_model: bool = True
     enable_short_expiry: bool = True
+    blocked_opportunity_slices: list[str] = field(default_factory=list)
     short_expiry_window_minutes: int = 6
     short_expiry_periods: list[str] = field(default_factory=lambda: ["5m", "15m"])
     short_expiry_history_seconds: int = 900
@@ -292,6 +305,12 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         enable_short_expiry=_env_bool(
             "HIP4_OUTCOME_ENABLE_SHORT_EXPIRY",
             bool(section.get("enable_short_expiry", True)),
+        ),
+        blocked_opportunity_slices=_slice_list(
+            os.getenv(
+                "HIP4_OUTCOME_BLOCKED_OPPORTUNITY_SLICES",
+                section.get("blocked_opportunity_slices", []),
+            )
         ),
         short_expiry_window_minutes=int(section.get("short_expiry_window_minutes", 6)),
         short_expiry_periods=_str_list(section.get("short_expiry_periods", ["5m", "15m"])),

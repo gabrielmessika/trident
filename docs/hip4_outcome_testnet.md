@@ -138,6 +138,11 @@ Orders are capped by:
 - `max_total_outcome_exposure_usdc`
 - `max_per_underlying_outcome_exposure_usdc`
 - `max_outcome_markets_open`
+- `blocked_opportunity_slices` for review-driven slice guardrails
 
 Only buy-side outcome trades are implemented: `BUY_YES`, `BUY_NO`, and `BUY_BOTH`.
 No shorting or martingale logic exists in this pod.
+
+`blocked_opportunity_slices` uses `UNDERLYING:EDGE_TYPE:SIDE` values. The
+testnet config currently blocks `HYPE:LATE_EXPIRY:BUY_YES`, based on the
+2026-05-05 run review; mainnet observer remains unblocked for comparison.

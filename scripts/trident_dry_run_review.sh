@@ -94,6 +94,11 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/runtime/reviews/${TIMESTAMP_UTC}}"
 RAW_DIR="${OUTPUT_DIR}/raw"
 mkdir -p "${RAW_DIR}"
+HIP4_RUN_REVIEW_JSON="${OUTPUT_DIR}/hip4_outcome_run_review.json"
+HIP4_RUN_REVIEW_MD="${OUTPUT_DIR}/hip4_outcome_run_review.md"
+HIP4_RUN_REVIEW_STDOUT="${RAW_DIR}/hip4_outcome_run_review_stdout.json"
+HIP4_RUN_REVIEW_STDERR="${RAW_DIR}/hip4_outcome_run_review_stderr.txt"
+HIP4_RUN_REVIEW_STATUS="${RAW_DIR}/hip4_outcome_run_review_status.txt"
 
 SSH_ARGS=()
 if [ -f "${IDENTITY_FILE}" ]; then
@@ -308,6 +313,62 @@ capture_remote() {
     fi
 }
 
+run_hip4_outcome_run_review() {
+    if [ -z "${LOCAL_DIR}" ] || [ ! -d "${LOCAL_DIR}/logs" ]; then
+        printf 'skipped:no_local_hip4_logs\n' > "${HIP4_RUN_REVIEW_STATUS}"
+        return 0
+    fi
+
+    local replay_report_dir="${LOCAL_DIR}/replay_reports"
+    local latest_json="${replay_report_dir}/hip4_outcome_run_review_latest.json"
+    local latest_md="${replay_report_dir}/hip4_outcome_run_review_latest.md"
+    mkdir -p "${replay_report_dir}"
+
+    info "Generation de la review HIP-4 outcome depuis ${LOCAL_DIR}/logs..."
+    if (
+        cd "${ROOT_DIR}" && \
+        if command -v uv >/dev/null 2>&1; then
+            uv run python -m app.backtest.hip4_outcome_run_review \
+                --logs-dir "paper=${LOCAL_DIR}/logs/hip4_outcome_paper" \
+                --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
+                --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
+                --output-json "${HIP4_RUN_REVIEW_JSON}" \
+                --output-md "${HIP4_RUN_REVIEW_MD}"
+        elif command -v python3.12 >/dev/null 2>&1; then
+            python3.12 -m app.backtest.hip4_outcome_run_review \
+                --logs-dir "paper=${LOCAL_DIR}/logs/hip4_outcome_paper" \
+                --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
+                --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
+                --output-json "${HIP4_RUN_REVIEW_JSON}" \
+                --output-md "${HIP4_RUN_REVIEW_MD}"
+        elif command -v python3.11 >/dev/null 2>&1; then
+            python3.11 -m app.backtest.hip4_outcome_run_review \
+                --logs-dir "paper=${LOCAL_DIR}/logs/hip4_outcome_paper" \
+                --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
+                --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
+                --output-json "${HIP4_RUN_REVIEW_JSON}" \
+                --output-md "${HIP4_RUN_REVIEW_MD}"
+        else
+            python3 -m app.backtest.hip4_outcome_run_review \
+                --logs-dir "paper=${LOCAL_DIR}/logs/hip4_outcome_paper" \
+                --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
+                --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
+                --output-json "${HIP4_RUN_REVIEW_JSON}" \
+                --output-md "${HIP4_RUN_REVIEW_MD}"
+        fi
+    ) >"${HIP4_RUN_REVIEW_STDOUT}" 2>"${HIP4_RUN_REVIEW_STDERR}"; then
+        cp "${HIP4_RUN_REVIEW_JSON}" "${latest_json}"
+        cp "${HIP4_RUN_REVIEW_MD}" "${latest_md}"
+        printf 'ok:%s:%s\n' "${HIP4_RUN_REVIEW_JSON}" "${latest_json}" > "${HIP4_RUN_REVIEW_STATUS}"
+        ok "Review HIP-4 outcome generee"
+        return 0
+    fi
+
+    warn "Review HIP-4 outcome echouee; la revue dry-run continue"
+    printf 'failed:%s\n' "${HIP4_RUN_REVIEW_STDERR}" > "${HIP4_RUN_REVIEW_STATUS}"
+    return 0
+}
+
 if [ -n "${LOCAL_DIR}" ] && [ -d "${LOCAL_DIR}" ]; then
     info "Collecte des artefacts du dry-run depuis le cache local ${LOCAL_DIR}..."
     capture_local_review_inputs "${LOCAL_DIR}"
@@ -334,6 +395,8 @@ else
     capture_remote "funding_collector_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} funding-collector 2>&1"
     capture_remote "tradfi_funding_collector_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} tradfi-funding-collector 2>&1"
 fi
+
+run_hip4_outcome_run_review
 
 info "Analyse locale des artefacts..."
 
@@ -380,6 +443,17 @@ def load_json(name: str) -> dict[str, object] | None:
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def load_output_json(name: str) -> dict[str, object] | None:
+    path = output_dir / name
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def parse_docker_ps(text: str) -> dict[str, str]:
@@ -558,10 +632,12 @@ state = load_json("state.json") or {}
 metrics = load_json("metrics.json") or {}
 report = load_json("report.json") or {}
 hip4_outcome = load_json("hip4_outcome.json") or {}
+hip4_run_review = load_output_json("hip4_outcome_run_review.json") or {}
 health = load_json("health.json") or {}
 latest_snapshot = latest_snapshot_info(read_text("snapshot_files.txt"))
 journal_files = parse_journal_files(read_text("journal_files.txt"))
 hip4_files = parse_journal_files(read_text("hip4_files.txt"))
+hip4_run_review_status = read_text("hip4_outcome_run_review_status.txt").strip()
 pod_b_runtime_present = read_text("pod_b_runtime_present.txt").strip() == "present"
 
 api_log_patterns = count_log_patterns(read_text("api_log_tail.txt"))
@@ -590,6 +666,16 @@ tradfi_funding_service_report = service_report(report, "tradfi_funding_collector
 pod_a_economics = summarize_pod_economics(pod_a_report)
 pod_b_economics = summarize_pod_economics(pod_b_report)
 pod_c_economics = summarize_pod_economics(pod_c_report)
+hip4_run_readiness = (
+    hip4_run_review.get("readiness", {})
+    if isinstance(hip4_run_review.get("readiness", {}), dict)
+    else {}
+)
+hip4_run_profile_count = (
+    len(hip4_run_review.get("profiles", []))
+    if isinstance(hip4_run_review.get("profiles", []), list)
+    else 0
+)
 latest_business_date = (
     str(latest_snapshot["timestamp"])[:10] if latest_snapshot is not None else ""
 )
@@ -948,6 +1034,25 @@ if container_is_running("trident-hip4-outcome-dry-run") or container_is_running(
         pod_b_warnings.append(
             f"Fees Pod B lourdes par rapport au gross PnL ({pod_b_economics['fees_usd']:.2f} USD / {pod_b_economics['gross_pnl_usd']:.2f} USD)"
         )
+    if hip4_run_review:
+        hip4_status = str(hip4_run_readiness.get("status", "unknown"))
+        hip4_recommendation = str(hip4_run_readiness.get("recommendation", ""))
+        pod_b_checks.append(
+            "Review HIP-4 outcome generee "
+            f"({hip4_run_profile_count} profils, status={hip4_status})"
+        )
+        if hip4_recommendation:
+            pod_b_checks.append(f"Recommendation HIP-4: {hip4_recommendation}")
+        for reason in hip4_run_readiness.get("reasons", []):
+            pod_b_warnings.append(f"Review HIP-4: {reason}")
+    elif hip4_run_review_status.startswith("failed:"):
+        pod_b_warnings.append(
+            f"Review HIP-4 outcome indisponible ({hip4_run_review_status})"
+        )
+    else:
+        pod_b_warnings.append(
+            "Review HIP-4 outcome non lancee; lancer fetch_trident_data.sh pour analyser les logs complets"
+        )
 
     pod_b_prompt = None
     if not pod_b_failures:
@@ -970,6 +1075,8 @@ if container_is_running("trident-hip4-outcome-dry-run") or container_is_running(
                 f"- pod_b_economics: {pod_b_economics}\n"
                 f"- hip4_outcome_summary: {hip4_outcome}\n"
                 f"- hip4_files: {hip4_files}\n"
+                f"- hip4_run_review_status: {hip4_run_review_status}\n"
+                f"- hip4_run_readiness: {hip4_run_readiness}\n"
                 f"- log patterns Pod B: {pod_b_log_patterns}\n\n"
                 "Artefacts a lire:\n"
                 f"- {raw_dir / 'state.json'}\n"
@@ -977,6 +1084,8 @@ if container_is_running("trident-hip4-outcome-dry-run") or container_is_running(
                 f"- {raw_dir / 'report.json'}\n"
                 f"- {raw_dir / 'hip4_outcome.json'}\n"
                 f"- {raw_dir / 'hip4_files.txt'}\n"
+                f"- {output_dir / 'hip4_outcome_run_review.md'}\n"
+                f"- {output_dir / 'hip4_outcome_run_review.json'}\n"
                 f"- {raw_dir / 'pod_b_log_tail.txt'}\n"
                 f"- {raw_dir / 'journal_files.txt'}\n\n"
                 "Questions:\n"
@@ -1237,6 +1346,19 @@ summary = {
     "latest_snapshot": latest_snapshot,
     "latest_business_date": latest_business_date,
     "ownership_conflict_count": ownership_conflicts,
+    "hip4_run_review": {
+        "status": hip4_run_readiness.get("status"),
+        "recommendation": hip4_run_readiness.get("recommendation"),
+        "reasons": hip4_run_readiness.get("reasons", []),
+        "profile_count": hip4_run_profile_count,
+        "json_path": str(output_dir / "hip4_outcome_run_review.json")
+        if hip4_run_review
+        else None,
+        "markdown_path": str(output_dir / "hip4_outcome_run_review.md")
+        if hip4_run_review
+        else None,
+        "raw_status": hip4_run_review_status,
+    },
     "stages": [asdict(stage) for stage in stages],
 }
 (output_dir / "review_summary.json").write_text(
@@ -1254,9 +1376,35 @@ md_lines = [
     f"- latest_business_date: `{latest_business_date}`",
     f"- ownership_conflict_count: `{ownership_conflicts}`",
     "",
-    "## Stages",
-    "",
 ]
+if hip4_run_review:
+    md_lines.extend(
+        [
+            "## HIP-4 Outcome Run Review",
+            "",
+            f"- status: `{hip4_run_readiness.get('status', 'unknown')}`",
+            f"- recommendation: {hip4_run_readiness.get('recommendation', 'n/a')}",
+            f"- report: `{output_dir / 'hip4_outcome_run_review.md'}`",
+            f"- json: `{output_dir / 'hip4_outcome_run_review.json'}`",
+            "",
+        ]
+    )
+elif hip4_run_review_status:
+    md_lines.extend(
+        [
+            "## HIP-4 Outcome Run Review",
+            "",
+            f"- status: `{hip4_run_review_status}`",
+            "- note: run the review from a local fetch cache to analyze full HIP-4 logs.",
+            "",
+        ]
+    )
+md_lines.extend(
+    [
+        "## Stages",
+        "",
+    ]
+)
 for stage in stages:
     md_lines.append(f"### {stage.stage}")
     md_lines.append("")
@@ -1279,3 +1427,7 @@ ok "Revue terminee"
 echo "Artefacts ecrits dans: ${OUTPUT_DIR}"
 echo "  - ${OUTPUT_DIR}/review_summary.md"
 echo "  - ${OUTPUT_DIR}/review_summary.json"
+if [ -f "${HIP4_RUN_REVIEW_MD}" ]; then
+    echo "  - ${HIP4_RUN_REVIEW_MD}"
+    echo "  - ${HIP4_RUN_REVIEW_JSON}"
+fi

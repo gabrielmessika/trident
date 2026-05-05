@@ -725,6 +725,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("realized_pnl_usd", payload)
         self.assertIn("fees_usd", payload)
         self.assertIn("gross_pnl_usd", payload)
+        self.assertIn("blocked_opportunity_slices", payload)
 
         html = hip4_outcome_html(self.supervisor, self.metrics)
         self.assertIn("HIP-4 Outcome Experimental", html)
