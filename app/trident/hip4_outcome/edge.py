@@ -27,6 +27,24 @@ class OutcomeEdgeDetector:
         short_assessment: ShortExpiryAssessment | None = None,
     ) -> list[OutcomeOpportunity]:
         opportunities: list[OutcomeOpportunity] = []
+        if market.class_name == "priceBucket":
+            if self.config.enable_price_bucket:
+                opportunities.extend(
+                    self._detect_price_bucket_model(
+                        market=market,
+                        order_book=order_book,
+                        probability=probability,
+                        reference_price=reference_price,
+                        now_ts=now_ts,
+                    )
+                )
+            return [
+                item
+                for item in opportunities
+                if item.gross_edge >= self.config.min_gross_edge
+                and item.net_edge >= self.config.min_net_edge
+                and item.requested_size_usdc > 0
+            ]
         if self.config.enable_late_expiry:
             opportunities.extend(
                 self._detect_late_expiry(
@@ -81,6 +99,8 @@ class OutcomeEdgeDetector:
         features: ShortHorizonFeatures | None,
     ) -> ShortExpiryAssessment | None:
         if not self.config.enable_short_expiry:
+            return None
+        if market.class_name != "priceBinary":
             return None
         time_left = market.expiry_ts - now_ts
         if time_left <= self.config.min_time_to_expiry_seconds:
@@ -562,6 +582,85 @@ class OutcomeEdgeDetector:
                 metadata=dict(short_assessment.metadata),
             )
         ]
+
+    def _detect_price_bucket_model(
+        self,
+        *,
+        market: OutcomeMarket,
+        order_book: OutcomeOrderBook,
+        probability: ProbabilityEstimate,
+        reference_price: float,
+        now_ts: int,
+    ) -> list[OutcomeOpportunity]:
+        if market.bucket_lower is None or market.bucket_upper is None:
+            return []
+        opportunities: list[OutcomeOpportunity] = []
+        time_left = market.expiry_ts - now_ts
+        base_metadata = {
+            "reference_price": reference_price,
+            "bucket_lower": market.bucket_lower,
+            "bucket_upper": market.bucket_upper,
+            "bucket_mid": market.strike,
+            "bucket_index": market.bucket_index,
+            "thresholds": list(market.thresholds),
+            "time_to_expiry_seconds": time_left,
+            "probability_yes": probability.probability_yes,
+            "probability_bucket": probability.probability_yes,
+            "probability_outside_bucket": 1.0 - probability.probability_yes,
+            "probability_model": probability.model_name,
+            "probability_confidence": probability.confidence,
+            **probability.inputs,
+        }
+        if order_book.yes.ask is not None and order_book.yes.ask <= self.config.price_bucket_max_yes_price:
+            gross = round(probability.probability_yes - order_book.yes.ask, 8)
+            opportunities.append(
+                OutcomeOpportunity(
+                    market_id=market.market_id,
+                    outcome=market.outcome,
+                    underlying=market.underlying,
+                    side="BUY_YES",
+                    edge_type="PRICE_BUCKET_MODEL",
+                    gross_edge=gross,
+                    estimated_fees=self._estimated_settlement_fee(probability.probability_yes),
+                    estimated_slippage=self.config.estimated_slippage,
+                    net_edge=self._net_edge(
+                        gross,
+                        settlement_probability=probability.probability_yes,
+                    ),
+                    confidence=probability.confidence,
+                    requested_size_usdc=self._size_for_side(order_book, "BUY_YES"),
+                    max_loss_usdc=self._size_for_side(order_book, "BUY_YES"),
+                    expiry_ts=market.expiry_ts,
+                    reason="Range probability above YES ask",
+                    metadata={**base_metadata, "yes_ask": order_book.yes.ask},
+                )
+            )
+        probability_no = 1.0 - probability.probability_yes
+        if order_book.no.ask is not None and order_book.no.ask <= self.config.price_bucket_max_no_price:
+            gross = round(probability_no - order_book.no.ask, 8)
+            opportunities.append(
+                OutcomeOpportunity(
+                    market_id=market.market_id,
+                    outcome=market.outcome,
+                    underlying=market.underlying,
+                    side="BUY_NO",
+                    edge_type="PRICE_BUCKET_MODEL",
+                    gross_edge=gross,
+                    estimated_fees=self._estimated_settlement_fee(probability_no),
+                    estimated_slippage=self.config.estimated_slippage,
+                    net_edge=self._net_edge(
+                        gross,
+                        settlement_probability=probability_no,
+                    ),
+                    confidence=probability.confidence,
+                    requested_size_usdc=self._size_for_side(order_book, "BUY_NO"),
+                    max_loss_usdc=self._size_for_side(order_book, "BUY_NO"),
+                    expiry_ts=market.expiry_ts,
+                    reason="Outside-range probability above NO ask",
+                    metadata={**base_metadata, "no_ask": order_book.no.ask},
+                )
+            )
+        return opportunities
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:

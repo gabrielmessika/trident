@@ -42,6 +42,10 @@ class OutcomeMarket:
     settlement_source: str = "hyperliquid_outcome"
     side_names: tuple[str, str] = ("Yes", "No")
     raw: dict[str, Any] = field(default_factory=dict)
+    thresholds: tuple[float, ...] = ()
+    bucket_lower: float | None = None
+    bucket_upper: float | None = None
+    bucket_index: int | None = None
 
     @property
     def yes_coin(self) -> str:
@@ -62,6 +66,55 @@ class OutcomeMarket:
     @property
     def expiry_iso(self) -> str:
         return datetime.fromtimestamp(self.expiry_ts, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(slots=True)
+class OutcomeMarketObservation:
+    outcome: int | None
+    name: str
+    description: str
+    class_name: str
+    side_names: tuple[str, ...] = ()
+    market_id: str = ""
+    underlying: str = ""
+    expiry_ts: int | None = None
+    period: str = ""
+    support_status: str = "observe_only"
+    support_reason: str = ""
+    coins: tuple[str, ...] = ()
+    thresholds: tuple[float, ...] = ()
+    bucket_lower: float | None = None
+    bucket_upper: float | None = None
+    bucket_index: int | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def expiry_iso(self) -> str | None:
+        if self.expiry_ts is None:
+            return None
+        return datetime.fromtimestamp(self.expiry_ts, timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "outcome": self.outcome,
+            "name": self.name,
+            "description": self.description,
+            "class_name": self.class_name,
+            "side_names": list(self.side_names),
+            "market_id": self.market_id,
+            "underlying": self.underlying,
+            "expiry_ts": self.expiry_ts,
+            "expiry_iso": self.expiry_iso,
+            "period": self.period,
+            "support_status": self.support_status,
+            "support_reason": self.support_reason,
+            "coins": list(self.coins),
+            "thresholds": list(self.thresholds),
+            "bucket_lower": self.bucket_lower,
+            "bucket_upper": self.bucket_upper,
+            "bucket_index": self.bucket_index,
+            "raw": _json_safe(self.raw),
+        }
 
 
 @dataclass(slots=True)

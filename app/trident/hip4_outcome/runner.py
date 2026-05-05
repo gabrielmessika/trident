@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from app.live.runtime_status import write_runtime_status
-from app.trident.hip4_outcome.book import build_order_book
+from app.trident.hip4_outcome.book import build_order_book, parse_side_book
 from app.trident.hip4_outcome.capital import OutcomeCapitalGuard, OutcomeCapitalSnapshot
 from app.trident.hip4_outcome.client import HIP4OutcomeInfoClient
-from app.trident.hip4_outcome.config import Hip4OutcomeConfig
+from app.trident.hip4_outcome.config import Hip4OutcomeConfig, load_hip4_outcome_config
 from app.trident.hip4_outcome.edge import OutcomeEdgeDetector
 from app.trident.hip4_outcome.execution import PaperOutcomeExecutor, TestnetOutcomeExecutor
 from app.trident.hip4_outcome.external_prices import ExternalPriceAggregator
@@ -29,7 +32,7 @@ from app.trident.hip4_outcome.models import (
     SupervisorDecision,
     utc_now_iso,
 )
-from app.trident.hip4_outcome.parser import parse_outcome_markets
+from app.trident.hip4_outcome.parser import parse_outcome_markets, parse_outcome_observations
 from app.trident.hip4_outcome.probability import ProbabilityModel
 from app.trident.hip4_outcome.reconciliation import (
     OutcomeReconciler,
@@ -73,6 +76,11 @@ class HIP4OutcomeEdgePod:
         ).to_dict()
         self._last_markets_seen = 0
         self._last_supported_underlyings: list[str] = []
+        self._last_market_observation: dict[str, Any] = {}
+        self._embedded_observer_threads: list[threading.Thread] = []
+        self._embedded_observer_stop = threading.Event()
+        self._embedded_observer_lock = threading.Lock()
+        self._embedded_observer_summaries: dict[str, dict[str, Any]] = {}
 
     def run(
         self,
@@ -81,15 +89,20 @@ class HIP4OutcomeEdgePod:
         max_runtime_seconds: float | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
-        while True:
-            summary = self.run_once()
-            if max_loops is not None and self.loop_count >= max_loops:
-                return summary
-            if max_runtime_seconds is not None and time.monotonic() - started >= max_runtime_seconds:
-                return summary
-            time.sleep(max(self.config.loop_interval_seconds, 0.1))
+        self._start_embedded_observers(looping=True)
+        try:
+            while True:
+                summary = self.run_once()
+                if max_loops is not None and self.loop_count >= max_loops:
+                    return summary
+                if max_runtime_seconds is not None and time.monotonic() - started >= max_runtime_seconds:
+                    return summary
+                time.sleep(max(self.config.loop_interval_seconds, 0.1))
+        finally:
+            self._stop_embedded_observers()
 
     def run_once(self) -> dict[str, Any]:
+        one_shot_observers = self._start_embedded_observers(looping=False)
         self.loop_count += 1
         self.last_execution_results = []
         now_ts = int(time.time())
@@ -97,6 +110,7 @@ class HIP4OutcomeEdgePod:
         timings: dict[str, float] = {
             "fetch_mids_ms": 0.0,
             "discover_markets_ms": 0.0,
+            "market_observation_ms": 0.0,
             "reference_prices_ms": 0.0,
             "short_features_ms": 0.0,
             "books_ms": 0.0,
@@ -118,6 +132,8 @@ class HIP4OutcomeEdgePod:
             "short_expiry_markets": 0,
             "short_expiry_assessments": 0,
             "short_expiry_best_net_edge": None,
+            "market_observation": {},
+            "embedded_observers": self._embedded_observer_status(),
             "reconciliation": None,
             "capital": self.capital_guard.local_snapshot(
                 open_positions=self._active_positions_for_mode()
@@ -129,8 +145,14 @@ class HIP4OutcomeEdgePod:
             timings["fetch_mids_ms"] = _elapsed_ms(stage_started)
 
             stage_started = time.monotonic()
-            markets = self._discover_markets(now_ts=now_ts)
+            outcome_meta = self.info_client.fetch_outcome_meta()
+            markets = self._discover_markets(now_ts=now_ts, payload=outcome_meta)
             timings["discover_markets_ms"] = _elapsed_ms(stage_started)
+
+            stage_started = time.monotonic()
+            market_observation = self._observe_market_metadata(payload=outcome_meta, now_ts=now_ts)
+            timings["market_observation_ms"] = _elapsed_ms(stage_started)
+            summary["market_observation"] = market_observation
 
             stage_started = time.monotonic()
             reference_prices = self.price_aggregator.fetch_many(
@@ -284,6 +306,8 @@ class HIP4OutcomeEdgePod:
             logger.exception("HIP-4 outcome pod loop failed")
             self.last_error = str(exc)
             summary["last_error"] = self.last_error
+        self._join_one_shot_observers(one_shot_observers)
+        summary["embedded_observers"] = self._embedded_observer_status()
         self.last_summary = summary
         timings["total_ms"] = _elapsed_ms(loop_started)
         stage_started = time.monotonic()
@@ -291,6 +315,117 @@ class HIP4OutcomeEdgePod:
         timings["status_ms"] = _elapsed_ms(stage_started)
         self._log_latency(summary=summary, timings=timings)
         return summary
+
+    def _start_embedded_observers(self, *, looping: bool) -> list[threading.Thread]:
+        if not self.config.enable_embedded_observers:
+            return []
+        config_paths = [path for path in self.config.embedded_observer_config_paths if path]
+        if not config_paths:
+            return []
+        if looping:
+            with self._embedded_observer_lock:
+                if self._embedded_observer_threads:
+                    return []
+                self._embedded_observer_stop.clear()
+                for path in config_paths:
+                    thread = threading.Thread(
+                        target=self._embedded_observer_loop,
+                        args=(path,),
+                        name=f"hip4-observer:{Path(path).stem}",
+                        daemon=True,
+                    )
+                    self._embedded_observer_threads.append(thread)
+                    thread.start()
+            return []
+        with self._embedded_observer_lock:
+            if self._embedded_observer_threads:
+                return []
+        threads: list[threading.Thread] = []
+        for path in config_paths:
+            thread = threading.Thread(
+                target=self._embedded_observer_once,
+                args=(path,),
+                name=f"hip4-observer-once:{Path(path).stem}",
+                daemon=True,
+            )
+            threads.append(thread)
+            thread.start()
+        return threads
+
+    def _stop_embedded_observers(self) -> None:
+        with self._embedded_observer_lock:
+            threads = list(self._embedded_observer_threads)
+            self._embedded_observer_threads = []
+            self._embedded_observer_stop.set()
+        for thread in threads:
+            thread.join(timeout=max(float(self.config.loop_interval_seconds), 1.0) + 2.0)
+
+    def _join_one_shot_observers(self, threads: list[threading.Thread]) -> None:
+        timeout = max(float(self.config.embedded_observer_once_timeout_seconds), 0.1)
+        started = time.monotonic()
+        for thread in threads:
+            remaining = max(timeout - (time.monotonic() - started), 0.1)
+            thread.join(timeout=remaining)
+
+    def _embedded_observer_loop(self, config_path: str) -> None:
+        pod = self._build_embedded_observer(config_path)
+        while not self._embedded_observer_stop.is_set():
+            self._run_embedded_observer_pod(config_path=config_path, pod=pod)
+            sleep_seconds = max(float(pod.config.loop_interval_seconds), 0.1)
+            self._embedded_observer_stop.wait(timeout=sleep_seconds)
+
+    def _embedded_observer_once(self, config_path: str) -> None:
+        self._run_embedded_observer_pod(
+            config_path=config_path,
+            pod=self._build_embedded_observer(config_path),
+        )
+
+    def _build_embedded_observer(self, config_path: str) -> "HIP4OutcomeEdgePod":
+        observer_config = load_hip4_outcome_config(config_path, apply_env=False)
+        observer_config = replace(
+            observer_config,
+            mode="observer",
+            allow_testnet_orders=False,
+            write_pod_b_alias_status=False,
+            enable_embedded_observers=False,
+        )
+        return HIP4OutcomeEdgePod(observer_config)
+
+    def _run_embedded_observer_pod(
+        self,
+        *,
+        config_path: str,
+        pod: "HIP4OutcomeEdgePod",
+    ) -> None:
+        try:
+            summary = pod.run_once()
+            payload = {
+                "config_path": config_path,
+                "status_path": pod.config.status_path,
+                "logs_dir": pod.config.logs_dir,
+                "mode": pod.config.mode,
+                "updated_at": utc_now_iso(),
+                "summary": summary,
+                "last_error": pod.last_error,
+            }
+        except Exception as exc:
+            logger.exception("Embedded HIP-4 observer failed: %s", config_path)
+            payload = {
+                "config_path": config_path,
+                "updated_at": utc_now_iso(),
+                "last_error": str(exc),
+            }
+        with self._embedded_observer_lock:
+            self._embedded_observer_summaries[config_path] = payload
+
+    def _embedded_observer_status(self) -> dict[str, Any]:
+        with self._embedded_observer_lock:
+            return {
+                "enabled": bool(self.config.enable_embedded_observers),
+                "config_paths": list(self.config.embedded_observer_config_paths),
+                "running_threads": len(self._embedded_observer_threads),
+                "observers": dict(self._embedded_observer_summaries),
+            }
 
     def _apply_capital_guard(self, decision: SupervisorDecision) -> SupervisorDecision:
         try:
@@ -348,13 +483,15 @@ class HIP4OutcomeEdgePod:
             self.testnet_executor = TestnetOutcomeExecutor(self.config)
         return self.testnet_executor
 
-    def _discover_markets(self, *, now_ts: int) -> list[OutcomeMarket]:
-        payload = self.info_client.fetch_outcome_meta()
+    def _discover_markets(self, *, now_ts: int, payload: object | None = None) -> list[OutcomeMarket]:
+        if payload is None:
+            payload = self.info_client.fetch_outcome_meta()
+        observations = parse_outcome_observations(payload)
         markets = parse_outcome_markets(
             payload,
             include_underlyings=self.config.include_underlyings,
         )
-        self._last_markets_seen = len(markets)
+        self._last_markets_seen = len(observations)
         filtered = [
             market
             for market in markets
@@ -373,7 +510,77 @@ class HIP4OutcomeEdgePod:
             )
         return filtered[: max(self.config.max_markets_per_loop, 1)]
 
+    def _observe_market_metadata(self, *, payload: object, now_ts: int) -> dict[str, Any]:
+        if not self.config.enable_market_observation:
+            return {}
+        observations = parse_outcome_observations(payload)
+        by_class = Counter(observation.class_name or "unknown" for observation in observations)
+        by_support = Counter(observation.support_status for observation in observations)
+        books_logged = 0
+        max_markets = max(int(self.config.max_observation_markets_per_loop), 0)
+        max_books = max(int(self.config.max_observation_books_per_loop), 0)
+        for observation in observations[:max_markets]:
+            book_payload: dict[str, Any] = {}
+            should_fetch_books = (
+                self.config.observe_unsupported_books
+                and observation.support_status != "trading_supported"
+                and books_logged < max_books
+            )
+            if should_fetch_books:
+                book_payload = self._observation_books(observation.coins)
+                if book_payload:
+                    books_logged += 1
+            self.event_logger.log_market_observation(
+                {
+                    "ts": utc_now_iso(),
+                    "mode": self.config.mode,
+                    "now_ts": now_ts,
+                    **observation.to_dict(),
+                    "books": book_payload,
+                }
+            )
+        summary = {
+            "total": len(observations),
+            "by_class": dict(sorted(by_class.items())),
+            "by_support_status": dict(sorted(by_support.items())),
+            "observe_only_count": by_support.get("observe_only", 0),
+            "paper_supported_count": by_support.get("paper_supported", 0),
+            "trading_supported_count": by_support.get("trading_supported", 0),
+            "price_bucket_count": by_class.get("priceBucket", 0),
+            "named_outcome_count": by_class.get("namedOutcome", 0),
+            "books_logged": books_logged,
+        }
+        self._last_market_observation = summary
+        return summary
+
+    def _observation_books(self, coins: tuple[str, ...]) -> dict[str, Any]:
+        books: dict[str, Any] = {}
+        for index, coin in enumerate(coins[:2]):
+            side = "yes" if index == 0 else "no"
+            try:
+                parsed = parse_side_book(
+                    self.info_client.fetch_l2_book(coin),
+                    max_slippage=self.config.max_order_slippage,
+                )
+            except Exception as exc:
+                books[side] = {"coin": coin, "error": str(exc)}
+                continue
+            books[side] = {
+                "coin": coin,
+                "bid": parsed.bid,
+                "ask": parsed.ask,
+                "bid_size": parsed.bid_size,
+                "ask_size": parsed.ask_size,
+                "bid_depth_usdc": parsed.bid_depth_usdc,
+                "ask_depth_usdc": parsed.ask_depth_usdc,
+                "spread": parsed.spread,
+                "time_ms": parsed.time_ms,
+            }
+        return books
+
     def _is_short_expiry_candidate(self, *, market: OutcomeMarket, now_ts: int) -> bool:
+        if market.class_name != "priceBinary":
+            return False
         time_left = market.expiry_ts - now_ts
         if time_left <= self.config.min_time_to_expiry_seconds:
             return False
@@ -416,6 +623,8 @@ class HIP4OutcomeEdgePod:
         history: dict[str, list[dict[str, float]]],
     ) -> ShortHorizonFeatures | None:
         if not self.config.enable_short_expiry:
+            return None
+        if market.class_name != "priceBinary":
             return None
         if market.expiry_ts - now_ts > self.config.short_expiry_window_seconds:
             return None
@@ -506,9 +715,14 @@ class HIP4OutcomeEdgePod:
             reference = reference_prices.get(position.underlying.upper())
             reference_price = None if reference is None else reference.price
             strike = _position_strike(position)
-            if reference_price is None or strike is None:
+            bucket = _position_price_bucket(position)
+            if reference_price is None or (strike is None and bucket is None):
                 continue
-            result_yes = reference_price > strike
+            if bucket is not None:
+                lower, upper = bucket
+                result_yes = lower <= reference_price <= upper
+            else:
+                result_yes = bool(strike is not None and reference_price > strike)
             payout = 0.0
             for fill in position.fills:
                 side_name = fill.side_name.upper()
@@ -519,13 +733,18 @@ class HIP4OutcomeEdgePod:
             position.status = "estimated_settled"
             position.settled_at = utc_now_iso()
             position.estimated_payout_usdc = round(payout, 8)
-            position.metadata["settlement"] = {
+            settlement_payload = {
                 "result": "YES" if result_yes else "NO",
                 "reference_price": reference_price,
-                "strike": strike,
                 "fee_model": self._fee_model_payload(),
                 "notes": "estimated_from_reference_price",
             }
+            if bucket is not None:
+                settlement_payload["bucket_lower"] = bucket[0]
+                settlement_payload["bucket_upper"] = bucket[1]
+            else:
+                settlement_payload["strike"] = strike
+            position.metadata["settlement"] = settlement_payload
             _apply_settlement_accounting(position, self.config)
             self.event_logger.log_settlement(_settlement_row_from_position(position))
             changed = True
@@ -815,6 +1034,7 @@ class HIP4OutcomeEdgePod:
                 "total_ms": timings.get("total_ms", 0.0),
                 "fetch_mids_ms": timings.get("fetch_mids_ms", 0.0),
                 "discover_markets_ms": timings.get("discover_markets_ms", 0.0),
+                "market_observation_ms": timings.get("market_observation_ms", 0.0),
                 "reference_prices_ms": timings.get("reference_prices_ms", 0.0),
                 "short_features_ms": timings.get("short_features_ms", 0.0),
                 "books_ms": round(timings.get("books_ms", 0.0), 3),
@@ -849,6 +1069,8 @@ class HIP4OutcomeEdgePod:
             ],
             "fee_model": self._fee_model_payload(),
             "blocked_opportunity_slices": list(self.config.blocked_opportunity_slices),
+            "embedded_observers": self._embedded_observer_status(),
+            "market_observation": self._last_market_observation,
             "logs_dir": str(Path(self.config.logs_dir)),
             "state_path": self.config.state_path,
         }
@@ -957,6 +1179,8 @@ class HIP4OutcomeEdgePod:
             "capital": self.last_capital_snapshot,
             "fee_model": self._fee_model_payload(),
             "blocked_opportunity_slices": list(self.config.blocked_opportunity_slices),
+            "embedded_observers": self._embedded_observer_status(),
+            "market_observation": self._last_market_observation,
             "report": {
                 "strategy": "HIP4OutcomeEdgePod",
                 "closed_trade_count": len(settled_positions),
@@ -1003,6 +1227,23 @@ def _position_strike(position: OutcomePosition) -> float | None:
         return float(metadata.get("strike"))
     except (TypeError, ValueError):
         return None
+
+
+def _position_price_bucket(position: OutcomePosition) -> tuple[float, float] | None:
+    signal = position.metadata.get("signal", {})
+    if not isinstance(signal, dict):
+        return None
+    metadata = signal.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return None
+    try:
+        lower = float(metadata.get("bucket_lower"))
+        upper = float(metadata.get("bucket_upper"))
+    except (TypeError, ValueError):
+        return None
+    if lower <= 0 or upper <= lower:
+        return None
+    return lower, upper
 
 
 def _position_execution_mode(position: OutcomePosition) -> str:

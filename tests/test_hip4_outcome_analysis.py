@@ -32,6 +32,15 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
             )
 
             self.assertEqual(payload["row_counts"]["opportunities"], 2)
+            self.assertEqual(payload["row_counts"]["market_observations"], 3)
+            self.assertEqual(payload["market_observations"]["count"], 3)
+            self.assertEqual(payload["market_observations"]["books_logged_count"], 2)
+            self.assertEqual(payload["market_observations"]["price_bucket"]["count"], 1)
+            self.assertEqual(
+                payload["market_observations"]["price_bucket"]["paper_supported_count"],
+                1,
+            )
+            self.assertEqual(payload["market_observations"]["named_outcome"]["count"], 1)
             self.assertEqual(payload["decisions"]["approved_count"], 2)
             self.assertEqual(payload["settlements"]["count"], 2)
             self.assertEqual(payload["settlements"]["win_count"], 1)
@@ -110,6 +119,8 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
             self.assertEqual(len(payload["profiles"]), 2)
             self.assertIn("HIP-4 Outcome Run Review", markdown)
             self.assertIn("Guardrail Candidates", markdown)
+            self.assertIn("Market Observations", markdown)
+            self.assertIn("priceBucket", markdown)
             self.assertIn("testnet", markdown)
             self.assertIn("mainnet", markdown)
 
@@ -268,6 +279,78 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
                     probability_yes=0.2,
                     seconds_left=200,
                 ),
+            ],
+        )
+        self._write_jsonl(
+            root / "market_observations.jsonl",
+            [
+                {
+                    "ts": "2026-05-03T08:00:00Z",
+                    "mode": "testnet",
+                    "outcome": 1,
+                    "name": "BTC above 100",
+                    "description": "class:priceBinary|underlying:BTC|expiry:20260503-0815|targetPrice:100|period:15m",
+                    "class_name": "priceBinary",
+                    "side_names": ["Yes", "No"],
+                    "market_id": "BTC_GT_100_20260503_0815",
+                    "underlying": "BTC",
+                    "expiry_iso": "2026-05-03T08:15:00Z",
+                    "support_status": "trading_supported",
+                    "support_reason": "price_binary_supported",
+                    "coins": ["#10", "#11"],
+                    "books": {},
+                },
+                {
+                    "ts": "2026-05-03T08:01:00Z",
+                    "mode": "testnet",
+                    "outcome": 3,
+                    "name": "BTC range",
+                    "description": "class:priceBucket|underlying:BTC|expiry:20260503-0815|thresholds:99,101|period:15m",
+                    "class_name": "priceBucket",
+                    "side_names": ["Inside", "Outside"],
+                    "market_id": "BTC_BUCKET_99_101_20260503_0815",
+                    "underlying": "BTC",
+                    "expiry_iso": "2026-05-03T08:15:00Z",
+                    "support_status": "paper_supported",
+                    "support_reason": "price_bucket_paper_only",
+                    "coins": ["#30", "#31"],
+                    "thresholds": [99, 101],
+                    "bucket_lower": 99,
+                    "bucket_upper": 101,
+                    "books": {
+                        "yes": {
+                            "coin": "#30",
+                            "bid": 0.4,
+                            "ask": 0.42,
+                            "bid_depth_usdc": 10,
+                            "ask_depth_usdc": 12,
+                        },
+                        "no": {
+                            "coin": "#31",
+                            "bid": 0.56,
+                            "ask": 0.58,
+                            "bid_depth_usdc": 11,
+                            "ask_depth_usdc": 13,
+                        },
+                    },
+                },
+                {
+                    "ts": "2026-05-03T08:02:00Z",
+                    "mode": "testnet",
+                    "outcome": 4,
+                    "name": "Recurring Named Outcome",
+                    "description": "index:0",
+                    "class_name": "namedOutcome",
+                    "side_names": ["Yes", "No"],
+                    "market_id": "OUTCOME_4",
+                    "support_status": "observe_only",
+                    "support_reason": "named_outcome_observation_only",
+                    "coins": ["#40", "#41"],
+                    "books": {
+                        "yes": {"coin": "#40", "bid": 0.48, "ask": 0.5},
+                        "no": {"coin": "#41", "bid": 0.49, "ask": 0.51},
+                    },
+                },
             ],
         )
 

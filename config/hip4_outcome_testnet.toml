@@ -37,6 +37,14 @@ enable_late_expiry = true
 enable_parity = true
 enable_model = true
 enable_short_expiry = true
+enable_price_bucket = true
+enable_market_observation = true
+observe_unsupported_books = true
+max_observation_markets_per_loop = 40
+max_observation_books_per_loop = 20
+enable_embedded_observers = true
+embedded_observer_config_paths = ["config/hip4_outcome_mainnet_observer.toml"]
+embedded_observer_once_timeout_seconds = 20
 # Format: UNDERLYING:EDGE_TYPE:SIDE. First guardrail comes from the
 # 2026-05-05 testnet review; keep mainnet observer unblocked for comparison.
 blocked_opportunity_slices = ["HYPE:LATE_EXPIRY:BUY_YES"]
@@ -64,6 +72,8 @@ short_expiry_min_confidence = 0.55
 short_expiry_max_yes_price = 0.92
 short_expiry_max_no_price = 0.92
 short_expiry_require_momentum_alignment = true
+price_bucket_max_yes_price = 0.98
+price_bucket_max_no_price = 0.98
 
 # HIP-4 outcome docs: opening positions is fee-free; fees apply when closing/settling.
 outcome_open_fee_rate = 0.0

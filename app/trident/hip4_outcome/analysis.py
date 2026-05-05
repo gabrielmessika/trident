@@ -73,6 +73,7 @@ def analyze_profile(
     latency = _read_csv(root / "latency_stats.csv")
     short_features = _read_csv(root / "short_expiry_features.csv")
     daily_summary = _read_csv(root / "daily_summary.csv")
+    market_observations = _read_jsonl(root / "market_observations.jsonl")
     decisions = _read_jsonl(root / "decisions.jsonl")
     execution_results = _read_jsonl(root / "execution_results.jsonl")
 
@@ -106,6 +107,7 @@ def analyze_profile(
             "latency": len(latency),
             "short_expiry_features": len(short_features),
             "daily_summary": len(daily_summary),
+            "market_observations": len(market_observations),
         },
         "window": _window(
             opportunities
@@ -115,8 +117,10 @@ def analyze_profile(
             + latency
             + short_features
             + daily_summary
+            + market_observations
         ),
         "opportunities": _opportunity_summary(opportunities),
+        "market_observations": _market_observation_summary(market_observations),
         "decisions": _decision_summary(decisions),
         "trades": {
             "summary": _trade_summary(trades),
@@ -160,9 +164,9 @@ def render_markdown(payload: dict[str, Any]) -> str:
     if profiles:
         lines.extend(["## Profiles", ""])
         lines.append(
-            "| Profile | Window | Opps | Approved | Trades | Settlements | PnL | PF | Brier | Fill slip |"
+            "| Profile | Window | Opps | Obs | Approved | Trades | Settlements | PnL | PF | Brier | Fill slip |"
         )
-        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for profile in profiles:
             rows = profile.get("row_counts", {})
             decisions = profile.get("decisions", {})
@@ -175,6 +179,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
                 f"{profile.get('profile')} | "
                 f"{_fmt_window(window)} | "
                 f"{rows.get('opportunities', 0)} | "
+                f"{rows.get('market_observations', 0)} | "
                 f"{decisions.get('approved_count', 0)} | "
                 f"{rows.get('trades', 0)} | "
                 f"{settlements.get('count', 0)} | "
@@ -207,6 +212,42 @@ def render_markdown(payload: dict[str, Any]) -> str:
         for reason in profile_readiness.get("reasons", []):
             lines.append(f"- Reason: {reason}")
         lines.append("")
+
+        market_observations = profile.get("market_observations", {})
+        if market_observations.get("count"):
+            lines.extend(["### Market Observations", ""])
+            lines.append(
+                f"- Total: `{market_observations.get('count')}`; "
+                f"books logged: `{market_observations.get('books_logged_count', 0)}`"
+            )
+            price_bucket = market_observations.get("price_bucket", {})
+            if price_bucket.get("count"):
+                lines.append(
+                    f"- priceBucket: `{price_bucket.get('count')}` total, "
+                    f"`{price_bucket.get('paper_supported_count', 0)}` paper-supported, "
+                    f"`{price_bucket.get('incomplete_count', 0)}` incomplete/observe-only"
+                )
+            named_outcome = market_observations.get("named_outcome", {})
+            if named_outcome.get("count"):
+                lines.append(f"- namedOutcome: `{named_outcome.get('count')}` watch-only")
+            lines.append("")
+            class_support = market_observations.get("by_class_support", [])
+            if class_support:
+                lines.append("| Class | Support | Count | Books |")
+                lines.append("|---|---|---:|---:|")
+                for row in class_support[:12]:
+                    lines.append(
+                        f"| {row.get('class_name')} | {row.get('support_status')} | "
+                        f"{row.get('count')} | {row.get('books_logged_count')} |"
+                    )
+                lines.append("")
+            support_reasons = market_observations.get("support_reasons", [])
+            if support_reasons:
+                lines.append("| Support reason | Count |")
+                lines.append("|---|---:|")
+                for row in support_reasons[:10]:
+                    lines.append(f"| {row.get('support_reason')} | {row.get('count')} |")
+                lines.append("")
 
         top_losses = profile.get("loss_review", {}).get("categories", [])
         if top_losses:
@@ -303,6 +344,7 @@ def _file_summary(root: Path) -> dict[str, dict[str, Any]]:
         "edge_decay.csv",
         "latency_stats.csv",
         "short_expiry_features.csv",
+        "market_observations.jsonl",
         "daily_summary.csv",
     ]
     files: dict[str, dict[str, Any]] = {}
@@ -1178,6 +1220,167 @@ def _short_expiry_summary(rows: list[dict[str, str]]) -> dict[str, Any]:
         "max_best_net_edge": max(best_edges) if best_edges else None,
         "reasons": _counter_rows(reasons, "reason"),
     }
+
+
+def _market_observation_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_class: Counter[str] = Counter()
+    by_support: Counter[str] = Counter()
+    by_reason: Counter[str] = Counter()
+    by_underlying: Counter[str] = Counter()
+    by_class_support: Counter[tuple[str, str]] = Counter()
+    books_by_class_support: Counter[tuple[str, str]] = Counter()
+    book_spreads: list[float] = []
+    examples: list[dict[str, Any]] = []
+
+    for row in rows:
+        class_name = str(row.get("class_name") or "unknown")
+        support = str(row.get("support_status") or "unknown")
+        reason = str(row.get("support_reason") or "unspecified")
+        underlying = str(row.get("underlying") or "").upper()
+        key = (class_name, support)
+        by_class[class_name] += 1
+        by_support[support] += 1
+        by_reason[reason] += 1
+        by_class_support[key] += 1
+        if underlying:
+            by_underlying[underlying] += 1
+        if _observation_has_book(row):
+            books_by_class_support[key] += 1
+            book_spreads.extend(_observation_book_spreads(row))
+        if len(examples) < 20:
+            examples.append(_market_observation_example(row))
+
+    price_bucket_rows = [
+        row for row in rows if str(row.get("class_name") or "") == "priceBucket"
+    ]
+    named_rows = [
+        row for row in rows if str(row.get("class_name") or "") == "namedOutcome"
+    ]
+    return {
+        "count": len(rows),
+        "books_logged_count": len([row for row in rows if _observation_has_book(row)]),
+        "avg_book_spread": _avg(book_spreads),
+        "by_class": _counter_rows(by_class, "class_name"),
+        "by_support_status": _counter_rows(by_support, "support_status"),
+        "support_reasons": _counter_rows(by_reason, "support_reason"),
+        "by_underlying": _counter_rows(by_underlying, "underlying"),
+        "by_class_support": [
+            {
+                "class_name": class_name,
+                "support_status": support,
+                "count": count,
+                "books_logged_count": books_by_class_support.get((class_name, support), 0),
+            }
+            for (class_name, support), count in sorted(
+                by_class_support.items(),
+                key=lambda item: (-item[1], item[0][0], item[0][1]),
+            )
+        ],
+        "price_bucket": _price_bucket_observation_summary(price_bucket_rows),
+        "named_outcome": _named_outcome_observation_summary(named_rows),
+        "examples": examples,
+    }
+
+
+def _price_bucket_observation_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    paper_supported = [
+        row for row in rows if str(row.get("support_status") or "") == "paper_supported"
+    ]
+    complete = [
+        row
+        for row in rows
+        if _optional_float(row.get("bucket_lower")) is not None
+        and _optional_float(row.get("bucket_upper")) is not None
+    ]
+    widths = [
+        float(row.get("bucket_upper")) - float(row.get("bucket_lower"))
+        for row in complete
+        if _optional_float(row.get("bucket_lower")) is not None
+        and _optional_float(row.get("bucket_upper")) is not None
+    ]
+    by_underlying = Counter(
+        str(row.get("underlying") or "unknown").upper() for row in rows
+    )
+    return {
+        "count": len(rows),
+        "paper_supported_count": len(paper_supported),
+        "complete_bucket_count": len(complete),
+        "incomplete_count": max(len(rows) - len(complete), 0),
+        "avg_bucket_width": _avg(widths),
+        "by_underlying": _counter_rows(by_underlying, "underlying"),
+        "examples": [_market_observation_example(row) for row in rows[:10]],
+    }
+
+
+def _named_outcome_observation_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    names = Counter(str(row.get("name") or "unnamed") for row in rows)
+    return {
+        "count": len(rows),
+        "names": _counter_rows(names, "name"),
+        "examples": [_market_observation_example(row) for row in rows[:10]],
+    }
+
+
+def _market_observation_example(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ts": row.get("ts"),
+        "class_name": row.get("class_name"),
+        "support_status": row.get("support_status"),
+        "support_reason": row.get("support_reason"),
+        "market_id": row.get("market_id"),
+        "name": row.get("name"),
+        "underlying": row.get("underlying"),
+        "expiry_iso": row.get("expiry_iso"),
+        "coins": row.get("coins"),
+        "thresholds": row.get("thresholds"),
+        "bucket_lower": row.get("bucket_lower"),
+        "bucket_upper": row.get("bucket_upper"),
+        "bucket_index": row.get("bucket_index"),
+        "book": _market_observation_book_example(row),
+    }
+
+
+def _market_observation_book_example(row: dict[str, Any]) -> dict[str, Any]:
+    books = row.get("books")
+    if not isinstance(books, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for side in ("yes", "no"):
+        book = books.get(side)
+        if not isinstance(book, dict):
+            continue
+        output[side] = {
+            "coin": book.get("coin"),
+            "bid": book.get("bid"),
+            "ask": book.get("ask"),
+            "bid_depth_usdc": book.get("bid_depth_usdc"),
+            "ask_depth_usdc": book.get("ask_depth_usdc"),
+            "error": book.get("error"),
+        }
+    return output
+
+
+def _observation_has_book(row: dict[str, Any]) -> bool:
+    books = row.get("books")
+    if not isinstance(books, dict) or not books:
+        return False
+    return any(isinstance(books.get(side), dict) for side in ("yes", "no"))
+
+
+def _observation_book_spreads(row: dict[str, Any]) -> list[float]:
+    books = row.get("books")
+    if not isinstance(books, dict):
+        return []
+    spreads: list[float] = []
+    for side in ("yes", "no"):
+        book = books.get(side)
+        if not isinstance(book, dict):
+            continue
+        bid = _optional_float(book.get("bid"))
+        ask = _optional_float(book.get("ask"))
+        if bid is not None and ask is not None and ask >= bid:
+            spreads.append(round(ask - bid, 8))
+    return spreads
 
 
 def _cross_profile_summary(profiles: list[dict[str, Any]]) -> dict[str, Any]:

@@ -127,6 +127,14 @@ class Hip4OutcomeConfig:
     enable_parity: bool = True
     enable_model: bool = True
     enable_short_expiry: bool = True
+    enable_price_bucket: bool = True
+    enable_market_observation: bool = True
+    observe_unsupported_books: bool = True
+    max_observation_markets_per_loop: int = 40
+    max_observation_books_per_loop: int = 20
+    enable_embedded_observers: bool = False
+    embedded_observer_config_paths: list[str] = field(default_factory=list)
+    embedded_observer_once_timeout_seconds: float = 20.0
     blocked_opportunity_slices: list[str] = field(default_factory=list)
     short_expiry_window_minutes: int = 6
     short_expiry_periods: list[str] = field(default_factory=lambda: ["5m", "15m"])
@@ -147,6 +155,8 @@ class Hip4OutcomeConfig:
     short_expiry_max_yes_price: float = 0.92
     short_expiry_max_no_price: float = 0.92
     short_expiry_require_momentum_alignment: bool = True
+    price_bucket_max_yes_price: float = 0.98
+    price_bucket_max_no_price: float = 0.98
     default_annualized_vol: float = 0.85
     annualized_vol_by_underlying: dict[str, float] = field(
         default_factory=lambda: {"BTC": 0.65, "ETH": 0.75, "HYPE": 1.25}
@@ -197,8 +207,8 @@ class Hip4OutcomeConfig:
         return replace(self, mode=mode.strip().lower())
 
 
-def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfig:
-    config_path = Path(path or os.getenv("HIP4_OUTCOME_CONFIG", "config/hip4_outcome_testnet.toml"))
+def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool = True) -> Hip4OutcomeConfig:
+    config_path = Path(path or (os.getenv("HIP4_OUTCOME_CONFIG") if apply_env else None) or "config/hip4_outcome_testnet.toml")
     data: dict[str, object] = {}
     if config_path.exists():
         with config_path.open("rb") as handle:
@@ -215,19 +225,31 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         section.get("outcome_settlement_fee_rate", section.get("estimated_fees", 0.002))
     )
 
+    def env_str(name: str, default: object) -> str:
+        if not apply_env:
+            return str(default)
+        return str(os.getenv(name, default))
+
+    def env_bool(name: str, default: bool) -> bool:
+        return _env_bool(name, default) if apply_env else bool(default)
+
+    def env_float(name: str, default: float) -> float:
+        return _env_float(name, default) if apply_env else float(default)
+
+    def env_value(name: str, default: object) -> object:
+        if not apply_env:
+            return default
+        return os.getenv(name, default)
+
     return Hip4OutcomeConfig(
-        mode=str(os.getenv("HIP4_OUTCOME_MODE", section.get("mode", "observer"))).strip().lower(),
-        info_url=str(
-            os.getenv(
-                "HIP4_OUTCOME_INFO_URL",
-                hyperliquid.get("info_url", section.get("info_url", "https://api.hyperliquid-testnet.xyz/info")),
-            )
+        mode=env_str("HIP4_OUTCOME_MODE", section.get("mode", "observer")).strip().lower(),
+        info_url=env_str(
+            "HIP4_OUTCOME_INFO_URL",
+            hyperliquid.get("info_url", section.get("info_url", "https://api.hyperliquid-testnet.xyz/info")),
         ),
-        ws_url=str(
-            os.getenv(
-                "HIP4_OUTCOME_WS_URL",
-                hyperliquid.get("ws_url", section.get("ws_url", "wss://api.hyperliquid-testnet.xyz/ws")),
-            )
+        ws_url=env_str(
+            "HIP4_OUTCOME_WS_URL",
+            hyperliquid.get("ws_url", section.get("ws_url", "wss://api.hyperliquid-testnet.xyz/ws")),
         ),
         rate_limit_state_path=str(
             section.get("rate_limit_state_path", "./runtime/hip4_outcome_rate_limits.json")
@@ -235,7 +257,7 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         logs_dir=str(section.get("logs_dir", "./logs/hip4_outcome")),
         state_path=str(section.get("state_path", "./runtime/hip4_outcome_state.json")),
         status_path=str(section.get("status_path", "./logs/hip4_outcome_status.json")),
-        write_pod_b_alias_status=_env_bool(
+        write_pod_b_alias_status=env_bool(
             "HIP4_OUTCOME_WRITE_POD_B_ALIAS_STATUS",
             bool(section.get("write_pod_b_alias_status", True)),
         ),
@@ -259,7 +281,7 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         reference_price_sources_by_underlying=_str_list_map(
             section.get("reference_price_sources_by_underlying", {})
         ),
-        anchor_reference_to_hyperliquid=_env_bool(
+        anchor_reference_to_hyperliquid=env_bool(
             "HIP4_OUTCOME_ANCHOR_REFERENCE_TO_HYPERLIQUID",
             bool(section.get("anchor_reference_to_hyperliquid", True)),
         ),
@@ -274,11 +296,11 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         min_time_to_expiry_seconds=int(section.get("min_time_to_expiry_seconds", 20)),
         max_time_to_expiry_minutes=int(section.get("max_time_to_expiry_minutes", 1440)),
         estimated_fees=float(section.get("estimated_fees", configured_settlement_fee)),
-        outcome_open_fee_rate=_env_float(
+        outcome_open_fee_rate=env_float(
             "HIP4_OUTCOME_OPEN_FEE_RATE",
             float(section.get("outcome_open_fee_rate", 0.0)),
         ),
-        outcome_settlement_fee_rate=_env_float(
+        outcome_settlement_fee_rate=env_float(
             "HIP4_OUTCOME_SETTLEMENT_FEE_RATE",
             configured_settlement_fee,
         ),
@@ -290,24 +312,51 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         strike_buffer_bps=float(section.get("strike_buffer_bps", 8.0)),
         max_late_yes_price=float(section.get("max_late_yes_price", 0.97)),
         max_late_no_price=float(section.get("max_late_no_price", 0.97)),
-        enable_late_expiry=_env_bool(
+        enable_late_expiry=env_bool(
             "HIP4_OUTCOME_ENABLE_LATE_EXPIRY",
             bool(section.get("enable_late_expiry", True)),
         ),
-        enable_parity=_env_bool(
+        enable_parity=env_bool(
             "HIP4_OUTCOME_ENABLE_PARITY",
             bool(section.get("enable_parity", True)),
         ),
-        enable_model=_env_bool(
+        enable_model=env_bool(
             "HIP4_OUTCOME_ENABLE_MODEL",
             bool(section.get("enable_model", True)),
         ),
-        enable_short_expiry=_env_bool(
+        enable_short_expiry=env_bool(
             "HIP4_OUTCOME_ENABLE_SHORT_EXPIRY",
             bool(section.get("enable_short_expiry", True)),
         ),
+        enable_price_bucket=env_bool(
+            "HIP4_OUTCOME_ENABLE_PRICE_BUCKET",
+            bool(section.get("enable_price_bucket", True)),
+        ),
+        enable_market_observation=env_bool(
+            "HIP4_OUTCOME_ENABLE_MARKET_OBSERVATION",
+            bool(section.get("enable_market_observation", True)),
+        ),
+        observe_unsupported_books=env_bool(
+            "HIP4_OUTCOME_OBSERVE_UNSUPPORTED_BOOKS",
+            bool(section.get("observe_unsupported_books", True)),
+        ),
+        max_observation_markets_per_loop=int(section.get("max_observation_markets_per_loop", 40)),
+        max_observation_books_per_loop=int(section.get("max_observation_books_per_loop", 20)),
+        enable_embedded_observers=env_bool(
+            "HIP4_OUTCOME_ENABLE_EMBEDDED_OBSERVERS",
+            bool(section.get("enable_embedded_observers", False)),
+        ),
+        embedded_observer_config_paths=_str_list(
+            env_value(
+                "HIP4_OUTCOME_EMBEDDED_OBSERVER_CONFIGS",
+                section.get("embedded_observer_config_paths", []),
+            )
+        ),
+        embedded_observer_once_timeout_seconds=float(
+            section.get("embedded_observer_once_timeout_seconds", 20.0)
+        ),
         blocked_opportunity_slices=_slice_list(
-            os.getenv(
+            env_value(
                 "HIP4_OUTCOME_BLOCKED_OPPORTUNITY_SLICES",
                 section.get("blocked_opportunity_slices", []),
             )
@@ -346,10 +395,12 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         short_expiry_min_confidence=float(section.get("short_expiry_min_confidence", 0.55)),
         short_expiry_max_yes_price=float(section.get("short_expiry_max_yes_price", 0.92)),
         short_expiry_max_no_price=float(section.get("short_expiry_max_no_price", 0.92)),
-        short_expiry_require_momentum_alignment=_env_bool(
+        short_expiry_require_momentum_alignment=env_bool(
             "HIP4_OUTCOME_SHORT_EXPIRY_REQUIRE_MOMENTUM_ALIGNMENT",
             bool(section.get("short_expiry_require_momentum_alignment", True)),
         ),
+        price_bucket_max_yes_price=float(section.get("price_bucket_max_yes_price", 0.98)),
+        price_bucket_max_no_price=float(section.get("price_bucket_max_no_price", 0.98)),
         default_annualized_vol=float(section.get("default_annualized_vol", 0.85)),
         annualized_vol_by_underlying=_float_map(
             section.get(
@@ -358,7 +409,7 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
             )
         ),
         max_position_usdc=float(section.get("max_position_usdc", 5.0)),
-        pod_b_budget_usdc=_env_float(
+        pod_b_budget_usdc=env_float(
             "HIP4_OUTCOME_POD_B_BUDGET_USDC",
             float(
                 section.get(
@@ -381,36 +432,34 @@ def load_hip4_outcome_config(path: str | Path | None = None) -> Hip4OutcomeConfi
         min_order_value_usdc=float(section.get("min_order_value_usdc", 10.0)),
         outcome_size_decimals=int(section.get("outcome_size_decimals", 0)),
         order_tif=str(section.get("order_tif", "Ioc")),
-        allow_testnet_orders=_env_bool(
+        allow_testnet_orders=env_bool(
             "HIP4_OUTCOME_ALLOW_TESTNET_ORDERS",
             bool(section.get("allow_testnet_orders", False)),
         ),
-        enforce_testnet_balance_check=_env_bool(
+        enforce_testnet_balance_check=env_bool(
             "HIP4_OUTCOME_ENFORCE_TESTNET_BALANCE_CHECK",
             bool(section.get("enforce_testnet_balance_check", True)),
         ),
-        testnet_balance_coin=str(
-            os.getenv(
-                "HIP4_OUTCOME_TESTNET_BALANCE_COIN",
-                section.get("testnet_balance_coin", "USDH"),
-            )
+        testnet_balance_coin=env_str(
+            "HIP4_OUTCOME_TESTNET_BALANCE_COIN",
+            section.get("testnet_balance_coin", "USDH"),
         ).strip().upper(),
-        testnet_balance_buffer_usdc=_env_float(
+        testnet_balance_buffer_usdc=env_float(
             "HIP4_OUTCOME_TESTNET_BALANCE_BUFFER_USDC",
             float(section.get("testnet_balance_buffer_usdc", 1.0)),
         ),
-        auto_transfer_testnet_spot_usdc=_env_bool(
+        auto_transfer_testnet_spot_usdc=env_bool(
             "HIP4_OUTCOME_AUTO_TRANSFER_TESTNET_SPOT_USDC",
             bool(section.get("auto_transfer_testnet_spot_usdc", False)),
         ),
-        testnet_spot_transfer_target_usdc=_env_float(
+        testnet_spot_transfer_target_usdc=env_float(
             "HIP4_OUTCOME_TESTNET_SPOT_TRANSFER_TARGET_USDC",
             float(section.get("testnet_spot_transfer_target_usdc", 0.0)),
         ),
         require_testnet_url=bool(section.get("require_testnet_url", True)),
         settlement_grace_seconds=int(section.get("settlement_grace_seconds", 300)),
         fills_lookback_hours=float(section.get("fills_lookback_hours", 24.0)),
-        reconcile_after_execution=_env_bool(
+        reconcile_after_execution=env_bool(
             "HIP4_OUTCOME_RECONCILE_AFTER_EXECUTION",
             bool(section.get("reconcile_after_execution", True)),
         ),

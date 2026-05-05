@@ -26,9 +26,9 @@ Déploie TRIDENT sur le serveur :
 Par défaut :
 - host SSH : trident-hetzner
 - mode : dry-run
-- démarrage avec `--start` : API + Pod A + Pod B HIP-4 testnet + observateur HIP-4 mainnet + Pod C + funding en dry-run
+- démarrage avec `--start` : API + Pod A + Pod B HIP-4 testnet avec observateur HIP-4 mainnet intégré + Pod C + funding en dry-run
 - `--without-pod-b` retire le Pod B HIP-4
-- `--without-hip4-mainnet-observer` retire seulement l'observateur HIP-4 mainnet
+- `--without-hip4-mainnet-observer` retire seulement l'observateur HIP-4 mainnet intégré au process Pod B
 - `--without-pod-c` retire Pod C
 - `--without-funding` retire le collecteur funding/OI global
 - `--without-hip4-outcome` est conservé comme alias de `--without-pod-b`
@@ -63,7 +63,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 selected_pods_label() {
     local pods=("API" "Pod A")
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && pods+=("Pod B HIP-4")
-    [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && pods+=("HIP-4 Mainnet Observer")
+    [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && pods+=("HIP-4 Mainnet Observer intégré")
     [ -n "$ENABLE_POD_C" ] && pods+=("Pod C" "Tradfi Funding Collector")
     [ -n "$ENABLE_FUNDING" ] && pods+=("Funding Collector")
     local joined=""
@@ -263,7 +263,6 @@ build_remote() {
     info "Build Docker sur le serveur..."
     local profile_args=""
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && profile_args="${profile_args} --profile pod_b"
-    [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && profile_args="${profile_args} --profile hip4_mainnet_observer"
     [ -n "$ENABLE_POD_C" ] && profile_args="${profile_args} --profile pod_c"
     [ -n "$ENABLE_FUNDING" ] && profile_args="${profile_args} --profile funding"
     ssh_remote "cd ${DEPLOY_DIR} && docker compose -f docker-compose.trident.yml${profile_args} build"

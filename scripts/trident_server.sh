@@ -17,7 +17,7 @@ usage() {
 Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--without-hip4-mainnet-observer] [--fresh-start] [service]
 
 Actions:
-  start     démarre l'API + Pod A + Pod B HIP-4 testnet + observateur HIP-4 mainnet + Pod C + funding par défaut en dry-run
+  start     démarre l'API + Pod A + Pod B HIP-4 testnet avec observateur HIP-4 mainnet intégré + Pod C + funding par défaut en dry-run
   stop      arrête les services sélectionnés
   restart   redémarre les services sélectionnés
   update    rebuild + redémarre les services sélectionnés
@@ -29,7 +29,7 @@ Actions:
 Compatibilité :
   --with-pod-b / --with-pod-c / --with-funding restent acceptés mais sont redondants.
   --with-hip4-outcome / --without-hip4-outcome sont des alias du Pod B HIP-4.
-  --with-hip4-mainnet-observer / --without-hip4-mainnet-observer contrôle seulement l'observateur mainnet.
+  --with-hip4-mainnet-observer / --without-hip4-mainnet-observer contrôle l'observateur mainnet intégré au process Pod B HIP-4.
 
 Sécurité live :
   --mode dry-run est le défaut. --mode live lance Pod A + Pod C par défaut,
@@ -50,6 +50,10 @@ fi
 ACTION="$1"
 shift
 
+REMOTE_HOST="${TRIDENT_DEPLOY_HOST:-trident-hetzner}"
+REMOTE_USER="${TRIDENT_DEPLOY_USER:-trident-deploy}"
+REMOTE_IDENTITY_FILE="${TRIDENT_DEPLOY_IDENTITY:-${HOME}/.ssh/trident_hetzner_ed25519}"
+REMOTE_DIR="${TRIDENT_DEPLOY_DIR:-/opt/trident}"
 ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
@@ -153,7 +157,6 @@ cd "$ROOT_DIR"
 
 PROFILE_ARGS=()
 [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && PROFILE_ARGS+=(--profile pod_b)
-[ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && PROFILE_ARGS+=(--profile hip4_mainnet_observer)
 [ -n "$ENABLE_POD_C" ] && PROFILE_ARGS+=(--profile pod_c)
 [ -n "$ENABLE_FUNDING" ] && PROFILE_ARGS+=(--profile funding)
 
@@ -177,13 +180,40 @@ compose_all() {
     docker compose "${COMPOSE_ENV_ARGS[@]}" -f docker-compose.trident.yml "$@"
 }
 
+ssh_remote() {
+    local ssh_args=()
+    if [ -f "${REMOTE_IDENTITY_FILE}" ]; then
+        ssh_args+=(-i "${REMOTE_IDENTITY_FILE}")
+    fi
+    ssh_args+=(-o BatchMode=yes -o ConnectTimeout=10)
+    ssh "${ssh_args[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+}
+
+remote_compose() {
+    local remote_dir_q
+    local args=()
+    local arg quoted
+    printf -v remote_dir_q '%q' "${REMOTE_DIR}"
+    for arg in -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"; do
+        printf -v quoted '%q' "${arg}"
+        args+=("${quoted}")
+    done
+    warn "Docker absent localement; lecture distante sur ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}."
+    ssh_remote "cd ${remote_dir_q} && docker compose ${args[*]}"
+}
+
+read_only_compose() {
+    if command -v docker >/dev/null 2>&1; then
+        compose "$@"
+        return
+    fi
+    remote_compose "$@"
+}
+
 default_services() {
     local services=(trident-api pod-a-live)
     if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ]; then
         services+=(hip4-outcome-dry-run)
-    fi
-    if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ]; then
-        services+=(hip4-outcome-mainnet-observer)
     fi
     if [ -n "$ENABLE_POD_C" ]; then
         services+=(pod-c-live tradfi-funding-collector)
@@ -371,13 +401,13 @@ case "$ACTION" in
         ok "Update terminé"
         ;;
     status|ps)
-        compose ps
+        read_only_compose ps
         ;;
     logs)
         if [ -n "$SERVICE_ARG" ]; then
-            compose logs -f --tail=200 "$SERVICE_ARG"
+            read_only_compose logs -f --tail=200 "$SERVICE_ARG"
         else
-            compose logs -f --tail=200
+            read_only_compose logs -f --tail=200
         fi
         ;;
     health)

@@ -44,6 +44,8 @@ class OutcomeRiskManager:
             return self._reject("expiry_too_far")
         if not market.settlement_source:
             return self._reject("missing_settlement_source")
+        if market.class_name == "priceBucket" and self.config.mode == "testnet":
+            return self._reject("price_bucket_paper_only")
         blocked_slice = self._opportunity_slice_key(opportunity=opportunity, market=market)
         if blocked_slice in self._blocked_opportunity_slices:
             return self._reject(

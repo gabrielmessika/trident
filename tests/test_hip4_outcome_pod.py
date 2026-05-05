@@ -30,8 +30,13 @@ from app.trident.hip4_outcome.models import (
     outcome_coin,
     outcome_encoding,
 )
-from app.trident.hip4_outcome.parser import parse_outcome_markets, parse_price_binary_outcome
-from app.trident.hip4_outcome.probability import ProbabilityModel
+from app.trident.hip4_outcome.parser import (
+    parse_outcome_markets,
+    parse_outcome_observations,
+    parse_price_binary_outcome,
+    parse_price_bucket_outcome,
+)
+from app.trident.hip4_outcome.probability import ProbabilityModel, probability_between_prices
 from app.trident.hip4_outcome.reconciliation import (
     OutcomeReconciler,
     apply_reconciliation_to_positions,
@@ -117,6 +122,66 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertEqual(markets[0].underlying, "HYPE")
         self.assertEqual(markets[0].strike, 26.121)
 
+    def test_parses_price_bucket_outcome_meta(self) -> None:
+        market = parse_price_bucket_outcome(
+            {
+                "outcome": 6200,
+                "name": "BTC range",
+                "description": "class:priceBucket|underlying:BTC|expiry:20260505-1015|thresholds:80000,81000|period:15m",
+                "sideSpecs": [{"name": "Inside"}, {"name": "Outside"}],
+            }
+        )
+
+        self.assertIsNotNone(market)
+        self.assertEqual(market.class_name, "priceBucket")
+        self.assertEqual(market.market_id, "BTC_BUCKET_80000_81000_20260505_1015")
+        self.assertEqual(market.bucket_lower, 80000.0)
+        self.assertEqual(market.bucket_upper, 81000.0)
+        self.assertEqual(market.thresholds, (80000.0, 81000.0))
+        self.assertEqual(market.side_names, ("Inside", "Outside"))
+
+    def test_price_bucket_with_multiple_thresholds_uses_indexed_adjacent_range(self) -> None:
+        market = parse_price_bucket_outcome(
+            {
+                "outcome": 6201,
+                "name": "BTC range",
+                "description": "class:priceBucket|underlying:BTC|expiry:20260505-1015|thresholds:80000,81000,82000|index:1|period:15m",
+                "sideSpecs": [{"name": "Inside"}, {"name": "Outside"}],
+            }
+        )
+
+        self.assertIsNotNone(market)
+        self.assertEqual(market.bucket_lower, 81000.0)
+        self.assertEqual(market.bucket_upper, 82000.0)
+        self.assertEqual(market.bucket_index, 1)
+
+    def test_outcome_observations_keep_named_outcomes_watch_only(self) -> None:
+        observations = parse_outcome_observations(
+            {
+                "outcomes": [
+                    {
+                        "outcome": 6290,
+                        "name": "Recurring Named Outcome",
+                        "description": "index:0",
+                        "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+                    },
+                    {
+                        "outcome": 6200,
+                        "name": "BTC range",
+                        "description": "class:priceBucket|underlying:BTC|expiry:20260505-1015|thresholds:80000,81000|period:15m",
+                        "sideSpecs": [{"name": "Inside"}, {"name": "Outside"}],
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(observations[0].class_name, "namedOutcome")
+        self.assertEqual(observations[0].support_status, "observe_only")
+        self.assertEqual(observations[0].support_reason, "named_outcome_observation_only")
+        self.assertEqual(observations[0].coins, ("#62900", "#62901"))
+        self.assertEqual(observations[1].class_name, "priceBucket")
+        self.assertEqual(observations[1].support_status, "paper_supported")
+
     def test_parses_order_book_depth_within_slippage(self) -> None:
         book = parse_side_book(
             {
@@ -163,6 +228,102 @@ class HIP4OutcomePodTests(unittest.TestCase):
         )
 
         self.assertTrue(any(item.side == "BUY_YES" for item in opportunities))
+
+    def test_price_bucket_probability_and_detector_are_paper_safe(self) -> None:
+        market = parse_price_bucket_outcome(
+            {
+                "outcome": 6200,
+                "name": "BTC range",
+                "description": "class:priceBucket|underlying:BTC|expiry:20260505-1015|thresholds:80000,81000|period:15m",
+                "sideSpecs": [{"name": "Inside"}, {"name": "Outside"}],
+            }
+        )
+        self.assertIsNotNone(market)
+        book = build_order_book(
+            market_id=market.market_id,
+            yes_payload={
+                "coin": market.yes_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.30", "sz": "100", "n": 1}],
+                    [{"px": "0.32", "sz": "100", "n": 1}],
+                ],
+            },
+            no_payload={
+                "coin": market.no_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.66", "sz": "100", "n": 1}],
+                    [{"px": "0.68", "sz": "100", "n": 1}],
+                ],
+            },
+            max_slippage=0.03,
+        )
+        config = Hip4OutcomeConfig(
+            mode="paper",
+            min_gross_edge=0.01,
+            min_net_edge=0.001,
+            max_position_usdc=5.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+        )
+
+        probability = ProbabilityModel(config).estimate(
+            market,
+            reference_price=80500.0,
+            now_ts=market.expiry_ts - 900,
+        )
+        opportunities = OutcomeEdgeDetector(config).detect(
+            market=market,
+            order_book=book,
+            reference_price=80500.0,
+            probability=probability,
+            now_ts=market.expiry_ts - 900,
+        )
+
+        self.assertGreater(probability.probability_yes, 0.0)
+        self.assertEqual(probability.model_name, "lognormal_static_vol_range_v1")
+        self.assertTrue(any(item.edge_type == "PRICE_BUCKET_MODEL" for item in opportunities))
+
+        testnet_decision = OutcomeRiskManager(
+            Hip4OutcomeConfig(
+                mode="testnet",
+                allow_testnet_orders=True,
+                min_yes_depth_usdc=1.0,
+                min_no_depth_usdc=1.0,
+            )
+        ).evaluate(
+            opportunity=opportunities[0],
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 900,
+        )
+
+        self.assertFalse(testnet_decision.approved)
+        self.assertEqual(testnet_decision.reason, "price_bucket_paper_only")
+
+    def test_probability_between_prices_settles_deterministically_at_expiry(self) -> None:
+        self.assertEqual(
+            probability_between_prices(
+                spot=80500.0,
+                lower=80000.0,
+                upper=81000.0,
+                time_to_expiry_years=0.0,
+                annualized_vol=0.65,
+            ),
+            1.0,
+        )
+        self.assertEqual(
+            probability_between_prices(
+                spot=82000.0,
+                lower=80000.0,
+                upper=81000.0,
+                time_to_expiry_years=0.0,
+                annualized_vol=0.65,
+            ),
+            0.0,
+        )
 
     def test_short_horizon_features_compute_recent_momentum(self) -> None:
         market = self._market()
@@ -730,6 +891,8 @@ BTC = 0.5
             self.assertEqual(config.outcome_open_fee_rate, 0.0)
             self.assertEqual(config.outcome_settlement_fee_rate, config.estimated_fees)
             self.assertEqual(config.blocked_opportunity_slices, [])
+            self.assertTrue(config.enable_price_bucket)
+            self.assertTrue(config.enable_market_observation)
 
     def test_loads_blocked_opportunity_slices_from_config_and_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -772,6 +935,31 @@ blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "b
             "HYPE:LATE_EXPIRY:BUY_YES",
             config.blocked_opportunity_slices,
         )
+        self.assertTrue(config.enable_embedded_observers)
+        self.assertIn(
+            "config/hip4_outcome_mainnet_observer.toml",
+            config.embedded_observer_config_paths,
+        )
+
+    def test_loads_embedded_observer_config_without_testnet_env_overrides(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "HIP4_OUTCOME_MODE": "testnet",
+                "HIP4_OUTCOME_ALLOW_TESTNET_ORDERS": "true",
+                "HIP4_OUTCOME_WRITE_POD_B_ALIAS_STATUS": "true",
+            },
+            clear=False,
+        ):
+            config = load_hip4_outcome_config(
+                "config/hip4_outcome_mainnet_observer.toml",
+                apply_env=False,
+            )
+
+        self.assertEqual(config.mode, "observer")
+        self.assertFalse(config.allow_testnet_orders)
+        self.assertFalse(config.write_pod_b_alias_status)
+        self.assertFalse(config.enable_embedded_observers)
 
     def test_testnet_executor_prefers_dedicated_hip4_credentials(self) -> None:
         env = {
@@ -825,6 +1013,123 @@ blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "b
             self.assertEqual(alias["report"]["strategy"], "HIP4OutcomeEdgePod")
             self.assertEqual(alias["hip4_outcome_status_path"], str(root / "hip4_status.json"))
             self.assertEqual(alias["blocked_opportunity_slices"], ["HYPE:LATE_EXPIRY:BUY_YES"])
+
+    def test_run_once_logs_observed_unsupported_markets(self) -> None:
+        class FakeInfoClient:
+            def fetch_all_mids(self):
+                return {"BTC": 80500.0}
+
+            def fetch_outcome_meta(self):
+                return {
+                    "outcomes": [
+                        {
+                            "outcome": 6290,
+                            "name": "Recurring Named Outcome",
+                            "description": "index:0",
+                            "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+                        },
+                        {
+                            "outcome": 7000,
+                            "name": "Recurring",
+                            "description": "class:priceBinary|underlying:BTC|expiry:20991231-0000|targetPrice:80000|period:1d",
+                            "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+                        },
+                    ]
+                }
+
+            def fetch_l2_book(self, coin: str):
+                return {
+                    "coin": coin,
+                    "time": 1,
+                    "levels": [
+                        [{"px": "0.40", "sz": "100", "n": 1}],
+                        [{"px": "0.42", "sz": "100", "n": 1}],
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="observer",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                reference_price_sources=["hyperliquid"],
+                include_underlyings=[],
+                max_time_to_expiry_minutes=100_000_000,
+                min_yes_depth_usdc=1.0,
+                min_no_depth_usdc=1.0,
+                enable_embedded_observers=False,
+            )
+            pod = HIP4OutcomeEdgePod(config, info_client=FakeInfoClient())  # type: ignore[arg-type]
+
+            summary = pod.run_once()
+
+            observation_path = root / "logs" / "market_observations.jsonl"
+            rows = [
+                json.loads(line)
+                for line in observation_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(summary["markets_seen"], 2)
+            self.assertEqual(summary["markets_supported"], 1)
+            self.assertEqual(summary["market_observation"]["named_outcome_count"], 1)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["class_name"], "namedOutcome")
+            self.assertEqual(rows[0]["support_status"], "observe_only")
+            self.assertIn("yes", rows[0]["books"])
+
+    def test_run_once_executes_embedded_observer_in_same_process(self) -> None:
+        class FakeInfoClient:
+            def fetch_all_mids(self):
+                return {}
+
+            def fetch_outcome_meta(self):
+                return {"outcomes": []}
+
+        class FakeObserverPod:
+            def __init__(self) -> None:
+                self.config = type(
+                    "Config",
+                    (),
+                    {
+                        "status_path": "logs/sidecar_status.json",
+                        "logs_dir": "logs/sidecar",
+                        "mode": "observer",
+                        "loop_interval_seconds": 0.01,
+                    },
+                )()
+                self.last_error = None
+
+            def run_once(self):
+                return {"markets_seen": 1, "markets_supported": 1}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="observer",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                enable_embedded_observers=True,
+                embedded_observer_config_paths=["config/hip4_outcome_mainnet_observer.toml"],
+                embedded_observer_once_timeout_seconds=5,
+            )
+            pod = HIP4OutcomeEdgePod(config, info_client=FakeInfoClient())  # type: ignore[arg-type]
+            with patch.object(
+                HIP4OutcomeEdgePod,
+                "_build_embedded_observer",
+                return_value=FakeObserverPod(),
+            ):
+                pod.run_once()
+
+            embedded = pod._embedded_observer_status()  # noqa: SLF001 - verifies in-process sidecar
+            self.assertIn("config/hip4_outcome_mainnet_observer.toml", embedded["observers"])
+            self.assertEqual(
+                embedded["observers"]["config/hip4_outcome_mainnet_observer.toml"]["summary"]["markets_seen"],
+                1,
+            )
 
     def test_capital_guard_caps_paper_size_by_pod_b_budget(self) -> None:
         config = Hip4OutcomeConfig(mode="paper", pod_b_budget_usdc=10.0)

@@ -20,6 +20,7 @@ class OutcomeEventLogger:
         self.short_expiry_features_path = self.logs_dir / "short_expiry_features.csv"
         self.reconciliation_path = self.logs_dir / "reconciliation.jsonl"
         self.daily_summary_path = self.logs_dir / "daily_summary.csv"
+        self.market_observations_path = self.logs_dir / "market_observations.jsonl"
 
     def log_opportunity(self, row: dict[str, Any]) -> None:
         self._append_csv(
@@ -93,6 +94,7 @@ class OutcomeEventLogger:
                 "total_ms",
                 "fetch_mids_ms",
                 "discover_markets_ms",
+                "market_observation_ms",
                 "reference_prices_ms",
                 "books_ms",
                 "edge_detection_ms",
@@ -167,6 +169,9 @@ class OutcomeEventLogger:
 
     def log_reconciliation(self, payload: dict[str, Any]) -> None:
         self._append_jsonl(self.reconciliation_path, payload)
+
+    def log_market_observation(self, payload: dict[str, Any]) -> None:
+        self._append_jsonl(self.market_observations_path, payload)
 
     def write_daily_summary(self, rows: list[dict[str, Any]]) -> None:
         self._write_csv(
