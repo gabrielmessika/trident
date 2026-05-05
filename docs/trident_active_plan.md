@@ -1,6 +1,6 @@
 # TRIDENT Active Plan
 
-Date: `2026-05-03`
+Date: `2026-05-05`
 
 ## Status
 
@@ -44,6 +44,10 @@ Notes importantes:
 - L'input courant saute `2026-04-19`.
 - Les replays de parite doivent inclure `collector + maintenance_refresh`; le collector-only n'est pas suffisant.
 - Les caps de levier crypto live manquants ont ete ajoutes dans `config/trident.toml`.
+- Validation OOS Pod A / Pod C du `2026-05-05`:
+  - rapport: `server-data/replay_reports/pod_a_c_shortlist_validation_20260505.md`
+  - input: `server-data/replay_inputs/pod_a_c_shortlist_oos_20260430_20260505`
+  - baseline OOS: total `+8.67`, Pod A `-11.50`, Pod C `+20.17`.
 
 ## Etat Des Pods
 
@@ -55,10 +59,10 @@ Promu dans le profil repo:
 
 - `pod_a.stop_grace_minutes = 165`, scope utile: `trend_pullback_long`.
 - `pod_a.opposite_signal_debounce_minutes = 15`.
-- Vetoes MTF Pod A valides le `2026-04-27`.
+- Vetoes MTF Pod A valides le `2026-04-27`, mais non confirmes sur l'OOS `2026-04-30 -> 2026-05-05` (`-4.16`, `5` vetoes). Statut: garder sous surveillance / candidat rollback, pas nouvelle extension.
 - Veto BTC overextension 4h, scope BTC long.
 - Veto XRP overextension 4h, scope XRP long.
-- Veto HYPE `trend_pullback_long` en observation dry-run.
+- Veto HYPE `trend_pullback_long`: actif dans le profil courant, mais rejete sur l'OOS `2026-04-30 -> 2026-05-05` (`-12.03`, `3` trades HYPE vetoes qui auraient ete gagnants). Statut: observation / candidat rollback.
 
 Principes:
 
@@ -76,7 +80,7 @@ Promu dans le profil repo:
 - `routing_revoke_grace_minutes_by_symbol`:
   - `XYZ:SP500 = 540`
   - `XYZ:XYZ100 = 540`
-- Veto `silver_strong_extension_veto`.
+- Veto `silver_strong_extension_veto`, historiquement promu mais non confirme sur l'OOS `2026-04-30 -> 2026-05-05` (`-2.56`, `1` veto). Statut: observation / candidat rollback.
 
 Principes:
 
@@ -488,6 +492,14 @@ Priorite apres plusieurs runs testnet/mainnet observer:
 - Pas de nouveau sweep massif tant que le Pod B HIP-4 est en exploration testnet.
 - Rejouer la baseline officielle seulement quand le fetch serveur change ou avant une promotion.
 - Toute divergence live/replay doit etre analysee avec `collector + maintenance_refresh`.
+- Resultats shortlist OOS `2026-05-05`:
+  - Pod A HYPE veto: `reject`, ne pas promouvoir; envisager rollback apres confirmation sur fenetre plus large.
+  - Pod A MTF vetoes: `reject` sur l'OOS recente malgre validation historique; ne pas etendre, surveiller.
+  - Pod A BTC/XRP overextension: `no_effect`, aucun declenchement sur cette fenetre.
+  - Pod C relaxed cluster-aware off: `reject` (`56` trades, Pod C `+1.05` vs `5` trades, Pod C `+20.17` courant); conserver la selectivite.
+  - Pod C silver veto: `reject` sur `1` veto; candidat rollback/watch.
+  - Pod C gold vetoes: `gold_soft_extension_veto` et `gold_strong_neutral_veto` sans effet; `gold_medium_neutral_veto` rejete (`-19.62`).
+  - Pod C signal drought recent: `2026-05-02`, `2026-05-03` et `2026-05-05` sans signal; `2026-05-04` a `6` signaux mais `0` acceptes. Pas d'anomalie mecanique prouvee, plutot selectivite/regime.
 
 ### 6. Deploiement / Rollback
 
