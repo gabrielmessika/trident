@@ -4,7 +4,7 @@ import contextlib
 import copy
 import csv
 import json
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from html import escape
 from http import HTTPStatus
@@ -196,6 +196,11 @@ def _hip4_outcome_monitor_payload(
     daily_summary = _tail_csv_records(logs_dir / "daily_summary.csv", limit=24)
     settlements = _tail_csv_records(logs_dir / "settlements.csv", limit=24)
     fills = _tail_csv_records(logs_dir / "trades.csv", limit=24)
+    market_observations = _tail_jsonl_records(
+        logs_dir / "market_observations.jsonl",
+        limit=80,
+        scan_lines=4000,
+    )
     replay_rows = replay_opportunities(logs_dir / "opportunities.csv")
     all_opportunity_rows = _tail_csv_records(logs_dir / "opportunities.csv", limit=5000)
     all_short_rows = _tail_csv_records(logs_dir / "short_expiry_features.csv", limit=5000)
@@ -308,6 +313,11 @@ def _hip4_outcome_monitor_payload(
 
     status_age = runtime_status_age_seconds(status)
     fresh = runtime_status_is_fresh(status)
+    market_observation_health = _hip4_observation_health(
+        market_observations,
+        loop_summary=summary.get("market_observation"),
+        fresh=fresh,
+    )
     return {
         "pod": "hip4_outcome_edge_pod",
         "status_path": str(status_path),
@@ -375,7 +385,168 @@ def _hip4_outcome_monitor_payload(
         "settlements": settlements,
         "fills": fills,
         "replay": replay_rows,
+        "market_observations": market_observations,
+        "market_observation_health": market_observation_health,
     }
+
+
+def _hip4_observation_health(
+    rows: list[dict[str, object]],
+    *,
+    loop_summary: object = None,
+    fresh: bool = True,
+) -> dict[str, object]:
+    tones = Counter(_hip4_observation_row_tone(row)["tone"] for row in rows)
+    classes = Counter(str(row.get("class_name") or "unknown") for row in rows)
+    supports = Counter(str(row.get("support_status") or "unknown") for row in rows)
+    reasons = Counter(str(row.get("support_reason") or "unspecified") for row in rows)
+    book_errors = sum(1 for row in rows if _hip4_observation_has_book_error(row))
+    books_logged = sum(1 for row in rows if _hip4_observation_has_books(row))
+    total = len(rows)
+    unknown_count = classes.get("unknown", 0)
+    named_count = classes.get("namedOutcome", 0)
+    price_bucket_count = classes.get("priceBucket", 0)
+    price_binary_count = classes.get("priceBinary", 0)
+    latest_ts = max((str(row.get("ts", "")) for row in rows if row.get("ts")), default="")
+    loop_total = None
+    if isinstance(loop_summary, dict):
+        loop_total = loop_summary.get("total")
+    if not fresh:
+        tone = "bad"
+        label = "stale"
+        reason = "status runtime trop ancien"
+    elif total <= 0 and not loop_total:
+        tone = "bad"
+        label = "aucune observation"
+        reason = "market_observations.jsonl vide ou absent"
+    elif book_errors > 0 or unknown_count > 0:
+        tone = "bad"
+        label = "à investiguer"
+        reason = "classes inconnues ou erreurs book"
+    elif tones.get("warn", 0) > 0:
+        tone = "warn"
+        label = "watch-only"
+        reason = "observations connues mais pas toutes exploitables"
+    else:
+        tone = "good"
+        label = "bonne"
+        reason = "classes reconnues et observations lisibles"
+    return {
+        "tone": tone,
+        "label": label,
+        "reason": reason,
+        "count": total,
+        "latest_ts": latest_ts,
+        "books_logged_count": books_logged,
+        "book_error_count": book_errors,
+        "unknown_count": unknown_count,
+        "named_outcome_count": named_count,
+        "price_bucket_count": price_bucket_count,
+        "price_binary_count": price_binary_count,
+        "by_tone": _counter_dict(tones),
+        "by_class": _counter_dict(classes),
+        "by_support_status": _counter_dict(supports),
+        "support_reasons": _counter_dict(reasons),
+    }
+
+
+def _hip4_observation_row_tone(row: dict[str, object]) -> dict[str, str]:
+    class_name = str(row.get("class_name") or "unknown")
+    support = str(row.get("support_status") or "unknown")
+    reason = str(row.get("support_reason") or "")
+    if _hip4_observation_has_book_error(row):
+        return {"tone": "bad", "label": "book error"}
+    if class_name == "unknown" or reason == "unsupported_outcome_class":
+        return {"tone": "bad", "label": "unknown"}
+    if support == "trading_supported":
+        return {"tone": "good", "label": "supported"}
+    if class_name == "priceBucket":
+        if (
+            support == "paper_supported"
+            and _float_or_none(row.get("bucket_lower")) is not None
+            and _float_or_none(row.get("bucket_upper")) is not None
+        ):
+            return {"tone": "good", "label": "paper ok"}
+        return {"tone": "warn", "label": "bucket incomplet"}
+    if class_name == "namedOutcome":
+        return {"tone": "warn", "label": "vote/watch"}
+    if class_name == "fallback":
+        return {"tone": "warn", "label": "fallback"}
+    if support == "observe_only":
+        return {"tone": "warn", "label": "observe"}
+    return {"tone": "warn", "label": support or "watch"}
+
+
+def _hip4_observation_has_books(row: dict[str, object]) -> bool:
+    books = row.get("books")
+    if not isinstance(books, dict) or not books:
+        return False
+    return any(isinstance(books.get(side), dict) for side in ("yes", "no"))
+
+
+def _hip4_observation_has_book_error(row: dict[str, object]) -> bool:
+    books = row.get("books")
+    if not isinstance(books, dict):
+        return False
+    for side in ("yes", "no"):
+        book = books.get(side)
+        if isinstance(book, dict) and book.get("error"):
+            return True
+    return False
+
+
+def _counter_dict(counter: Counter[str]) -> dict[str, int]:
+    return {key: int(value) for key, value in sorted(counter.items())}
+
+
+def _format_count_map(value: object) -> str:
+    if not isinstance(value, dict) or not value:
+        return "-"
+    return " · ".join(
+        f"{key}:{value[key]}"
+        for key in sorted(value)
+    )
+
+
+def _format_observation_list(value: object, *, limit: int = 4) -> str:
+    if not isinstance(value, list) or not value:
+        return "-"
+    items = [str(item) for item in value[:limit]]
+    suffix = "" if len(value) <= limit else f" +{len(value) - limit}"
+    return ", ".join(items) + suffix
+
+
+def _format_observation_bucket(row: dict[str, object]) -> str:
+    lower = _float_or_none(row.get("bucket_lower"))
+    upper = _float_or_none(row.get("bucket_upper"))
+    if lower is not None and upper is not None:
+        return f"{lower:g} - {upper:g}"
+    thresholds = row.get("thresholds")
+    if isinstance(thresholds, list) and thresholds:
+        return _format_observation_list(thresholds, limit=6)
+    return "-"
+
+
+def _format_observation_books(row: dict[str, object]) -> str:
+    books = row.get("books")
+    if not isinstance(books, dict) or not books:
+        return "-"
+    chunks: list[str] = []
+    for side in ("yes", "no"):
+        book = books.get(side)
+        if not isinstance(book, dict):
+            continue
+        error = book.get("error")
+        if error:
+            chunks.append(f"{side}:error")
+            continue
+        bid = _float_or_none(book.get("bid"))
+        ask = _float_or_none(book.get("ask"))
+        if bid is None and ask is None:
+            chunks.append(f"{side}:empty")
+        else:
+            chunks.append(f"{side}:{'-' if bid is None else f'{bid:.4f}'}/{ '-' if ask is None else f'{ask:.4f}'}")
+    return " · ".join(chunks) if chunks else "-"
 
 
 def _recent_activity_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
@@ -2802,6 +2973,171 @@ def _control_center_html(
 
     pod_b_tab_panel = render_hip4_pod_b_tab()
 
+    def render_observation_tab() -> str:
+        testnet_payload = _hip4_outcome_monitor_payload()
+        mainnet_payload = hip4_outcome_mainnet_payload()
+        testnet_health = testnet_payload.get("market_observation_health", {})
+        if not isinstance(testnet_health, dict):
+            testnet_health = {}
+        mainnet_health = mainnet_payload.get("market_observation_health", {})
+        if not isinstance(mainnet_health, dict):
+            mainnet_health = {}
+        testnet_status = testnet_payload.get("status", {})
+        if not isinstance(testnet_status, dict):
+            testnet_status = {}
+        embedded = testnet_status.get("embedded_observers", {})
+        if not isinstance(embedded, dict):
+            embedded = {}
+        embedded_enabled = bool(embedded.get("enabled"))
+        embedded_threads = int(embedded.get("running_threads", 0) or 0)
+        embedded_tone = "good" if embedded_enabled and embedded_threads > 0 else "warn"
+
+        def observation_pill(tone_value: object, label: object) -> str:
+            tone_name = _panel_tone(tone_value)
+            return (
+                f"<span class='health-pill health-pill-{escape(tone_name)}'>"
+                f"<span class='status-dot status-dot-{escape(tone_name)}'></span>"
+                f"{escape(str(label or tone_name))}</span>"
+            )
+
+        def observation_cards() -> str:
+            cards_html: list[str] = []
+            for label, health in (
+                ("Testnet observation", testnet_health),
+                ("Mainnet observation", mainnet_health),
+            ):
+                tone_name = _panel_tone(health.get("tone"))
+                cards_html.append(
+                    f"<article class='observation-card observation-card-{escape(tone_name)}'>"
+                    "<div class='observation-card-head'>"
+                    f"<span>{escape(label)}</span>"
+                    f"{observation_pill(tone_name, health.get('label', tone_name))}"
+                    "</div>"
+                    f"<strong>{int(health.get('count', 0) or 0)}</strong>"
+                    f"<small>{escape(str(health.get('reason', '-')))}</small>"
+                    f"<small>unknown {int(health.get('unknown_count', 0) or 0)} · "
+                    f"books {int(health.get('books_logged_count', 0) or 0)} · "
+                    f"named {int(health.get('named_outcome_count', 0) or 0)} · "
+                    f"bucket {int(health.get('price_bucket_count', 0) or 0)}</small>"
+                    "</article>"
+                )
+            cards_html.append(
+                f"<article class='observation-card observation-card-{escape(embedded_tone)}'>"
+                "<div class='observation-card-head'>"
+                "<span>Sidecar mainnet</span>"
+                f"{observation_pill(embedded_tone, 'embedded' if embedded_enabled else 'off')}"
+                "</div>"
+                f"<strong>{embedded_threads}</strong>"
+                "<small>thread(s) dans le process Pod B</small>"
+                f"<small>{escape(', '.join(str(item) for item in embedded.get('config_paths', []) if item) or '-')}</small>"
+                "</article>"
+            )
+            return "".join(cards_html)
+
+        def observation_summary_rows() -> str:
+            rendered_rows: list[str] = []
+            for profile_name, health in (
+                ("testnet", testnet_health),
+                ("mainnet", mainnet_health),
+            ):
+                class_counts = health.get("by_class")
+                if not isinstance(class_counts, dict):
+                    continue
+                support_counts = health.get("by_support_status")
+                if not isinstance(support_counts, dict):
+                    support_counts = {}
+                for class_name, count in sorted(
+                    class_counts.items(),
+                    key=lambda item: (-int(item[1]), str(item[0])),
+                ):
+                    rendered_rows.append(
+                        "<tr>"
+                        f"<td>{escape(profile_name)}</td>"
+                        f"<td>{observation_pill(health.get('tone'), health.get('label'))}</td>"
+                        f"<td>{escape(str(class_name))}</td>"
+                        f"<td>{int(count or 0)}</td>"
+                        f"<td>{escape(_format_count_map(support_counts))}</td>"
+                        f"<td>{escape(str(health.get('latest_ts') or '-'))}</td>"
+                        "</tr>"
+                    )
+            if not rendered_rows:
+                return "<tr><td colspan='6'>Aucune synthèse d'observation disponible.</td></tr>"
+            return "".join(rendered_rows)
+
+        def observation_detail_rows() -> str:
+            rendered_rows: list[str] = []
+            for profile_name, source in (("testnet", testnet_payload), ("mainnet", mainnet_payload)):
+                rows = source.get("market_observations", [])
+                if not isinstance(rows, list):
+                    continue
+                for row in rows[:50]:
+                    if not isinstance(row, dict):
+                        continue
+                    tone_payload = _hip4_observation_row_tone(row)
+                    rendered_rows.append(
+                        "<tr>"
+                        f"<td>{escape(profile_name)}</td>"
+                        f"<td>{observation_pill(tone_payload.get('tone'), tone_payload.get('label'))}</td>"
+                        f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                        f"<td>{escape(str(row.get('class_name', '-')))}</td>"
+                        f"<td>{escape(str(row.get('support_status', '-')))}</td>"
+                        f"<td>{escape(str(row.get('name', '-')))}</td>"
+                        f"<td>{escape(str(row.get('underlying') or '-'))}</td>"
+                        f"<td>{escape(_format_observation_bucket(row))}</td>"
+                        f"<td>{escape(_format_observation_list(row.get('coins')))}</td>"
+                        f"<td>{escape(_format_observation_books(row))}</td>"
+                        f"<td>{escape(str(row.get('support_reason') or '-'))}</td>"
+                        "</tr>"
+                    )
+            if not rendered_rows:
+                return "<tr><td colspan='11'>Aucune observation HIP-4 loggée pour le moment.</td></tr>"
+            return "".join(rendered_rows)
+
+        return f"""
+      <section class="tab-panel{' is-active' if active_tab == 'observation' else ''}" data-tab-panel="observation">
+        <div class="panel panel-neutral">
+          <div class="panel-header">
+            <h2>Observation</h2>
+            <p>Vue directe des marchés HIP-4 vus par Pod B et par le sidecar mainnet. Les pastilles indiquent si l'observation est exploitable, watch-only, ou à investiguer.</p>
+          </div>
+          <div class="observation-grid">
+            {observation_cards()}
+          </div>
+        </div>
+
+        <div class="panel panel-neutral">
+          <div class="panel-header">
+            <h3>Synthèse observation HIP-4</h3>
+            <p>Vert: classe reconnue et exploitable en observation. Jaune: watch-only connu. Rouge: classe inconnue ou erreur book.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>{_table_header("Profile", "Source de l'observation: testnet ou mainnet observer.")}{_table_header("État", "Pastille de santé synthétique.")}{_table_header("Classe", "Classe HIP-4 observée.")}{_table_header("Count", "Nombre de lignes récentes dans market_observations.jsonl.")}{_table_header("Support", "Répartition des statuts supportés / watch-only.")}{_table_header("Latest", "Dernier timestamp observé dans ce profil.")}</tr>
+              </thead>
+              <tbody>{observation_summary_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel panel-neutral">
+          <div class="panel-header">
+            <h3>Marchés observés</h3>
+            <p>Dernières lignes `market_observations.jsonl`, incluant namedOutcome, priceBucket, classes inconnues, coins et books visibles.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>{_table_header("Profile", "Source de la ligne.")}{_table_header("État", "État de l'observation.")}{_table_header("Ts", "Horodatage de l'observation.")}{_table_header("Classe", "Classe HIP-4 parsée.")}{_table_header("Support", "Statut supporté par le bot.")}{_table_header("Nom", "Nom brut du marché.")}{_table_header("Underlying", "Sous-jacent si connu.")}{_table_header("Bucket", "Bande ou thresholds si priceBucket.")}{_table_header("Coins", "Outcome coins observés.")}{_table_header("Books", "Bid/ask résumé sur YES/NO.")}{_table_header("Reason", "Raison du statut support/watch.")}</tr>
+              </thead>
+              <tbody>{observation_detail_rows()}</tbody>
+            </table>
+          </div>
+        </div>
+      </section>"""
+
+    observation_tab_panel = render_observation_tab()
+
     runtime_report_rows = "".join(
         (
             "<tr>"
@@ -2976,6 +3312,7 @@ def _control_center_html(
         ("stats", "Stats"),
         ("pod_a", "Pod A"),
         ("pod_b", "Pod B HIP-4"),
+        ("observation", "Observation"),
         ("pod_c", "Pod C"),
         ("activity", "Activity"),
         ("system", "System"),
@@ -3122,10 +3459,10 @@ def _control_center_html(
       display: none;
       gap: 16px;
     }}
-    .tab-panel.is-active {{
+      .tab-panel.is-active {{
       display: grid;
     }}
-    .panel, .status-card, .metric-card, .pod-card {{
+    .panel, .status-card, .metric-card, .pod-card, .observation-card {{
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 22px;
@@ -3169,6 +3506,77 @@ def _control_center_html(
     .status-card, .metric-card, .pod-card {{
       padding: 18px;
     }}
+    .observation-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }}
+    .observation-card {{
+      border-radius: 8px;
+      padding: 18px;
+      display: grid;
+      gap: 8px;
+    }}
+    .observation-card-good {{
+      background: linear-gradient(180deg, rgba(248, 255, 250, 0.97), rgba(255, 251, 244, 0.97));
+      border-color: rgba(23, 107, 58, 0.18);
+    }}
+    .observation-card-warn {{
+      background: linear-gradient(180deg, rgba(255, 251, 240, 0.97), rgba(255, 251, 244, 0.97));
+      border-color: rgba(154, 103, 0, 0.20);
+    }}
+    .observation-card-bad {{
+      background: linear-gradient(180deg, rgba(255, 245, 245, 0.97), rgba(255, 251, 244, 0.97));
+      border-color: rgba(161, 45, 47, 0.20);
+    }}
+    .observation-card-neutral {{
+      background: linear-gradient(180deg, rgba(246, 248, 249, 0.97), rgba(255, 251, 244, 0.97));
+      border-color: rgba(106, 118, 128, 0.18);
+    }}
+    .observation-card-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }}
+    .observation-card-head span:first-child {{
+      color: var(--muted);
+      font-weight: 800;
+    }}
+    .observation-card strong {{
+      font-size: 1.7rem;
+      line-height: 1.1;
+      font-family: "Fraunces", "Iowan Old Style", Georgia, serif;
+    }}
+    .observation-card small {{
+      color: var(--muted);
+      line-height: 1.4;
+    }}
+    .health-pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 0.84rem;
+      font-weight: 800;
+      line-height: 1;
+    }}
+    .health-pill-good {{ background: var(--good-soft); color: var(--good); }}
+    .health-pill-warn {{ background: var(--warn-soft); color: var(--warn); }}
+    .health-pill-bad {{ background: var(--bad-soft); color: var(--bad); }}
+    .health-pill-neutral {{ background: var(--neutral-soft); color: var(--neutral); }}
+    .status-dot {{
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      display: inline-block;
+      flex: 0 0 auto;
+    }}
+    .status-dot-good {{ background: var(--good); }}
+    .status-dot-warn {{ background: var(--warn); }}
+    .status-dot-bad {{ background: var(--bad); }}
+    .status-dot-neutral {{ background: var(--neutral); }}
     .panel-good {{
       background: linear-gradient(180deg, rgba(248, 255, 250, 0.98), rgba(255, 251, 244, 0.97));
       border-color: rgba(23, 107, 58, 0.20);
@@ -3773,6 +4181,7 @@ def _control_center_html(
       </section>
 
       {pod_b_tab_panel}
+      {observation_tab_panel}
 
       <section class="tab-panel{' is-active' if active_tab == 'pod_c' else ''}" data-tab-panel="pod_c">
         <div class="panel panel-{escape(_panel_tone(pod_c_summary['tone']))}">
@@ -4113,7 +4522,7 @@ def _control_center_html(
   </main>
   <script>
     (() => {{
-      const validTabs = new Set(["status", "stats", "pod_a", "pod_b", "pod_c", "activity", "system"]);
+      const validTabs = new Set(["status", "stats", "pod_a", "pod_b", "observation", "pod_c", "activity", "system"]);
       const body = document.body;
       const refreshSeconds = Number(body.dataset.refreshSeconds || "0");
       const buttons = Array.from(document.querySelectorAll("[data-tab-button]"));
@@ -4375,6 +4784,12 @@ def hip4_outcome_html(
     if not isinstance(capital, dict):
         capital = {}
     balance_coin = str(capital.get("testnet_balance_coin") or "USDH")
+    testnet_observation_health = payload.get("market_observation_health", {})
+    if not isinstance(testnet_observation_health, dict):
+        testnet_observation_health = {}
+    mainnet_observation_health = mainnet_payload.get("market_observation_health", {})
+    if not isinstance(mainnet_observation_health, dict):
+        mainnet_observation_health = {}
 
     def fmt_number(value: object, digits: int = 4, *, fallback: str = "-") -> str:
         parsed = _float_or_none(value)
@@ -4405,6 +4820,110 @@ def hip4_outcome_html(
             )
             for card in cards
         )
+
+    def render_health_pill(tone_value: object, label: object) -> str:
+        tone_name = str(tone_value or "neutral")
+        if tone_name not in {"good", "warn", "bad", "neutral"}:
+            tone_name = "neutral"
+        return (
+            f"<span class='health-pill health-pill-{escape(tone_name)}'>"
+            f"<span class='status-dot status-dot-{escape(tone_name)}'></span>"
+            f"{escape(str(label or tone_name))}</span>"
+        )
+
+    def render_observation_cards() -> str:
+        embedded = status.get("embedded_observers") if isinstance(status, dict) else {}
+        if not isinstance(embedded, dict):
+            embedded = {}
+        embedded_enabled = bool(embedded.get("enabled"))
+        embedded_threads = int(embedded.get("running_threads", 0) or 0)
+        embedded_tone = "good" if embedded_enabled and embedded_threads > 0 else "warn"
+        specs = [
+            ("Testnet observation", testnet_observation_health),
+            ("Mainnet observation", mainnet_observation_health),
+        ]
+        cards_html = []
+        for label, health in specs:
+            tone_name = str(health.get("tone", "neutral"))
+            cards_html.append(
+                "<article class='observation-card'>"
+                f"<div class='observation-card-head'><span>{escape(label)}</span>"
+                f"{render_health_pill(tone_name, health.get('label', tone_name))}</div>"
+                f"<strong>{int(health.get('count', 0) or 0)}</strong>"
+                f"<small>{escape(str(health.get('reason', '-')))}</small>"
+                f"<small>unknown {int(health.get('unknown_count', 0) or 0)} · "
+                f"books {int(health.get('books_logged_count', 0) or 0)} · "
+                f"named {int(health.get('named_outcome_count', 0) or 0)} · "
+                f"bucket {int(health.get('price_bucket_count', 0) or 0)}</small>"
+                "</article>"
+            )
+        cards_html.append(
+            "<article class='observation-card'>"
+            f"<div class='observation-card-head'><span>Sidecar mainnet</span>"
+            f"{render_health_pill(embedded_tone, 'embedded' if embedded_enabled else 'off')}</div>"
+            f"<strong>{embedded_threads}</strong>"
+            "<small>thread(s) dans le process Pod B</small>"
+            f"<small>{escape(', '.join(str(item) for item in embedded.get('config_paths', []) if item) or '-')}</small>"
+            "</article>"
+        )
+        return "".join(cards_html)
+
+    def render_observation_summary_rows() -> str:
+        rows_html: list[str] = []
+        for profile_name, health in (
+            ("testnet", testnet_observation_health),
+            ("mainnet", mainnet_observation_health),
+        ):
+            class_counts = health.get("by_class")
+            if not isinstance(class_counts, dict):
+                continue
+            support_counts = health.get("by_support_status")
+            if not isinstance(support_counts, dict):
+                support_counts = {}
+            for class_name, count in sorted(class_counts.items(), key=lambda item: (-int(item[1]), str(item[0]))):
+                rows_html.append(
+                    "<tr>"
+                    f"<td>{escape(profile_name)}</td>"
+                    f"<td>{render_health_pill(health.get('tone'), health.get('label'))}</td>"
+                    f"<td>{escape(str(class_name))}</td>"
+                    f"<td>{int(count or 0)}</td>"
+                    f"<td>{escape(_format_count_map(support_counts))}</td>"
+                    f"<td>{escape(str(health.get('latest_ts') or '-'))}</td>"
+                    "</tr>"
+                )
+        if not rows_html:
+            return "<tr><td colspan='6'>Aucune synthèse d'observation disponible.</td></tr>"
+        return "".join(rows_html)
+
+    def render_observation_rows() -> str:
+        rows_html: list[str] = []
+        for profile_name, source in (("testnet", payload), ("mainnet", mainnet_payload)):
+            rows = source.get("market_observations", [])
+            if not isinstance(rows, list):
+                continue
+            for row in rows[:40]:
+                if not isinstance(row, dict):
+                    continue
+                tone_payload = _hip4_observation_row_tone(row)
+                rows_html.append(
+                    "<tr>"
+                    f"<td>{escape(profile_name)}</td>"
+                    f"<td>{render_health_pill(tone_payload.get('tone'), tone_payload.get('label'))}</td>"
+                    f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                    f"<td>{escape(str(row.get('class_name', '-')))}</td>"
+                    f"<td>{escape(str(row.get('support_status', '-')))}</td>"
+                    f"<td>{escape(str(row.get('name', '-')))}</td>"
+                    f"<td>{escape(str(row.get('underlying') or '-'))}</td>"
+                    f"<td>{escape(_format_observation_bucket(row))}</td>"
+                    f"<td>{escape(_format_observation_list(row.get('coins')))}</td>"
+                    f"<td>{escape(_format_observation_books(row))}</td>"
+                    f"<td>{escape(str(row.get('support_reason') or '-'))}</td>"
+                    f"<td>{escape(str(row.get('description') or '-'))}</td>"
+                    "</tr>"
+                )
+        if not rows_html:
+            return "<tr><td colspan='12'>Aucune observation HIP-4 loggée pour le moment.</td></tr>"
+        return "".join(rows_html)
 
     def render_coin_summary_rows() -> str:
         if not coin_summary_rows:
@@ -4859,7 +5378,9 @@ def hip4_outcome_html(
       font-size: 0.9rem;
     }}
     .badge-good {{ background: #ddf5e5; color: var(--good); }}
+    .badge-warn {{ background: #fff2c2; color: var(--warn); }}
     .badge-bad {{ background: #ffe1e1; color: var(--bad); }}
+    .badge-neutral {{ background: #e9edf0; color: var(--muted); }}
     .badge {{
       display: inline-flex;
       padding: 7px 12px;
@@ -4871,8 +5392,72 @@ def hip4_outcome_html(
     .metric-card {{ padding: 16px; display: grid; gap: 6px; }}
     .metric-card span, .metric-card small {{ color: var(--muted); }}
     .metric-card strong {{ font-size: 1.55rem; }}
+    .tab-bar {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--line);
+      padding-top: 4px;
+    }}
+    .tab-button {{
+      appearance: none;
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 8px 8px 0 0;
+      background: #eee6da;
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 800;
+      padding: 10px 14px;
+    }}
+    .tab-button.is-active {{
+      background: var(--panel);
+      color: var(--accent);
+      box-shadow: 0 -8px 22px rgba(31, 42, 51, 0.06);
+    }}
+    .tab-panel {{ display: none; }}
+    .tab-panel.is-active {{ display: grid; gap: 16px; }}
     .panel {{ padding: 18px; display: grid; gap: 14px; }}
     .panel-header {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; flex-wrap: wrap; }}
+    .observation-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
+    .observation-card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+      display: grid;
+      gap: 7px;
+    }}
+    .observation-card-head {{ display: flex; justify-content: space-between; gap: 10px; align-items: center; }}
+    .observation-card-head span:first-child {{ color: var(--muted); font-weight: 800; }}
+    .observation-card strong {{ font-size: 1.7rem; }}
+    .observation-card small {{ color: var(--muted); }}
+    .health-pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-weight: 800;
+      line-height: 1;
+    }}
+    .health-pill-good {{ background: #ddf5e5; color: var(--good); }}
+    .health-pill-warn {{ background: #fff2c2; color: var(--warn); }}
+    .health-pill-bad {{ background: #ffe1e1; color: var(--bad); }}
+    .health-pill-neutral {{ background: #e9edf0; color: var(--muted); }}
+    .status-dot {{
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      display: inline-block;
+      flex: 0 0 auto;
+    }}
+    .status-dot-good {{ background: var(--good); }}
+    .status-dot-warn {{ background: var(--warn); }}
+    .status-dot-bad {{ background: var(--bad); }}
+    .status-dot-neutral {{ background: var(--muted); }}
     .table-wrap {{ overflow-x: auto; }}
     table {{ width: 100%; border-collapse: collapse; font-size: 0.92rem; }}
     th, td {{ padding: 10px 9px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }}
@@ -4914,6 +5499,12 @@ def hip4_outcome_html(
       </section>
       <section class="metric-grid">{mainnet_cards}</section>
 
+      <nav class="tab-bar" aria-label="HIP-4 sections">
+        <button class="tab-button is-active" type="button" data-hip4-tab="overview" aria-selected="true">Vue générale</button>
+        <button class="tab-button" type="button" data-hip4-tab="observation" aria-selected="false">Observation</button>
+      </nav>
+
+      <section class="tab-panel is-active" data-hip4-panel="overview">
       <section class="two-col">
         <div class="panel">
           <div class="panel-header"><h2>Opportunités mainnet</h2><p>Observation pure: décisions rejetées en mode observer, aucune exécution.</p></div>
@@ -5047,8 +5638,69 @@ def hip4_outcome_html(
           </div>
         </div>
       </section>
+      </section>
+
+      <section class="tab-panel" data-hip4-panel="observation" hidden>
+        <section class="observation-grid">
+          {render_observation_cards()}
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Observation HIP-4</h2>
+            <p>Pastilles: vert = classe reconnue et exploitable en observation, jaune = watch-only connu, rouge = inconnu ou erreur book.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Profile</th><th>État</th><th>Classe</th><th>Count</th><th>Support</th><th>Latest</th></tr></thead>
+              <tbody>{render_observation_summary_rows()}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Marchés observés</h2>
+            <p>Dernières lignes `market_observations.jsonl` testnet et mainnet.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Profile</th><th>État</th><th>Ts</th><th>Classe</th><th>Support</th><th>Nom</th><th>Underlying</th><th>Bucket</th><th>Coins</th><th>Books</th><th>Reason</th><th>Description</th></tr></thead>
+              <tbody>{render_observation_rows()}</tbody>
+            </table>
+          </div>
+        </section>
+      </section>
     </div>
   </main>
+  <script>
+    (() => {{
+      const tabs = Array.from(document.querySelectorAll("[data-hip4-tab]"));
+      const panels = Array.from(document.querySelectorAll("[data-hip4-panel]"));
+      const valid = new Set(tabs.map((button) => button.dataset.hip4Tab));
+      function setTab(name, updateHash = true) {{
+        const next = valid.has(name) ? name : "overview";
+        tabs.forEach((button) => {{
+          const active = button.dataset.hip4Tab === next;
+          button.classList.toggle("is-active", active);
+          button.setAttribute("aria-selected", active ? "true" : "false");
+        }});
+        panels.forEach((panel) => {{
+          const active = panel.dataset.hip4Panel === next;
+          panel.classList.toggle("is-active", active);
+          panel.hidden = !active;
+        }});
+        if (updateHash) {{
+          history.replaceState(null, "", `#${{next}}`);
+        }}
+      }}
+      tabs.forEach((button) => {{
+        button.addEventListener("click", () => setTab(button.dataset.hip4Tab || "overview"));
+      }});
+      setTab((window.location.hash || "").replace("#", "") || "overview", false);
+      window.addEventListener("hashchange", () => setTab((window.location.hash || "").replace("#", ""), false));
+    }})();
+  </script>
 </body>
 </html>"""
 
