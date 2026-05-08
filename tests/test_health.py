@@ -732,6 +732,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("fees_usd", payload)
         self.assertIn("gross_pnl_usd", payload)
         self.assertIn("blocked_opportunity_slices", payload)
+        self.assertIn("reference_divergence_guard", payload)
         self.assertIn("market_observations", payload)
         self.assertIn("market_observation_health", payload)
 

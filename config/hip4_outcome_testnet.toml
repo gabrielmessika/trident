@@ -35,7 +35,9 @@ max_time_to_expiry_minutes = 1440
 
 enable_late_expiry = true
 enable_parity = true
-enable_model = true
+# 2026-05-08 review: MODEL testnet calibration is negative; keep it in
+# observer/mainnet logs, but quarantine it before more testnet USDH is funded.
+enable_model = false
 enable_short_expiry = true
 enable_price_bucket = true
 enable_market_observation = true
@@ -45,9 +47,20 @@ max_observation_books_per_loop = 20
 enable_embedded_observers = true
 embedded_observer_config_paths = ["config/hip4_outcome_mainnet_observer.toml"]
 embedded_observer_once_timeout_seconds = 20
-# Format: UNDERLYING:EDGE_TYPE:SIDE. First guardrail comes from the
-# 2026-05-05 testnet review; keep mainnet observer unblocked for comparison.
-blocked_opportunity_slices = ["HYPE:LATE_EXPIRY:BUY_YES"]
+# Format: UNDERLYING:EDGE_TYPE:SIDE. These are kept explicit so an env toggle
+# that re-enables MODEL still cannot immediately reopen the toxic HYPE BUY_YES
+# slices found in the 2026-05-08 testnet review.
+blocked_opportunity_slices = [
+  "HYPE:LATE_EXPIRY:BUY_YES",
+  "HYPE:MODEL:BUY_YES",
+  "HYPE:SHORT_EXPIRY:BUY_YES",
+]
+block_reference_divergence = true
+reference_divergence_max_bps = 250
+reference_divergence_min_rejected_sources = 2
+reference_divergence_underlyings = ["HYPE"]
+reference_divergence_sides = []
+reference_divergence_edge_types = []
 late_expiry_window_minutes = 20
 strike_buffer_bps = 8
 max_late_yes_price = 0.97
@@ -72,6 +85,7 @@ short_expiry_min_confidence = 0.55
 short_expiry_max_yes_price = 0.92
 short_expiry_max_no_price = 0.92
 short_expiry_require_momentum_alignment = true
+short_expiry_watchlist_limit = 8
 price_bucket_max_yes_price = 0.98
 price_bucket_max_no_price = 0.98
 

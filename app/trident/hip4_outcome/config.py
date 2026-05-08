@@ -78,6 +78,16 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 @dataclass(slots=True)
 class Hip4OutcomeConfig:
     """Configuration for the HIP-4 outcome Pod B replacement.
@@ -136,6 +146,12 @@ class Hip4OutcomeConfig:
     embedded_observer_config_paths: list[str] = field(default_factory=list)
     embedded_observer_once_timeout_seconds: float = 20.0
     blocked_opportunity_slices: list[str] = field(default_factory=list)
+    block_reference_divergence: bool = False
+    reference_divergence_max_bps: float = 50.0
+    reference_divergence_min_rejected_sources: int = 1
+    reference_divergence_underlyings: list[str] = field(default_factory=list)
+    reference_divergence_sides: list[str] = field(default_factory=list)
+    reference_divergence_edge_types: list[str] = field(default_factory=list)
     short_expiry_window_minutes: int = 6
     short_expiry_periods: list[str] = field(default_factory=lambda: ["5m", "15m"])
     short_expiry_history_seconds: int = 900
@@ -155,6 +171,7 @@ class Hip4OutcomeConfig:
     short_expiry_max_yes_price: float = 0.92
     short_expiry_max_no_price: float = 0.92
     short_expiry_require_momentum_alignment: bool = True
+    short_expiry_watchlist_limit: int = 8
     price_bucket_max_yes_price: float = 0.98
     price_bucket_max_no_price: float = 0.98
     default_annualized_vol: float = 0.85
@@ -235,6 +252,9 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
 
     def env_float(name: str, default: float) -> float:
         return _env_float(name, default) if apply_env else float(default)
+
+    def env_int(name: str, default: int) -> int:
+        return _env_int(name, default) if apply_env else int(default)
 
     def env_value(name: str, default: object) -> object:
         if not apply_env:
@@ -361,6 +381,39 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
                 section.get("blocked_opportunity_slices", []),
             )
         ),
+        block_reference_divergence=env_bool(
+            "HIP4_OUTCOME_BLOCK_REFERENCE_DIVERGENCE",
+            bool(section.get("block_reference_divergence", False)),
+        ),
+        reference_divergence_max_bps=env_float(
+            "HIP4_OUTCOME_REFERENCE_DIVERGENCE_MAX_BPS",
+            float(section.get("reference_divergence_max_bps", 50.0)),
+        ),
+        reference_divergence_min_rejected_sources=env_int(
+            "HIP4_OUTCOME_REFERENCE_DIVERGENCE_MIN_REJECTED_SOURCES",
+            int(section.get("reference_divergence_min_rejected_sources", 1)),
+        ),
+        reference_divergence_underlyings=_str_list(
+            env_value(
+                "HIP4_OUTCOME_REFERENCE_DIVERGENCE_UNDERLYINGS",
+                section.get("reference_divergence_underlyings", []),
+            ),
+            upper=True,
+        ),
+        reference_divergence_sides=_str_list(
+            env_value(
+                "HIP4_OUTCOME_REFERENCE_DIVERGENCE_SIDES",
+                section.get("reference_divergence_sides", []),
+            ),
+            upper=True,
+        ),
+        reference_divergence_edge_types=_str_list(
+            env_value(
+                "HIP4_OUTCOME_REFERENCE_DIVERGENCE_EDGE_TYPES",
+                section.get("reference_divergence_edge_types", []),
+            ),
+            upper=True,
+        ),
         short_expiry_window_minutes=int(section.get("short_expiry_window_minutes", 6)),
         short_expiry_periods=_str_list(section.get("short_expiry_periods", ["5m", "15m"])),
         short_expiry_history_seconds=int(section.get("short_expiry_history_seconds", 900)),
@@ -399,6 +452,7 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
             "HIP4_OUTCOME_SHORT_EXPIRY_REQUIRE_MOMENTUM_ALIGNMENT",
             bool(section.get("short_expiry_require_momentum_alignment", True)),
         ),
+        short_expiry_watchlist_limit=int(section.get("short_expiry_watchlist_limit", 8)),
         price_bucket_max_yes_price=float(section.get("price_bucket_max_yes_price", 0.98)),
         price_bucket_max_no_price=float(section.get("price_bucket_max_no_price", 0.98)),
         default_annualized_vol=float(section.get("default_annualized_vol", 0.85)),

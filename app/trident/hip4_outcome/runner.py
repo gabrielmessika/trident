@@ -132,6 +132,12 @@ class HIP4OutcomeEdgePod:
             "short_expiry_markets": 0,
             "short_expiry_assessments": 0,
             "short_expiry_best_net_edge": None,
+            "short_expiry_ready_count": 0,
+            "short_expiry_watchlist": [],
+            "next_short_expiry_seconds": None,
+            "decision_reasons": {},
+            "opportunity_mix": {},
+            "operator_brief": {},
             "market_observation": {},
             "embedded_observers": self._embedded_observer_status(),
             "reconciliation": None,
@@ -139,6 +145,8 @@ class HIP4OutcomeEdgePod:
                 open_positions=self._active_positions_for_mode()
             ).to_dict(),
         }
+        decision_reasons: Counter[str] = Counter()
+        opportunity_mix: Counter[str] = Counter()
         try:
             stage_started = time.monotonic()
             mids = self.info_client.fetch_all_mids()
@@ -209,6 +217,19 @@ class HIP4OutcomeEdgePod:
                     now_ts=now_ts,
                     features=short_features,
                 )
+                if self._is_short_expiry_candidate(market=market, now_ts=now_ts):
+                    self._append_short_expiry_watchlist(
+                        summary=summary,
+                        row=_short_expiry_watchlist_row(
+                            market=market,
+                            order_book=order_book,
+                            reference_price=reference_price,
+                            now_ts=now_ts,
+                            short_features=short_features,
+                            short_assessment=short_assessment,
+                            config=self.config,
+                        ),
+                    )
                 if short_assessment is not None:
                     summary["short_expiry_markets"] = int(summary["short_expiry_markets"]) + 1
                     summary["short_expiry_assessments"] = int(summary["short_expiry_assessments"]) + 1
@@ -232,6 +253,7 @@ class HIP4OutcomeEdgePod:
                 timings["edge_detection_ms"] += _elapsed_ms(stage_started)
 
                 summary["opportunities"] = int(summary["opportunities"]) + len(opportunities)
+                opportunity_mix.update(opportunity.edge_type for opportunity in opportunities)
                 for opportunity in sorted(opportunities, key=lambda item: item.net_edge, reverse=True):
                     opportunity.metadata.update(reference.to_metadata())
                     self._record_edge_decay(
@@ -254,6 +276,7 @@ class HIP4OutcomeEdgePod:
                     )
                     if decision.approved:
                         decision = self._apply_capital_guard(decision)
+                    decision_reasons[decision.reason] += 1
                     self._log_decision(opportunity=opportunity, decision=decision)
                     if not decision.approved:
                         continue
@@ -306,6 +329,11 @@ class HIP4OutcomeEdgePod:
             logger.exception("HIP-4 outcome pod loop failed")
             self.last_error = str(exc)
             summary["last_error"] = self.last_error
+        self._finalize_operator_summary(
+            summary=summary,
+            decision_reasons=decision_reasons,
+            opportunity_mix=opportunity_mix,
+        )
         self._join_one_shot_observers(one_shot_observers)
         summary["embedded_observers"] = self._embedded_observer_status()
         self.last_summary = summary
@@ -588,6 +616,53 @@ class HIP4OutcomeEdgePod:
             return False
         allowed_periods = {period.strip().lower() for period in self.config.short_expiry_periods if period.strip()}
         return not allowed_periods or market.period.strip().lower() in allowed_periods
+
+    def _append_short_expiry_watchlist(
+        self,
+        *,
+        summary: dict[str, Any],
+        row: dict[str, Any],
+    ) -> None:
+        watchlist = summary.get("short_expiry_watchlist")
+        if not isinstance(watchlist, list):
+            watchlist = []
+            summary["short_expiry_watchlist"] = watchlist
+        watchlist.append(row)
+        if row.get("readiness") == "ready":
+            summary["short_expiry_ready_count"] = int(summary.get("short_expiry_ready_count", 0) or 0) + 1
+        seconds_left = _int_from_any(row.get("seconds_left"), 0)
+        current_next = summary.get("next_short_expiry_seconds")
+        if current_next is None or seconds_left < _int_from_any(current_next, seconds_left):
+            summary["next_short_expiry_seconds"] = seconds_left
+
+    def _finalize_operator_summary(
+        self,
+        *,
+        summary: dict[str, Any],
+        decision_reasons: Counter[str],
+        opportunity_mix: Counter[str],
+    ) -> None:
+        watchlist = summary.get("short_expiry_watchlist")
+        if not isinstance(watchlist, list):
+            watchlist = []
+        limit = max(int(self.config.short_expiry_watchlist_limit), 1)
+        watchlist = sorted(
+            (row for row in watchlist if isinstance(row, dict)),
+            key=lambda row: (
+                0 if row.get("readiness") == "ready" else 1,
+                _int_from_any(row.get("seconds_left"), 10**9),
+                -_float_from_any(row.get("best_net_edge"), -1.0),
+            ),
+        )[:limit]
+        summary["short_expiry_watchlist"] = watchlist
+        summary["short_expiry_ready_count"] = sum(1 for row in watchlist if row.get("readiness") == "ready")
+        summary["decision_reasons"] = dict(sorted(decision_reasons.items()))
+        summary["opportunity_mix"] = dict(sorted(opportunity_mix.items()))
+        summary["operator_brief"] = _build_short_expiry_operator_brief(
+            summary,
+            config=self.config,
+            last_error=self.last_error,
+        )
 
     def _update_short_expiry_history(
         self,
@@ -1057,6 +1132,8 @@ class HIP4OutcomeEdgePod:
             "updated_at": updated_at,
             "poll_seconds": self.config.loop_interval_seconds,
             "summary": summary,
+            "operator_brief": summary.get("operator_brief", {}),
+            "short_expiry_watchlist": summary.get("short_expiry_watchlist", []),
             "capital": self.last_capital_snapshot,
             "last_error": self.last_error,
             "last_execution_results": self.last_execution_results,
@@ -1069,6 +1146,7 @@ class HIP4OutcomeEdgePod:
             ],
             "fee_model": self._fee_model_payload(),
             "blocked_opportunity_slices": list(self.config.blocked_opportunity_slices),
+            "reference_divergence_guard": self._reference_divergence_guard_payload(),
             "embedded_observers": self._embedded_observer_status(),
             "market_observation": self._last_market_observation,
             "logs_dir": str(Path(self.config.logs_dir)),
@@ -1176,9 +1254,12 @@ class HIP4OutcomeEdgePod:
             "last_error": self.last_error,
             "last_execution_results": self.last_execution_results,
             "summary": summary,
+            "operator_brief": summary.get("operator_brief", {}),
+            "short_expiry_watchlist": summary.get("short_expiry_watchlist", []),
             "capital": self.last_capital_snapshot,
             "fee_model": self._fee_model_payload(),
             "blocked_opportunity_slices": list(self.config.blocked_opportunity_slices),
+            "reference_divergence_guard": self._reference_divergence_guard_payload(),
             "embedded_observers": self._embedded_observer_status(),
             "market_observation": self._last_market_observation,
             "report": {
@@ -1200,6 +1281,16 @@ class HIP4OutcomeEdgePod:
             },
         }
 
+    def _reference_divergence_guard_payload(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.config.block_reference_divergence),
+            "max_bps": float(self.config.reference_divergence_max_bps),
+            "min_rejected_sources": int(self.config.reference_divergence_min_rejected_sources),
+            "underlyings": list(self.config.reference_divergence_underlyings),
+            "sides": list(self.config.reference_divergence_sides),
+            "edge_types": list(self.config.reference_divergence_edge_types),
+        }
+
     def _active_positions_for_mode(self) -> list[OutcomePosition]:
         return [
             position
@@ -1214,6 +1305,176 @@ class HIP4OutcomeEdgePod:
             for position in self.positions
             if _position_execution_mode(position) == self.config.mode.upper()
         ]
+
+
+def _short_expiry_watchlist_row(
+    *,
+    market: OutcomeMarket,
+    order_book: Any,
+    reference_price: float,
+    now_ts: int,
+    short_features: ShortHorizonFeatures | None,
+    short_assessment: ShortExpiryAssessment | None,
+    config: Hip4OutcomeConfig,
+) -> dict[str, Any]:
+    seconds_left = max(int(market.expiry_ts - now_ts), 0)
+    distance_bps = None
+    momentum_60s = None
+    history_span_seconds = None
+    sample_count = None
+    if short_features is not None:
+        distance_bps = short_features.distance_to_strike_bps
+        momentum_60s = short_features.momentum_bps(60)
+        history_span_seconds = short_features.history_span_seconds
+        sample_count = short_features.sample_count
+    elif market.strike > 0:
+        distance_bps = ((reference_price - market.strike) / market.strike) * 10_000.0
+
+    return {
+        "market_id": market.market_id,
+        "outcome": market.outcome,
+        "underlying": market.underlying,
+        "period": market.period,
+        "expiry_ts": market.expiry_ts,
+        "expiry_iso": market.expiry_iso,
+        "seconds_left": seconds_left,
+        "strike": market.strike,
+        "reference_price": round(float(reference_price), 8),
+        "distance_bps": None if distance_bps is None else round(float(distance_bps), 4),
+        "momentum_bps_60s": None if momentum_60s is None else round(float(momentum_60s), 4),
+        "history_span_seconds": history_span_seconds,
+        "sample_count": sample_count,
+        "yes_bid": getattr(order_book.yes, "bid", None),
+        "yes_ask": getattr(order_book.yes, "ask", None),
+        "no_bid": getattr(order_book.no, "bid", None),
+        "no_ask": getattr(order_book.no, "ask", None),
+        "book_probability_yes": (
+            None
+            if short_assessment is None
+            else short_assessment.book_probability_yes
+        ),
+        "short_probability_yes": (
+            None
+            if short_assessment is None
+            else short_assessment.probability_yes
+        ),
+        "best_side": "" if short_assessment is None else short_assessment.best_side,
+        "best_gross_edge": None if short_assessment is None else short_assessment.best_gross_edge,
+        "best_net_edge": None if short_assessment is None else short_assessment.best_net_edge,
+        "confidence": None if short_assessment is None else short_assessment.confidence,
+        "reason": "short_expiry_not_assessed" if short_assessment is None else short_assessment.reason,
+        "readiness": _short_expiry_readiness(short_assessment, config=config),
+    }
+
+
+def _short_expiry_readiness(
+    assessment: ShortExpiryAssessment | None,
+    *,
+    config: Hip4OutcomeConfig,
+) -> str:
+    if assessment is None:
+        return "watch"
+    if assessment.reason in {"short_expiry_missing_features", "short_expiry_history_warming"}:
+        return "warming"
+    if (
+        assessment.reason == "Short-expiry model probability above visible ask"
+        and assessment.best_gross_edge >= config.min_gross_edge
+        and assessment.best_net_edge >= config.min_net_edge
+        and assessment.confidence >= config.short_expiry_min_confidence
+    ):
+        return "ready"
+    if assessment.reason.startswith("short_expiry_"):
+        return "blocked"
+    return "watch"
+
+
+def _build_short_expiry_operator_brief(
+    summary: dict[str, Any],
+    *,
+    config: Hip4OutcomeConfig,
+    last_error: str | None,
+) -> dict[str, Any]:
+    watchlist = summary.get("short_expiry_watchlist")
+    if not isinstance(watchlist, list):
+        watchlist = []
+    typed_rows = [row for row in watchlist if isinstance(row, dict)]
+    ready_rows = [row for row in typed_rows if row.get("readiness") == "ready"]
+    warming_rows = [row for row in typed_rows if row.get("readiness") == "warming"]
+    blocked_rows = [row for row in typed_rows if row.get("readiness") == "blocked"]
+    blocked_reasons = Counter(str(row.get("reason") or "unknown") for row in blocked_rows)
+    decision_reasons = summary.get("decision_reasons")
+    if not isinstance(decision_reasons, dict):
+        decision_reasons = {}
+    blocker_reasons = {
+        str(reason): int(count)
+        for reason, count in sorted(decision_reasons.items())
+        if str(reason) != "local_outcome_risk_ok"
+    }
+    top_candidate = _top_short_candidate(ready_rows or typed_rows)
+    executed = int(summary.get("executed", 0) or 0)
+    approved = int(summary.get("approved", 0) or 0)
+    opportunities = int(summary.get("opportunities", 0) or 0)
+
+    if last_error:
+        tone = "bad"
+        label = "runtime_error"
+    elif executed > 0:
+        tone = "good"
+        label = "executed"
+    elif ready_rows:
+        tone = "good"
+        label = "short_edge_ready"
+    elif warming_rows and not ready_rows:
+        tone = "warn"
+        label = "warming_history"
+    elif typed_rows:
+        tone = "neutral"
+        label = "watching_window"
+    elif int(summary.get("markets_supported", 0) or 0) > 0:
+        tone = "neutral"
+        label = "waiting_for_short_window"
+    else:
+        tone = "warn"
+        label = "no_supported_market"
+
+    return {
+        "focus": "short_expiry",
+        "tone": tone,
+        "label": label,
+        "candidate_count": len(typed_rows),
+        "ready_count": len(ready_rows),
+        "warming_count": len(warming_rows),
+        "blocked_count": len(blocked_rows),
+        "next_window_seconds": summary.get("next_short_expiry_seconds"),
+        "top_candidate": top_candidate,
+        "decision_reasons": dict(sorted(decision_reasons.items())),
+        "blocker_reasons": blocker_reasons,
+        "short_blocked_reasons": dict(sorted(blocked_reasons.items())),
+        "opportunity_mix": summary.get("opportunity_mix", {}),
+        "loop": {
+            "opportunities": opportunities,
+            "approved": approved,
+            "executed": executed,
+        },
+        "thresholds": {
+            "window_minutes": int(config.short_expiry_window_minutes),
+            "min_net_edge": float(config.min_net_edge),
+            "min_confidence": float(config.short_expiry_min_confidence),
+        },
+    }
+
+
+def _top_short_candidate(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    return max(
+        rows,
+        key=lambda row: (
+            _float_from_any(row.get("best_net_edge"), -1.0),
+            _float_from_any(row.get("confidence"), 0.0),
+            -_int_from_any(row.get("seconds_left"), 10**9),
+        ),
+    )
 
 
 def _position_strike(position: OutcomePosition) -> float | None:

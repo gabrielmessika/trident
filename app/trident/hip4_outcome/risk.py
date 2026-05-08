@@ -52,6 +52,12 @@ class OutcomeRiskManager:
                 "blocked_outcome_slice",
                 constraints={"blocked_slice": blocked_slice},
             )
+        reference_guard = self._reference_divergence_guard(
+            opportunity=opportunity,
+            market=market,
+        )
+        if reference_guard is not None:
+            return self._reject("reference_divergence_guard", constraints=reference_guard)
         if any(position.market_id == market.market_id and position.status == "open" for position in open_positions):
             return self._reject("market_already_open")
 
@@ -185,6 +191,64 @@ class OutcomeRiskManager:
         scale = 10**decimals
         return math.floor(max(value, 0.0) * scale) / scale
 
+    def _reference_divergence_guard(
+        self,
+        *,
+        opportunity: OutcomeOpportunity,
+        market: OutcomeMarket,
+    ) -> dict[str, object] | None:
+        if not self.config.block_reference_divergence:
+            return None
+        underlying = str(market.underlying or opportunity.underlying).strip().upper()
+        allowed_underlyings = {
+            item.strip().upper()
+            for item in self.config.reference_divergence_underlyings
+            if item.strip()
+        }
+        if allowed_underlyings and underlying not in allowed_underlyings:
+            return None
+
+        side = str(opportunity.side).strip().upper()
+        allowed_sides = {
+            item.strip().upper()
+            for item in self.config.reference_divergence_sides
+            if item.strip()
+        }
+        if allowed_sides and side not in allowed_sides and side != "BUY_BOTH":
+            return None
+
+        edge_type = str(opportunity.edge_type).strip().upper()
+        allowed_edge_types = {
+            item.strip().upper()
+            for item in self.config.reference_divergence_edge_types
+            if item.strip()
+        }
+        if allowed_edge_types and edge_type not in allowed_edge_types:
+            return None
+
+        metadata = opportunity.metadata if isinstance(opportunity.metadata, dict) else {}
+        rejected_sources = metadata.get("reference_rejected_sources")
+        rejected_count = len(rejected_sources) if isinstance(rejected_sources, list) else 0
+        max_deviation = _optional_float(metadata.get("reference_max_deviation_bps"))
+        min_rejected = max(int(self.config.reference_divergence_min_rejected_sources), 1)
+        max_allowed_bps = max(float(self.config.reference_divergence_max_bps), 0.0)
+        rejected_hit = rejected_count >= min_rejected
+        deviation_hit = max_deviation is not None and max_deviation > max_allowed_bps
+        if not rejected_hit and not deviation_hit:
+            return None
+
+        return {
+            "underlying": underlying,
+            "side": side,
+            "edge_type": edge_type,
+            "reference_price": metadata.get("reference_price"),
+            "reference_max_deviation_bps": max_deviation,
+            "reference_rejected_source_count": rejected_count,
+            "reference_rejected_sources": _compact_rejected_sources(rejected_sources),
+            "reference_divergence_max_bps": max_allowed_bps,
+            "reference_divergence_min_rejected_sources": min_rejected,
+        }
+
     @staticmethod
     def _min_value_price(limit_price: float) -> float:
         price = max(min(float(limit_price), 0.99999), 0.00001)
@@ -224,3 +288,30 @@ class OutcomeRiskManager:
             execution_mode=self.config.mode.upper(),
             constraints=constraints or {},
         )
+
+
+def _optional_float(value: object) -> float | None:
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
+
+
+def _compact_rejected_sources(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    compact: list[dict[str, object]] = []
+    for item in value[:6]:
+        if not isinstance(item, dict):
+            continue
+        compact.append(
+            {
+                "source": item.get("source"),
+                "symbol": item.get("symbol"),
+                "price": item.get("price"),
+            }
+        )
+    return compact

@@ -66,6 +66,7 @@ short_expiry_min_confidence = 0.55
 short_expiry_max_yes_price = 0.92
 short_expiry_max_no_price = 0.92
 short_expiry_require_momentum_alignment = true
+short_expiry_watchlist_limit = 8
 price_bucket_max_yes_price = 0.98
 price_bucket_max_no_price = 0.98
 

@@ -285,6 +285,22 @@ def _hip4_outcome_monitor_payload(
         capital = status["capital"]
     elif isinstance(summary.get("capital"), dict):
         capital = summary["capital"]
+    operator_brief = {}
+    if isinstance(status, dict) and isinstance(status.get("operator_brief"), dict):
+        operator_brief = status["operator_brief"]
+    elif isinstance(summary.get("operator_brief"), dict):
+        operator_brief = summary["operator_brief"]
+    short_expiry_watchlist: list[object] = []
+    if isinstance(status, dict) and isinstance(status.get("short_expiry_watchlist"), list):
+        short_expiry_watchlist = status["short_expiry_watchlist"]
+    elif isinstance(summary.get("short_expiry_watchlist"), list):
+        short_expiry_watchlist = summary["short_expiry_watchlist"]
+    decision_reasons = summary.get("decision_reasons", {})
+    if not isinstance(decision_reasons, dict):
+        decision_reasons = {}
+    opportunity_mix = summary.get("opportunity_mix", {})
+    if not isinstance(opportunity_mix, dict):
+        opportunity_mix = {}
     blocked_opportunity_slices: list[object] = []
     if (
         isinstance(pod_b_alias_status, dict)
@@ -296,6 +312,17 @@ def _hip4_outcome_monitor_payload(
         and isinstance(status.get("blocked_opportunity_slices"), list)
     ):
         blocked_opportunity_slices = status["blocked_opportunity_slices"]
+    reference_divergence_guard: dict[str, object] = {}
+    if (
+        isinstance(pod_b_alias_status, dict)
+        and isinstance(pod_b_alias_status.get("reference_divergence_guard"), dict)
+    ):
+        reference_divergence_guard = pod_b_alias_status["reference_divergence_guard"]
+    elif (
+        isinstance(status, dict)
+        and isinstance(status.get("reference_divergence_guard"), dict)
+    ):
+        reference_divergence_guard = status["reference_divergence_guard"]
     reference_rows: list[dict[str, object]] = []
     for underlying, reference in sorted(reference_prices.items()):
         if not isinstance(reference, dict):
@@ -365,10 +392,15 @@ def _hip4_outcome_monitor_payload(
             else {}
         ),
         "blocked_opportunity_slices": blocked_opportunity_slices,
+        "reference_divergence_guard": reference_divergence_guard,
         "best_net_edge": best_net_edge,
         "latest_net_edge": latest_net_edge,
         "best_short_net_edge": best_short_net_edge,
         "latest_short_net_edge": latest_short_net_edge,
+        "short_expiry_brief": operator_brief,
+        "short_expiry_watchlist": short_expiry_watchlist,
+        "decision_reasons": decision_reasons,
+        "opportunity_mix": opportunity_mix,
         "reference_prices": reference_rows,
         "capital": capital,
         "opportunities": opportunities,
@@ -2649,6 +2681,12 @@ def _control_center_html(
         open_positions = status.get("open_positions", [])
         if not isinstance(open_positions, list):
             open_positions = []
+        short_brief = payload.get("short_expiry_brief", {})
+        if not isinstance(short_brief, dict):
+            short_brief = {}
+        short_watchlist = payload.get("short_expiry_watchlist", [])
+        if not isinstance(short_watchlist, list):
+            short_watchlist = []
 
         def fmt_hip4_number(value: object, digits: int = 4, *, fallback: str = "-") -> str:
             parsed = _float_or_none(value)
@@ -2781,6 +2819,29 @@ def _control_center_html(
                 if isinstance(row, dict)
             )
 
+        def render_short_watchlist_rows() -> str:
+            if not short_watchlist:
+                return "<tr><td colspan='11'>Aucune fenêtre short-expiry surveillée dans la dernière boucle.</td></tr>"
+            return "".join(
+                (
+                    "<tr>"
+                    f"<td>{escape(str(row.get('readiness', '-')))}</td>"
+                    f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                    f"<td>{escape(str(row.get('period', '-')))}</td>"
+                    f"<td>{fmt_hip4_number(row.get('seconds_left'), 0)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('reference_price'), 6)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('strike'), 6)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('distance_bps'), 2)}</td>"
+                    f"<td>{fmt_hip4_number(row.get('momentum_bps_60s'), 2)}</td>"
+                    f"<td>{escape(str(row.get('best_side') or '-'))}</td>"
+                    f"<td>{fmt_hip4_number(row.get('best_net_edge'), 6)}</td>"
+                    f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                    "</tr>"
+                )
+                for row in short_watchlist
+                if isinstance(row, dict)
+            )
+
         def render_latency_rows() -> str:
             rows = payload.get("latency", [])
             if not isinstance(rows, list) or not rows:
@@ -2864,6 +2925,23 @@ def _control_center_html(
                     "note": f"latest {fmt_hip4_number(latest_short_edge, 4)}",
                 },
                 {
+                    "label": "Short focus",
+                    "value": str(short_brief.get("label", "-")),
+                    "note": (
+                        f"ready {short_brief.get('ready_count', 0)} · "
+                        f"watch {short_brief.get('candidate_count', 0)}"
+                    ),
+                },
+                {
+                    "label": "Next window",
+                    "value": (
+                        _format_duration_compact(float(short_brief.get("next_window_seconds")))
+                        if _float_or_none(short_brief.get("next_window_seconds")) is not None
+                        else "-"
+                    ),
+                    "note": "short-expiry prioritaire",
+                },
+                {
                     "label": "Loop signals",
                     "value": str(payload.get("opportunities_this_loop", 0)),
                     "note": (
@@ -2930,6 +3008,15 @@ def _control_center_html(
         </div>
 
         <div class="pod-detail-grid">
+          <div class="panel panel-{escape(_panel_tone(short_brief.get('tone')))}">
+            <div class="panel-header"><h3>Short-expiry watchlist</h3><p>Fenêtres proches expiry priorisées par la dernière boucle du pod.</p></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Status</th><th>Underlying</th><th>Period</th><th>T-exp s</th><th>Ref</th><th>Strike</th><th>Dist bps</th><th>Mom 60s</th><th>Best side</th><th>Net</th><th>Reason</th></tr></thead>
+                <tbody>{render_short_watchlist_rows()}</tbody>
+              </table>
+            </div>
+          </div>
           <div class="panel panel-neutral">
             <div class="panel-header"><h3>Short-expiry</h3><p>Snapshots du modèle court terme YES/NO.</p></div>
             <div class="table-wrap">
@@ -4790,6 +4877,12 @@ def hip4_outcome_html(
     mainnet_observation_health = mainnet_payload.get("market_observation_health", {})
     if not isinstance(mainnet_observation_health, dict):
         mainnet_observation_health = {}
+    short_brief = payload.get("short_expiry_brief", {})
+    if not isinstance(short_brief, dict):
+        short_brief = {}
+    short_watchlist = payload.get("short_expiry_watchlist", [])
+    if not isinstance(short_watchlist, list):
+        short_watchlist = []
 
     def fmt_number(value: object, digits: int = 4, *, fallback: str = "-") -> str:
         parsed = _float_or_none(value)
@@ -5033,6 +5126,29 @@ def hip4_outcome_html(
             if isinstance(row, dict)
         )
 
+    def render_short_watchlist_rows() -> str:
+        if not short_watchlist:
+            return "<tr><td colspan='11'>Aucune fenêtre short-expiry surveillée dans la dernière boucle.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('readiness', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('period', '-')))}</td>"
+                f"<td>{fmt_number(row.get('seconds_left'), 0)}</td>"
+                f"<td>{fmt_number(row.get('reference_price'), 6)}</td>"
+                f"<td>{fmt_number(row.get('strike'), 6)}</td>"
+                f"<td>{fmt_number(row.get('distance_bps'), 2)}</td>"
+                f"<td>{fmt_number(row.get('momentum_bps_60s'), 2)}</td>"
+                f"<td>{escape(str(row.get('best_side') or '-'))}</td>"
+                f"<td>{fmt_number(row.get('best_net_edge'), 6)}</td>"
+                f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                "</tr>"
+            )
+            for row in short_watchlist
+            if isinstance(row, dict)
+        )
+
     def render_execution_rows() -> str:
         rows = payload.get("execution_results", [])
         if not isinstance(rows, list) or not rows:
@@ -5255,6 +5371,23 @@ def hip4_outcome_html(
                 "label": "Best short",
                 "value": fmt_number(best_short_edge, 4),
                 "note": f"latest {fmt_number(latest_short_edge, 4)}",
+            },
+            {
+                "label": "Short focus",
+                "value": str(short_brief.get("label", "-")),
+                "note": (
+                    f"ready {short_brief.get('ready_count', 0)} · "
+                    f"watch {short_brief.get('candidate_count', 0)}"
+                ),
+            },
+            {
+                "label": "Next window",
+                "value": (
+                    _format_duration_compact(float(short_brief.get("next_window_seconds")))
+                    if _float_or_none(short_brief.get("next_window_seconds")) is not None
+                    else "-"
+                ),
+                "note": "short-expiry prioritaire",
             },
             {
                 "label": "Best edge",
@@ -5583,6 +5716,16 @@ def hip4_outcome_html(
           <table>
             <thead><tr><th>Ts</th><th>Underlying</th><th>Period</th><th>T-exp s</th><th>Dist bps</th><th>Mom 60s</th><th>Book pY</th><th>Short pY</th><th>Best side</th><th>Net</th><th>Conf</th><th>Reason</th></tr></thead>
             <tbody>{render_short_expiry_rows()}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>Short-expiry watchlist</h2><p>Fenêtres proches expiry priorisées par la dernière boucle du pod.</p></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Status</th><th>Underlying</th><th>Period</th><th>T-exp s</th><th>Ref</th><th>Strike</th><th>Dist bps</th><th>Mom 60s</th><th>Best side</th><th>Net</th><th>Reason</th></tr></thead>
+            <tbody>{render_short_watchlist_rows()}</tbody>
           </table>
         </div>
       </section>

@@ -25,6 +25,7 @@ from app.trident.hip4_outcome.models import (
     OutcomeFill,
     OutcomeOpportunity,
     OutcomePosition,
+    ShortHorizonFeatures,
     SupervisorDecision,
     outcome_asset_id,
     outcome_coin,
@@ -45,6 +46,10 @@ from app.trident.hip4_outcome.reconciliation import (
 )
 from app.trident.hip4_outcome.reporting import build_daily_summary_rows, replay_opportunities
 from app.trident.hip4_outcome.risk import OutcomeRiskManager
+from app.trident.hip4_outcome.runner import (
+    _build_short_expiry_operator_brief,
+    _short_expiry_watchlist_row,
+)
 from app.trident.hip4_outcome.state import OutcomeStateStore
 
 
@@ -303,6 +308,89 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertFalse(testnet_decision.approved)
         self.assertEqual(testnet_decision.reason, "price_bucket_paper_only")
 
+    def test_short_expiry_watchlist_row_marks_ready_edge(self) -> None:
+        market = self._market()
+        now_ts = market.expiry_ts - 120
+        book = self._book()
+        config = Hip4OutcomeConfig(
+            min_gross_edge=0.025,
+            min_net_edge=0.015,
+            short_expiry_periods=["1d"],
+            short_expiry_min_confidence=0.55,
+        )
+        features = ShortHorizonFeatures(
+            underlying="BTC",
+            reference_price=77000.0,
+            strike=market.strike,
+            seconds_left=120,
+            sample_count=12,
+            history_span_seconds=90,
+            distance_to_strike_bps=29.3,
+            momentum_bps_by_window={60: 5.5},
+            has_min_history=True,
+        )
+        probability = ProbabilityModel(config).estimate(
+            market,
+            reference_price=77000.0,
+            now_ts=now_ts,
+        )
+        assessment = OutcomeEdgeDetector(config).assess_short_expiry(
+            market=market,
+            order_book=book,
+            probability=probability,
+            reference_price=77000.0,
+            now_ts=now_ts,
+            features=features,
+        )
+
+        self.assertIsNotNone(assessment)
+        row = _short_expiry_watchlist_row(
+            market=market,
+            order_book=book,
+            reference_price=77000.0,
+            now_ts=now_ts,
+            short_features=features,
+            short_assessment=assessment,
+            config=config,
+        )
+
+        self.assertEqual(row["underlying"], "BTC")
+        self.assertEqual(row["seconds_left"], 120)
+        self.assertEqual(row["readiness"], "ready")
+        self.assertEqual(row["best_side"], "BUY_YES")
+
+    def test_short_expiry_operator_brief_surfaces_ready_focus(self) -> None:
+        config = Hip4OutcomeConfig(min_net_edge=0.015, short_expiry_min_confidence=0.55)
+        summary = {
+            "markets_supported": 3,
+            "opportunities": 1,
+            "approved": 1,
+            "executed": 0,
+            "next_short_expiry_seconds": 120,
+            "decision_reasons": {"local_outcome_risk_ok": 1},
+            "opportunity_mix": {"SHORT_EXPIRY": 1},
+            "short_expiry_watchlist": [
+                {
+                    "readiness": "ready",
+                    "underlying": "BTC",
+                    "seconds_left": 120,
+                    "best_net_edge": 0.042,
+                    "confidence": 0.72,
+                }
+            ],
+        }
+
+        brief = _build_short_expiry_operator_brief(
+            summary,
+            config=config,
+            last_error=None,
+        )
+
+        self.assertEqual(brief["tone"], "good")
+        self.assertEqual(brief["label"], "short_edge_ready")
+        self.assertEqual(brief["ready_count"], 1)
+        self.assertEqual(brief["top_candidate"]["underlying"], "BTC")
+
     def test_probability_between_prices_settles_deterministically_at_expiry(self) -> None:
         self.assertEqual(
             probability_between_prices(
@@ -517,6 +605,62 @@ class HIP4OutcomePodTests(unittest.TestCase):
             decision.constraints["blocked_slice"],
             "HYPE:LATE_EXPIRY:BUY_YES",
         )
+
+    def test_risk_rejects_reference_divergence_before_execution(self) -> None:
+        market = self._market()
+        market.underlying = "HYPE"
+        book = self._book()
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_NO",
+            edge_type="LATE_EXPIRY",
+            gross_edge=0.3,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.28,
+            confidence=0.9,
+            requested_size_usdc=25.0,
+            max_loss_usdc=25.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={
+                "reference_price": 30.92,
+                "reference_max_deviation_bps": 3855.11,
+                "reference_rejected_sources": [
+                    {"source": "okx", "symbol": "HYPE-USDT", "price": 42.81},
+                    {"source": "bybit", "symbol": "HYPEUSDT", "price": 42.83},
+                ],
+            },
+        )
+        config = Hip4OutcomeConfig(
+            mode="testnet",
+            allow_testnet_orders=True,
+            block_reference_divergence=True,
+            reference_divergence_max_bps=250.0,
+            reference_divergence_min_rejected_sources=2,
+            reference_divergence_underlyings=["HYPE"],
+            max_position_usdc=50.0,
+            max_total_outcome_exposure_usdc=100.0,
+            max_per_underlying_outcome_exposure_usdc=100.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+        )
+
+        decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 300,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "reference_divergence_guard")
+        self.assertEqual(decision.constraints["underlying"], "HYPE")
+        self.assertEqual(decision.constraints["reference_rejected_source_count"], 2)
+        self.assertEqual(decision.constraints["reference_max_deviation_bps"], 3855.11)
 
     def test_risk_rejects_testnet_order_below_effective_hl_minimum(self) -> None:
         market = self._market()
@@ -891,16 +1035,23 @@ BTC = 0.5
             self.assertEqual(config.outcome_open_fee_rate, 0.0)
             self.assertEqual(config.outcome_settlement_fee_rate, config.estimated_fees)
             self.assertEqual(config.blocked_opportunity_slices, [])
+            self.assertFalse(config.block_reference_divergence)
             self.assertTrue(config.enable_price_bucket)
             self.assertTrue(config.enable_market_observation)
 
-    def test_loads_blocked_opportunity_slices_from_config_and_env(self) -> None:
+    def test_loads_outcome_guardrails_from_config_and_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "hip4.toml"
             path.write_text(
                 """
 [hip4_outcome]
 blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "bad"]
+block_reference_divergence = true
+reference_divergence_max_bps = 250
+reference_divergence_min_rejected_sources = 2
+reference_divergence_underlyings = ["hype"]
+reference_divergence_sides = ["buy_yes"]
+reference_divergence_edge_types = ["model"]
 """,
                 encoding="utf-8",
             )
@@ -911,10 +1062,24 @@ blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "b
                 config.blocked_opportunity_slices,
                 ["HYPE:LATE_EXPIRY:BUY_YES", "BTC:MODEL:BUY_NO"],
             )
+            self.assertTrue(config.block_reference_divergence)
+            self.assertEqual(config.reference_divergence_max_bps, 250.0)
+            self.assertEqual(config.reference_divergence_min_rejected_sources, 2)
+            self.assertEqual(config.reference_divergence_underlyings, ["HYPE"])
+            self.assertEqual(config.reference_divergence_sides, ["BUY_YES"])
+            self.assertEqual(config.reference_divergence_edge_types, ["MODEL"])
 
             with patch.dict(
                 os.environ,
-                {"HIP4_OUTCOME_BLOCKED_OPPORTUNITY_SLICES": "ETH:MODEL:BUY_YES"},
+                {
+                    "HIP4_OUTCOME_BLOCKED_OPPORTUNITY_SLICES": "ETH:MODEL:BUY_YES",
+                    "HIP4_OUTCOME_BLOCK_REFERENCE_DIVERGENCE": "false",
+                    "HIP4_OUTCOME_REFERENCE_DIVERGENCE_MAX_BPS": "100",
+                    "HIP4_OUTCOME_REFERENCE_DIVERGENCE_MIN_REJECTED_SOURCES": "3",
+                    "HIP4_OUTCOME_REFERENCE_DIVERGENCE_UNDERLYINGS": "BTC,ETH",
+                    "HIP4_OUTCOME_REFERENCE_DIVERGENCE_SIDES": "BUY_NO",
+                    "HIP4_OUTCOME_REFERENCE_DIVERGENCE_EDGE_TYPES": "SHORT_EXPIRY",
+                },
             ):
                 overridden = load_hip4_outcome_config(path)
 
@@ -922,6 +1087,12 @@ blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "b
                 overridden.blocked_opportunity_slices,
                 ["ETH:MODEL:BUY_YES"],
             )
+            self.assertFalse(overridden.block_reference_divergence)
+            self.assertEqual(overridden.reference_divergence_max_bps, 100.0)
+            self.assertEqual(overridden.reference_divergence_min_rejected_sources, 3)
+            self.assertEqual(overridden.reference_divergence_underlyings, ["BTC", "ETH"])
+            self.assertEqual(overridden.reference_divergence_sides, ["BUY_NO"])
+            self.assertEqual(overridden.reference_divergence_edge_types, ["SHORT_EXPIRY"])
 
     def test_testnet_config_keeps_external_price_sources_visible(self) -> None:
         config = load_hip4_outcome_config("config/hip4_outcome_testnet.toml")
@@ -931,10 +1102,23 @@ blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "b
         self.assertIn("hyperliquid", config.reference_price_sources)
         self.assertTrue(config.anchor_reference_to_hyperliquid)
         self.assertNotIn("HYPE", config.reference_price_sources_by_underlying)
+        self.assertFalse(config.enable_model)
         self.assertIn(
             "HYPE:LATE_EXPIRY:BUY_YES",
             config.blocked_opportunity_slices,
         )
+        self.assertIn(
+            "HYPE:MODEL:BUY_YES",
+            config.blocked_opportunity_slices,
+        )
+        self.assertIn(
+            "HYPE:SHORT_EXPIRY:BUY_YES",
+            config.blocked_opportunity_slices,
+        )
+        self.assertTrue(config.block_reference_divergence)
+        self.assertEqual(config.reference_divergence_underlyings, ["HYPE"])
+        self.assertEqual(config.reference_divergence_max_bps, 250.0)
+        self.assertEqual(config.reference_divergence_min_rejected_sources, 2)
         self.assertTrue(config.enable_embedded_observers)
         self.assertIn(
             "config/hip4_outcome_mainnet_observer.toml",
@@ -993,6 +1177,10 @@ blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "b
                 status_path=str(root / "hip4_status.json"),
                 pod_b_alias_status_path=str(root / "pod_b_live_status.json"),
                 blocked_opportunity_slices=["HYPE:LATE_EXPIRY:BUY_YES"],
+                block_reference_divergence=True,
+                reference_divergence_max_bps=250.0,
+                reference_divergence_min_rejected_sources=2,
+                reference_divergence_underlyings=["HYPE"],
             )
             pod = HIP4OutcomeEdgePod(config)
 
@@ -1013,6 +1201,17 @@ blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "b
             self.assertEqual(alias["report"]["strategy"], "HIP4OutcomeEdgePod")
             self.assertEqual(alias["hip4_outcome_status_path"], str(root / "hip4_status.json"))
             self.assertEqual(alias["blocked_opportunity_slices"], ["HYPE:LATE_EXPIRY:BUY_YES"])
+            self.assertEqual(
+                alias["reference_divergence_guard"],
+                {
+                    "enabled": True,
+                    "max_bps": 250.0,
+                    "min_rejected_sources": 2,
+                    "underlyings": ["HYPE"],
+                    "sides": [],
+                    "edge_types": [],
+                },
+            )
 
     def test_run_once_logs_observed_unsupported_markets(self) -> None:
         class FakeInfoClient:

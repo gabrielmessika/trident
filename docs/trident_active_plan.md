@@ -19,6 +19,9 @@ Date: `2026-05-05`
   - dashboard principal: `/dashboard`
   - monitoring HIP-4: `/hip4-outcome`
   - API HIP-4: `/api/hip4-outcome`
+- Pod B HIP-4 expose maintenant un `operator_brief` et une `short_expiry_watchlist`
+  dans son status/API, afin de piloter explicitement les fenêtres proches expiry
+  sans transformer le paper/testnet en claim de performance.
 - `/api/hip4-outcome` expose aussi `blocked_opportunity_slices`, afin de verifier
   les guardrails testnet actifs sans ouvrir le fichier TOML serveur.
 - Regle de promotion: aucune logique HIP-4 ne passe en mainnet sans dataset complet, calibration, replay comparable, dry-run propre et testnet concluant sur plusieurs expiries.
@@ -221,15 +224,22 @@ Edge types implementes:
 
 Guardrail testnet actif:
 
-- `blocked_opportunity_slices = ["HYPE:LATE_EXPIRY:BUY_YES"]` dans
+- `enable_model = false` dans `config/hip4_outcome_testnet.toml` depuis la
+  review du `2026-05-08`: `MODEL` testnet etait a `-754.5327` PnL, win rate
+  `26.98%`, Brier `0.4826`.
+- `blocked_opportunity_slices = ["HYPE:LATE_EXPIRY:BUY_YES",
+  "HYPE:MODEL:BUY_YES", "HYPE:SHORT_EXPIRY:BUY_YES"]` dans
   `config/hip4_outcome_testnet.toml`.
-- Derive de la review testnet du `2026-05-05`: cette slice excluait `36` trades,
-  passait le PnL simule apres exclusion a `787.9492`, le profit factor a `3.3724`
-  et le Brier a `0.1578`.
+- `block_reference_divergence = true` cible `HYPE` quand au moins `2` sources
+  sont rejetees ou que `reference_max_deviation_bps > 250`. La review du
+  `2026-05-08` classait `184` pertes / `-3315.58` PnL sous
+  `reference_divergence`; ce guardrail doit rester entry-time avant de remettre
+  de la taille testnet.
 - Le rejet runtime est explicite: `reason = "blocked_outcome_slice"` avec
-  `constraints.blocked_slice = "HYPE:LATE_EXPIRY:BUY_YES"`.
-- Le status HIP-4 et l'alias Pod B exposent `blocked_opportunity_slices`; l'API
-  `/api/hip4-outcome` relaie ce champ.
+  `constraints.blocked_slice = "..."`, ou `reason = "reference_divergence_guard"`
+  avec le nombre de sources rejetees et le max deviation bps.
+- Le status HIP-4 et l'alias Pod B exposent `blocked_opportunity_slices` et
+  `reference_divergence_guard`; l'API `/api/hip4-outcome` relaie ces champs.
 
 Mode `SHORT_EXPIRY`:
 
