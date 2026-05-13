@@ -36,6 +36,9 @@ observation_universe = [
   "ADA", "BNB", "LTC",
   "AAVE", "NEAR", "ZRO", "TAO",
   "ZEC", "ENA", "TON", "BCH",
+  "STRK", "ONDO", "BIO", "VVV",
+  "SAGA", "JUP", "PENGU", "INJ",
+  "PENDLE", "TIA", "DYM", "ICP", "ATOM",
   "XYZ:CL", "XYZ:BRENTOIL", "XYZ:SP500",
   "XYZ:XYZ100", "XYZ:SILVER", "XYZ:GOLD",
   "XYZ:JPY", "XYZ:TSLA", "XYZ:NVDA", "XYZ:CRCL",
@@ -151,9 +154,22 @@ HYPE = 1440
 LINK = 1440
 LTC = 1440
 NEAR = 1440
+ATOM = 1440
+BIO = 1440
+DYM = 1440
+ICP = 1440
+INJ = 1440
+JUP = 1440
+ONDO = 1440
+PENDLE = 1440
+PENGU = 1440
+SAGA = 1440
 SOL = 1440
+STRK = 1440
 SUI = 1440
+TIA = 1440
 TON = 1440
+VVV = 1440
 XRP = 1440
 ZEC = 1440
 ZRO = 1440
@@ -504,6 +520,19 @@ ZEC = 10
 ENA = 10
 TON = 10
 BCH = 10
+STRK = 5
+ONDO = 10
+BIO = 5
+VVV = 5
+SAGA = 5
+JUP = 5
+PENGU = 5
+INJ = 10
+PENDLE = 10
+TIA = 5
+DYM = 5
+ICP = 10
+ATOM = 10
 
 # Mode special TAO prepare, mais volontairement inactif tant que TAO
 # reste bloque globalement du pool tradable. Pour l'activer:

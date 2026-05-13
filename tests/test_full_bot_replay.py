@@ -134,6 +134,18 @@ class FullBotReplayTests(unittest.TestCase):
             self.assertIn("pod_b_closed_trade_count", history_entry)
             self.assertIn("pod_c_realized_pnl_usd", history_entry)
 
+    def test_force_enable_backtest_keeps_pod_b_disabled_like_live_dry_run(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_a.enabled = False
+        config.pod_b.enabled = False
+        config.pod_c.enabled = False
+
+        runner = FullBotBacktestRunner(config, force_enable_all_pods=True)
+
+        self.assertTrue(runner.config.pod_a.enabled)
+        self.assertFalse(runner.config.pod_b.enabled)
+        self.assertTrue(runner.config.pod_c.enabled)
+
     def test_full_bot_replay_merges_same_timestamp_snapshot_lines(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_a.enabled = True

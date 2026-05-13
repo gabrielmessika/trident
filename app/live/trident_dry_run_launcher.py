@@ -42,7 +42,7 @@ class TridentDryRunLauncher:
         hip4_outcome_runner_factory: Callable[..., Any] | None = None,
         force_enable_all_pods: bool = True,
         enable_hip4_outcome: bool = True,
-        hip4_outcome_config_path: str | Path = "config/hip4_outcome_testnet.toml",
+        hip4_outcome_config_path: str | Path = "config/hip4_outcome_mainnet_paper.toml",
     ) -> None:
         self.config = self._runtime_config(
             config,
@@ -233,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-messages", type=int)
     parser.add_argument("--journal-dir", default="logs/dry_run_journals")
     parser.add_argument("--report-dir", default="logs/dry_run_reports")
-    parser.add_argument("--hip4-outcome-config", default="config/hip4_outcome_testnet.toml")
+    parser.add_argument("--hip4-outcome-config", default="config/hip4_outcome_mainnet_paper.toml")
     parser.add_argument(
         "--without-hip4-outcome",
         action="store_true",

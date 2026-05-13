@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Experimental HIP-4 outcome Pod B runner")
     parser.add_argument(
         "--config",
-        default="config/hip4_outcome_testnet.toml",
+        default="config/hip4_outcome_mainnet_paper.toml",
         help="HIP-4 outcome TOML config path",
     )
     parser.add_argument(

@@ -2603,7 +2603,7 @@ class HyperliquidTop30ResearchRunner:
 
     def _render_markdown(self, result: ResearchResult) -> str:
         lines = [
-            "# Hyperliquid Top 30 Research",
+            f"# Hyperliquid Top {len(result.symbols)} Research",
             "",
             f"- Dataset: `{result.dataset_dir}`",
             f"- Requested window: `{result.requested_start}` -> `{result.requested_end}`",

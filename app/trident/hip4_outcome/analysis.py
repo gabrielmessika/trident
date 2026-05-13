@@ -10,6 +10,7 @@ from typing import Any
 
 
 DEFAULT_PROFILE_LOGS: dict[str, str] = {
+    "mainnet_paper": "logs/hip4_outcome_mainnet_paper",
     "testnet": "logs/hip4_outcome_testnet",
     "mainnet": "logs/hip4_outcome_mainnet",
     "paper": "logs/hip4_outcome_paper",
@@ -1439,11 +1440,20 @@ def _readiness(profiles: list[dict[str, Any]], limits: ReviewThresholds) -> dict
     by_name = {str(profile.get("profile")): profile for profile in profiles}
     reasons: list[str] = []
     testnet = by_name.get("testnet")
+    mainnet_paper = by_name.get("mainnet_paper")
     mainnet = by_name.get("mainnet")
-    if testnet is None:
-        reasons.append("profil testnet absent de la review")
+    execution_profile = None
+    for candidate in (mainnet_paper, testnet):
+        if candidate is not None and _profile_has_execution_data(candidate):
+            execution_profile = candidate
+            break
+    if execution_profile is None:
+        execution_profile = mainnet_paper or testnet
+
+    if execution_profile is None:
+        reasons.append("profil mainnet paper/testnet absent de la review")
     else:
-        reasons.extend(testnet.get("readiness", {}).get("reasons", []))
+        reasons.extend(execution_profile.get("readiness", {}).get("reasons", []))
     if mainnet is None:
         reasons.append("profil mainnet observer absent de la review")
     else:
@@ -1456,15 +1466,25 @@ def _readiness(profiles: list[dict[str, Any]], limits: ReviewThresholds) -> dict
 
     status = "candidate_for_next_review" if not reasons else "collect_more_data"
     recommendation = (
-        "continuer tiny-size et preparer une calibration detaillee"
+        "continuer mainnet paper et preparer une calibration detaillee"
         if status == "candidate_for_next_review"
-        else "continuer la collecte paper/testnet/mainnet observer avant toute promotion"
+        else "continuer la collecte mainnet paper/mainnet observer avant toute promotion"
     )
     return {
         "status": status,
         "recommendation": recommendation,
         "reasons": reasons,
     }
+
+
+def _profile_has_execution_data(profile: dict[str, Any]) -> bool:
+    row_counts = profile.get("row_counts", {})
+    if not isinstance(row_counts, dict):
+        return False
+    return any(
+        int(row_counts.get(key, 0) or 0) > 0
+        for key in ("opportunities", "trades", "settlements", "execution_results")
+    )
 
 
 def _profile_readiness(
@@ -1477,20 +1497,21 @@ def _profile_readiness(
     limits: ReviewThresholds,
 ) -> dict[str, Any]:
     reasons: list[str] = []
-    if profile == "testnet":
+    if profile in {"testnet", "mainnet_paper"}:
+        label = "mainnet paper" if profile == "mainnet_paper" else "testnet"
         settlements = int(settlement_summary.get("count", 0))
         unique_markets = int(settlement_summary.get("unique_markets", 0))
         active_days = int(settlement_summary.get("active_days", 0))
         if settlements < limits.min_testnet_settlements:
-            reasons.append(f"settlements testnet insuffisants: {settlements}/{limits.min_testnet_settlements}")
+            reasons.append(f"settlements {label} insuffisants: {settlements}/{limits.min_testnet_settlements}")
         if unique_markets < limits.min_testnet_markets:
-            reasons.append(f"expiries/marches testnet insuffisants: {unique_markets}/{limits.min_testnet_markets}")
+            reasons.append(f"expiries/marches {label} insuffisants: {unique_markets}/{limits.min_testnet_markets}")
         if active_days < limits.min_testnet_days:
-            reasons.append(f"jours testnet insuffisants: {active_days}/{limits.min_testnet_days}")
+            reasons.append(f"jours {label} insuffisants: {active_days}/{limits.min_testnet_days}")
         profit_factor = _optional_float(settlement_summary.get("profit_factor"))
         if profit_factor is None or profit_factor < limits.min_profit_factor:
             reasons.append(
-                "profit factor testnet insuffisant: "
+                f"profit factor {label} insuffisant: "
                 f"{_fmt_num(profit_factor)}/{limits.min_profit_factor:.2f}"
             )
         brier = _optional_float(calibration.get("brier_score"))

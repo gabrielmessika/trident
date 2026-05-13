@@ -84,6 +84,17 @@ class TradfiTrendContextService:
                     cluster_leader=snapshot.cluster_leader,
                     global_regime=regime.value,
                     cluster_regime=context_regime.value,
+                    external_reference_price=snapshot.external_reference_price,
+                    external_reference_source_count=snapshot.external_reference_source_count,
+                    external_reference_sources=snapshot.external_reference_sources,
+                    external_reference_symbol=snapshot.external_reference_symbol,
+                    external_reference_time=snapshot.external_reference_time,
+                    external_reference_age_seconds=snapshot.external_reference_age_seconds,
+                    external_reference_max_deviation_bps=snapshot.external_reference_max_deviation_bps,
+                    external_premium_bps=snapshot.external_premium_bps,
+                    external_momentum_60s_bps=snapshot.external_momentum_60s_bps,
+                    external_momentum_300s_bps=snapshot.external_momentum_300s_bps,
+                    external_alignment_score=snapshot.external_alignment_score,
                 )
             )
         return contexts

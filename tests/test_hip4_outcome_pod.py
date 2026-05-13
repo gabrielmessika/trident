@@ -2057,6 +2057,22 @@ reference_divergence_edge_types = ["model"]
         self.assertIn("hip4_outcome_mainnet", config.logs_dir)
         self.assertIn("hip4_outcome_mainnet", config.status_path)
 
+    def test_mainnet_paper_config_is_paper_dry_run(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = load_hip4_outcome_config("config/hip4_outcome_mainnet_paper.toml")
+
+        self.assertEqual(config.mode, "paper")
+        self.assertEqual(config.info_url, "https://api.hyperliquid.xyz/info")
+        self.assertEqual(config.ws_url, "wss://api.hyperliquid.xyz/ws")
+        self.assertFalse(config.allow_testnet_orders)
+        self.assertFalse(config.require_testnet_url)
+        self.assertTrue(config.write_pod_b_alias_status)
+        self.assertFalse(config.enforce_testnet_balance_check)
+        self.assertEqual(config.include_underlyings, ["BTC"])
+        self.assertIn("hip4_outcome_mainnet_paper", config.logs_dir)
+        self.assertIn("hip4_outcome_mainnet_paper", config.state_path)
+        self.assertIn("hip4_outcome_mainnet_paper", config.rate_limit_state_path)
+
 
 if __name__ == "__main__":
     unittest.main()

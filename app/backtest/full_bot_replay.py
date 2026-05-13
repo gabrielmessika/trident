@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from app.backtest.external_reference_policy import ExternalReferenceDecisionPolicy
 from app.backtest.pod_a_executor import PodAExecutor
 from app.backtest.pod_report import PodABacktestReport
 from app.backtest.routing_replay import RoutingReplayRunner
@@ -67,8 +68,10 @@ class FullBotBacktestRunner:
         config: AppConfig,
         *,
         force_enable_all_pods: bool = True,
+        external_reference_policy: ExternalReferenceDecisionPolicy | None = None,
     ) -> None:
         self.config = self._runtime_config(config, force_enable_all_pods=force_enable_all_pods)
+        self.external_reference_policy = external_reference_policy
         self.loader = SnapshotLoader()
         self.pod_a_risk_gate = PodARiskGate(self.config)
         self.pod_c_risk_gate = PodCRiskGate(self.config)
@@ -86,7 +89,6 @@ class FullBotBacktestRunner:
         return replace(
             config,
             pod_a=replace(config.pod_a, enabled=True),
-            pod_b=replace(config.pod_b, enabled=True),
             pod_c=replace(config.pod_c, enabled=True),
         )
 
@@ -306,7 +308,14 @@ class FullBotBacktestRunner:
                 **dict(plan.setup_details or {}),
                 "current_date_key": date_key,
             }
+        if self.external_reference_policy is not None:
+            self.external_reference_policy.adjust_plans(PodName.POD_A, trade_plans)
         risk_decisions = self.pod_a_risk_gate.evaluate_many(trade_plans)
+        if self.external_reference_policy is not None:
+            risk_decisions = self.external_reference_policy.apply_decisions(
+                PodName.POD_A,
+                risk_decisions,
+            )
         opening_symbols = supervisor.opening_symbols_for(PodName.POD_A)
         managed_symbols = supervisor.managed_symbols_for(
             PodName.POD_A,
@@ -353,7 +362,20 @@ class FullBotBacktestRunner:
         )
         previews = supervisor.preview_pod_c_signals(snapshots)
         trade_plans = supervisor.build_pod_c_trade_plans(snapshots)
+        date_key = self._date_key(timestamp, source_file)
+        for plan in trade_plans:
+            plan.setup_details = {
+                **dict(plan.setup_details or {}),
+                "current_date_key": date_key,
+            }
+        if self.external_reference_policy is not None:
+            self.external_reference_policy.adjust_plans(PodName.POD_C, trade_plans)
         risk_decisions = self.pod_c_risk_gate.evaluate_many(trade_plans)
+        if self.external_reference_policy is not None:
+            risk_decisions = self.external_reference_policy.apply_decisions(
+                PodName.POD_C,
+                risk_decisions,
+            )
         opening_symbols = supervisor.opening_symbols_for(PodName.POD_C)
         managed_symbols = supervisor.managed_symbols_for(
             PodName.POD_C,
@@ -899,7 +921,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--respect-config-enabled",
         action="store_true",
-        help="Do not force-enable all pods for this backtest.",
+        help="Do not force-enable Pod A / Pod C for this backtest.",
     )
     return parser
 

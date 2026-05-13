@@ -225,7 +225,7 @@ class Hip4OutcomeConfig:
 
 
 def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool = True) -> Hip4OutcomeConfig:
-    config_path = Path(path or (os.getenv("HIP4_OUTCOME_CONFIG") if apply_env else None) or "config/hip4_outcome_testnet.toml")
+    config_path = Path(path or (os.getenv("HIP4_OUTCOME_CONFIG") if apply_env else None) or "config/hip4_outcome_mainnet_paper.toml")
     data: dict[str, object] = {}
     if config_path.exists():
         with config_path.open("rb") as handle:

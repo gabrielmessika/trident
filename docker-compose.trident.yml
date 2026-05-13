@@ -209,13 +209,13 @@ services:
       HIP4_OUTCOME_SECRET_KEY: ${HIP4_OUTCOME_SECRET_KEY:-}
       HIP4_OUTCOME_VAULT_ADDRESS: ${HIP4_OUTCOME_VAULT_ADDRESS:-}
       TRIDENT_ENABLE_HIP4_OUTCOME: ${TRIDENT_ENABLE_HIP4_OUTCOME:-true}
-      HIP4_OUTCOME_ENABLE_EMBEDDED_OBSERVERS: ${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-true}
+      HIP4_OUTCOME_ENABLE_EMBEDDED_OBSERVERS: ${HIP4_OUTCOME_ENABLE_EMBEDDED_OBSERVERS:-false}
     command:
       - python
       - -m
       - app.live.hip4_outcome_runner
       - --config
-      - ${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_testnet.toml}
+      - ${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}
       - --mode
       - ${HIP4_OUTCOME_MODE:-paper}
     volumes:
@@ -259,7 +259,7 @@ services:
       trident-api:
         condition: service_healthy
     restart: unless-stopped
-    profiles: ["pod_b", "hip4", "hip4_mainnet_observer"]
+    profiles: ["hip4_mainnet_observer"]
     logging:
       driver: json-file
       options:

@@ -1,0 +1,128 @@
+[hyperliquid]
+info_url = "https://api.hyperliquid.xyz/info"
+ws_url = "wss://api.hyperliquid.xyz/ws"
+
+[hip4_outcome]
+mode = "paper" # observer | paper | testnet
+allow_testnet_orders = false
+require_testnet_url = false
+
+logs_dir = "./logs/hip4_outcome_mainnet_paper"
+state_path = "./runtime/hip4_outcome_mainnet_paper_state.json"
+status_path = "./logs/hip4_outcome_status.json"
+write_pod_b_alias_status = true
+pod_b_alias_status_path = "./logs/pod_b_live_status.json"
+rate_limit_state_path = "./runtime/hip4_outcome_mainnet_paper_rate_limits.json"
+
+loop_interval_seconds = 4
+request_timeout_seconds = 10
+info_requests_per_minute = 240
+
+# Mainnet paper is now the Pod B dry-run source of truth. Keep it scoped to BTC
+# until other mainnet outcome underlyings have enough observation history.
+include_underlyings = ["BTC"]
+reference_price_sources = ["binance", "okx", "bybit", "coinbase", "kraken", "hyperliquid"]
+anchor_reference_to_hyperliquid = true
+max_source_deviation_bps = 50
+min_reference_sources = 1
+external_price_timeout_seconds = 5
+external_price_user_agent = "trident-hip4-outcome-mainnet-paper/0.1"
+max_markets_per_loop = 12
+max_opportunities_per_loop = 4
+min_time_to_expiry_seconds = 20
+max_time_to_expiry_minutes = 10080
+
+enable_late_expiry = true
+enable_parity = true
+enable_model = true
+enable_short_expiry = true
+enable_price_bucket = true
+enable_market_observation = true
+observe_unsupported_books = true
+max_observation_markets_per_loop = 80
+max_observation_books_per_loop = 30
+enable_embedded_observers = false
+embedded_observer_config_paths = []
+late_expiry_window_minutes = 20
+strike_buffer_bps = 8
+max_late_yes_price = 0.97
+max_late_no_price = 0.97
+
+short_expiry_window_minutes = 6
+short_expiry_periods = ["5m", "15m", "1d"]
+short_expiry_history_seconds = 900
+short_expiry_min_history_seconds = 45
+short_expiry_price_history_limit = 720
+short_expiry_momentum_windows_seconds = [30, 60, 180]
+short_expiry_primary_momentum_seconds = 60
+short_expiry_min_abs_momentum_bps = 1.0
+short_expiry_momentum_scale_bps = 12
+short_expiry_distance_scale_bps = 30
+short_expiry_distance_weight = 0.22
+short_expiry_momentum_weight = 0.22
+short_expiry_microstructure_weight = 0.16
+short_expiry_book_imbalance_weight = 0.08
+short_expiry_static_model_weight = 0.32
+short_expiry_min_confidence = 0.55
+short_expiry_max_yes_price = 0.92
+short_expiry_max_no_price = 0.92
+short_expiry_require_momentum_alignment = true
+short_expiry_watchlist_limit = 8
+price_bucket_max_yes_price = 0.98
+price_bucket_max_no_price = 0.98
+
+# HIP-4 outcome docs: opening positions is fee-free; fees apply when closing/settling.
+# Keep the fee/slippage/min-order assumptions learned during testnet integration.
+outcome_open_fee_rate = 0.0
+outcome_settlement_fee_rate = 0.002
+estimated_fees = 0.002
+estimated_slippage = 0.005
+safety_margin = 0.01
+min_gross_edge = 0.025
+min_net_edge = 0.015
+
+default_annualized_vol = 0.85
+max_position_usdc = 50
+pod_b_budget_usdc = 500
+max_total_outcome_exposure_usdc = 500
+max_per_underlying_outcome_exposure_usdc = 150
+max_outcome_markets_open = 3
+
+min_yes_depth_usdc = 12
+min_no_depth_usdc = 12
+max_spread = 0.60
+max_order_slippage = 0.03
+min_order_value_usdc = 10
+outcome_size_decimals = 0
+order_tif = "Ioc"
+enforce_testnet_balance_check = false
+testnet_balance_coin = "USDH"
+testnet_balance_buffer_usdc = 1
+auto_transfer_testnet_spot_usdc = false
+testnet_spot_transfer_target_usdc = 0
+settlement_grace_seconds = 300
+fills_lookback_hours = 24
+reconcile_after_execution = false
+reconcile_every_loops = 0
+enable_latency_log = true
+enable_edge_decay_log = true
+enable_daily_summary = true
+edge_decay_state_limit = 2000
+
+[hip4_outcome.annualized_vol_by_underlying]
+BTC = 0.65
+ETH = 0.75
+SOL = 0.95
+HYPE = 1.25
+DOGE = 1.20
+XRP = 1.05
+SUI = 1.20
+AVAX = 1.05
+LINK = 1.00
+ARB = 1.20
+ADA = 1.05
+BNB = 0.75
+LTC = 0.85
+AAVE = 1.05
+NEAR = 1.15
+ZRO = 1.35

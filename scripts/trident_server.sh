@@ -14,10 +14,10 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--without-hip4-mainnet-observer] [--fresh-start] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start] [service]
 
 Actions:
-  start     démarre l'API + Pod A + Pod B HIP-4 testnet avec observateur HIP-4 mainnet intégré + Pod C + funding par défaut en dry-run
+  start     démarre l'API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding par défaut en dry-run
   stop      arrête les services sélectionnés
   restart   redémarre les services sélectionnés
   update    rebuild + redémarre les services sélectionnés
@@ -29,7 +29,7 @@ Actions:
 Compatibilité :
   --with-pod-b / --with-pod-c / --with-funding restent acceptés mais sont redondants.
   --with-hip4-outcome / --without-hip4-outcome sont des alias du Pod B HIP-4.
-  --with-hip4-mainnet-observer / --without-hip4-mainnet-observer contrôle l'observateur mainnet intégré au process Pod B HIP-4.
+  --with-hip4-mainnet-observer / --without-hip4-mainnet-observer contrôle l'observateur mainnet séparé.
 
 Sécurité live :
   --mode dry-run est le défaut. --mode live lance Pod A + Pod C par défaut,
@@ -58,7 +58,7 @@ ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
 ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
-ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-true}"
+ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-}"
 FRESH_START=""
 MODE="${TRIDENT_MODE:-dry-run}"
 CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
@@ -157,6 +157,7 @@ cd "$ROOT_DIR"
 
 PROFILE_ARGS=()
 [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && PROFILE_ARGS+=(--profile pod_b)
+[ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && PROFILE_ARGS+=(--profile hip4_mainnet_observer)
 [ -n "$ENABLE_POD_C" ] && PROFILE_ARGS+=(--profile pod_c)
 [ -n "$ENABLE_FUNDING" ] && PROFILE_ARGS+=(--profile funding)
 
@@ -214,6 +215,9 @@ default_services() {
     local services=(trident-api pod-a-live)
     if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ]; then
         services+=(hip4-outcome-dry-run)
+    fi
+    if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ]; then
+        services+=(hip4-outcome-mainnet-observer)
     fi
     if [ -n "$ENABLE_POD_C" ]; then
         services+=(pod-c-live tradfi-funding-collector)
@@ -277,6 +281,8 @@ fresh_start_cleanup() {
         runtime/hip4_outcome_state.json \
         runtime/hip4_outcome_paper_state.json \
         runtime/hip4_outcome_testnet_state.json \
+        runtime/hip4_outcome_mainnet_paper_state.json \
+        runtime/hip4_outcome_mainnet_paper_rate_limits.json \
         runtime/hip4_outcome_mainnet_state.json \
         runtime/hip4_outcome_mainnet_rate_limits.json \
         2>/dev/null || true
@@ -284,6 +290,7 @@ fresh_start_cleanup() {
         logs/hip4_outcome \
         logs/hip4_outcome_paper \
         logs/hip4_outcome_testnet \
+        logs/hip4_outcome_mainnet_paper \
         logs/hip4_outcome_mainnet \
         2>/dev/null || true
     compose_all run --rm --no-deps --entrypoint sh trident-api -c '
@@ -302,12 +309,15 @@ fresh_start_cleanup() {
             /app/runtime/hip4_outcome_state.json \
             /app/runtime/hip4_outcome_paper_state.json \
             /app/runtime/hip4_outcome_testnet_state.json \
+            /app/runtime/hip4_outcome_mainnet_paper_state.json \
+            /app/runtime/hip4_outcome_mainnet_paper_rate_limits.json \
             /app/runtime/hip4_outcome_mainnet_state.json \
             /app/runtime/hip4_outcome_mainnet_rate_limits.json
         rm -rf \
             /app/logs/hip4_outcome \
             /app/logs/hip4_outcome_paper \
             /app/logs/hip4_outcome_testnet \
+            /app/logs/hip4_outcome_mainnet_paper \
             /app/logs/hip4_outcome_mainnet
     ' >/dev/null
     ok "Artefacts live réinitialisés"
@@ -322,7 +332,7 @@ guard_live_start() {
         return 0
     fi
     if [ -n "$ENABLE_POD_B" ]; then
-        error "Mode live refuse: Pod B HIP-4 est réservé au dry-run/testnet. Relance avec --without-pod-b."
+        error "Mode live refuse: Pod B HIP-4 est réservé au dry-run mainnet paper. Relance avec --without-pod-b."
         exit 1
     fi
 

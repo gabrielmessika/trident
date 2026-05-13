@@ -56,6 +56,17 @@ class AnchorTrendContext:
     lower_wick_ratio_4h: float = 0.0
     bb_position_4h: float = 0.5
     btc_overextension_score: float = 0.0
+    external_reference_price: float | None = None
+    external_reference_source_count: int = 0
+    external_reference_sources: str = ""
+    external_reference_symbol: str = ""
+    external_reference_time: str = ""
+    external_reference_age_seconds: float | None = None
+    external_reference_max_deviation_bps: float = 0.0
+    external_premium_bps: float = 0.0
+    external_momentum_60s_bps: float = 0.0
+    external_momentum_300s_bps: float = 0.0
+    external_alignment_score: float = 0.0
 
 
 @dataclass(slots=True)

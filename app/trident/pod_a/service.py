@@ -66,6 +66,24 @@ def _with_regime(context: AnchorTrendContext, details: dict[str, float | str | b
         "lower_wick_ratio_4h": round(context.lower_wick_ratio_4h, 4),
         "bb_position_4h": round(context.bb_position_4h, 4),
         "btc_overextension_score": round(context.btc_overextension_score, 4),
+        "external_reference_available": context.external_reference_source_count > 0,
+        "external_reference_price": round(context.external_reference_price or 0.0, 8),
+        "external_reference_source_count": float(context.external_reference_source_count),
+        "external_reference_sources": context.external_reference_sources,
+        "external_reference_symbol": context.external_reference_symbol,
+        "external_reference_time": context.external_reference_time,
+        "external_reference_age_seconds": round(
+            float(context.external_reference_age_seconds or 0.0),
+            4,
+        ),
+        "external_reference_max_deviation_bps": round(
+            context.external_reference_max_deviation_bps,
+            4,
+        ),
+        "external_premium_bps": round(context.external_premium_bps, 4),
+        "external_momentum_60s_bps": round(context.external_momentum_60s_bps, 4),
+        "external_momentum_300s_bps": round(context.external_momentum_300s_bps, 4),
+        "external_alignment_score": round(context.external_alignment_score, 4),
     }
 
 

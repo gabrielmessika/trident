@@ -213,7 +213,7 @@ targets = [
     "trades.csv",
 ]
 lines = []
-for directory in ("hip4_outcome_testnet", "hip4_outcome_mainnet"):
+for directory in ("hip4_outcome_mainnet_paper", "hip4_outcome_testnet", "hip4_outcome_mainnet"):
     log_dir = log_root / directory
     for name in targets:
         path = log_dir / name
@@ -332,6 +332,7 @@ run_hip4_outcome_run_review() {
         if command -v uv >/dev/null 2>&1; then
             uv run python -m app.backtest.hip4_outcome_run_review \
                 --logs-dir "paper=${LOCAL_DIR}/logs/hip4_outcome_paper" \
+                --logs-dir "mainnet_paper=${LOCAL_DIR}/logs/hip4_outcome_mainnet_paper" \
                 --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
                 --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
                 --output-json "${HIP4_RUN_REVIEW_JSON}" \
@@ -339,6 +340,7 @@ run_hip4_outcome_run_review() {
         elif command -v python3.12 >/dev/null 2>&1; then
             python3.12 -m app.backtest.hip4_outcome_run_review \
                 --logs-dir "paper=${LOCAL_DIR}/logs/hip4_outcome_paper" \
+                --logs-dir "mainnet_paper=${LOCAL_DIR}/logs/hip4_outcome_mainnet_paper" \
                 --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
                 --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
                 --output-json "${HIP4_RUN_REVIEW_JSON}" \
@@ -346,6 +348,7 @@ run_hip4_outcome_run_review() {
         elif command -v python3.11 >/dev/null 2>&1; then
             python3.11 -m app.backtest.hip4_outcome_run_review \
                 --logs-dir "paper=${LOCAL_DIR}/logs/hip4_outcome_paper" \
+                --logs-dir "mainnet_paper=${LOCAL_DIR}/logs/hip4_outcome_mainnet_paper" \
                 --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
                 --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
                 --output-json "${HIP4_RUN_REVIEW_JSON}" \
@@ -353,6 +356,7 @@ run_hip4_outcome_run_review() {
         else
             python3 -m app.backtest.hip4_outcome_run_review \
                 --logs-dir "paper=${LOCAL_DIR}/logs/hip4_outcome_paper" \
+                --logs-dir "mainnet_paper=${LOCAL_DIR}/logs/hip4_outcome_mainnet_paper" \
                 --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
                 --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
                 --output-json "${HIP4_RUN_REVIEW_JSON}" \
@@ -387,7 +391,7 @@ else
     capture_remote "hip4_outcome_mainnet.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome-mainnet"
     capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && find data/live_snapshots -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
     capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
-    capture_remote "hip4_files.txt" "cd '${REMOTE_DIR}' && for d in logs/hip4_outcome_testnet logs/hip4_outcome_mainnet; do for f in \"\$d\"/decisions.jsonl \"\$d\"/opportunities.csv \"\$d\"/short_expiry_features.csv \"\$d\"/edge_decay.csv \"\$d\"/latency_stats.csv \"\$d\"/daily_summary.csv \"\$d\"/market_observations.jsonl \"\$d\"/settlements.csv \"\$d\"/trades.csv; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done; done"
+    capture_remote "hip4_files.txt" "cd '${REMOTE_DIR}' && for d in logs/hip4_outcome_mainnet_paper logs/hip4_outcome_testnet logs/hip4_outcome_mainnet; do for f in \"\$d\"/decisions.jsonl \"\$d\"/opportunities.csv \"\$d\"/short_expiry_features.csv \"\$d\"/edge_decay.csv \"\$d\"/latency_stats.csv \"\$d\"/daily_summary.csv \"\$d\"/market_observations.jsonl \"\$d\"/settlements.csv \"\$d\"/trades.csv; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done; done"
     capture_remote "pod_b_runtime_present.txt" "cd '${REMOTE_DIR}' && if [ -f logs/pod_b_live_status.json ]; then echo present; else echo missing; fi"
     capture_remote "api_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} trident-api 2>&1"
     capture_remote "pod_a_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-a-live 2>&1"
@@ -678,6 +682,19 @@ hip4_run_profile_count = (
     if isinstance(hip4_run_review.get("profiles", []), list)
     else 0
 )
+
+
+def normalize_logs_dir(value: object, default: str = "logs/hip4_outcome_mainnet_paper") -> str:
+    text = str(value or "").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    if "/logs/" in text:
+        text = "logs/" + text.split("/logs/", 1)[1]
+    text = text.rstrip("/")
+    return text or default
+
+
+hip4_primary_logs_dir = normalize_logs_dir(hip4_outcome.get("logs_dir"))
 latest_business_date = (
     str(latest_snapshot["timestamp"])[:10] if latest_snapshot is not None else ""
 )
@@ -1008,10 +1025,10 @@ if container_is_running("trident-hip4-outcome-dry-run") or container_is_running(
         pod_b_failures.append("Snapshot /api/hip4-outcome absent")
 
     for required_file in (
-        "logs/hip4_outcome_testnet/decisions.jsonl",
-        "logs/hip4_outcome_testnet/opportunities.csv",
-        "logs/hip4_outcome_testnet/latency_stats.csv",
-        "logs/hip4_outcome_testnet/market_observations.jsonl",
+        f"{hip4_primary_logs_dir}/decisions.jsonl",
+        f"{hip4_primary_logs_dir}/opportunities.csv",
+        f"{hip4_primary_logs_dir}/latency_stats.csv",
+        f"{hip4_primary_logs_dir}/market_observations.jsonl",
     ):
         file_info = hip4_files.get(required_file)
         if file_info is None:
@@ -1065,7 +1082,7 @@ if container_is_running("trident-hip4-outcome-dry-run") or container_is_running(
             (
                 "Analyse la cohabitation dry-run Pod A + Pod B HIP-4 Outcome.\n\n"
                 "Objectif: verifier que la coexistence est propre avec comptes separes, "
-                "et que les opportunites outcome testnet montrent ou non un edge exploitable.\n\n"
+                "et que les opportunites outcome mainnet paper montrent ou non un edge exploitable.\n\n"
                 f"Contexte resume:\n"
                 f"- ownership_conflict_count: {ownership_conflicts}\n"
                 f"- pod_b_process_state: {pod_b_report.get('process_state')}\n"
@@ -1272,7 +1289,7 @@ for label, payload, day_metrics in freshness_specs:
         open_positions = as_int(hip4_outcome.get("open_positions"))
         opportunities = as_int(hip4_outcome.get("opportunities_this_loop"))
         decisions = as_int(
-            hip4_files.get("logs/hip4_outcome_testnet/decisions.jsonl", {}).get("line_count")
+            hip4_files.get(f"{hip4_primary_logs_dir}/decisions.jsonl", {}).get("line_count")
         )
         best_edge = as_float(hip4_outcome.get("best_net_edge"))
         if bool(hip4_outcome.get("fresh")) and (open_positions > 0 or opportunities > 0 or decisions > 1):

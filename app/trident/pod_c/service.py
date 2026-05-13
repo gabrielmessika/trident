@@ -539,6 +539,24 @@ class TradfiTrendService:
             "activity_bucket": _activity_bucket(context.activity_ratio),
             "trade_count_bucket": _activity_bucket(context.trade_count_ratio),
             "flow_bucket": _flow_bucket(flow_support_score),
+            "external_reference_available": context.external_reference_source_count > 0,
+            "external_reference_price": round(context.external_reference_price or 0.0, 8),
+            "external_reference_source_count": float(context.external_reference_source_count),
+            "external_reference_sources": context.external_reference_sources,
+            "external_reference_symbol": context.external_reference_symbol,
+            "external_reference_time": context.external_reference_time,
+            "external_reference_age_seconds": round(
+                float(context.external_reference_age_seconds or 0.0),
+                4,
+            ),
+            "external_reference_max_deviation_bps": round(
+                context.external_reference_max_deviation_bps,
+                4,
+            ),
+            "external_premium_bps": round(context.external_premium_bps, 4),
+            "external_momentum_60s_bps": round(context.external_momentum_60s_bps, 4),
+            "external_momentum_300s_bps": round(context.external_momentum_300s_bps, 4),
+            "external_alignment_score": round(context.external_alignment_score, 4),
         }
 
     def _review_setup_details(
@@ -581,6 +599,24 @@ class TradfiTrendService:
             "activity_bucket": _activity_bucket(context.activity_ratio),
             "trade_count_bucket": _activity_bucket(context.trade_count_ratio),
             "flow_bucket": _flow_bucket(flow_support_score),
+            "external_reference_available": context.external_reference_source_count > 0,
+            "external_reference_price": round(context.external_reference_price or 0.0, 8),
+            "external_reference_source_count": float(context.external_reference_source_count),
+            "external_reference_sources": context.external_reference_sources,
+            "external_reference_symbol": context.external_reference_symbol,
+            "external_reference_time": context.external_reference_time,
+            "external_reference_age_seconds": round(
+                float(context.external_reference_age_seconds or 0.0),
+                4,
+            ),
+            "external_reference_max_deviation_bps": round(
+                context.external_reference_max_deviation_bps,
+                4,
+            ),
+            "external_premium_bps": round(context.external_premium_bps, 4),
+            "external_momentum_60s_bps": round(context.external_momentum_60s_bps, 4),
+            "external_momentum_300s_bps": round(context.external_momentum_300s_bps, 4),
+            "external_alignment_score": round(context.external_alignment_score, 4),
         }
 
     def reset(self) -> None:

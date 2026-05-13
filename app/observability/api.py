@@ -182,7 +182,7 @@ def _hip4_outcome_monitor_payload(
     summary = status.get("summary", {}) if isinstance(status, dict) else {}
     if not isinstance(summary, dict):
         summary = {}
-    logs_dir = Path("logs/hip4_outcome_testnet")
+    logs_dir = Path("logs/hip4_outcome_mainnet_paper")
     if isinstance(status, dict):
         raw_logs_dir = status.get("logs_dir")
         if isinstance(raw_logs_dir, str) and raw_logs_dir:
@@ -2950,9 +2950,9 @@ def _control_center_html(
                     ),
                 },
                 {
-                    "label": f"Testnet {balance_coin}",
+                    "label": f"Quote {balance_coin}",
                     "value": f"{fmt_hip4_number(capital.get('testnet_available_usdc'), 2)} {balance_coin}",
-                    "note": "non requis en paper" if capital.get("testnet_available_usdc") is None else "balance testnet",
+                    "note": "non requis en paper" if capital.get("testnet_available_usdc") is None else "balance runtime",
                 },
                 {
                     "label": "Last error",
@@ -2967,7 +2967,7 @@ def _control_center_html(
         <div class="panel panel-{escape(_panel_tone(tone))}">
           <div class="panel-header">
             <h2>Pod B HIP-4 Outcome</h2>
-            <p>Vue native du nouveau Pod B expérimental: marchés outcome testnet, positions, budget, edge court terme, latence et exécutions.</p>
+            <p>Vue native du nouveau Pod B expérimental: marchés outcome mainnet paper, positions simulées, budget, edge court terme, latence et exécutions.</p>
           </div>
           <div class="metric-grid">
             {cards}
@@ -3090,7 +3090,7 @@ def _control_center_html(
         def observation_cards() -> str:
             cards_html: list[str] = []
             for label, health in (
-                ("Testnet observation", testnet_health),
+                ("Pod B mainnet paper", testnet_health),
                 ("Mainnet observation", mainnet_health),
             ):
                 tone_name = _panel_tone(health.get("tone"))
@@ -3124,7 +3124,7 @@ def _control_center_html(
         def observation_summary_rows() -> str:
             rendered_rows: list[str] = []
             for profile_name, health in (
-                ("testnet", testnet_health),
+                ("pod_b_mainnet_paper", testnet_health),
                 ("mainnet", mainnet_health),
             ):
                 class_counts = health.get("by_class")
@@ -3153,7 +3153,7 @@ def _control_center_html(
 
         def observation_detail_rows() -> str:
             rendered_rows: list[str] = []
-            for profile_name, source in (("testnet", testnet_payload), ("mainnet", mainnet_payload)):
+            for profile_name, source in (("pod_b_mainnet_paper", testnet_payload), ("mainnet", mainnet_payload)):
                 rows = source.get("market_observations", [])
                 if not isinstance(rows, list):
                     continue
@@ -3200,7 +3200,7 @@ def _control_center_html(
           <div class="table-wrap">
             <table>
               <thead>
-                <tr>{_table_header("Profile", "Source de l'observation: testnet ou mainnet observer.")}{_table_header("État", "Pastille de santé synthétique.")}{_table_header("Classe", "Classe HIP-4 observée.")}{_table_header("Count", "Nombre de lignes récentes dans market_observations.jsonl.")}{_table_header("Support", "Répartition des statuts supportés / watch-only.")}{_table_header("Latest", "Dernier timestamp observé dans ce profil.")}</tr>
+                <tr>{_table_header("Profile", "Source de l'observation: Pod B mainnet paper ou mainnet observer.")}{_table_header("État", "Pastille de santé synthétique.")}{_table_header("Classe", "Classe HIP-4 observée.")}{_table_header("Count", "Nombre de lignes récentes dans market_observations.jsonl.")}{_table_header("Support", "Répartition des statuts supportés / watch-only.")}{_table_header("Latest", "Dernier timestamp observé dans ce profil.")}</tr>
               </thead>
               <tbody>{observation_summary_rows()}</tbody>
             </table>
@@ -4932,7 +4932,7 @@ def hip4_outcome_html(
         embedded_threads = int(embedded.get("running_threads", 0) or 0)
         embedded_tone = "good" if embedded_enabled and embedded_threads > 0 else "warn"
         specs = [
-            ("Testnet observation", testnet_observation_health),
+            ("Pod B mainnet paper", testnet_observation_health),
             ("Mainnet observation", mainnet_observation_health),
         ]
         cards_html = []
@@ -4964,7 +4964,7 @@ def hip4_outcome_html(
     def render_observation_summary_rows() -> str:
         rows_html: list[str] = []
         for profile_name, health in (
-            ("testnet", testnet_observation_health),
+            ("pod_b_mainnet_paper", testnet_observation_health),
             ("mainnet", mainnet_observation_health),
         ):
             class_counts = health.get("by_class")
@@ -4990,7 +4990,7 @@ def hip4_outcome_html(
 
     def render_observation_rows() -> str:
         rows_html: list[str] = []
-        for profile_name, source in (("testnet", payload), ("mainnet", mainnet_payload)):
+        for profile_name, source in (("pod_b_mainnet_paper", payload), ("mainnet", mainnet_payload)):
             rows = source.get("market_observations", [])
             if not isinstance(rows, list):
                 continue
@@ -5405,7 +5405,7 @@ def hip4_outcome_html(
                 "note": f"sur {fmt_number(capital.get('budget_usdc'), 2)} USD",
             },
             {
-                "label": f"Testnet {balance_coin}",
+                "label": f"Quote {balance_coin}",
                 "value": f"{fmt_number(capital.get('testnet_available_usdc'), 2)} {balance_coin}",
                 "note": str(
                     capital.get("testnet_spot_transfer_status")
@@ -5611,7 +5611,7 @@ def hip4_outcome_html(
         <span class="badge badge-{tone}">{'fresh' if payload.get('fresh') else 'stale'}</span>
       </div>
       <h1>HIP-4 Outcome Experimental</h1>
-      <p>Pod expérimental isolé: exécution testnet dédiée et observation mainnet en parallèle, sans ordre mainnet.</p>
+      <p>Pod expérimental isolé: dry-run mainnet paper, observation des books mainnet, sans ordre mainnet.</p>
       <div class="hero-links">
         <span>Last updated: {escape(refreshed_at)}</span>
         <a href="/dashboard">/dashboard</a>
@@ -5681,7 +5681,7 @@ def hip4_outcome_html(
       </section>
 
       <section class="panel">
-        <div class="panel-header"><h2>Exécutions testnet</h2><p>Réponses persistées après les décisions approuvées.</p></div>
+        <div class="panel-header"><h2>Exécutions paper</h2><p>Réponses persistées après les décisions approuvées en dry-run.</p></div>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Ts</th><th>Underlying</th><th>Edge</th><th>Side</th><th>Approved</th><th>Status</th><th>Filled</th><th>Cost</th><th>Fill statuses</th><th>Error</th></tr></thead>
@@ -5804,7 +5804,7 @@ def hip4_outcome_html(
         <section class="panel">
           <div class="panel-header">
             <h2>Marchés observés</h2>
-            <p>Dernières lignes `market_observations.jsonl` testnet et mainnet.</p>
+            <p>Dernières lignes `market_observations.jsonl` mainnet paper et mainnet observer.</p>
           </div>
           <div class="table-wrap">
             <table>

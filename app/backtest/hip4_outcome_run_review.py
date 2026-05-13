@@ -14,7 +14,7 @@ from app.trident.hip4_outcome.analysis import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Review HIP-4 outcome paper/testnet/mainnet-observer runs."
+        description="Review HIP-4 outcome mainnet-paper/testnet/mainnet-observer runs."
     )
     parser.add_argument(
         "--logs-dir",
@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PROFILE=PATH",
         help=(
             "Logs directory to review. Can be repeated. "
-            "Defaults to testnet/mainnet/paper HIP-4 log directories."
+            "Defaults to mainnet-paper/testnet/mainnet/paper HIP-4 log directories."
         ),
     )
     parser.add_argument(

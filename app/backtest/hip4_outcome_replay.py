@@ -11,8 +11,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Replay HIP-4 outcome opportunity logs")
     parser.add_argument(
         "--profile",
-        choices=["testnet", "mainnet"],
-        default="testnet",
+        choices=["mainnet_paper", "testnet", "mainnet"],
+        default="mainnet_paper",
         help="Default logs directory profile when --logs-dir is omitted.",
     )
     parser.add_argument("--logs-dir", default=None)
@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     default_logs_dir = {
+        "mainnet_paper": "logs/hip4_outcome_mainnet_paper",
         "testnet": "logs/hip4_outcome_testnet",
         "mainnet": "logs/hip4_outcome_mainnet",
     }[args.profile]

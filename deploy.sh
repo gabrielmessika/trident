@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--without-hip4-mainnet-observer] [--fresh-start]
+Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start]
 
 Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
@@ -26,9 +26,9 @@ Déploie TRIDENT sur le serveur :
 Par défaut :
 - host SSH : trident-hetzner
 - mode : dry-run
-- démarrage avec `--start` : API + Pod A + Pod B HIP-4 testnet avec observateur HIP-4 mainnet intégré + Pod C + funding en dry-run
+- démarrage avec `--start` : API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding en dry-run
 - `--without-pod-b` retire le Pod B HIP-4
-- `--without-hip4-mainnet-observer` retire seulement l'observateur HIP-4 mainnet intégré au process Pod B
+- `--with-hip4-mainnet-observer` ajoute l'ancien observateur HIP-4 mainnet séparé
 - `--without-pod-c` retire Pod C
 - `--without-funding` retire le collecteur funding/OI global
 - `--without-hip4-outcome` est conservé comme alias de `--without-pod-b`
@@ -40,7 +40,7 @@ Sécurité live :
 - pour un live Pod A seul, ajoutez aussi `--without-pod-c`.
 
 Compatibilité :
-- `--with-pod-b`, `--with-pod-c`, `--with-funding`, `--with-hip4-outcome`, `--with-hip4-mainnet-observer` restent acceptés mais sont désormais redondants
+- `--with-pod-b`, `--with-pod-c`, `--with-funding`, `--with-hip4-outcome` restent acceptés mais sont désormais redondants
 EOF
 }
 
@@ -56,14 +56,14 @@ ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
 ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
-ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-true}"
+ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-}"
 FRESH_START=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 selected_pods_label() {
     local pods=("API" "Pod A")
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && pods+=("Pod B HIP-4")
-    [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && pods+=("HIP-4 Mainnet Observer intégré")
+    [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && pods+=("HIP-4 Mainnet Observer séparé")
     [ -n "$ENABLE_POD_C" ] && pods+=("Pod C" "Tradfi Funding Collector")
     [ -n "$ENABLE_FUNDING" ] && pods+=("Funding Collector")
     local joined=""
@@ -89,7 +89,7 @@ selected_server_flags() {
     [ -z "$ENABLE_POD_C" ] && flags="${flags} --without-pod-c"
     [ -z "$ENABLE_FUNDING" ] && flags="${flags} --without-funding"
     [ -z "$ENABLE_HIP4_OUTCOME" ] && [ "$MODE" != "live" ] && flags="${flags} --without-hip4-outcome"
-    [ -z "$ENABLE_HIP4_MAINNET_OBSERVER" ] && [ "$MODE" != "live" ] && flags="${flags} --without-hip4-mainnet-observer"
+    [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && [ "$MODE" != "live" ] && flags="${flags} --with-hip4-mainnet-observer"
     [ -n "$FRESH_START" ] && flags="${flags} --fresh-start"
     printf '%s' "$flags"
 }
@@ -263,6 +263,7 @@ build_remote() {
     info "Build Docker sur le serveur..."
     local profile_args=""
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && profile_args="${profile_args} --profile pod_b"
+    [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && profile_args="${profile_args} --profile hip4_mainnet_observer"
     [ -n "$ENABLE_POD_C" ] && profile_args="${profile_args} --profile pod_c"
     [ -n "$ENABLE_FUNDING" ] && profile_args="${profile_args} --profile funding"
     ssh_remote "cd ${DEPLOY_DIR} && docker compose -f docker-compose.trident.yml${profile_args} build"
