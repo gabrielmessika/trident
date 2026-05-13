@@ -19,6 +19,20 @@ from app.trident.pod_a.symbol_mode import active_symbol_mode, scale_exit_policy
 from app.trident.types import PodAllocation, TradePlan
 
 
+def _float_detail(details: dict[str, object], key: str) -> float:
+    try:
+        return float(details.get(key, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _int_detail(details: dict[str, object], key: str) -> int:
+    try:
+        return int(float(details.get(key, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 class AnchorTrendPlanner:
     """Builds executable trade plans from Pod A signals and capital limits."""
 
@@ -148,7 +162,7 @@ class AnchorTrendPlanner:
             base_expected_loss_usd * campaign_initial_entry_fraction,
             6,
         )
-        return TradePlan(
+        plan = TradePlan(
             symbol=signal.symbol,
             side=signal.side,
             setup=signal.setup,
@@ -196,6 +210,107 @@ class AnchorTrendPlanner:
                 "special_symbol_mode_active": symbol_mode is not None,
             },
         )
+        self._apply_a_grade_boost_and_exits(plan)
+        return plan
+
+    def _apply_a_grade_boost_and_exits(self, plan: TradePlan) -> None:
+        config = self._config.pod_a
+        if not config.a_grade_enabled:
+            return
+        details = dict(plan.setup_details or {})
+        if details.get("market_cluster") != "crypto" or plan.setup != "trend_pullback_long":
+            return
+        if bool(details.get("special_symbol_mode_active", False)):
+            return
+        if bool(details.get("campaign_add_on_enabled", False)):
+            return
+        score, reason = self._a_grade_score(plan)
+        if score < max(config.a_grade_min_score, 0):
+            return
+        if score >= max(config.a_grade_strong_score, config.a_grade_min_score):
+            scale = config.a_grade_strong_boost_scale
+            grade = "strong"
+        else:
+            scale = config.a_grade_boost_scale
+            grade = "standard"
+        self._scale_plan(plan, scale)
+        plan.break_even_trigger_bps = round(
+            plan.break_even_trigger_bps * max(config.a_grade_break_even_multiplier, 0.0),
+            4,
+        )
+        plan.trailing_activation_bps = round(
+            plan.trailing_activation_bps
+            * max(config.a_grade_trailing_activation_multiplier, 0.0),
+            4,
+        )
+        plan.trailing_distance_bps = round(
+            plan.trailing_distance_bps * max(config.a_grade_trailing_distance_multiplier, 0.0),
+            4,
+        )
+        plan.setup_details = {
+            **dict(plan.setup_details or {}),
+            "a_grade_active": True,
+            "a_grade_score": score,
+            "a_grade_level": grade,
+            "a_grade_size_scale": round(scale, 4),
+            "a_grade_reason": reason,
+        }
+
+    def _scale_plan(self, plan: TradePlan, scale: float) -> None:
+        bounded = max(0.0, min(float(scale), 2.0))
+        plan.target_notional_usd = round(plan.target_notional_usd * bounded, 6)
+        plan.margin_usd = round(plan.margin_usd * bounded, 6)
+        plan.risk_budget_usd = round(plan.risk_budget_usd * bounded, 6)
+        plan.expected_loss_usd = round(plan.expected_loss_usd * bounded, 6)
+
+    def _a_grade_score(self, plan: TradePlan) -> tuple[int, str]:
+        details = dict(plan.setup_details or {})
+        score = 0
+        hits: list[str] = []
+        regime = str(details.get("regime", "") or "")
+        structure_score = abs(_float_detail(details, "structure_score"))
+        trend_1h = _float_detail(details, "trend_1h_bps")
+        trend_4h = _float_detail(details, "trend_4h_bps")
+        stoch = _float_detail(details, "stoch_rsi_k")
+        cci20 = _float_detail(details, "cci20")
+        vwap = _float_detail(details, "vwap_reclaim_score")
+        btc_overextension = _float_detail(details, "btc_overextension_score")
+        pattern_watch_count = _int_detail(details, "pattern_watch_count")
+
+        if float(plan.confidence or 0.0) >= 0.62:
+            score += 1
+            hits.append("confidence")
+        if regime in {"TrendExpansion", "PanicSqueeze"}:
+            score += 1
+            hits.append("regime")
+        if bool(details.get("candles_ready", False)):
+            score += 1
+            hits.append("candles")
+        if structure_score >= 0.45:
+            score += 1
+            hits.append("structure")
+        if 8.0 <= trend_1h <= 180.0:
+            score += 1
+            hits.append("trend_1h")
+        if -25.0 <= trend_4h <= 110.0:
+            score += 1
+            hits.append("trend_4h")
+        if vwap >= 0.45:
+            score += 1
+            hits.append("vwap")
+        if 0.32 <= stoch <= 0.78:
+            score += 1
+            hits.append("stoch")
+        if cci20 <= 110.0:
+            score += 1
+            hits.append("cci")
+        if btc_overextension <= 0.60:
+            score += 1
+            hits.append("btc_ok")
+        if pattern_watch_count <= 1:
+            score += 1
+            hits.append("few_watchers")
+        return score, f"score={score} hits={','.join(hits)}"
 
     def _campaign_for_signal(
         self,

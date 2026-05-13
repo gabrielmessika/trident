@@ -1,5 +1,6 @@
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
@@ -446,8 +447,12 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(supervisor.snapshot()["pod_a_signal_review"])
 
     def test_supervisor_builds_pod_a_trade_plans(self) -> None:
+        config = replace(
+            self.config,
+            pod_a=replace(self.config.pod_a, a_grade_enabled=False),
+        )
         supervisor = TridentSupervisor(
-            config=self.config,
+            config=config,
             profile="trident",
             mode="observation",
         )

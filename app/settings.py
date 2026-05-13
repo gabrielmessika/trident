@@ -215,6 +215,14 @@ class PodAConfig:
     intraday_setup_guardrail_min_closed_trades: int = 3
     intraday_setup_guardrail_max_cumulative_loss_usd: float = -10.0
     intraday_setup_guardrail_max_average_pnl_usd: float = -1.0
+    a_grade_enabled: bool = False
+    a_grade_min_score: int = 6
+    a_grade_boost_scale: float = 1.25
+    a_grade_strong_score: int = 8
+    a_grade_strong_boost_scale: float = 1.40
+    a_grade_break_even_multiplier: float = 1.20
+    a_grade_trailing_activation_multiplier: float = 1.15
+    a_grade_trailing_distance_multiplier: float = 1.35
     campaign: PodACampaignConfig = field(default_factory=lambda: PodACampaignConfig())
     setup_runner: PodASetupRunnerConfig = field(default_factory=lambda: PodASetupRunnerConfig())
     structural_targets: PodAStructuralTargetConfig = field(
@@ -1417,6 +1425,22 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             intraday_setup_guardrail_max_average_pnl_usd=float(
                 pod_a_data.get("intraday_setup_guardrail_max_average_pnl_usd", -1.0)
+            ),
+            a_grade_enabled=bool(pod_a_data.get("a_grade_enabled", False)),
+            a_grade_min_score=int(pod_a_data.get("a_grade_min_score", 6)),
+            a_grade_boost_scale=float(pod_a_data.get("a_grade_boost_scale", 1.25)),
+            a_grade_strong_score=int(pod_a_data.get("a_grade_strong_score", 8)),
+            a_grade_strong_boost_scale=float(
+                pod_a_data.get("a_grade_strong_boost_scale", 1.40)
+            ),
+            a_grade_break_even_multiplier=float(
+                pod_a_data.get("a_grade_break_even_multiplier", 1.20)
+            ),
+            a_grade_trailing_activation_multiplier=float(
+                pod_a_data.get("a_grade_trailing_activation_multiplier", 1.15)
+            ),
+            a_grade_trailing_distance_multiplier=float(
+                pod_a_data.get("a_grade_trailing_distance_multiplier", 1.35)
             ),
             campaign=_pod_a_campaign(pod_a_data.get("campaign", {})),
             setup_runner=_pod_a_setup_runner(pod_a_data.get("setup_runner", {})),

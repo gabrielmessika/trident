@@ -14,6 +14,7 @@ from app.settings import (
 from app.trident.capital_allocator import CapitalAllocator
 from app.trident.pod_a import (
     AnchorTrendContext,
+    AnchorTrendSignal,
     AnchorTrendPlanner,
     AnchorTrendService,
     MarketContextService,
@@ -322,6 +323,7 @@ class AnchorTrendServiceTests(unittest.TestCase):
             self.config,
             pod_a=replace(
                 self.config.pod_a,
+                a_grade_enabled=False,
                 symbol_modes={
                     "TAO": PodASymbolModeConfig(
                         enabled=True,
@@ -920,6 +922,7 @@ class AnchorTrendServiceTests(unittest.TestCase):
             self.config,
             pod_a=replace(
                 self.config.pod_a,
+                a_grade_enabled=False,
                 setup_runner=PodASetupRunnerConfig(
                     enabled=True,
                     setups=["trend_pullback_long"],
@@ -968,11 +971,104 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertTrue(bool(trade_plan.setup_details.get("setup_runner_active")))
         self.assertFalse(bool(trade_plan.setup_details.get("campaign_mode_active")))
 
+    def test_trade_planner_applies_a_grade_boost_and_wider_exits(self) -> None:
+        base_config = replace(
+            self.config,
+            pod_a=replace(self.config.pod_a, a_grade_enabled=False),
+        )
+        boosted_config = replace(
+            self.config,
+            pod_a=replace(self.config.pod_a, a_grade_enabled=True),
+        )
+        signal = AnchorTrendSignal(
+            symbol="ETH",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.70,
+            entry_price=3100.0,
+            invalidation_price=3050.0,
+            market_cluster="crypto",
+            cluster_leader="BTC",
+            setup_details={
+                "regime": "TrendExpansion",
+                "structure_score": 0.62,
+                "candles_ready": True,
+                "trend_1h_bps": 22.0,
+                "trend_4h_bps": 48.0,
+                "stoch_rsi_k": 0.58,
+                "cci20": 48.0,
+                "vwap_reclaim_score": 0.55,
+                "btc_overextension_score": 0.20,
+            },
+        )
+        base_allocation = CapitalAllocator(base_config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        boosted_allocation = CapitalAllocator(boosted_config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+
+        base_plan = AnchorTrendPlanner(base_config).build_trade_plan(signal, base_allocation)
+        boosted_plan = AnchorTrendPlanner(boosted_config).build_trade_plan(
+            signal,
+            boosted_allocation,
+        )
+
+        self.assertIsNotNone(base_plan)
+        self.assertIsNotNone(boosted_plan)
+        assert base_plan is not None
+        assert boosted_plan is not None
+        self.assertTrue(bool(boosted_plan.setup_details.get("a_grade_active")))
+        self.assertEqual(boosted_plan.setup_details.get("a_grade_level"), "strong")
+        self.assertGreaterEqual(int(boosted_plan.setup_details.get("a_grade_score", 0)), 8)
+        self.assertAlmostEqual(
+            boosted_plan.target_notional_usd,
+            base_plan.target_notional_usd * 1.4,
+            places=4,
+        )
+        self.assertAlmostEqual(boosted_plan.margin_usd, base_plan.margin_usd * 1.4, places=4)
+        self.assertAlmostEqual(
+            boosted_plan.risk_budget_usd,
+            base_plan.risk_budget_usd * 1.4,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            boosted_plan.expected_loss_usd,
+            base_plan.expected_loss_usd * 1.4,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            boosted_plan.break_even_trigger_bps,
+            base_plan.break_even_trigger_bps * 1.2,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            boosted_plan.trailing_activation_bps,
+            base_plan.trailing_activation_bps * 1.15,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            boosted_plan.trailing_distance_bps,
+            base_plan.trailing_distance_bps * 1.35,
+            places=4,
+        )
+
     def test_trade_planner_reserves_capacity_for_campaign_add_on(self) -> None:
         config = replace(
             self.config,
             pod_a=replace(
                 self.config.pod_a,
+                a_grade_enabled=False,
                 campaign=PodACampaignConfig(
                     enabled=True,
                     setups=["trend_pullback_long"],

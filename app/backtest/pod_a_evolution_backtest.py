@@ -31,6 +31,9 @@ DEFAULT_VARIANTS = [
     "evo2_fee_aware_be",
     "evo3_trend_health_sizing",
     "evo4_symbol_health",
+    "evo8_a_grade_boost",
+    "evo9_wider_winner_exits",
+    "evo10_context_guardrail",
 ]
 
 
@@ -54,6 +57,20 @@ class PodAEvolutionSpec:
     symbol_health_lookback: int = 3
     symbol_health_loss_trigger: int = 2
     symbol_health_loss_sum_trigger_usd: float = -10.0
+    a_grade_boost_enabled: bool = False
+    a_grade_exit_enabled: bool = False
+    a_grade_min_score: int = 6
+    a_grade_boost_scale: float = 1.25
+    a_grade_strong_score: int = 8
+    a_grade_strong_boost_scale: float = 1.40
+    a_grade_break_even_multiplier: float = 1.20
+    a_grade_trailing_activation_multiplier: float = 1.15
+    a_grade_trailing_distance_multiplier: float = 1.35
+    context_guardrail_enabled: bool = False
+    context_guardrail_cooldown_minutes: int = 720
+    context_guardrail_lookback: int = 3
+    context_guardrail_loss_trigger: int = 2
+    context_guardrail_loss_sum_trigger_usd: float = -10.0
 
 
 def spec_for_variant(name: str) -> PodAEvolutionSpec:
@@ -98,6 +115,42 @@ def spec_for_variant(name: str) -> PodAEvolutionSpec:
                 "rolling weakness."
             ),
             symbol_health_enabled=True,
+        )
+    if normalized == "evo8_a_grade_boost":
+        return PodAEvolutionSpec(
+            name=normalized,
+            description=(
+                "Increase Pod A notional only for A-grade crypto trend_pullback_long entries; "
+                "do not downsize the rest."
+            ),
+            a_grade_boost_enabled=True,
+        )
+    if normalized == "evo9_wider_winner_exits":
+        return PodAEvolutionSpec(
+            name=normalized,
+            description=(
+                "Let A-grade Pod A winners breathe by delaying break-even/trailing activation "
+                "and widening the trailing distance."
+            ),
+            a_grade_exit_enabled=True,
+        )
+    if normalized == "evo10_context_guardrail":
+        return PodAEvolutionSpec(
+            name=normalized,
+            description=(
+                "Block only the precise symbol/setup/regime context after repeated recent losses, "
+                "instead of throttling the whole symbol."
+            ),
+            context_guardrail_enabled=True,
+        )
+    if normalized == "evo11_a_grade_boost_wider_exits":
+        return PodAEvolutionSpec(
+            name=normalized,
+            description=(
+                "Combine A-grade size boost with wider winner exits for the same A-grade entries."
+            ),
+            a_grade_boost_enabled=True,
+            a_grade_exit_enabled=True,
         )
     raise ValueError(f"Unknown Pod A evolution variant: {name}")
 
@@ -261,15 +314,87 @@ class SymbolHealthTracker:
                 )
 
 
+class ContextGuardrailTracker:
+    def __init__(self, spec: PodAEvolutionSpec) -> None:
+        self._spec = spec
+        self._recent_pnls_by_context: dict[tuple[str, str, str], deque[float]] = {}
+        self._cooldown_until_by_context: dict[tuple[str, str, str], datetime] = {}
+
+    def active_reason(self, plan: TradePlan, timestamp: str | None) -> str | None:
+        if not self._spec.context_guardrail_enabled:
+            return None
+        current = parse_timestamp(timestamp)
+        key = self._key_from_plan(plan)
+        if current is None or key is None:
+            return None
+        until = self._cooldown_until_by_context.get(key)
+        if until is None or current >= until:
+            return None
+        symbol, setup, regime = key
+        return (
+            f"context_guardrail:{symbol}/{setup}/{regime}:"
+            f"cooldown_until={until.isoformat()}"
+        )
+
+    def record_closed_trades(self, trades: Iterable[object]) -> None:
+        if not self._spec.context_guardrail_enabled:
+            return
+        for trade in trades:
+            key = self._key_from_trade(trade)
+            closed_at = getattr(trade, "closed_at", None)
+            if key is None or closed_at is None:
+                continue
+            bucket = self._recent_pnls_by_context.setdefault(
+                key,
+                deque(maxlen=max(self._spec.context_guardrail_lookback, 1)),
+            )
+            bucket.append(float(getattr(trade, "pnl_usd", 0.0) or 0.0))
+            recent = list(bucket)
+            loss_count = sum(1 for value in recent if value < 0.0)
+            if (
+                len(recent) >= self._spec.context_guardrail_lookback
+                and (
+                    loss_count >= self._spec.context_guardrail_loss_trigger
+                    or sum(recent) <= self._spec.context_guardrail_loss_sum_trigger_usd
+                )
+            ):
+                self._cooldown_until_by_context[key] = closed_at + timedelta(
+                    minutes=self._spec.context_guardrail_cooldown_minutes,
+                )
+
+    def _key_from_plan(self, plan: TradePlan) -> tuple[str, str, str] | None:
+        symbol = str(plan.symbol or "").strip().upper()
+        setup = str(plan.setup or "").strip()
+        regime = str((plan.setup_details or {}).get("regime", "") or "").strip()
+        if not symbol or not setup or not regime:
+            return None
+        return symbol, setup, regime
+
+    def _key_from_trade(self, trade: object) -> tuple[str, str, str] | None:
+        symbol = str(getattr(trade, "symbol", "") or "").strip().upper()
+        setup = str(getattr(trade, "setup", "") or "").strip()
+        setup_details = dict(getattr(trade, "setup_details", {}) or {})
+        regime = str(setup_details.get("regime", "") or "").strip()
+        if not symbol or not setup or not regime:
+            return None
+        return symbol, setup, regime
+
+
 class PodAEvolutionPolicy:
     def __init__(self, spec: PodAEvolutionSpec) -> None:
         self.spec = spec
         self.symbol_health = SymbolHealthTracker(spec)
+        self.context_guardrail = ContextGuardrailTracker(spec)
 
     def adjust_plans(self, plans: list[TradePlan], *, timestamp: str | None) -> None:
+        kept_plans: list[TradePlan] = []
         for plan in plans:
             details = dict(plan.setup_details or {})
             if details.get("market_cluster") != "crypto" or plan.setup != "trend_pullback_long":
+                kept_plans.append(plan)
+                continue
+            context_guardrail_reason = self.context_guardrail.active_reason(plan, timestamp)
+            if context_guardrail_reason is not None:
                 continue
             scale = 1.0
             reasons: list[str] = []
@@ -277,22 +402,110 @@ class PodAEvolutionPolicy:
                 trend_scale, trend_reason = self._trend_health_scale(plan)
                 scale *= trend_scale
                 reasons.append(trend_reason)
+            if self.spec.a_grade_boost_enabled:
+                boost_scale, boost_reason = self._a_grade_boost_scale(plan)
+                scale *= boost_scale
+                if boost_scale != 1.0:
+                    reasons.append(boost_reason)
             health_scale, health_reason = self.symbol_health.scale_for(plan.symbol, timestamp)
             if health_scale != 1.0:
                 scale *= health_scale
                 reasons.append(f"symbol_health:{health_reason}")
-            if scale == 1.0:
-                continue
-            self._scale_plan(plan, scale)
-            plan.setup_details = {
-                **details,
-                "pod_a_evolution": self.spec.name,
-                "pod_a_evolution_size_scale": round(scale, 4),
-                "pod_a_evolution_size_reason": "; ".join(part for part in reasons if part),
-            }
+            exit_reason = self._adjust_a_grade_exit(plan)
+            if exit_reason:
+                reasons.append(exit_reason)
+            if scale != 1.0:
+                self._scale_plan(plan, scale)
+            if scale != 1.0 or exit_reason:
+                plan.setup_details = {
+                    **dict(plan.setup_details or {}),
+                    "pod_a_evolution": self.spec.name,
+                    "pod_a_evolution_size_scale": round(scale, 4),
+                    "pod_a_evolution_reason": "; ".join(part for part in reasons if part),
+                }
+            kept_plans.append(plan)
+        plans[:] = kept_plans
 
     def record_closed_trades(self, trades: Iterable[object]) -> None:
         self.symbol_health.record_closed_trades(trades)
+        self.context_guardrail.record_closed_trades(trades)
+
+    def _a_grade_boost_scale(self, plan: TradePlan) -> tuple[float, str]:
+        score, reason = self._a_grade_score(plan)
+        if score >= self.spec.a_grade_strong_score:
+            return self.spec.a_grade_strong_boost_scale, f"a_grade_strong:{reason}"
+        if score >= self.spec.a_grade_min_score:
+            return self.spec.a_grade_boost_scale, f"a_grade:{reason}"
+        return 1.0, ""
+
+    def _adjust_a_grade_exit(self, plan: TradePlan) -> str:
+        if not self.spec.a_grade_exit_enabled:
+            return ""
+        score, reason = self._a_grade_score(plan)
+        if score < self.spec.a_grade_min_score:
+            return ""
+        plan.break_even_trigger_bps = round(
+            plan.break_even_trigger_bps * self.spec.a_grade_break_even_multiplier,
+            4,
+        )
+        plan.trailing_activation_bps = round(
+            plan.trailing_activation_bps * self.spec.a_grade_trailing_activation_multiplier,
+            4,
+        )
+        plan.trailing_distance_bps = round(
+            plan.trailing_distance_bps * self.spec.a_grade_trailing_distance_multiplier,
+            4,
+        )
+        return f"a_grade_wider_exit:{reason}"
+
+    def _a_grade_score(self, plan: TradePlan) -> tuple[int, str]:
+        details = dict(plan.setup_details or {})
+        score = 0
+        hits: list[str] = []
+        regime = str(details.get("regime", "") or "")
+        structure_score = abs(_float_detail(details, "structure_score"))
+        trend_1h = _float_detail(details, "trend_1h_bps")
+        trend_4h = _float_detail(details, "trend_4h_bps")
+        stoch = _float_detail(details, "stoch_rsi_k")
+        cci20 = _float_detail(details, "cci20")
+        vwap = _float_detail(details, "vwap_reclaim_score")
+        btc_overextension = _float_detail(details, "btc_overextension_score")
+        pattern_watch_count = _int_detail(details, "pattern_watch_count")
+
+        if float(plan.confidence or 0.0) >= 0.62:
+            score += 1
+            hits.append("confidence")
+        if regime in {"TrendExpansion", "PanicSqueeze"}:
+            score += 1
+            hits.append("regime")
+        if bool(details.get("candles_ready", False)):
+            score += 1
+            hits.append("candles")
+        if structure_score >= 0.45:
+            score += 1
+            hits.append("structure")
+        if 8.0 <= trend_1h <= 180.0:
+            score += 1
+            hits.append("trend_1h")
+        if -25.0 <= trend_4h <= 110.0:
+            score += 1
+            hits.append("trend_4h")
+        if vwap >= 0.45:
+            score += 1
+            hits.append("vwap")
+        if 0.32 <= stoch <= 0.78:
+            score += 1
+            hits.append("stoch")
+        if cci20 <= 110.0:
+            score += 1
+            hits.append("cci")
+        if btc_overextension <= 0.60:
+            score += 1
+            hits.append("btc_ok")
+        if pattern_watch_count <= 1:
+            score += 1
+            hits.append("few_watchers")
+        return score, f"score={score} hits={','.join(hits)}"
 
     def _trend_health_scale(self, plan: TradePlan) -> tuple[float, str]:
         details = dict(plan.setup_details or {})
@@ -342,6 +555,13 @@ def _float_detail(details: dict[str, object], key: str) -> float:
         return float(details.get(key, 0.0) or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _int_detail(details: dict[str, object], key: str) -> int:
+    try:
+        return int(float(details.get(key, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 class PodAEvolutionBacktestRunner(FullBotBacktestRunner):
@@ -747,7 +967,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True)
     parser.add_argument(
         "--pod-c-source-report",
-        default="server-data/replay_reports/external_reference_multisource_20260405_20260513_baseline.json",
+        default="server-data/replay_reports/official_baseline_current_cli_20260513.json",
     )
     parser.add_argument("--variants", default=",".join(DEFAULT_VARIANTS))
     parser.add_argument("--report-dir", default="server-data/replay_reports/pod_a_evolutions_20260513")

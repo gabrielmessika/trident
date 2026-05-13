@@ -1,18 +1,20 @@
 # TRIDENT Active Plan
 
-Date: `2026-05-05`
+Date: `2026-05-13`
 
 ## Status
 
 - `ACTIVE_SINGLE_SOURCE_OF_TRUTH`
 - Ce fichier est la feuille de route courante. Les autres documents sont des archives, des notes de recherche, ou des details d'implementation.
 - En cas de contradiction avec un ancien doc, ce fichier gagne.
-- Objectif actuel: exploiter Pod B HIP-4 Outcome comme remplacement complet du Pod B historique, sur compte Hyperliquid testnet dedie, avec Pod A / Pod C stables et sans exposition mainnet.
+- Objectif actuel: exploiter Pod A comme moteur PnL principal en dry-run mainnet,
+  garder Pod C stable, et faire tourner Pod B HIP-4 Outcome comme pod independant
+  sur compte/budget separe, sans cannibaliser Pod A.
 
 ## Lecture Rapide
 
 - Prod/dry-run principal: `config/trident.toml`.
-- Pods actifs dry-run: `Pod A` crypto core, `Pod B HIP-4 Outcome`, `Pod C` tradfi.
+- Pods actifs dry-run: `Pod A` crypto core avec `a_grade_enabled`, `Pod B HIP-4 Outcome`, `Pod C` tradfi.
 - Pod B historique directionnel: legacy / non demarre par defaut.
 - Nouveau Pod B: `HIP4OutcomeEdgePod`, branche HIP-4 outcome sur testnet. Le repo reste safe par defaut en paper; le serveur peut l'activer en vrais ordres testnet via env dedie.
 - UI:
@@ -32,23 +34,42 @@ Config canonique:
 
 - `config/trident.toml`
 
-Backtest officiel de reference encore valide:
+Backtest officiel de reference courant:
 
-- `server-data/replay_reports/official_baseline_current_cli_20260423.md`
-- `server-data/replay_reports/official_baseline_current_cli_20260423.json`
+- `server-data/replay_reports/official_baseline_current_cli_20260513.md`
+- `server-data/replay_reports/official_baseline_current_cli_20260513.json`
+- Statut des references:
+  `server-data/replay_reports/BACKTEST_REFERENCE_STATUS_20260513.md`
+- Comparaison experimentale ayant servi a promouvoir `evo11`:
+  `server-data/replay_reports/pod_a_improvement_levers_20260513/comparison.md`
+- Source de validation chemin production avant copie officielle:
+  `server-data/replay_reports/pod_a_evo11_promoted_20260513.md`
 
-Resultat de reference:
+Resultat de reference avant promotion `evo11`:
 
 | Total | Pod A | Pod B | Pod C |
 |---:|---:|---:|---:|
-| `+562.48 USD` | `+526.26` | `0.00` | `+36.22` |
+| `+669.69 USD` | `+590.58` | `0.00` | `+79.11` |
+
+Resultat officiel courant avec `evo11_a_grade_boost_wider_exits`:
+
+| Total | Pod A | Pod B | Pod C |
+|---:|---:|---:|---:|
+| `+859.83 USD` | `+780.72` | `0.00` | `+79.11` |
 
 Notes importantes:
 
-- L'input officiel couvre `2026-04-05 -> 2026-04-23`.
-- L'input courant saute `2026-04-19`.
+- L'input de reference couvre `2026-04-05T19:45:00Z -> 2026-05-13T07:56:49Z`.
+- L'input courant saute plusieurs dates sans collecte locale (`2026-04-19`,
+  `2026-04-28`, `2026-04-29`, `2026-05-09 -> 2026-05-11`).
 - Les replays de parite doivent inclure `collector + maintenance_refresh`; le collector-only n'est pas suffisant.
 - Les caps de levier crypto live manquants ont ete ajoutes dans `config/trident.toml`.
+- Le full replay ne force-enable plus Pod B: Pod B HIP-4 est independant et ne
+  doit plus retirer de symboles, budget ou marge a Pod A.
+- L'univers crypto Pod A a ete elargi avec `STRK`, `ONDO`, `BIO`, `VVV`,
+  `SAGA`, `JUP`, `PENGU`, `INJ`, `PENDLE`, `TIA`, `DYM`, `ICP`, `ATOM`.
+  `WLFI` reste exclu. Ces nouveaux symbols ne sont pas dans le JSONL full-replay
+  historique; leur validation PnL reste donc light/API HL puis dry-run live.
 - Validation OOS Pod A / Pod C du `2026-05-05`:
   - rapport: `server-data/replay_reports/pod_a_c_shortlist_validation_20260505.md`
   - input: `server-data/replay_inputs/pod_a_c_shortlist_oos_20260430_20260505`
@@ -64,10 +85,22 @@ Promu dans le profil repo:
 
 - `pod_a.stop_grace_minutes = 165`, scope utile: `trend_pullback_long`.
 - `pod_a.opposite_signal_debounce_minutes = 15`.
+- `pod_a.a_grade_enabled = true`: boost selectif des entrees A-grade
+  `trend_pullback_long` crypto, avec scaling `1.25x` / `1.40x` et exits plus
+  larges (`break_even x1.20`, `trailing_activation x1.15`,
+  `trailing_distance x1.35`). Backtest `2026-04-05 -> 2026-05-13`:
+  `+190.14 USD` vs baseline corrigee.
 - Vetoes MTF Pod A valides le `2026-04-27`, mais non confirmes sur l'OOS `2026-04-30 -> 2026-05-05` (`-4.16`, `5` vetoes). Statut: garder sous surveillance / candidat rollback, pas nouvelle extension.
 - Veto BTC overextension 4h, scope BTC long.
 - Veto XRP overextension 4h, scope XRP long.
 - Veto HYPE `trend_pullback_long`: actif dans le profil courant, mais rejete sur l'OOS `2026-04-30 -> 2026-05-05` (`-12.03`, `3` trades HYPE vetoes qui auraient ete gagnants). Statut: observation / candidat rollback.
+- Leviers testes mais non promus:
+  - `evo1_adaptive_exit`: negatif, coupe trop vite la convexite.
+  - `evo2_fee_aware_be`: legerement negatif dans la baseline corrigee.
+  - `evo3_trend_health_sizing`: negatif, sous-size les winners.
+  - `evo4_symbol_health`: negatif, throttle trop brutal.
+  - `evo10_context_guardrail`: negatif (`-70.37 USD`), retire surtout des
+    re-entries gagnantes BTC/SOL/NEAR.
 
 Principes:
 
@@ -75,6 +108,9 @@ Principes:
 - Ne pas relacher globalement `RangeAuction` ou `DeadZone`.
 - Ne pas promouvoir `stop_grace_210m` sans validation hors echantillon.
 - Toute nouvelle regle Pod A doit battre la baseline full-bot, pas seulement un test isole.
+- Surveiller en dry-run l'impact `a_grade` sur `max_open_notional_usd`,
+  `max_open_expected_loss_usd`, drawdown et fees; le levier augmente le PnL en
+  backtest mais augmente aussi l'exposition brute.
 
 ### Pod C - Tradfi
 
