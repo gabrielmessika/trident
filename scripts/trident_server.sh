@@ -14,10 +14,10 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--with-trigger-liquidity] [--without-trigger-liquidity] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start] [service]
 
 Actions:
-  start     démarre l'API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding par défaut en dry-run
+  start     démarre l'API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding + trigger liquidity shadow par défaut en dry-run
   stop      arrête les services sélectionnés
   restart   redémarre les services sélectionnés
   update    rebuild + redémarre les services sélectionnés
@@ -30,6 +30,8 @@ Compatibilité :
   --with-pod-b / --with-pod-c / --with-funding restent acceptés mais sont redondants.
   --with-hip4-outcome / --without-hip4-outcome sont des alias du Pod B HIP-4.
   --with-hip4-mainnet-observer / --without-hip4-mainnet-observer contrôle l'observateur mainnet séparé.
+  --with-trigger-liquidity / --without-trigger-liquidity contrôle l'enrichisseur TP/SL shadow.
+  TRIDENT_HL_NODE_ORDER_STATUSES_DIR peut pointer vers les node_order_statuses Hyperliquid host.
 
 Sécurité live :
   --mode dry-run est le défaut. --mode live lance Pod A + Pod C par défaut,
@@ -57,6 +59,7 @@ REMOTE_DIR="${TRIDENT_DEPLOY_DIR:-/opt/trident}"
 ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
+ENABLE_TRIGGER_LIQUIDITY="${TRIDENT_ENABLE_TRIGGER_LIQUIDITY:-true}"
 ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
 ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-}"
 FRESH_START=""
@@ -76,6 +79,10 @@ while [ $# -gt 0 ]; do
             ;;
         --with-funding)
             ENABLE_FUNDING="true"
+            shift
+            ;;
+        --with-trigger-liquidity)
+            ENABLE_TRIGGER_LIQUIDITY="true"
             shift
             ;;
         --with-hip4-outcome)
@@ -108,6 +115,10 @@ while [ $# -gt 0 ]; do
             ;;
         --without-funding)
             ENABLE_FUNDING=""
+            shift
+            ;;
+        --without-trigger-liquidity)
+            ENABLE_TRIGGER_LIQUIDITY=""
             shift
             ;;
         --without-hip4-outcome)
@@ -155,11 +166,29 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+HL_NODE_ORDER_STATUSES_DIR="${TRIDENT_HL_NODE_ORDER_STATUSES_DIR:-}"
+if [ -z "$HL_NODE_ORDER_STATUSES_DIR" ]; then
+    for candidate in \
+        "${HOME}/hl/data/node_order_statuses/hourly" \
+        "/opt/hl/data/node_order_statuses/hourly" \
+        "/var/lib/hyperliquid/hl/data/node_order_statuses/hourly" \
+        "${ROOT_DIR}/data/node_order_statuses/hourly"; do
+        if [ -d "$candidate" ]; then
+            HL_NODE_ORDER_STATUSES_DIR="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "$HL_NODE_ORDER_STATUSES_DIR" ]; then
+    HL_NODE_ORDER_STATUSES_DIR="${ROOT_DIR}/data/node_order_statuses/hourly"
+fi
+
 PROFILE_ARGS=()
 [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && PROFILE_ARGS+=(--profile pod_b)
 [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && PROFILE_ARGS+=(--profile hip4_mainnet_observer)
 [ -n "$ENABLE_POD_C" ] && PROFILE_ARGS+=(--profile pod_c)
 [ -n "$ENABLE_FUNDING" ] && PROFILE_ARGS+=(--profile funding)
+[ -n "$ENABLE_TRIGGER_LIQUIDITY" ] && PROFILE_ARGS+=(--profile trigger_liquidity)
 
 COMPOSE_ENV_ARGS=()
 if [ -f ".env.trident" ]; then
@@ -172,6 +201,8 @@ compose() {
     TRIDENT_ENABLE_POD_C="${ENABLE_POD_C:+true}" \
     TRIDENT_ENABLE_HIP4_OUTCOME="${ENABLE_HIP4_OUTCOME:+true}" \
     TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER="${ENABLE_HIP4_MAINNET_OBSERVER:+true}" \
+    TRIDENT_ENABLE_TRIGGER_LIQUIDITY="${ENABLE_TRIGGER_LIQUIDITY:+true}" \
+    TRIDENT_HL_NODE_ORDER_STATUSES_DIR="${HL_NODE_ORDER_STATUSES_DIR}" \
     TRIDENT_MODE="${MODE}" \
     TRIDENT_CONFIG_PATH="${CONFIG_PATH}" \
     docker compose "${COMPOSE_ENV_ARGS[@]}" -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"
@@ -213,6 +244,9 @@ read_only_compose() {
 
 default_services() {
     local services=(trident-api pod-a-live)
+    if [ -n "$ENABLE_TRIGGER_LIQUIDITY" ]; then
+        services+=(trigger-liquidity-collector trigger-liquidity-enricher)
+    fi
     if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ]; then
         services+=(hip4-outcome-dry-run)
     fi
@@ -232,6 +266,8 @@ all_managed_services() {
     printf '%s\n' \
         trident-api \
         pod-a-live \
+        trigger-liquidity-collector \
+        trigger-liquidity-enricher \
         pod-b-live \
         pod-c-live \
         hip4-outcome-dry-run \
@@ -275,6 +311,9 @@ fresh_start_cleanup() {
         logs/pod_c_live_status.json \
         logs/hip4_outcome_status.json \
         logs/hip4_outcome_mainnet_status.json \
+        runtime/trigger_liquidity_collector_status.json \
+        runtime/trigger_liquidity_collector_state.json \
+        runtime/trigger_liquidity_enricher_status.json \
         logs/pod_a_live_report.json \
         logs/pod_b_live_report.json \
         logs/pod_c_live_report.json \
@@ -303,6 +342,9 @@ fresh_start_cleanup() {
             /app/logs/pod_c_live_status.json \
             /app/logs/hip4_outcome_status.json \
             /app/logs/hip4_outcome_mainnet_status.json \
+            /app/runtime/trigger_liquidity_collector_status.json \
+            /app/runtime/trigger_liquidity_collector_state.json \
+            /app/runtime/trigger_liquidity_enricher_status.json \
             /app/logs/pod_a_live_report.json \
             /app/logs/pod_b_live_report.json \
             /app/logs/pod_c_live_report.json \
@@ -325,6 +367,9 @@ fresh_start_cleanup() {
 
 require_runtime_files() {
     mkdir -p logs data runtime
+    if [ -n "$ENABLE_TRIGGER_LIQUIDITY" ]; then
+        mkdir -p data/trigger_liquidity data/live_snapshots_trigger_liquidity data/node_order_statuses/hourly
+    fi
 }
 
 guard_live_start() {

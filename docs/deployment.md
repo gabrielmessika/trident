@@ -231,6 +231,36 @@ TRIDENT_LIVE_STATE_PATH_POD_C=
 réconcilier. `TRIDENT_SECRET_KEY` doit être une API wallet approuvée, pas une
 clé à déplacer dans le repo.
 
+Pour alimenter les observations TP/SL publiques sans node Hyperliquid local,
+ajouter aussi l'endpoint QuickNode Hyperliquid dans le même fichier serveur :
+
+```bash
+TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_URL=https://...hype-mainnet.quiknode.pro/...
+TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_STREAM=orders
+TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_BATCH_SIZE=5
+TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_INITIAL_LOOKBACK_BLOCKS=25
+TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_MAX_BLOCKS_PER_POLL=300
+TRIDENT_TRIGGER_LIQUIDITY_POLL_SECONDS=1
+TRIDENT_TRIGGER_LIQUIDITY_SQL_API_KEY=
+```
+
+Le collector normalise automatiquement l'URL vers `/hypercore` et ne logge que
+la partie non secrète. Les comptes QuickNode Discover/free limitent
+`hl_getBatchBlocks` à des ranges de 5 blocs; ces valeurs permettent de démarrer
+la collecte JSON-RPC sans WebSocket.
+
+Pour reconstruire l'historique TP/SL depuis SQL Explorer, lancer ensuite côté
+serveur :
+
+```bash
+cd /opt/trident
+docker compose --env-file .env.trident -f docker-compose.trident.yml run --rm --no-deps trident-api \
+  python -m app.live.trigger_liquidity_sql_backfill \
+    --start 2026-04-01 \
+    --end 2026-05-15 \
+    --output-dir data/trigger_liquidity
+```
+
 ---
 
 ## 4. Contrôler le bot depuis le serveur

@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start]
+Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--with-trigger-liquidity] [--without-trigger-liquidity] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start]
 
 Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
@@ -26,11 +26,12 @@ Déploie TRIDENT sur le serveur :
 Par défaut :
 - host SSH : trident-hetzner
 - mode : dry-run
-- démarrage avec `--start` : API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding en dry-run
+- démarrage avec `--start` : API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding + trigger liquidity shadow en dry-run
 - `--without-pod-b` retire le Pod B HIP-4
 - `--with-hip4-mainnet-observer` ajoute l'ancien observateur HIP-4 mainnet séparé
 - `--without-pod-c` retire Pod C
 - `--without-funding` retire le collecteur funding/OI global
+- `--without-trigger-liquidity` retire l'enrichisseur TP/SL shadow
 - `--without-hip4-outcome` est conservé comme alias de `--without-pod-b`
 
 Sécurité live :
@@ -40,7 +41,7 @@ Sécurité live :
 - pour un live Pod A seul, ajoutez aussi `--without-pod-c`.
 
 Compatibilité :
-- `--with-pod-b`, `--with-pod-c`, `--with-funding`, `--with-hip4-outcome` restent acceptés mais sont désormais redondants
+- `--with-pod-b`, `--with-pod-c`, `--with-funding`, `--with-trigger-liquidity`, `--with-hip4-outcome` restent acceptés mais sont désormais redondants
 EOF
 }
 
@@ -55,6 +56,7 @@ CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
 ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
+ENABLE_TRIGGER_LIQUIDITY="${TRIDENT_ENABLE_TRIGGER_LIQUIDITY:-true}"
 ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
 ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-}"
 FRESH_START=""
@@ -66,6 +68,7 @@ selected_pods_label() {
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && pods+=("HIP-4 Mainnet Observer séparé")
     [ -n "$ENABLE_POD_C" ] && pods+=("Pod C" "Tradfi Funding Collector")
     [ -n "$ENABLE_FUNDING" ] && pods+=("Funding Collector")
+    [ -n "$ENABLE_TRIGGER_LIQUIDITY" ] && pods+=("Trigger Liquidity Collector" "Trigger Liquidity Enricher")
     local joined=""
     local pod
     for pod in "${pods[@]}"; do
@@ -88,6 +91,7 @@ selected_server_flags() {
     [ -z "$ENABLE_POD_B" ] && flags="${flags} --without-pod-b"
     [ -z "$ENABLE_POD_C" ] && flags="${flags} --without-pod-c"
     [ -z "$ENABLE_FUNDING" ] && flags="${flags} --without-funding"
+    [ -z "$ENABLE_TRIGGER_LIQUIDITY" ] && flags="${flags} --without-trigger-liquidity"
     [ -z "$ENABLE_HIP4_OUTCOME" ] && [ "$MODE" != "live" ] && flags="${flags} --without-hip4-outcome"
     [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && [ "$MODE" != "live" ] && flags="${flags} --with-hip4-mainnet-observer"
     [ -n "$FRESH_START" ] && flags="${flags} --fresh-start"
@@ -132,6 +136,10 @@ while [ $# -gt 0 ]; do
             ENABLE_FUNDING="true"
             shift
             ;;
+        --with-trigger-liquidity)
+            ENABLE_TRIGGER_LIQUIDITY="true"
+            shift
+            ;;
         --with-hip4-outcome)
             ENABLE_HIP4_OUTCOME="true"
             ENABLE_POD_B="true"
@@ -154,6 +162,10 @@ while [ $# -gt 0 ]; do
             ;;
         --without-funding)
             ENABLE_FUNDING=""
+            shift
+            ;;
+        --without-trigger-liquidity)
+            ENABLE_TRIGGER_LIQUIDITY=""
             shift
             ;;
         --without-hip4-outcome)
@@ -224,7 +236,7 @@ validate_local() {
 
 deploy_code() {
     info "Transfert du code vers ${HOST}..."
-    ssh_remote "mkdir -p ${DEPLOY_DIR}/data ${DEPLOY_DIR}/logs ${DEPLOY_DIR}/runtime"
+    ssh_remote "mkdir -p ${DEPLOY_DIR}/data ${DEPLOY_DIR}/data/trigger_liquidity ${DEPLOY_DIR}/data/live_snapshots_trigger_liquidity ${DEPLOY_DIR}/data/node_order_statuses/hourly ${DEPLOY_DIR}/logs ${DEPLOY_DIR}/runtime"
 
     # Write VERSION file from git before rsync
     local _commit _date _version
@@ -243,6 +255,10 @@ deploy_code() {
         --exclude='data/server_archive' \
         --exclude='data/replay_reports' \
         --exclude='data/live_snapshots' \
+        --exclude='data/live_snapshots_trigger_liquidity' \
+        --exclude='data/live_features' \
+        --exclude='data/node_order_statuses' \
+        --exclude='data/trigger_liquidity' \
         --exclude='data/funding_history' \
         --exclude='data/research' \
         --exclude='server-data' \
@@ -266,6 +282,7 @@ build_remote() {
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && profile_args="${profile_args} --profile hip4_mainnet_observer"
     [ -n "$ENABLE_POD_C" ] && profile_args="${profile_args} --profile pod_c"
     [ -n "$ENABLE_FUNDING" ] && profile_args="${profile_args} --profile funding"
+    [ -n "$ENABLE_TRIGGER_LIQUIDITY" ] && profile_args="${profile_args} --profile trigger_liquidity"
     ssh_remote "cd ${DEPLOY_DIR} && docker compose -f docker-compose.trident.yml${profile_args} build"
     ok "Image Docker buildée"
 }

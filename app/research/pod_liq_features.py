@@ -61,6 +61,25 @@ class PodLiqFeatureRow:
     exhaustion_score: float
     exhaustion_direction: str
     book_churn_score: float
+    trigger_stop_breakout_score: float
+    trigger_stop_breakout_direction: str
+    trigger_sweep_reversal_score: float
+    trigger_sweep_reversal_direction: str
+    trigger_tp_exhaustion_score: float
+    trigger_tp_exhaustion_direction: str
+    trigger_cascade_veto_score: float
+    trigger_cascade_veto_direction: str
+    trigger_liquidity_available: bool
+    nearest_stop_cluster_bps: float
+    nearest_tp_cluster_bps: float
+    stop_pressure_above: float
+    stop_pressure_below: float
+    tp_pressure_above: float
+    tp_pressure_below: float
+    trigger_asymmetry: float
+    cascade_risk_up: float
+    cascade_risk_down: float
+    trigger_data_age_seconds: float | None
     future_return_bps: float | None
 
     def to_dict(self) -> dict[str, object]:
@@ -285,6 +304,7 @@ class PodLiqFeatureBuilder:
                     best_bid_size_velocity=best_bid_size_velocity,
                     best_ask_size_velocity=best_ask_size_velocity,
                 )
+                trigger_signals = self._trigger_liquidity_signals(current)
 
                 rows.append(
                     PodLiqFeatureRow(
@@ -339,6 +359,29 @@ class PodLiqFeatureBuilder:
                         exhaustion_score=exhaustion_score,
                         exhaustion_direction=exhaustion_direction,
                         book_churn_score=book_churn_score,
+                        trigger_stop_breakout_score=trigger_signals["stop_breakout_score"],
+                        trigger_stop_breakout_direction=str(trigger_signals["stop_breakout_direction"]),
+                        trigger_sweep_reversal_score=trigger_signals["sweep_reversal_score"],
+                        trigger_sweep_reversal_direction=str(trigger_signals["sweep_reversal_direction"]),
+                        trigger_tp_exhaustion_score=trigger_signals["tp_exhaustion_score"],
+                        trigger_tp_exhaustion_direction=str(trigger_signals["tp_exhaustion_direction"]),
+                        trigger_cascade_veto_score=trigger_signals["cascade_veto_score"],
+                        trigger_cascade_veto_direction=str(trigger_signals["cascade_veto_direction"]),
+                        trigger_liquidity_available=current.trigger_liquidity_available,
+                        nearest_stop_cluster_bps=round(current.nearest_stop_cluster_bps, 4),
+                        nearest_tp_cluster_bps=round(current.nearest_tp_cluster_bps, 4),
+                        stop_pressure_above=round(current.stop_pressure_above, 4),
+                        stop_pressure_below=round(current.stop_pressure_below, 4),
+                        tp_pressure_above=round(current.tp_pressure_above, 4),
+                        tp_pressure_below=round(current.tp_pressure_below, 4),
+                        trigger_asymmetry=round(current.trigger_asymmetry, 4),
+                        cascade_risk_up=round(current.cascade_risk_up, 4),
+                        cascade_risk_down=round(current.cascade_risk_down, 4),
+                        trigger_data_age_seconds=(
+                            round(current.trigger_data_age_seconds, 4)
+                            if current.trigger_data_age_seconds is not None
+                            else None
+                        ),
                         future_return_bps=future_return,
                     )
                 )
@@ -713,6 +756,73 @@ class PodLiqFeatureBuilder:
             + activity * 0.10
         )
         return round(score, 4)
+
+    def _trigger_liquidity_signals(
+        self,
+        current: SymbolMarketSnapshot,
+    ) -> dict[str, float | str]:
+        if not current.trigger_liquidity_available:
+            return {
+                "stop_breakout_score": 0.0,
+                "stop_breakout_direction": "none",
+                "sweep_reversal_score": 0.0,
+                "sweep_reversal_direction": "none",
+                "tp_exhaustion_score": 0.0,
+                "tp_exhaustion_direction": "none",
+                "cascade_veto_score": 0.0,
+                "cascade_veto_direction": "none",
+            }
+
+        stop_breakout_direction = (
+            "long" if current.cascade_risk_up >= current.cascade_risk_down else "short"
+        )
+        stop_breakout_score = max(current.cascade_risk_up, current.cascade_risk_down)
+        nearest_above = current.nearest_stop_cluster_above_bps or 0.0
+        nearest_below = current.nearest_stop_cluster_below_bps or 0.0
+        above_proximity = 1.0 - self._clamp(nearest_above / 100.0) if nearest_above > 0 else 0.0
+        below_proximity = 1.0 - self._clamp(nearest_below / 100.0) if nearest_below > 0 else 0.0
+        sweep_above_score = self._clamp(current.stop_pressure_above / 3.0) * above_proximity
+        sweep_below_score = self._clamp(current.stop_pressure_below / 3.0) * below_proximity
+        if sweep_above_score >= sweep_below_score:
+            sweep_reversal_direction = "short"
+            sweep_reversal_score = sweep_above_score
+        else:
+            sweep_reversal_direction = "long"
+            sweep_reversal_score = sweep_below_score
+
+        tp_above_proximity = (
+            1.0 - self._clamp((current.nearest_tp_cluster_above_bps or 0.0) / 100.0)
+            if current.nearest_tp_cluster_above_bps > 0
+            else 0.0
+        )
+        tp_below_proximity = (
+            1.0 - self._clamp((current.nearest_tp_cluster_below_bps or 0.0) / 100.0)
+            if current.nearest_tp_cluster_below_bps > 0
+            else 0.0
+        )
+        tp_above_score = self._clamp(current.tp_pressure_above / 3.0) * tp_above_proximity
+        tp_below_score = self._clamp(current.tp_pressure_below / 3.0) * tp_below_proximity
+        if tp_above_score >= tp_below_score:
+            tp_exhaustion_direction = "short"
+            tp_exhaustion_score = tp_above_score
+        else:
+            tp_exhaustion_direction = "long"
+            tp_exhaustion_score = tp_below_score
+
+        flow_direction = self._flow_direction(current)
+        adverse_risk = (
+            current.cascade_risk_down if flow_direction == "long" else current.cascade_risk_up
+        )
+        return {
+            "stop_breakout_score": round(stop_breakout_score, 4),
+            "stop_breakout_direction": stop_breakout_direction,
+            "sweep_reversal_score": round(sweep_reversal_score, 4),
+            "sweep_reversal_direction": sweep_reversal_direction,
+            "tp_exhaustion_score": round(tp_exhaustion_score, 4),
+            "tp_exhaustion_direction": tp_exhaustion_direction,
+            "cascade_veto_score": round(adverse_risk, 4),
+            "cascade_veto_direction": flow_direction,
+        }
 
     def _clamp(self, value: float, lower: float = 0.0, upper: float = 1.0) -> float:
         return max(lower, min(value, upper))

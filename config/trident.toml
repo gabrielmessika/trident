@@ -68,6 +68,27 @@ HOOD = "@271"
 USPYX = "@189"
 CRCL = "@263"
 
+[trigger_liquidity]
+# Shadow-only overlay for Hyperliquid perp TP/SL trigger clusters.
+# Pod B is HIP-4 Outcome and remains independent; this data only informs
+# Pod A / Supervisor after explicit promotion.
+enabled = true
+shadow_only = true
+source_path = "./data/trigger_liquidity"
+snapshot_output_dir = "./data/live_snapshots_trigger_liquidity"
+max_data_age_seconds = 300.0
+bucket_bps = 5.0
+lookahead_bps = 100.0
+min_cluster_notional_usd = 50000.0
+veto_enabled = false
+sizing_enabled = false
+confidence_boost_enabled = false
+veto_min_cascade_risk = 0.75
+reduce_min_cascade_risk = 0.50
+confidence_boost_min_cascade_risk = 0.60
+confidence_boost_delta = 0.03
+size_reduction_multiplier = 0.50
+
 [hyperliquid.market_cluster_overrides]
 PAXG = "gold"
 SPY = "index"

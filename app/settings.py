@@ -168,6 +168,26 @@ class HyperliquidConfig:
 
 
 @dataclass(slots=True)
+class TriggerLiquidityConfig:
+    enabled: bool = False
+    shadow_only: bool = True
+    source_path: str = "./data/trigger_liquidity"
+    snapshot_output_dir: str = "./data/live_snapshots_trigger_liquidity"
+    max_data_age_seconds: float = 10.0
+    bucket_bps: float = 5.0
+    lookahead_bps: float = 100.0
+    min_cluster_notional_usd: float = 50_000.0
+    veto_enabled: bool = False
+    sizing_enabled: bool = False
+    confidence_boost_enabled: bool = False
+    veto_min_cascade_risk: float = 0.75
+    reduce_min_cascade_risk: float = 0.50
+    confidence_boost_min_cascade_risk: float = 0.60
+    confidence_boost_delta: float = 0.03
+    size_reduction_multiplier: float = 0.50
+
+
+@dataclass(slots=True)
 class TridentConfigSection:
     enabled: bool
     regime: RegimeThresholds
@@ -527,6 +547,7 @@ class PodCConfig:
 class AppConfig:
     general: GeneralConfig
     hyperliquid: HyperliquidConfig
+    trigger_liquidity: TriggerLiquidityConfig
     trident: TridentConfigSection
     pod_a: PodAConfig
     pod_b: PodBConfig
@@ -1058,6 +1079,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     general_data = data.get("general", {})
     hyperliquid_data = data.get("hyperliquid", {})
     trident_data = data.get("trident", {})
+    trigger_liquidity_data = data.get("trigger_liquidity", {})
     allocations_data = trident_data.get("allocations", {})
     regime_data = trident_data.get("regime", {})
     capital_data = trident_data.get("capital", {})
@@ -1177,6 +1199,50 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 hyperliquid_data.get("spot_coin_ids", {}),
                 upper_keys=True,
                 lower_values=False,
+            ),
+        ),
+        trigger_liquidity=TriggerLiquidityConfig(
+            enabled=bool(trigger_liquidity_data.get("enabled", False)),
+            shadow_only=bool(trigger_liquidity_data.get("shadow_only", True)),
+            source_path=str(
+                trigger_liquidity_data.get(
+                    "source_path",
+                    "./data/trigger_liquidity",
+                )
+            ),
+            snapshot_output_dir=str(
+                trigger_liquidity_data.get(
+                    "snapshot_output_dir",
+                    "./data/live_snapshots_trigger_liquidity",
+                )
+            ),
+            max_data_age_seconds=float(
+                trigger_liquidity_data.get("max_data_age_seconds", 10.0)
+            ),
+            bucket_bps=float(trigger_liquidity_data.get("bucket_bps", 5.0)),
+            lookahead_bps=float(trigger_liquidity_data.get("lookahead_bps", 100.0)),
+            min_cluster_notional_usd=float(
+                trigger_liquidity_data.get("min_cluster_notional_usd", 50_000.0)
+            ),
+            veto_enabled=bool(trigger_liquidity_data.get("veto_enabled", False)),
+            sizing_enabled=bool(trigger_liquidity_data.get("sizing_enabled", False)),
+            confidence_boost_enabled=bool(
+                trigger_liquidity_data.get("confidence_boost_enabled", False)
+            ),
+            veto_min_cascade_risk=float(
+                trigger_liquidity_data.get("veto_min_cascade_risk", 0.75)
+            ),
+            reduce_min_cascade_risk=float(
+                trigger_liquidity_data.get("reduce_min_cascade_risk", 0.50)
+            ),
+            confidence_boost_min_cascade_risk=float(
+                trigger_liquidity_data.get("confidence_boost_min_cascade_risk", 0.60)
+            ),
+            confidence_boost_delta=float(
+                trigger_liquidity_data.get("confidence_boost_delta", 0.03)
+            ),
+            size_reduction_multiplier=float(
+                trigger_liquidity_data.get("size_reduction_multiplier", 0.50)
             ),
         ),
         trident=TridentConfigSection(

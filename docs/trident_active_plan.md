@@ -27,6 +27,10 @@ Date: `2026-05-13`
 - `/api/hip4-outcome` expose aussi `blocked_opportunity_slices`, afin de verifier
   les guardrails testnet actifs sans ouvrir le fichier TOML serveur.
 - Regle de promotion: aucune logique HIP-4 ne passe en mainnet sans dataset complet, calibration, replay comparable, dry-run propre et testnet concluant sur plusieurs expiries.
+- Nouvelle piste active en shadow: `TriggerLiquidityOverlay` pour les perps
+  Hyperliquid. Elle exploite les TP/SL visibles via node/order-status data
+  comme couche de features et de risque pour `Pod A` / `Supervisor`.
+  Elle ne concerne pas `Pod B`, qui reste le pod HIP-4 Outcome independant.
 
 ## Reference Prod Courante
 
@@ -111,10 +115,25 @@ Principes:
 - Surveiller en dry-run l'impact `a_grade` sur `max_open_notional_usd`,
   `max_open_expected_loss_usd`, drawdown et fees; le levier augmente le PnL en
   backtest mais augmente aussi l'exposition brute.
+- Les donnees TP/SL Hyperliquid doivent d'abord rester un overlay shadow:
+  veto/size/boost seulement apres replay full-bot contre la baseline officielle.
+  Aucun signal TP/SL ne doit ouvrir un trade Pod A par lui-meme.
 
 ### Pod C - Tradfi
 
 Statut: actif, quasi stabilise.
+
+Backtest `Pod C off` du `2026-05-13`:
+
+- rapport: `server-data/replay_reports/no_pod_c_20260513.md`
+- input identique a la baseline officielle `2026-04-05 -> 2026-05-13`.
+- resultat: total `+780.72 USD`, Pod A `+780.72`, Pod B `0.00`,
+  Pod C `0.00`.
+- Pod A est strictement identique a la baseline officielle avec Pod C actif
+  (`155` trades, `+780.72 USD`, memes fees/rejets/exposition/drawdown).
+- Conclusion courante: Pod C ne bloque pas Pod A dans ce replay. Le couper
+  retirerait seulement sa contribution positive `+79.11 USD`; ne pas desactiver
+  tant qu'un conflit live explicite de marge/routing n'est pas observe.
 
 Promu dans le profil repo:
 
@@ -249,6 +268,104 @@ Isolation Pod A / Pod B:
 - Les modules d'overlap/lock HIP-4 ont ete supprimes; il ne doit plus rester de cle `directional_overlap`, `hip4_overlap` ou `block_directional_overlap` dans les statuts/UI.
 - Les garde-fous conserves sont internes au Pod B: budget, exposition max, `market_already_open`, minimum d'ordre HL, reconciliation/fills/settlement.
 - L'UI HIP-4 affiche le budget, le solde testnet disponible, les positions et les executions, sans carte d'overlap Pod A.
+- Toute nouvelle logique perps TP/SL, stop clusters, liquidation pressure ou
+  microstructure directionnelle doit rester hors Pod B. Le chemin autorise est
+  `TriggerLiquidityOverlay -> Pod A / Supervisor`, pas `Pod B`.
+
+## TriggerLiquidityOverlay Perps
+
+Statut: actif en collecte shadow serveur, sans veto/size/boost effectif.
+
+Objectif:
+
+- Lire les TP/SL publics Hyperliquid depuis une source node/order-status ou
+  QuickNode HyperCore `orders`.
+- Construire une carte compacte de trigger liquidity par symbole.
+- Enrichir les snapshots Trident avec des features replayables.
+- Produire des decisions `allow/watch/reduce_size/veto_entry/boost_confidence`
+  pour `Pod A` et le `Supervisor`, sans execution autonome.
+
+Fichiers principaux:
+
+- `app/hyperliquid/trigger_liquidity.py`
+- `app/trident/trigger_liquidity/`
+- `app/live/trigger_liquidity_enricher.py`
+- `app/live/trigger_liquidity_sql_backfill.py`
+- `app/research/pod_liq_features.py`
+- `app/research/pod_liq_research.py`
+- `app/research/pod_liq_exhaustive_research.py`
+
+Config canonique:
+
+- `[trigger_liquidity]` dans `config/trident.toml`
+- Profil serveur courant:
+  - `enabled = true`
+  - `shadow_only = true`
+  - `veto_enabled = false`
+  - `sizing_enabled = false`
+  - `confidence_boost_enabled = false`
+  - service Docker: `trigger-liquidity-collector`
+  - service Docker: `trigger-liquidity-enricher`
+
+Features snapshot ajoutees:
+
+- `trigger_liquidity_available`
+- `nearest_stop_cluster_bps`
+- `nearest_stop_cluster_above_bps`
+- `nearest_stop_cluster_below_bps`
+- `nearest_tp_cluster_bps`
+- `nearest_tp_cluster_above_bps`
+- `nearest_tp_cluster_below_bps`
+- `stop_pressure_above`
+- `stop_pressure_below`
+- `tp_pressure_above`
+- `tp_pressure_below`
+- `trigger_asymmetry`
+- `cascade_risk_up`
+- `cascade_risk_down`
+- `trigger_data_age_seconds`
+- `total_trigger_notional_usd`
+- `max_trigger_cluster_notional_usd`
+
+Usage concret autorise:
+
+1. `TriggerLiquiditySnapshotEnricher` enrichit un JSONL snapshot depuis les
+   `node_order_statuses` TP/SL.
+   En live, `trigger-liquidity-collector` lit les donnees node Hyperliquid
+   `node_order_statuses/hourly` ou les blocs QuickNode HyperCore `orders`
+   quand `TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_URL` est configure. Il filtre les
+   ordres `isTrigger` et ecrit `data/trigger_liquidity/*.jsonl`.
+   Ensuite `trigger-liquidity-enricher`
+   reecrit en continu `data/live_snapshots_trigger_liquidity/*.jsonl` et publie
+   `runtime/trigger_liquidity_enricher_status.json`.
+   Le status collecteur est `runtime/trigger_liquidity_collector_status.json`.
+   Pour les replays historiques, `trigger_liquidity_sql_backfill` peut remplir
+   la meme source depuis QuickNode SQL Explorer `hyperliquid_orders`.
+2. Les recherches `pod_liq_*` testent:
+   - `trigger_stop_breakout_continuation`
+   - `trigger_sweep_reversal`
+   - `trigger_tp_exhaustion`
+   - `cascade_risk_veto`
+3. Le `Supervisor` ajoute les details overlay aux previews Pod A quand
+   `trigger_liquidity.enabled = true`.
+4. Le `Supervisor` peut appliquer veto/size/boost aux trade plans Pod A
+   uniquement si `shadow_only = false` et si le flag correspondant est active.
+
+Regles de securite:
+
+- Pas de nouveau pod capitalise pour cette idee tant que les replays ne battent
+  pas la baseline officielle full-bot.
+- Pas de trade ouvert uniquement parce qu'un cluster TP/SL existe.
+- Donnees stale: ignorer si `trigger_data_age_seconds` depasse
+  `max_data_age_seconds`.
+- Ne pas assimiler TP/SL a liquidation map: les liquidations restent une
+  inference separee, a valider ulterieurement.
+- Promotion graduelle seulement dans cet ordre:
+  1. logging / dashboard / review;
+  2. veto shadow;
+  3. veto effectif Pod A;
+  4. reduction de taille;
+  5. boost de confiance, seulement si la baseline full-bot s'ameliore.
 
 Edge types implementes:
 
