@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.live.trigger_liquidity_enricher import (
     TriggerLiquidityEnricherRunner,
+    TriggerLiquidityLiveRecordEnricher,
     TriggerLiquiditySnapshotEnricher,
 )
 from app.live.trigger_liquidity_collector import (
@@ -218,6 +219,70 @@ class TriggerLiquidityEnricherTests(unittest.TestCase):
             self.assertEqual(status_payload["records_processed"], 1)
             self.assertEqual(status_payload["symbols_enriched"], 1)
             self.assertTrue(enriched["symbols"][0]["trigger_liquidity_available"])
+
+    def test_live_record_enricher_tails_trigger_source_incrementally(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            trigger_source = tmp / "trigger_source.jsonl"
+            trigger_source.write_text(
+                json.dumps(
+                    _order_status(
+                        oid=1,
+                        side="B",
+                        trigger_px=101.0,
+                        sz=20.0,
+                        time="2026-05-13T10:00:00Z",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = TriggerLiquidityConfig(
+                enabled=True,
+                source_path=str(trigger_source),
+                bucket_bps=10.0,
+                lookahead_bps=200.0,
+                min_cluster_notional_usd=1_000.0,
+            )
+            enricher = TriggerLiquidityLiveRecordEnricher(config)
+            record = {
+                "timestamp": "2026-05-13T10:00:05Z",
+                "symbols": [{"symbol": "SOL", "price": 100.0}],
+            }
+
+            enriched = enricher.enrich_record(record)
+
+            self.assertTrue(enriched["symbols"][0]["trigger_liquidity_available"])
+            self.assertEqual(enriched["symbols"][0]["cascade_risk_up"], 1.0)
+            status = enricher.status()
+            self.assertEqual(status["events_loaded"], 1)
+            self.assertEqual(status["events_applied"], 1)
+            self.assertEqual(status["pending_events"], 0)
+
+            with trigger_source.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        _order_status(
+                            status="canceled",
+                            oid=1,
+                            side="B",
+                            trigger_px=101.0,
+                            sz=20.0,
+                            time="2026-05-13T10:00:10Z",
+                        )
+                    )
+                    + "\n"
+                )
+
+            later = enricher.enrich_record(
+                {
+                    "timestamp": "2026-05-13T10:00:15Z",
+                    "symbols": [{"symbol": "SOL", "price": 100.0}],
+                }
+            )
+
+            self.assertFalse(later["symbols"][0]["trigger_liquidity_available"])
+            self.assertEqual(enricher.status()["events_applied"], 2)
 
 
 class TriggerLiquidityCollectorTests(unittest.TestCase):

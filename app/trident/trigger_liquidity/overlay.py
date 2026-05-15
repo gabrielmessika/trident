@@ -95,6 +95,11 @@ class TriggerLiquidityOverlay:
         plan: TradePlan,
         snapshot: SymbolMarketSnapshot,
     ) -> TradePlan | None:
+        original_confidence = plan.confidence
+        original_target_notional_usd = plan.target_notional_usd
+        original_margin_usd = plan.margin_usd
+        original_risk_budget_usd = plan.risk_budget_usd
+        original_expected_loss_usd = plan.expected_loss_usd
         decision = self.evaluate(
             snapshot,
             side=plan.side,
@@ -104,6 +109,11 @@ class TriggerLiquidityOverlay:
         plan.setup_details = {
             **dict(plan.setup_details or {}),
             **self.details_for_snapshot(snapshot, decision),
+            "trigger_original_confidence": original_confidence,
+            "trigger_original_target_notional_usd": original_target_notional_usd,
+            "trigger_original_margin_usd": original_margin_usd,
+            "trigger_original_risk_budget_usd": original_risk_budget_usd,
+            "trigger_original_expected_loss_usd": original_expected_loss_usd,
         }
         if decision.veto:
             return None
@@ -115,6 +125,14 @@ class TriggerLiquidityOverlay:
             plan.expected_loss_usd = round(plan.expected_loss_usd * multiplier, 6)
         if decision.action == "boost_confidence":
             plan.confidence = round(min(plan.confidence + decision.confidence_delta, 1.0), 3)
+        plan.setup_details = {
+            **dict(plan.setup_details or {}),
+            "trigger_adjusted_confidence": plan.confidence,
+            "trigger_adjusted_target_notional_usd": plan.target_notional_usd,
+            "trigger_adjusted_margin_usd": plan.margin_usd,
+            "trigger_adjusted_risk_budget_usd": plan.risk_budget_usd,
+            "trigger_adjusted_expected_loss_usd": plan.expected_loss_usd,
+        }
         return plan
 
     def details_for_snapshot(
@@ -127,6 +145,9 @@ class TriggerLiquidityOverlay:
             "trigger_liquidity_proposed_action": decision.proposed_action,
             "trigger_liquidity_reason": decision.reason,
             "trigger_liquidity_shadow_only": decision.shadow_only,
+            "trigger_liquidity_veto": decision.veto,
+            "trigger_size_multiplier": decision.size_multiplier,
+            "trigger_confidence_delta": decision.confidence_delta,
             "trigger_adverse_cascade_risk": decision.adverse_cascade_risk,
             "trigger_supportive_cascade_risk": decision.supportive_cascade_risk,
             "trigger_nearest_stop_cluster_bps": snapshot.nearest_stop_cluster_bps,
@@ -137,6 +158,8 @@ class TriggerLiquidityOverlay:
             "trigger_tp_pressure_below": snapshot.tp_pressure_below,
             "trigger_asymmetry": snapshot.trigger_asymmetry,
             "trigger_data_age_seconds": snapshot.trigger_data_age_seconds,
+            "trigger_total_notional_usd": snapshot.total_trigger_notional_usd,
+            "trigger_max_cluster_notional_usd": snapshot.max_trigger_cluster_notional_usd,
         }
 
     def _decision(

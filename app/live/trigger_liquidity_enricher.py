@@ -6,7 +6,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.hyperliquid.trigger_liquidity import iter_node_order_status_events
+from app.hyperliquid.trigger_liquidity import (
+    TriggerLiquidityEvent,
+    iter_node_order_status_events,
+    parse_node_order_status_event,
+)
 from app.settings import AppConfig, TriggerLiquidityConfig, load_config
 from app.trident.trigger_liquidity.state import (
     TriggerLiquidityBook,
@@ -64,8 +68,9 @@ class TriggerLiquiditySnapshotEnricher:
                             event_index += 1
 
                     records_processed += 1
-                    symbols_enriched += self._enrich_payload(
+                    symbols_enriched += enrich_trigger_liquidity_payload(
                         payload,
+                        config=self.config,
                         book=book,
                         now_ms=snapshot_time_ms,
                     )
@@ -84,75 +89,235 @@ class TriggerLiquiditySnapshotEnricher:
             "events_loaded": len(events),
         }
 
-    def _apply_event(self, book: TriggerLiquidityBook, event: object) -> None:
-        order = getattr(event, "order")
-        book.apply_order_status(
-            {
-                "time": getattr(event, "event_time_ms"),
-                "status": getattr(event, "status"),
-                "user": order.user,
-                "order": {
-                    "coin": order.symbol,
-                    "side": order.side,
-                    "limitPx": order.limit_px,
-                    "sz": order.sz,
-                    "oid": order.oid,
-                    "timestamp": order.observed_at_ms,
-                    "triggerCondition": order.trigger_condition,
-                    "isTrigger": True,
-                    "triggerPx": order.trigger_px,
-                    "isPositionTpsl": order.is_position_tpsl,
-                    "reduceOnly": order.reduce_only,
-                    "orderType": order.order_type,
-                    "origSz": order.orig_sz,
-                },
-            }
-        )
+    def _apply_event(self, book: TriggerLiquidityBook, event: TriggerLiquidityEvent) -> None:
+        apply_trigger_liquidity_event(book, event)
 
-    def _enrich_payload(
+
+class TriggerLiquidityLiveRecordEnricher:
+    """Incrementally enriches live records from the trigger-liquidity JSONL feed."""
+
+    def __init__(
         self,
-        payload: dict[str, object],
+        config: TriggerLiquidityConfig,
         *,
-        book: TriggerLiquidityBook,
-        now_ms: int | None,
-    ) -> int:
-        symbols = payload.get("symbols")
-        if not isinstance(symbols, list):
-            return 0
-        enriched = 0
-        for item in symbols:
-            if not isinstance(item, dict):
-                continue
-            symbol = str(item.get("symbol", "")).strip().upper()
-            if not symbol:
-                continue
-            reference_price = self._reference_price(item)
-            features = book.features_for_symbol(
-                symbol=symbol,
-                reference_price=reference_price,
-                bucket_bps=self.config.bucket_bps,
-                lookahead_bps=self.config.lookahead_bps,
-                min_cluster_notional_usd=self.config.min_cluster_notional_usd,
-                now_ms=now_ms,
+        source_path: str | Path | None = None,
+    ) -> None:
+        self.config = config
+        self.source_path = Path(source_path or config.source_path)
+        self.book = TriggerLiquidityBook()
+        self._file_offsets: dict[str, int] = {}
+        self._pending_events: list[tuple[int, int, TriggerLiquidityEvent]] = []
+        self._sequence = 0
+        self.records_processed = 0
+        self.records_enriched = 0
+        self.symbols_seen = 0
+        self.symbols_enriched = 0
+        self.events_loaded = 0
+        self.events_applied = 0
+        self.error_count = 0
+        self.last_error: str | None = None
+        self.last_event_time_ms: int | None = None
+        self.last_enriched_at: str | None = None
+
+    def enrich_record(self, payload: dict[str, object]) -> dict[str, object]:
+        if not self.config.enabled:
+            return payload
+        self.records_processed += 1
+        try:
+            self._load_new_events()
+            snapshot_time_ms = parse_event_time_ms(payload.get("timestamp"))
+            self.events_applied += self._apply_pending_events(snapshot_time_ms)
+            symbols = payload.get("symbols")
+            if isinstance(symbols, list):
+                self.symbols_seen += sum(1 for item in symbols if isinstance(item, dict))
+            enriched = enrich_trigger_liquidity_payload(
+                payload,
+                config=self.config,
+                book=self.book,
+                now_ms=snapshot_time_ms,
             )
-            item.update(features.to_dict())
-            if features.trigger_liquidity_available:
-                enriched += 1
-        return enriched
+            self.symbols_enriched += enriched
+            if enriched > 0:
+                self.records_enriched += 1
+            self.last_error = None
+            self.last_enriched_at = utc_now_iso()
+        except Exception as exc:
+            self.error_count += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+        return payload
 
-    def _reference_price(self, item: dict[str, object]) -> float:
-        for key in ("mark_px", "price"):
-            value = item.get(key)
-            if value in (None, ""):
-                continue
+    def status(self) -> dict[str, object]:
+        return {
+            "enabled": bool(self.config.enabled),
+            "source_path": str(self.source_path),
+            "records_processed": self.records_processed,
+            "records_enriched": self.records_enriched,
+            "symbols_seen": self.symbols_seen,
+            "symbols_enriched": self.symbols_enriched,
+            "events_loaded": self.events_loaded,
+            "events_applied": self.events_applied,
+            "pending_events": len(self._pending_events),
+            "active_order_count": len(self.book.orders),
+            "last_event_time": (
+                datetime.fromtimestamp(self.last_event_time_ms / 1000, tz=timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+                if self.last_event_time_ms is not None
+                else None
+            ),
+            "last_enriched_at": self.last_enriched_at,
+            "error_count": self.error_count,
+            "last_error": self.last_error,
+        }
+
+    def _load_new_events(self) -> None:
+        for file_path in iter_trigger_source_files(self.source_path):
+            key = str(file_path)
             try:
-                parsed = float(value)
-            except (TypeError, ValueError):
+                size = file_path.stat().st_size
+            except FileNotFoundError:
                 continue
-            if parsed > 0:
-                return parsed
-        return 0.0
+            offset = self._file_offsets.get(key, 0)
+            if size < offset:
+                offset = 0
+            if size == offset:
+                continue
+            with file_path.open("rb") as handle:
+                handle.seek(offset)
+                while True:
+                    line_start = handle.tell()
+                    raw_line = handle.readline()
+                    if not raw_line:
+                        break
+                    if not raw_line.endswith(b"\n"):
+                        handle.seek(line_start)
+                        break
+                    event = self._parse_raw_event(raw_line)
+                    if event is None:
+                        continue
+                    self._sequence += 1
+                    self.events_loaded += 1
+                    event_time_ms = event.event_time_ms or 0
+                    self.last_event_time_ms = max(
+                        self.last_event_time_ms or event_time_ms,
+                        event_time_ms,
+                    )
+                    self._pending_events.append((event_time_ms, self._sequence, event))
+                self._file_offsets[key] = handle.tell()
+        if self._pending_events:
+            self._pending_events.sort(key=lambda item: (item[0], item[1]))
 
+    def _parse_raw_event(self, raw_line: bytes) -> TriggerLiquidityEvent | None:
+        try:
+            payload = json.loads(raw_line.decode("utf-8").strip())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return parse_node_order_status_event(payload)
+
+    def _apply_pending_events(self, snapshot_time_ms: int | None) -> int:
+        if not self._pending_events:
+            return 0
+        cutoff = snapshot_time_ms if snapshot_time_ms is not None else float("inf")
+        applied = 0
+        for event_time_ms, _, event in self._pending_events:
+            if event_time_ms > cutoff:
+                break
+            apply_trigger_liquidity_event(self.book, event)
+            applied += 1
+        if applied:
+            del self._pending_events[:applied]
+        return applied
+
+
+def apply_trigger_liquidity_event(
+    book: TriggerLiquidityBook,
+    event: TriggerLiquidityEvent,
+) -> None:
+    order = event.order
+    book.apply_order_status(
+        {
+            "time": event.event_time_ms,
+            "status": event.status,
+            "user": order.user,
+            "order": {
+                "coin": order.symbol,
+                "side": order.side,
+                "limitPx": order.limit_px,
+                "sz": order.sz,
+                "oid": order.oid,
+                "timestamp": order.observed_at_ms,
+                "triggerCondition": order.trigger_condition,
+                "isTrigger": True,
+                "triggerPx": order.trigger_px,
+                "isPositionTpsl": order.is_position_tpsl,
+                "reduceOnly": order.reduce_only,
+                "orderType": order.order_type,
+                "origSz": order.orig_sz,
+            },
+        }
+    )
+
+
+def enrich_trigger_liquidity_payload(
+    payload: dict[str, object],
+    *,
+    config: TriggerLiquidityConfig,
+    book: TriggerLiquidityBook,
+    now_ms: int | None,
+) -> int:
+    symbols = payload.get("symbols")
+    if not isinstance(symbols, list):
+        return 0
+    enriched = 0
+    for item in symbols:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", "")).strip().upper()
+        if not symbol:
+            continue
+        reference_price = trigger_reference_price(item)
+        features = book.features_for_symbol(
+            symbol=symbol,
+            reference_price=reference_price,
+            bucket_bps=config.bucket_bps,
+            lookahead_bps=config.lookahead_bps,
+            min_cluster_notional_usd=config.min_cluster_notional_usd,
+            now_ms=now_ms,
+        )
+        item.update(features.to_dict())
+        if features.trigger_liquidity_available:
+            enriched += 1
+    return enriched
+
+
+def trigger_reference_price(item: dict[str, object]) -> float:
+    for key in ("mark_px", "price"):
+        value = item.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return 0.0
+
+
+def iter_trigger_source_files(path: str | Path):
+    root = Path(path)
+    if root.is_file():
+        yield root
+        return
+    if not root.exists():
+        return
+    yield from sorted(
+        item
+        for item in root.glob("*.jsonl")
+        if item.is_file() and not item.name.startswith(".")
+    )
 
 class TriggerLiquidityEnricherRunner:
     """Continuously mirrors live snapshots with trigger-liquidity shadow fields."""
