@@ -8,7 +8,7 @@ from pathlib import Path
 from app.backtest.snapshot_loader import SnapshotLoader
 from app.settings import AppConfig, load_config
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot
+from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 @dataclass(slots=True)
@@ -135,7 +135,7 @@ class RoutingReplayRunner:
                 },
             )
             supervisor.refresh_symbol_routing(
-                [SymbolMarketSnapshot(**item) for item in record.symbols]
+                [symbol_market_snapshot_from_mapping(item) for item in record.symbols]
             )
             snapshot = supervisor.snapshot()
 

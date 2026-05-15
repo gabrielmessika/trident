@@ -18,7 +18,7 @@ from app.trident.pod_b import (
     ReplayFeatureEnricher,
 )
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodAllocation, PodName, RegimeSnapshot, SignalPreview, SymbolAllocation, SymbolMarketSnapshot
+from app.trident.types import PodAllocation, PodName, RegimeSnapshot, SignalPreview, SymbolAllocation, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 @dataclass(slots=True)
@@ -83,7 +83,7 @@ class PodBBacktestRunner:
                     new_regime=current_regime,
                 )
             report.add_record_regime(current_regime)
-            snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            snapshots = [symbol_market_snapshot_from_mapping(item) for item in record.symbols]
             snapshots = self.replay_enricher.enrich_many(snapshots)
             supervisor.refresh_symbol_routing(snapshots)
             opening_symbols = supervisor.opening_symbols_for(PodName.POD_B)

@@ -33,6 +33,7 @@ from app.trident.types import (
     SignalPreview,
     SymbolAllocation,
     SymbolMarketSnapshot,
+    symbol_market_snapshot_from_mapping,
 )
 
 
@@ -136,7 +137,7 @@ class FullBotBacktestRunner:
             if timestamp:
                 dates_covered.add(timestamp[:10])
 
-            snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            snapshots = [symbol_market_snapshot_from_mapping(item) for item in record.symbols]
             previous_snapshots_by_symbol = dict(latest_snapshots_by_symbol)
             latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
             if record.capture_reason == "maintenance_refresh":

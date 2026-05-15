@@ -15,7 +15,7 @@ from app.trident.market_clusters import cluster_for_symbol
 from app.trident.pod_c import TradfiTrendContextService, TradfiTrendPlanner, TradfiTrendService
 from app.trident.pod_c.signals import TradfiTrendContext, TradfiTrendSignal
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot
+from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 @dataclass(slots=True)
@@ -194,7 +194,7 @@ class ExperimentalPodCBacktestRunner:
                 )
             report.add_record_regime(current_regime)
 
-            snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            snapshots = [symbol_market_snapshot_from_mapping(item) for item in record.symbols]
             previews = supervisor.preview_pod_c_signals(snapshots)
             trade_plans = supervisor.build_pod_c_trade_plans(snapshots)
             risk_decisions = self.risk_gate.evaluate_many(trade_plans)

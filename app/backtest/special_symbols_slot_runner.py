@@ -16,7 +16,7 @@ from app.trident.pod_a.context import MarketContextService
 from app.trident.pod_a.planner import AnchorTrendPlanner
 from app.trident.pod_a.service import AnchorTrendService
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodAllocation, PodName, RegimeSnapshot, SymbolAllocation, SymbolMarketSnapshot
+from app.trident.types import PodAllocation, PodName, RegimeSnapshot, SymbolAllocation, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 @dataclass(slots=True)
@@ -96,7 +96,7 @@ class SpecialSymbolsSlotBacktestRunner:
                 )
             report.add_record_regime(current_regime)
 
-            snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            snapshots = [symbol_market_snapshot_from_mapping(item) for item in record.symbols]
             special_universe_snapshots = [
                 snapshot for snapshot in snapshots if snapshot.symbol.upper() in universe_set
             ]

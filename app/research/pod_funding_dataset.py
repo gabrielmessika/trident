@@ -10,7 +10,7 @@ from pathlib import Path
 from app.backtest.snapshot_loader import SnapshotLoader
 from app.settings import load_config
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import RegimeSnapshot, SymbolMarketSnapshot
+from app.trident.types import RegimeSnapshot, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 @dataclass(slots=True)
@@ -152,7 +152,7 @@ class FundingDatasetBuilder:
             record_timestamps.append(parse_utc_timestamp(record.timestamp))
             snapshots_by_index.append(
                 {
-                    item["symbol"].upper(): SymbolMarketSnapshot(**item)
+                    item["symbol"].upper(): symbol_market_snapshot_from_mapping(item)
                     for item in record.symbols
                     if isinstance(item, dict)
                 }

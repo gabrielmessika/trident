@@ -25,6 +25,7 @@ from app.trident.types import (
     SignalPreview,
     SymbolAllocation,
     SymbolMarketSnapshot,
+    symbol_market_snapshot_from_mapping,
 )
 
 
@@ -138,7 +139,7 @@ class FullBotSpecialReplacementRunner(FullBotBacktestRunner):
             if timestamp:
                 dates_covered.add(timestamp[:10])
 
-            snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            snapshots = [symbol_market_snapshot_from_mapping(item) for item in record.symbols]
             latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
             previous_regime = supervisor.state.regime.value
             cluster_regime_snapshots = {

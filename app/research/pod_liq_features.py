@@ -10,7 +10,7 @@ from pathlib import Path
 from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
 from app.settings import load_config
 from app.trident.regime_allocator import RegimeAllocator
-from app.trident.types import Regime, RegimeSnapshot, SymbolMarketSnapshot
+from app.trident.types import Regime, RegimeSnapshot, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 @dataclass(slots=True)
@@ -380,7 +380,7 @@ class PodLiqFeatureBuilder:
 
     def _snapshot_map(self, record: SnapshotRecord) -> dict[str, SymbolMarketSnapshot]:
         return {
-            item["symbol"].upper(): SymbolMarketSnapshot(**item)
+            item["symbol"].upper(): symbol_market_snapshot_from_mapping(item)
             for item in record.symbols
             if isinstance(item, dict)
         }

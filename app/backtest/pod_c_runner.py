@@ -16,7 +16,7 @@ from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import AppConfig, load_config
 from app.trident.market_clusters import cluster_for_symbol
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
+from app.trident.types import RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 @dataclass(slots=True)
@@ -79,7 +79,7 @@ class PodCBacktestRunner:
                 )
             report.add_record_regime(current_regime)
 
-            snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            snapshots = [symbol_market_snapshot_from_mapping(item) for item in record.symbols]
             previews = supervisor.preview_pod_c_signals(snapshots)
             trade_plans = supervisor.build_pod_c_trade_plans(snapshots)
             for plan in trade_plans:

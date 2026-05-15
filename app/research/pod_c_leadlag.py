@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from app.backtest.snapshot_loader import SnapshotLoader
-from app.trident.types import SymbolMarketSnapshot
+from app.trident.types import SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 @dataclass(slots=True)
@@ -49,7 +49,7 @@ class LeadLagResearchRunner:
         records = list(self.loader.iter_jsonl(input_path))
         snapshot_matrix: list[dict[str, SymbolMarketSnapshot]] = [
             {
-                item["symbol"].upper(): SymbolMarketSnapshot(**item)
+                item["symbol"].upper(): symbol_market_snapshot_from_mapping(item)
                 for item in record.symbols
                 if isinstance(item, dict)
             }

@@ -36,7 +36,7 @@ from app.trident.market_clusters import (
     symbols_in_allowed_clusters,
 )
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot
+from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 def _latest_snapshot_status(snapshot_dir: Path = Path("data/live_snapshots")) -> dict[str, object]:
@@ -1888,7 +1888,7 @@ def _refresh_supervisor_from_latest_snapshot(
     )
     supervisor.refresh_symbol_routing(
         [
-            SymbolMarketSnapshot(**item)
+            symbol_market_snapshot_from_mapping(item)
             for item in record.symbols
             if isinstance(item, dict)
         ]

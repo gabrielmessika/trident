@@ -32,7 +32,7 @@ from app.risk.pod_a_gate import PodARiskGate
 from app.settings import AppConfig, load_config
 from app.trident.market_clusters import cluster_for_symbol
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
+from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -364,7 +364,7 @@ class PodALiveRunner:
             )
         self.report.add_record_regime(current_regime)
 
-        snapshots = [SymbolMarketSnapshot(**item) for item in symbols if isinstance(item, dict)]
+        snapshots = [symbol_market_snapshot_from_mapping(item) for item in symbols if isinstance(item, dict)]
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
         snapshots = self._backfill_missing_position_snapshots(snapshots)
         previews = self.supervisor.preview_pod_a_signals(snapshots, timestamp=timestamp)
@@ -602,7 +602,7 @@ class PodALiveRunner:
         symbols = record.get("symbols", [])
         if not isinstance(symbols, list):
             return
-        snapshots = [SymbolMarketSnapshot(**item) for item in symbols if isinstance(item, dict)]
+        snapshots = [symbol_market_snapshot_from_mapping(item) for item in symbols if isinstance(item, dict)]
         if not snapshots:
             return
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
@@ -889,7 +889,7 @@ class PodALiveRunner:
             snapshots=snapshots,
         )
         snapshots = [
-            SymbolMarketSnapshot(**item)
+            symbol_market_snapshot_from_mapping(item)
             for item in maintenance_record.get("symbols", [])
             if isinstance(item, dict)
         ]

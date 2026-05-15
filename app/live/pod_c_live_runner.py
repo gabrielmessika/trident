@@ -37,7 +37,7 @@ from app.trident.market_clusters import (
     symbols_in_allowed_clusters,
 )
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
+from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -335,7 +335,7 @@ class PodCLiveRunner:
             )
         self.report.add_record_regime(current_regime)
 
-        snapshots = [SymbolMarketSnapshot(**item) for item in symbols if isinstance(item, dict)]
+        snapshots = [symbol_market_snapshot_from_mapping(item) for item in symbols if isinstance(item, dict)]
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
         previews = self.supervisor.preview_pod_c_signals(snapshots)
         trade_plans = self.supervisor.build_pod_c_trade_plans(snapshots)
@@ -492,7 +492,7 @@ class PodCLiveRunner:
         symbols = record.get("symbols", [])
         if not isinstance(symbols, list):
             return
-        snapshots = [SymbolMarketSnapshot(**item) for item in symbols if isinstance(item, dict)]
+        snapshots = [symbol_market_snapshot_from_mapping(item) for item in symbols if isinstance(item, dict)]
         if not snapshots:
             return
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})

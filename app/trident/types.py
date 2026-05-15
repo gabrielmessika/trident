@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
@@ -222,6 +222,19 @@ class SymbolMarketSnapshot:
     external_momentum_300s_bps: float = 0.0
     external_alignment_score: float = 0.0
     source: str = ""
+
+
+_SYMBOL_MARKET_SNAPSHOT_FIELD_NAMES = {item.name for item in fields(SymbolMarketSnapshot)}
+
+
+def symbol_market_snapshot_from_mapping(payload: dict[str, object]) -> SymbolMarketSnapshot:
+    return SymbolMarketSnapshot(
+        **{
+            key: value
+            for key, value in payload.items()
+            if key in _SYMBOL_MARKET_SNAPSHOT_FIELD_NAMES
+        }
+    )
 
 
 @dataclass(slots=True)

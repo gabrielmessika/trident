@@ -17,7 +17,7 @@ from app.persistence.journal import (
 from app.risk.pod_a_gate import PodARiskGate
 from app.settings import AppConfig
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot
+from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
 @dataclass(slots=True)
@@ -123,7 +123,7 @@ class PodABacktestRunner:
                     new_regime=current_regime,
                 )
             report.add_record_regime(supervisor.state.regime.value)
-            snapshots = [SymbolMarketSnapshot(**item) for item in record.symbols]
+            snapshots = [symbol_market_snapshot_from_mapping(item) for item in record.symbols]
             previews = supervisor.preview_pod_a_signals(snapshots, timestamp=record.timestamp)
             trade_plans = supervisor.build_pod_a_trade_plans(snapshots, timestamp=record.timestamp)
             for plan in trade_plans:
