@@ -91,8 +91,6 @@ done
 OUTPUT_DIR="${OUTPUT_DIR:-${LOCAL_DIR}/reviews/${TIMESTAMP_UTC}}"
 RAW_DIR="${LOCAL_DIR}/raw/${TIMESTAMP_UTC}"
 SNAPSHOT_DIR="${LOCAL_DIR}/live_snapshots"
-TRIGGER_SNAPSHOT_DIR="${LOCAL_DIR}/live_snapshots_trigger_liquidity"
-TRIGGER_SOURCE_DIR="${LOCAL_DIR}/trigger_liquidity"
 FUNDING_DIR="${LOCAL_DIR}/funding_history"
 LOG_DIR="${LOCAL_DIR}/logs"
 API_DIR="${LOCAL_DIR}/api"
@@ -356,7 +354,6 @@ fetch_api_snapshot() {
         "curl -fsS http://127.0.0.1:3000/api/state"
         "curl -fsS http://127.0.0.1:3000/api/metrics"
         "curl -fsS http://127.0.0.1:3000/api/report"
-        "curl -fsS http://127.0.0.1:3000/api/trigger-liquidity"
         "curl -fsS http://127.0.0.1:3000/api/hip4-outcome"
         "curl -fsS http://127.0.0.1:3000/api/hip4-outcome-mainnet"
     )
@@ -365,7 +362,6 @@ fetch_api_snapshot() {
         "state-${ts}.json"
         "metrics-${ts}.json"
         "report-${ts}.json"
-        "trigger-liquidity-${ts}.json"
         "hip4-outcome-${ts}.json"
         "hip4-outcome-mainnet-${ts}.json"
     )
@@ -484,38 +480,6 @@ fetch_snapshots() {
     ok "Snapshots live rapatries (${snapshot_count} fichier(s) locaux)"
 }
 
-fetch_trigger_liquidity_snapshots() {
-    info "Rapatriement des snapshots TP/SL trigger liquidity..."
-    local remote_snapshot_dir="${REMOTE_DIR}/data/live_snapshots_trigger_liquidity/"
-
-    if ! ssh_remote "test -d '${REMOTE_DIR}/data/live_snapshots_trigger_liquidity'" 2>/dev/null; then
-        info "Dossier data/live_snapshots_trigger_liquidity absent sur le serveur (optionnel)"
-        return
-    fi
-
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] %s -> %s/ (mode=%s)\n' "${remote_snapshot_dir}" "${TRIGGER_SNAPSHOT_DIR}" "${MODE}"
-        return
-    fi
-
-    if [[ "${MODE}" == "all" ]]; then
-        retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${remote_snapshot_dir}" "${TRIGGER_SNAPSHOT_DIR}/"
-    else
-        local filter_file
-        filter_file="$(build_snapshot_filter)"
-        retry_command 3 2 rsync_remote -azP --filter="merge ${filter_file}" "${SSH_TARGET}:${remote_snapshot_dir}" "${TRIGGER_SNAPSHOT_DIR}/"
-        rm -f "${filter_file}"
-    fi
-    local snapshot_count
-    snapshot_count="$(find "${TRIGGER_SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | wc -l | tr -d ' ')"
-    ok "Snapshots TP/SL trigger liquidity rapatries (${snapshot_count} fichier(s) locaux)"
-}
-
-fetch_trigger_liquidity_source() {
-    info "Rapatriement de la source TP/SL trigger liquidity..."
-    fetch_optional_remote_dir "data/trigger_liquidity" "${TRIGGER_SOURCE_DIR}" "Source TP/SL trigger liquidity"
-}
-
 fetch_funding_history() {
     info "Rapatriement de l'historique funding/OI..."
     local remote_funding_dir="${REMOTE_DIR}/data/funding_history/"
@@ -585,9 +549,6 @@ fetch_logs_and_runtime() {
     fetch_optional_remote_file "config/hip4_outcome_mainnet_paper.toml" "${CONFIG_DIR}/hip4_outcome_mainnet_paper.toml" "Config HIP-4 Outcome mainnet paper"
     fetch_optional_remote_file "config/hip4_outcome_mainnet_observer.toml" "${CONFIG_DIR}/hip4_outcome_mainnet_observer.toml" "Config HIP-4 Outcome mainnet observer"
     fetch_optional_remote_file "config/trident.toml" "${CONFIG_DIR}/trident.toml" "Config TRIDENT"
-    fetch_optional_remote_file "runtime/trigger_liquidity_collector_status.json" "${RUNTIME_DIR}/trigger_liquidity_collector_status.json" "Runtime status Trigger Liquidity Collector"
-    fetch_optional_remote_file "runtime/trigger_liquidity_sql_backfill_status.json" "${RUNTIME_DIR}/trigger_liquidity_sql_backfill_status.json" "Runtime status Trigger Liquidity SQL Backfill"
-    fetch_optional_remote_file "runtime/trigger_liquidity_enricher_status.json" "${RUNTIME_DIR}/trigger_liquidity_enricher_status.json" "Runtime status Trigger Liquidity Enricher"
     fetch_remote_file "logs/funding_collector_status.json" "${RUNTIME_DIR}/funding_collector_status.json" "Runtime status Funding Collector"
     fetch_remote_file "logs/tradfi_funding_collector_status.json" "${RUNTIME_DIR}/tradfi_funding_collector_status.json" "Runtime status Tradfi Funding Collector"
     fetch_optional_remote_file "docs/pod_funding_research_latest.json" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.json" "Research funding JSON"
@@ -598,8 +559,8 @@ fetch_logs_and_runtime() {
 
 fetch_docker_logs() {
     info "Rapatriement des tails de logs Docker..."
-    local services=("trident-api" "pod-a-live" "trigger-liquidity-collector" "trigger-liquidity-enricher" "hip4-outcome-dry-run" "pod-c-live" "tradfi-funding-collector" "funding-collector")
-    local files=("trident-api.log" "pod-a-live.log" "trigger-liquidity-collector.log" "trigger-liquidity-enricher.log" "hip4-outcome-dry-run.log" "pod-c-live.log" "tradfi-funding-collector.log" "funding-collector.log")
+    local services=("trident-api" "pod-a-live" "hip4-outcome-dry-run" "pod-c-live" "tradfi-funding-collector" "funding-collector")
+    local files=("trident-api.log" "pod-a-live.log" "hip4-outcome-dry-run.log" "pod-c-live.log" "tradfi-funding-collector.log" "funding-collector.log")
     local i
 
     for i in "${!services[@]}"; do
@@ -670,8 +631,6 @@ fetch_api_snapshot
 
 if [[ "${LOGS_ONLY}" != "true" ]]; then
     fetch_snapshots
-    fetch_trigger_liquidity_snapshots
-    fetch_trigger_liquidity_source
     fetch_funding_history
     prepare_backtest_inputs
 fi
@@ -698,8 +657,6 @@ if [[ "${DRY_RUN}" != "true" ]]; then
     echo
     echo "  Artefacts principaux :"
     echo "    - snapshots live : ${SNAPSHOT_DIR}"
-    echo "    - snapshots TP/SL trigger liquidity : ${TRIGGER_SNAPSHOT_DIR}"
-    echo "    - source TP/SL trigger liquidity : ${TRIGGER_SOURCE_DIR}"
     echo "    - funding history : ${FUNDING_DIR}"
     echo "    - logs applicatifs : ${LOG_DIR}"
     echo "    - logs HIP-4 paper : ${HIP4_LOG_DIR}"

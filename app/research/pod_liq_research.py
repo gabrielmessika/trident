@@ -93,36 +93,6 @@ class PodLiqResearchRunner:
             max_spread_bps=8.0,
             min_bucket_notional_usd=150.0,
         ),
-        _VariantDefinition(
-            variant="trigger_stop_breakout_continuation",
-            description="Continuation toward visible Hyperliquid stop clusters.",
-            score_field="trigger_stop_breakout_score",
-            direction_field="trigger_stop_breakout_direction",
-            min_score=0.55,
-            max_spread_bps=8.0,
-            min_bucket_notional_usd=150.0,
-            method_note="Requires snapshots enriched with node-derived TP/SL trigger liquidity.",
-        ),
-        _VariantDefinition(
-            variant="trigger_sweep_reversal",
-            description="Reversal after price trades into nearby visible stop clusters.",
-            score_field="trigger_sweep_reversal_score",
-            direction_field="trigger_sweep_reversal_direction",
-            min_score=0.55,
-            max_spread_bps=8.0,
-            min_bucket_notional_usd=150.0,
-            method_note="Requires snapshots enriched with node-derived TP/SL trigger liquidity.",
-        ),
-        _VariantDefinition(
-            variant="trigger_tp_exhaustion",
-            description="Exhaustion/reversal near visible take-profit clusters.",
-            score_field="trigger_tp_exhaustion_score",
-            direction_field="trigger_tp_exhaustion_direction",
-            min_score=0.55,
-            max_spread_bps=8.0,
-            min_bucket_notional_usd=150.0,
-            method_note="Requires snapshots enriched with node-derived TP/SL trigger liquidity.",
-        ),
     ]
 
     def __init__(self) -> None:

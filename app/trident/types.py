@@ -221,23 +221,6 @@ class SymbolMarketSnapshot:
     external_momentum_60s_bps: float = 0.0
     external_momentum_300s_bps: float = 0.0
     external_alignment_score: float = 0.0
-    trigger_liquidity_available: bool = False
-    nearest_stop_cluster_bps: float = 0.0
-    nearest_stop_cluster_above_bps: float = 0.0
-    nearest_stop_cluster_below_bps: float = 0.0
-    nearest_tp_cluster_bps: float = 0.0
-    nearest_tp_cluster_above_bps: float = 0.0
-    nearest_tp_cluster_below_bps: float = 0.0
-    stop_pressure_above: float = 0.0
-    stop_pressure_below: float = 0.0
-    tp_pressure_above: float = 0.0
-    tp_pressure_below: float = 0.0
-    trigger_asymmetry: float = 0.0
-    cascade_risk_up: float = 0.0
-    cascade_risk_down: float = 0.0
-    trigger_data_age_seconds: float | None = None
-    total_trigger_notional_usd: float = 0.0
-    max_trigger_cluster_notional_usd: float = 0.0
     source: str = ""
 
 

@@ -5,7 +5,6 @@ import asyncio
 import logging
 import os
 import time
-from collections import Counter, deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +21,6 @@ from app.live.replay_capture import (
 )
 from app.live.runtime_status import write_runtime_status
 from app.live.state_store import LiveStateStore, live_state_path_for_pod
-from app.live.trigger_liquidity_enricher import TriggerLiquidityLiveRecordEnricher
 from app.live.user_stream import UserOrderUpdateMonitor, check_order_updates_subscription
 from app.persistence.journal import (
     JsonlJournal,
@@ -127,18 +125,6 @@ class PodALiveRunner:
         self._info_client = HyperliquidInfoClient(self.config.hyperliquid)
         self._last_record_monotonic = time.monotonic()
         self._last_market_data_refresh_monotonic = 0.0
-        self.trigger_liquidity_enricher = TriggerLiquidityLiveRecordEnricher(
-            self.config.trigger_liquidity
-        )
-        self._trigger_liquidity_signal_actions: Counter[str] = Counter()
-        self._trigger_liquidity_signal_proposed_actions: Counter[str] = Counter()
-        self._trigger_liquidity_signal_reasons: Counter[str] = Counter()
-        self._trigger_liquidity_trade_plan_actions: Counter[str] = Counter()
-        self._trigger_liquidity_accepted_actions: Counter[str] = Counter()
-        self._trigger_liquidity_rejected_actions: Counter[str] = Counter()
-        self._trigger_liquidity_opened_actions: Counter[str] = Counter()
-        self._trigger_liquidity_recent_observations: deque[dict[str, object]] = deque(maxlen=25)
-
     async def run(
         self,
         *,
@@ -407,14 +393,6 @@ class PodALiveRunner:
             entry_allowed_symbols=entry_allowed_symbols,
             managed_symbols=managed_symbols,
         )
-        self._record_trigger_liquidity_observations(
-            timestamp=timestamp,
-            previews=previews,
-            trade_plans=trade_plans,
-            risk_decisions=risk_decisions,
-            execution=execution,
-        )
-
         snapshot_by_symbol = {
             item["symbol"]: item for item in symbols if isinstance(item, dict) and "symbol" in item
         }
@@ -497,7 +475,7 @@ class PodALiveRunner:
                                 else False,
                                 "reason": decisions_by_symbol.get(preview.symbol).reason
                                 if preview.symbol in decisions_by_symbol
-                                else self._missing_trade_plan_reason(preview),
+                                else "missing_trade_plan",
                                 "target_notional_usd": (
                                     decisions_by_symbol[preview.symbol].trade_plan.target_notional_usd
                                     if preview.symbol in decisions_by_symbol
@@ -659,106 +637,6 @@ class PodALiveRunner:
         if opened_at is None or closed_at is None:
             return None
         return round((closed_at - opened_at).total_seconds() / 3600.0, 4)
-
-    def _missing_trade_plan_reason(self, preview: object) -> str:
-        details = dict(getattr(preview, "setup_details", {}) or {})
-        if str(details.get("trigger_liquidity_action", "")) == "veto_entry":
-            return "trigger_liquidity_veto"
-        return "missing_trade_plan"
-
-    def _record_trigger_liquidity_observations(
-        self,
-        *,
-        timestamp: str,
-        previews: list[object],
-        trade_plans: list[object],
-        risk_decisions: list[RiskDecision],
-        execution: object,
-    ) -> None:
-        if not self.config.trigger_liquidity.enabled:
-            return
-        decisions_by_symbol = {
-            decision.trade_plan.symbol: decision for decision in risk_decisions
-        }
-        opened_symbols = {str(symbol) for symbol in getattr(execution, "opened_symbols", [])}
-        for plan in trade_plans:
-            details = dict(getattr(plan, "setup_details", {}) or {})
-            action = self._trigger_liquidity_value(details, "trigger_liquidity_action")
-            self._trigger_liquidity_trade_plan_actions[action] += 1
-        for decision in risk_decisions:
-            details = dict(getattr(decision.trade_plan, "setup_details", {}) or {})
-            action = self._trigger_liquidity_value(details, "trigger_liquidity_action")
-            if decision.accepted:
-                self._trigger_liquidity_accepted_actions[action] += 1
-            else:
-                self._trigger_liquidity_rejected_actions[action] += 1
-        for preview in previews:
-            details = dict(getattr(preview, "setup_details", {}) or {})
-            action = self._trigger_liquidity_value(details, "trigger_liquidity_action")
-            proposed_action = self._trigger_liquidity_value(
-                details,
-                "trigger_liquidity_proposed_action",
-            )
-            reason = self._trigger_liquidity_value(details, "trigger_liquidity_reason")
-            self._trigger_liquidity_signal_actions[action] += 1
-            self._trigger_liquidity_signal_proposed_actions[proposed_action] += 1
-            self._trigger_liquidity_signal_reasons[reason] += 1
-            symbol = str(getattr(preview, "symbol", ""))
-            if symbol in opened_symbols:
-                self._trigger_liquidity_opened_actions[action] += 1
-            if action == "allow" and reason in {"", "no_trigger_liquidity", "trigger_liquidity_neutral"}:
-                continue
-            decision = decisions_by_symbol.get(symbol)
-            self._trigger_liquidity_recent_observations.append(
-                {
-                    "timestamp": timestamp,
-                    "symbol": symbol,
-                    "side": getattr(preview, "side", ""),
-                    "setup": getattr(preview, "setup", ""),
-                    "action": action,
-                    "proposed_action": proposed_action,
-                    "reason": reason,
-                    "accepted": bool(decision.accepted) if decision is not None else False,
-                    "opened": symbol in opened_symbols,
-                    "adverse_cascade_risk": details.get("trigger_adverse_cascade_risk"),
-                    "supportive_cascade_risk": details.get("trigger_supportive_cascade_risk"),
-                    "max_trigger_cluster_notional_usd": details.get(
-                        "trigger_max_cluster_notional_usd"
-                    ),
-                    "data_age_seconds": details.get("trigger_data_age_seconds"),
-                }
-            )
-
-    def _trigger_liquidity_status(self) -> dict[str, object]:
-        actionable = {
-            action: count
-            for action, count in self._trigger_liquidity_signal_actions.items()
-            if action not in {"", "allow", "none"}
-        }
-        return {
-            "inline_enrichment": self.trigger_liquidity_enricher.status(),
-            "signals_by_action": dict(self._trigger_liquidity_signal_actions),
-            "signals_by_proposed_action": dict(
-                self._trigger_liquidity_signal_proposed_actions
-            ),
-            "signals_by_reason": dict(self._trigger_liquidity_signal_reasons),
-            "trade_plans_by_action": dict(self._trigger_liquidity_trade_plan_actions),
-            "accepted_by_action": dict(self._trigger_liquidity_accepted_actions),
-            "rejected_by_action": dict(self._trigger_liquidity_rejected_actions),
-            "opened_by_action": dict(self._trigger_liquidity_opened_actions),
-            "actionable_signal_count": sum(actionable.values()),
-            "recent_observations": list(self._trigger_liquidity_recent_observations),
-        }
-
-    def _trigger_liquidity_value(
-        self,
-        details: dict[str, object],
-        key: str,
-    ) -> str:
-        value = details.get(key)
-        if value in (None, ""):
-            return "none"
-        return str(value)
 
     def _emit_review_summary(
         self,
@@ -943,7 +821,6 @@ class PodALiveRunner:
                 ),
                 "report": self.report.to_dict(),
                 "open_positions": self._build_open_positions_payload(),
-                "trigger_liquidity": self._trigger_liquidity_status(),
                 "supervisor": self.supervisor.snapshot(),
             },
         )
@@ -1011,7 +888,6 @@ class PodALiveRunner:
             cluster_regime_snapshots=self.supervisor.state.cluster_regime_snapshots,
             snapshots=snapshots,
         )
-        maintenance_record = self._enrich_trigger_liquidity_record(maintenance_record)
         snapshots = [
             SymbolMarketSnapshot(**item)
             for item in maintenance_record.get("symbols", [])
@@ -1054,12 +930,7 @@ class PodALiveRunner:
             record,
             stream_source=self.snapshot_stream_source,
         )
-        return self._enrich_trigger_liquidity_record(annotated)
-
-    def _enrich_trigger_liquidity_record(self, record: dict[str, object]) -> dict[str, object]:
-        if not self.config.trigger_liquidity.enabled:
-            return record
-        return self.trigger_liquidity_enricher.enrich_record(record)
+        return annotated
 
     def _rest_fallback_snapshot(
         self,

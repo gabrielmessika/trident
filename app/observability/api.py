@@ -1918,312 +1918,6 @@ def _latest_snapshot_record(
     return latest_record
 
 
-def _latest_trigger_liquidity_record(
-    supervisor: TridentSupervisor,
-) -> tuple[SnapshotRecord | None, str | None]:
-    candidates: list[tuple[SnapshotRecord, Path]] = []
-    seen_paths: set[Path] = set()
-    max_age_seconds = max(
-        float(supervisor.config.trigger_liquidity.max_data_age_seconds) * 60.0,
-        86_400.0,
-    )
-    for raw_path in (
-        supervisor.config.trigger_liquidity.snapshot_output_dir,
-        supervisor.config.hyperliquid.snapshot_output_dir,
-    ):
-        if not raw_path:
-            continue
-        snapshot_dir = Path(raw_path)
-        if snapshot_dir in seen_paths:
-            continue
-        seen_paths.add(snapshot_dir)
-        try:
-            record = _latest_snapshot_record(
-                snapshot_dir=snapshot_dir,
-                max_snapshot_age_seconds=max_age_seconds,
-            )
-        except (OSError, ValueError, json.JSONDecodeError):
-            record = None
-        if record is not None:
-            candidates.append((record, snapshot_dir))
-
-    for record, snapshot_dir in candidates:
-        if _snapshot_record_has_trigger_liquidity(record):
-            return record, str(snapshot_dir / record.source_file)
-    if candidates:
-        record, snapshot_dir = candidates[0]
-        return record, str(snapshot_dir / record.source_file)
-    return None, None
-
-
-def _snapshot_record_has_trigger_liquidity(record: SnapshotRecord) -> bool:
-    for item in record.symbols:
-        if not isinstance(item, dict):
-            continue
-        if bool(item.get("trigger_liquidity_available")):
-            return True
-        for field in (
-            "stop_pressure_above",
-            "stop_pressure_below",
-            "tp_pressure_above",
-            "tp_pressure_below",
-            "cascade_risk_up",
-            "cascade_risk_down",
-            "total_trigger_notional_usd",
-            "max_trigger_cluster_notional_usd",
-        ):
-            value = _float_or_none(item.get(field))
-            if value is not None and abs(value) > 0:
-                return True
-    return False
-
-
-def _trigger_liquidity_rows_from_record(
-    supervisor: TridentSupervisor,
-    record: SnapshotRecord | None,
-) -> list[dict[str, object]]:
-    if record is None:
-        return []
-    rows: list[dict[str, object]] = []
-    max_data_age_seconds = max(
-        float(supervisor.config.trigger_liquidity.max_data_age_seconds),
-        0.0,
-    )
-    for item in record.symbols:
-        if not isinstance(item, dict):
-            continue
-        symbol = str(item.get("symbol", "")).strip().upper()
-        if not symbol:
-            continue
-        available = bool(item.get("trigger_liquidity_available"))
-        age_seconds = _float_or_none(item.get("trigger_data_age_seconds"))
-        stop_pressure_above = _float_or_none(item.get("stop_pressure_above")) or 0.0
-        stop_pressure_below = _float_or_none(item.get("stop_pressure_below")) or 0.0
-        tp_pressure_above = _float_or_none(item.get("tp_pressure_above")) or 0.0
-        tp_pressure_below = _float_or_none(item.get("tp_pressure_below")) or 0.0
-        cascade_risk_up = _float_or_none(item.get("cascade_risk_up")) or 0.0
-        cascade_risk_down = _float_or_none(item.get("cascade_risk_down")) or 0.0
-        total_notional = _float_or_none(item.get("total_trigger_notional_usd")) or 0.0
-        max_cluster_notional = (
-            _float_or_none(item.get("max_trigger_cluster_notional_usd")) or 0.0
-        )
-        has_trigger_data = (
-            available
-            or max(
-                stop_pressure_above,
-                stop_pressure_below,
-                tp_pressure_above,
-                tp_pressure_below,
-                cascade_risk_up,
-                cascade_risk_down,
-                total_notional,
-                max_cluster_notional,
-            )
-            > 0
-        )
-        if not has_trigger_data:
-            continue
-        fresh = (
-            available
-            and age_seconds is not None
-            and age_seconds <= max_data_age_seconds
-        )
-        row = {
-            "symbol": symbol,
-            "market_cluster": cluster_for_symbol(supervisor.config, symbol),
-            "available": available,
-            "fresh": fresh,
-            "stale": available and not fresh,
-            "price": _float_or_none(item.get("price")),
-            "age_seconds": age_seconds,
-            "nearest_stop_cluster_bps": _float_or_none(
-                item.get("nearest_stop_cluster_bps")
-            )
-            or 0.0,
-            "nearest_stop_cluster_above_bps": _float_or_none(
-                item.get("nearest_stop_cluster_above_bps")
-            )
-            or 0.0,
-            "nearest_stop_cluster_below_bps": _float_or_none(
-                item.get("nearest_stop_cluster_below_bps")
-            )
-            or 0.0,
-            "nearest_tp_cluster_bps": _float_or_none(
-                item.get("nearest_tp_cluster_bps")
-            )
-            or 0.0,
-            "nearest_tp_cluster_above_bps": _float_or_none(
-                item.get("nearest_tp_cluster_above_bps")
-            )
-            or 0.0,
-            "nearest_tp_cluster_below_bps": _float_or_none(
-                item.get("nearest_tp_cluster_below_bps")
-            )
-            or 0.0,
-            "stop_pressure_above": stop_pressure_above,
-            "stop_pressure_below": stop_pressure_below,
-            "tp_pressure_above": tp_pressure_above,
-            "tp_pressure_below": tp_pressure_below,
-            "trigger_asymmetry": _float_or_none(item.get("trigger_asymmetry")) or 0.0,
-            "cascade_risk_up": cascade_risk_up,
-            "cascade_risk_down": cascade_risk_down,
-            "total_trigger_notional_usd": total_notional,
-            "max_trigger_cluster_notional_usd": max_cluster_notional,
-        }
-        row["heat_score"] = max(
-            cascade_risk_up,
-            cascade_risk_down,
-            min(max(stop_pressure_above, stop_pressure_below) / 10.0, 1.0),
-            min(max(tp_pressure_above, tp_pressure_below) / 10.0, 1.0),
-            min(
-                max_cluster_notional
-                / max(
-                    float(supervisor.config.trigger_liquidity.min_cluster_notional_usd),
-                    1.0,
-                ),
-                1.0,
-            ),
-        )
-        rows.append(row)
-    return sorted(
-        rows,
-        key=lambda row: (
-            float(row.get("heat_score", 0.0) or 0.0),
-            float(row.get("total_trigger_notional_usd", 0.0) or 0.0),
-        ),
-        reverse=True,
-    )
-
-
-def _trigger_liquidity_pod_a_overlay_rows(
-    snapshot: dict[str, object],
-) -> list[dict[str, object]]:
-    previews = snapshot.get("pod_a_signal_preview")
-    if not isinstance(previews, list):
-        return []
-    rows: list[dict[str, object]] = []
-    for item in previews:
-        if not isinstance(item, dict):
-            continue
-        details = item.get("setup_details")
-        if not isinstance(details, dict) or not any(
-            str(key).startswith("trigger_") for key in details
-        ):
-            continue
-        rows.append(
-            {
-                "symbol": str(item.get("symbol", "")).strip().upper(),
-                "side": str(item.get("side", "")).strip().lower(),
-                "setup": str(item.get("setup", "")),
-                "confidence": _float_or_none(item.get("confidence")),
-                "action": str(details.get("trigger_liquidity_action", "")),
-                "proposed_action": str(details.get("trigger_liquidity_proposed_action", "")),
-                "reason": str(details.get("trigger_liquidity_reason", "")),
-                "shadow_only": bool(details.get("trigger_liquidity_shadow_only")),
-                "adverse_cascade_risk": _float_or_none(
-                    details.get("trigger_adverse_cascade_risk")
-                )
-                or 0.0,
-                "supportive_cascade_risk": _float_or_none(
-                    details.get("trigger_supportive_cascade_risk")
-                )
-                or 0.0,
-                "nearest_stop_cluster_bps": _float_or_none(
-                    details.get("trigger_nearest_stop_cluster_bps")
-                )
-                or 0.0,
-                "nearest_tp_cluster_bps": _float_or_none(
-                    details.get("trigger_nearest_tp_cluster_bps")
-                )
-                or 0.0,
-                "data_age_seconds": _float_or_none(details.get("trigger_data_age_seconds")),
-            }
-        )
-    return rows[:20]
-
-
-def _trigger_liquidity_payload_from_snapshot(
-    supervisor: TridentSupervisor,
-    snapshot: dict[str, object],
-) -> dict[str, object]:
-    record, source_path = _latest_trigger_liquidity_record(supervisor)
-    rows = _trigger_liquidity_rows_from_record(supervisor, record)
-    available_rows = [row for row in rows if bool(row.get("available"))]
-    fresh_rows = [row for row in available_rows if bool(row.get("fresh"))]
-    stale_rows = [row for row in available_rows if bool(row.get("stale"))]
-    pod_a_overlay = _trigger_liquidity_pod_a_overlay_rows(snapshot)
-    proposed_actions = Counter(
-        str(row.get("proposed_action") or row.get("action") or "unknown")
-        for row in pod_a_overlay
-    )
-    symbol_count = len(record.symbols) if record is not None else 0
-    max_cascade_up = max(
-        (_float_or_none(row.get("cascade_risk_up")) or 0.0 for row in rows),
-        default=0.0,
-    )
-    max_cascade_down = max(
-        (_float_or_none(row.get("cascade_risk_down")) or 0.0 for row in rows),
-        default=0.0,
-    )
-    max_total_notional = max(
-        (_float_or_none(row.get("total_trigger_notional_usd")) or 0.0 for row in rows),
-        default=0.0,
-    )
-    max_cluster_notional = max(
-        (_float_or_none(row.get("max_trigger_cluster_notional_usd")) or 0.0 for row in rows),
-        default=0.0,
-    )
-    return {
-        "config": {
-            "enabled": bool(supervisor.config.trigger_liquidity.enabled),
-            "shadow_only": bool(supervisor.config.trigger_liquidity.shadow_only),
-            "bucket_bps": float(supervisor.config.trigger_liquidity.bucket_bps),
-            "lookahead_bps": float(supervisor.config.trigger_liquidity.lookahead_bps),
-            "max_data_age_seconds": float(
-                supervisor.config.trigger_liquidity.max_data_age_seconds
-            ),
-            "min_cluster_notional_usd": float(
-                supervisor.config.trigger_liquidity.min_cluster_notional_usd
-            ),
-            "veto_enabled": bool(supervisor.config.trigger_liquidity.veto_enabled),
-            "sizing_enabled": bool(supervisor.config.trigger_liquidity.sizing_enabled),
-            "confidence_boost_enabled": bool(
-                supervisor.config.trigger_liquidity.confidence_boost_enabled
-            ),
-        },
-        "source": {
-            "path": source_path,
-            "timestamp": record.timestamp if record is not None else None,
-            "stream_source": record.stream_source if record is not None else None,
-            "capture_reason": record.capture_reason if record is not None else None,
-            "symbol_count": symbol_count,
-        },
-        "summary": {
-            "symbol_count": symbol_count,
-            "heatmap_symbol_count": len(rows),
-            "available_symbol_count": len(available_rows),
-            "fresh_symbol_count": len(fresh_rows),
-            "stale_symbol_count": len(stale_rows),
-            "pod_a_overlay_count": len(pod_a_overlay),
-            "pod_a_overlay_actions": dict(proposed_actions),
-            "max_cascade_risk_up": round(max_cascade_up, 4),
-            "max_cascade_risk_down": round(max_cascade_down, 4),
-            "max_total_trigger_notional_usd": round(max_total_notional, 4),
-            "max_trigger_cluster_notional_usd": round(max_cluster_notional, 4),
-        },
-        "heatmap": rows[:80],
-        "pod_a_overlay": pod_a_overlay,
-    }
-
-
-def trigger_liquidity_payload(
-    supervisor: TridentSupervisor,
-    metrics: MetricsRegistry,
-) -> dict[str, object]:
-    snapshot = state_payload(supervisor, metrics)
-    return _trigger_liquidity_payload_from_snapshot(supervisor, snapshot)
-
-
 def _pod_label(pod_name: str) -> str:
     return {
         "pod_a": "Pod A",
@@ -2360,33 +2054,6 @@ def _control_center_html(
     pod_c_observed_not_tradable = [
         symbol for symbol in pod_c_scope_symbols if symbol in observed_symbols and symbol not in tradable_symbols
     ]
-    trigger_liquidity = _trigger_liquidity_payload_from_snapshot(supervisor, snapshot)
-    trigger_config = (
-        trigger_liquidity.get("config", {})
-        if isinstance(trigger_liquidity.get("config"), dict)
-        else {}
-    )
-    trigger_source = (
-        trigger_liquidity.get("source", {})
-        if isinstance(trigger_liquidity.get("source"), dict)
-        else {}
-    )
-    trigger_summary = (
-        trigger_liquidity.get("summary", {})
-        if isinstance(trigger_liquidity.get("summary"), dict)
-        else {}
-    )
-    trigger_heatmap = (
-        trigger_liquidity.get("heatmap", [])
-        if isinstance(trigger_liquidity.get("heatmap"), list)
-        else []
-    )
-    trigger_pod_a_overlay = (
-        trigger_liquidity.get("pod_a_overlay", [])
-        if isinstance(trigger_liquidity.get("pod_a_overlay"), list)
-        else []
-    )
-
     def fmt_number(value: object, digits: int = 2, *, fallback: str = "-") -> str:
         if value in (None, ""):
             return fallback
@@ -2420,120 +2087,6 @@ def _control_center_html(
             )
             for card in cards
         )
-
-    def fmt_bps(value: object) -> str:
-        parsed = _float_or_none(value)
-        if parsed is None or parsed <= 0:
-            return "-"
-        return f"{parsed:.1f} bps"
-
-    def fmt_age(value: object) -> str:
-        parsed = _float_or_none(value)
-        if parsed is None:
-            return "-"
-        return _format_duration_compact(parsed)
-
-    def fmt_usd_compact(value: object) -> str:
-        parsed = _float_or_none(value)
-        if parsed is None:
-            return "-"
-        absolute = abs(parsed)
-        if absolute >= 1_000_000_000:
-            return f"{parsed / 1_000_000_000:.2f}B"
-        if absolute >= 1_000_000:
-            return f"{parsed / 1_000_000:.2f}M"
-        if absolute >= 1_000:
-            return f"{parsed / 1_000:.1f}K"
-        return f"{parsed:.0f}"
-
-    def render_heat_cell(
-        value: object,
-        *,
-        scale: float = 1.0,
-        tone: str = "neutral",
-        digits: int = 2,
-    ) -> str:
-        parsed = max(_float_or_none(value) or 0.0, 0.0)
-        width = min(parsed / max(scale, 0.0001), 1.0) * 100.0
-        return (
-            f"<div class='heat-cell heat-cell-{escape(tone)}'>"
-            f"<span style='width:{width:.1f}%'></span>"
-            f"<strong>{parsed:.{digits}f}</strong>"
-            "</div>"
-        )
-
-    def render_pressure_cell(
-        pressure: object,
-        distance_bps: object,
-        *,
-        tone: str,
-    ) -> str:
-        return (
-            "<div class='pressure-stack'>"
-            f"{render_heat_cell(pressure, scale=10.0, tone=tone)}"
-            f"<small>{fmt_bps(distance_bps)}</small>"
-            "</div>"
-        )
-
-    def render_trigger_heatmap_rows() -> str:
-        rows = [row for row in trigger_heatmap if isinstance(row, dict)]
-        if not rows:
-            return (
-                "<tr><td colspan='10'>Aucune donnée TP/SL enrichie visible dans le dernier snapshot.</td></tr>"
-            )
-        rendered_rows: list[str] = []
-        for row in rows:
-            status_tone = "good" if bool(row.get("fresh")) else "warn"
-            status_label = "Fresh" if bool(row.get("fresh")) else "Stale"
-            if not bool(row.get("available")):
-                status_tone = "neutral"
-                status_label = "No cluster"
-            rendered_rows.append(
-                "<tr>"
-                f"<td><strong>{escape(str(row.get('symbol', '-')))}</strong><br>"
-                f"<span class='soft-note'>{escape(str(row.get('market_cluster', '-')))}</span></td>"
-                f"<td>{fmt_number(row.get('price'), 6)}<br><span class='soft-note'>{fmt_age(row.get('age_seconds'))}</span></td>"
-                f"<td>{_status_badge(status_tone, status_label)}</td>"
-                f"<td>{render_pressure_cell(row.get('stop_pressure_below'), row.get('nearest_stop_cluster_below_bps'), tone='down')}</td>"
-                f"<td>{render_pressure_cell(row.get('stop_pressure_above'), row.get('nearest_stop_cluster_above_bps'), tone='up')}</td>"
-                f"<td>{render_pressure_cell(row.get('tp_pressure_below'), row.get('nearest_tp_cluster_below_bps'), tone='tp')}</td>"
-                f"<td>{render_pressure_cell(row.get('tp_pressure_above'), row.get('nearest_tp_cluster_above_bps'), tone='tp')}</td>"
-                f"<td>{render_heat_cell(row.get('cascade_risk_down'), tone='down')}</td>"
-                f"<td>{render_heat_cell(row.get('cascade_risk_up'), tone='up')}</td>"
-                f"<td>{fmt_signed_usd(row.get('trigger_asymmetry'), digits=2)}<br>"
-                f"<span class='soft-note'>max {fmt_usd_compact(row.get('max_trigger_cluster_notional_usd'))}</span></td>"
-                "</tr>"
-            )
-        return "".join(rendered_rows)
-
-    def render_trigger_overlay_rows() -> str:
-        rows = [row for row in trigger_pod_a_overlay if isinstance(row, dict)]
-        if not rows:
-            return "<tr><td colspan='9'>Aucun preview Pod A enrichi par TriggerLiquidityOverlay.</td></tr>"
-        rendered_rows: list[str] = []
-        for row in rows:
-            action = str(row.get("action") or "-")
-            proposed = str(row.get("proposed_action") or "-")
-            tone = "neutral"
-            if proposed in {"veto_entry", "reduce_size"}:
-                tone = "warn"
-            if action == "allow" and proposed == "allow":
-                tone = "good"
-            rendered_rows.append(
-                "<tr>"
-                f"<td>{escape(str(row.get('symbol', '-')))}</td>"
-                f"<td>{escape(str(row.get('side', '-')).upper())}</td>"
-                f"<td>{escape(str(row.get('setup', '-')))}</td>"
-                f"<td>{fmt_number(row.get('confidence'), 2)}</td>"
-                f"<td>{_status_badge(tone, action or '-')}</td>"
-                f"<td>{escape(proposed)}</td>"
-                f"<td>{render_heat_cell(row.get('adverse_cascade_risk'), tone='down')}</td>"
-                f"<td>{render_heat_cell(row.get('supportive_cascade_risk'), tone='up')}</td>"
-                f"<td>{escape(str(row.get('reason', '-')))}<br>"
-                f"<span class='soft-note'>SL {fmt_bps(row.get('nearest_stop_cluster_bps'))} · TP {fmt_bps(row.get('nearest_tp_cluster_bps'))} · age {fmt_age(row.get('data_age_seconds'))}</span></td>"
-                "</tr>"
-            )
-        return "".join(rendered_rows)
 
     def render_coin_trade_summary_rows(
         rows: list[dict[str, object]],
@@ -2814,24 +2367,6 @@ def _control_center_html(
                     "comment": str(service.get("comment") or "Runtime status collector absent ou obsolète."),
                 }
             )
-    if bool(trigger_config.get("enabled")) and int(trigger_summary.get("available_symbol_count", 0) or 0) == 0:
-        focus_items.append(
-            {
-                "tone": "warn",
-                "label": "Vérifier",
-                "title": "Trigger liquidity sans clusters",
-                "comment": "Overlay actif mais aucun cluster TP/SL exploitable dans le snapshot le plus récent.",
-            }
-        )
-    elif bool(trigger_config.get("enabled")) and int(trigger_summary.get("stale_symbol_count", 0) or 0) > 0:
-        focus_items.append(
-            {
-                "tone": "warn",
-                "label": "Vérifier",
-                "title": "Trigger liquidity vieillissante",
-                "comment": f"{int(trigger_summary.get('stale_symbol_count', 0) or 0)} symbole(s) TP/SL au-delà de la fraîcheur configurée.",
-            }
-        )
     for pod in pod_summaries:
         if bool(pod["enabled"]) and str(pod["tone"]) in {"warn", "bad"}:
             focus_items.append(
@@ -2909,18 +2444,6 @@ def _control_center_html(
                 "note": "Services funding visibles",
             },
             {
-                "label": "Trigger liq",
-                "value": (
-                    f"{int(trigger_summary.get('available_symbol_count', 0) or 0)}/"
-                    f"{int(trigger_summary.get('symbol_count', 0) or 0)}"
-                ),
-                "note": (
-                    "Shadow"
-                    if bool(trigger_config.get("enabled")) and bool(trigger_config.get("shadow_only"))
-                    else ("Live overlay" if bool(trigger_config.get("enabled")) else "Overlay off")
-                ),
-            },
-            {
                 "label": "Exécutions",
                 "value": str(total_fills),
                 "note": "Fills / trades observés",
@@ -2980,56 +2503,6 @@ def _control_center_html(
             }
         )
     cluster_regime_cards = render_stat_cards(cluster_cards)
-
-    if bool(trigger_config.get("enabled")):
-        trigger_mode_label = "Shadow" if bool(trigger_config.get("shadow_only")) else "Live"
-    else:
-        trigger_mode_label = "Off"
-    trigger_source_label = str(trigger_source.get("path") or "aucune source")
-    trigger_source_timestamp = str(trigger_source.get("timestamp") or "-")
-    trigger_metric_cards = render_stat_cards(
-        [
-            {
-                "label": "Mode",
-                "value": trigger_mode_label,
-                "note": (
-                    f"bucket {fmt_bps(trigger_config.get('bucket_bps'))} · "
-                    f"lookahead {fmt_bps(trigger_config.get('lookahead_bps'))}"
-                ),
-            },
-            {
-                "label": "Symboles TP/SL",
-                "value": (
-                    f"{int(trigger_summary.get('available_symbol_count', 0) or 0)}/"
-                    f"{int(trigger_summary.get('symbol_count', 0) or 0)}"
-                ),
-                "note": (
-                    f"{int(trigger_summary.get('fresh_symbol_count', 0) or 0)} fresh · "
-                    f"{int(trigger_summary.get('stale_symbol_count', 0) or 0)} stale"
-                ),
-            },
-            {
-                "label": "Cascade up",
-                "value": fmt_number(trigger_summary.get("max_cascade_risk_up"), 2),
-                "note": "Risque max de squeeze vers le haut",
-            },
-            {
-                "label": "Cascade down",
-                "value": fmt_number(trigger_summary.get("max_cascade_risk_down"), 2),
-                "note": "Risque max de flush vers le bas",
-            },
-            {
-                "label": "Max cluster",
-                "value": fmt_usd_compact(trigger_summary.get("max_trigger_cluster_notional_usd")),
-                "note": "Plus gros cluster TP/SL visible",
-            },
-            {
-                "label": "Overlay Pod A",
-                "value": str(int(trigger_summary.get("pod_a_overlay_count", 0) or 0)),
-                "note": "Previews enrichis par le superviseur",
-            },
-        ]
-    )
 
     pod_cards = "".join(
         (
@@ -3926,7 +3399,6 @@ def _control_center_html(
         ("status", "Status"),
         ("stats", "Stats"),
         ("pod_a", "Pod A"),
-        ("liquidity", "Trigger Liq"),
         ("pod_b", "Pod B HIP-4"),
         ("observation", "Observation"),
         ("pod_c", "Pod C"),
@@ -4453,61 +3925,6 @@ def _control_center_html(
       color: var(--muted);
       line-height: 1.55;
     }}
-    .pressure-stack {{
-      display: grid;
-      gap: 5px;
-      min-width: 120px;
-    }}
-    .pressure-stack small {{
-      color: var(--muted);
-      font-size: 0.78rem;
-    }}
-    .heat-cell {{
-      position: relative;
-      overflow: hidden;
-      min-width: 104px;
-      height: 30px;
-      border-radius: 8px;
-      background: rgba(106, 118, 128, 0.12);
-      border: 1px solid rgba(106, 118, 128, 0.18);
-    }}
-    .heat-cell span {{
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 0;
-      opacity: 0.82;
-    }}
-    .heat-cell strong {{
-      position: relative;
-      z-index: 1;
-      display: flex;
-      align-items: center;
-      height: 100%;
-      padding: 0 9px;
-      font-size: 0.86rem;
-      color: var(--text);
-    }}
-    .heat-cell-up span {{
-      background: linear-gradient(90deg, rgba(23, 107, 58, 0.18), rgba(23, 107, 58, 0.72));
-    }}
-    .heat-cell-down span {{
-      background: linear-gradient(90deg, rgba(161, 45, 47, 0.16), rgba(161, 45, 47, 0.70));
-    }}
-    .heat-cell-tp span {{
-      background: linear-gradient(90deg, rgba(20, 91, 87, 0.15), rgba(20, 91, 87, 0.66));
-    }}
-    .heat-cell-neutral span {{
-      background: linear-gradient(90deg, rgba(106, 118, 128, 0.14), rgba(106, 118, 128, 0.52));
-    }}
-    .liquidity-source {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 0.9rem;
-      line-height: 1.45;
-    }}
     .table-wrap {{
       overflow-x: auto;
       border-radius: 16px;
@@ -4647,7 +4064,6 @@ def _control_center_html(
         <a href="/api/state">/api/state</a>
         <a href="/api/report">/api/report</a>
         <a href="/api/metrics">/api/metrics</a>
-        <a href="/api/trigger-liquidity">/api/trigger-liquidity</a>
       </div>
     </header>
 
@@ -4847,53 +4263,6 @@ def _control_center_html(
                 <tr>{_table_header("Ferme le", "Horodatage reel de la sortie du trade.")}{_table_header("Symbol", "Marche concerne par le trade ferme.")}{_table_header("Side", "Sens du trade qui a ete porte: long ou short.")}{_table_header("Raison ouverture", "Setup lisible qui avait justifie l'entree du trade au depart.")}{_table_header("Raison fermeture", "Explication lisible de la sortie: TP touche, trailing stop, stop loss, time stop, signal oppose, etc.")}{_table_header("Prix entree", "Prix moyen d'entree du trade au moment de l'ouverture.")}{_table_header("Prix sortie", "Prix de sortie effectivement retenu lors de la cloture.")}{_table_header("Notional USD", "Notionnelle cible du trade au moment ou il a ete ouvert.")}{_table_header("Leverage", "Levier effectif configure pour ce trade si l'information est disponible.")}{_table_header("PnL USD", "Resultat net du trade, frais inclus.")}</tr>
               </thead>
               <tbody>{render_directional_closed_rows("pod_a")}</tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section class="tab-panel{' is-active' if active_tab == 'liquidity' else ''}" data-tab-panel="liquidity">
-        <div class="panel panel-neutral">
-          <div class="panel-header">
-            <h2>Trigger Liquidity</h2>
-            <p>Heat map des clusters TP/SL Hyperliquid exposés dans les snapshots enrichis, avec les scores que le superviseur peut utiliser en shadow ou en overlay actif.</p>
-            <div class="liquidity-source">
-              <span>Source: {escape(trigger_source_label)}</span>
-              <span>Timestamp: {escape(trigger_source_timestamp)}</span>
-              <span>JSON: <a href="/api/trigger-liquidity">/api/trigger-liquidity</a></span>
-            </div>
-          </div>
-          <div class="metric-grid">
-            {trigger_metric_cards}
-          </div>
-        </div>
-
-        <div class="panel panel-neutral">
-          <div class="panel-header">
-            <h3>Heat map TP/SL</h3>
-            <p>Chaque cellule combine pression et distance au cluster le plus proche. Les stops sont séparés au-dessus / au-dessous pour lire les sweeps probables.</p>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>{_table_header("Symbol", "Marché observé dans le snapshot enrichi.")}{_table_header("Prix / âge", "Dernier prix et âge des données TP/SL utilisées.")}{_table_header("État", "Fresh si les données sont sous max_data_age_seconds.")}{_table_header("Stop below", "Pression de stops sous le prix et distance du cluster stop le plus proche sous le prix.")}{_table_header("Stop above", "Pression de stops au-dessus du prix et distance du cluster stop le plus proche au-dessus du prix.")}{_table_header("TP below", "Pression de take profits sous le prix et distance du cluster TP le plus proche sous le prix.")}{_table_header("TP above", "Pression de take profits au-dessus du prix et distance du cluster TP le plus proche au-dessus du prix.")}{_table_header("Cascade down", "Risque compact de cascade vers le bas.")}{_table_header("Cascade up", "Risque compact de cascade vers le haut.")}{_table_header("Asym / max", "Asymétrie stop up/down et plus gros cluster notionnel.")}</tr>
-              </thead>
-              <tbody>{render_trigger_heatmap_rows()}</tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="panel panel-neutral">
-          <div class="panel-header">
-            <h3>Overlay Pod A</h3>
-            <p>Lecture des décisions que TriggerLiquidityOverlay ajoute aux previews Pod A sans toucher au Pod B HIP-4.</p>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>{_table_header("Symbol", "Marché du signal Pod A.")}{_table_header("Side", "Sens directionnel évalué.")}{_table_header("Setup", "Setup Pod A d'origine.")}{_table_header("Conf", "Confiance avant éventuel boost live.")}{_table_header("Action", "Action réellement appliquée: allow, watch, reduce_size, boost_confidence ou veto_entry.")}{_table_header("Proposed", "Action proposée avant shadow_only.")}{_table_header("Adverse", "Risque cascade contre le sens du trade.")}{_table_header("Supportive", "Risque cascade dans le sens du trade.")}{_table_header("Reason", "Raison compacte et distances TP/SL associées.")}</tr>
-              </thead>
-              <tbody>{render_trigger_overlay_rows()}</tbody>
             </table>
           </div>
         </div>
@@ -6493,7 +5862,6 @@ def build_handler(
                 "/api/state": lambda: state_payload(supervisor, metrics),
                 "/api/metrics": lambda: metrics_payload(supervisor, metrics),
                 "/api/report": lambda: report_payload(supervisor, metrics),
-                "/api/trigger-liquidity": lambda: trigger_liquidity_payload(supervisor, metrics),
                 "/api/hip4-outcome": lambda: hip4_outcome_payload(),
                 "/api/hip4-outcome-mainnet": lambda: hip4_outcome_mainnet_payload(),
             }

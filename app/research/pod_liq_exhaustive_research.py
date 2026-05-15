@@ -201,46 +201,6 @@ class PodLiqExhaustiveResearchRunner:
             objective="negative",
             method_note="Proxy only: no explicit cancel/replace feed is present in the replay snapshots.",
         ),
-        _CandidateSpec(
-            family="trigger_liquidity",
-            variant="stop_breakout_continuation",
-            use_case="watcher_continuation",
-            description="Continuation toward visible Hyperliquid stop clusters.",
-            score_field="trigger_stop_breakout_score",
-            direction_field="trigger_stop_breakout_direction",
-            objective="positive",
-            method_note="Requires snapshots enriched with node-derived TP/SL trigger liquidity.",
-        ),
-        _CandidateSpec(
-            family="trigger_liquidity",
-            variant="stop_sweep_reversal",
-            use_case="reversal",
-            description="Reversal after price trades into nearby visible stop clusters.",
-            score_field="trigger_sweep_reversal_score",
-            direction_field="trigger_sweep_reversal_direction",
-            objective="positive",
-            method_note="Requires snapshots enriched with node-derived TP/SL trigger liquidity.",
-        ),
-        _CandidateSpec(
-            family="trigger_liquidity",
-            variant="tp_cluster_exhaustion",
-            use_case="reversal",
-            description="Exhaustion/reversal near visible take-profit clusters.",
-            score_field="trigger_tp_exhaustion_score",
-            direction_field="trigger_tp_exhaustion_direction",
-            objective="positive",
-            method_note="Requires snapshots enriched with node-derived TP/SL trigger liquidity.",
-        ),
-        _CandidateSpec(
-            family="trigger_liquidity",
-            variant="cascade_risk_veto",
-            use_case="shadow_veto",
-            description="Shadow veto when adverse trigger cascade risk is high against the current flow direction.",
-            score_field="trigger_cascade_veto_score",
-            direction_field="trigger_cascade_veto_direction",
-            objective="negative",
-            method_note="Requires snapshots enriched with node-derived TP/SL trigger liquidity.",
-        ),
     ]
 
     def __init__(self) -> None:
@@ -294,7 +254,6 @@ class PodLiqExhaustiveResearchRunner:
             "Rows crossing large timestamp gaps are ignored by the feature builder so horizons 1/3/5 remain local.",
             "True 2/5/10bps depth ladders are not present in the replay snapshots; best bid/ask size is used as the inner-band proxy.",
             "Hyperliquid user feeds (`orderUpdates`, `userFills`, `openOrders`, `clearinghouseState`) are not present in this replay input, so those infrastructure ideas cannot be replay-validated here.",
-            "Trigger-liquidity candidates only activate when snapshots have been enriched from node-derived TP/SL order statuses.",
         ]
         result = PodLiqExhaustiveResearchResult(
             input_path=str(input_path),

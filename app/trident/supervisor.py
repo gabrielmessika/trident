@@ -29,7 +29,6 @@ from app.trident.pod_runtime import ConfiguredPod
 from app.trident.regime_allocator import RegimeAllocator
 from app.trident.symbol_router import SymbolRouter
 from app.trident.symbol_registry import SymbolRegistry
-from app.trident.trigger_liquidity import TriggerLiquidityOverlay
 from app.trident.types import (
     CapitalPlan,
     LocalSymbolState,
@@ -79,7 +78,6 @@ class TridentSupervisor:
         self.pod_a_context_service = MarketContextService(config)
         self.pod_a_service = AnchorTrendService(config)
         self.pod_a_planner = AnchorTrendPlanner(config)
-        self.trigger_liquidity_overlay = TriggerLiquidityOverlay(config.trigger_liquidity)
         self.pod_b_service = BreakoutService(config)
         self.pod_b_planner = BreakoutPlanner(config)
         self.pod_c_service = TradfiTrendService(config.pod_c)
@@ -646,14 +644,7 @@ class TridentSupervisor:
             timestamp=timestamp,
         )
         signals = self.pod_a_service.evaluate_many(contexts)
-        snapshot_by_symbol = {snapshot.symbol.upper(): snapshot for snapshot in snapshots}
-        previews = [
-            self._with_trigger_liquidity_preview_details(
-                self._build_signal_preview(signal),
-                snapshot_by_symbol.get(str(signal.symbol).upper()),
-            )
-            for signal in signals
-        ]
+        previews = [self._build_signal_preview(signal) for signal in signals]
         signal_by_symbol = {signal.symbol: signal for signal in signals}
         self.state.pod_a_signal_review = [
             self._build_signal_review(
@@ -681,46 +672,12 @@ class TridentSupervisor:
         signals = self.pod_a_service.evaluate_many(contexts)
         pod_allocation = self._pod_a_planning_allocation(signals)
         plans: list[TradePlan] = []
-        snapshot_by_symbol = {snapshot.symbol.upper(): snapshot for snapshot in snapshots}
         for signal in signals:
             plan = self.pod_a_planner.build_trade_plan(signal, pod_allocation)
             if plan is None:
                 continue
-            plan = self._apply_trigger_liquidity_to_plan(
-                plan,
-                snapshot_by_symbol.get(plan.symbol.upper()),
-            )
-            if plan is not None:
-                plans.append(plan)
+            plans.append(plan)
         return plans
-
-    def _with_trigger_liquidity_preview_details(
-        self,
-        preview: SignalPreview,
-        snapshot: SymbolMarketSnapshot | None,
-    ) -> SignalPreview:
-        if snapshot is None or not self.config.trigger_liquidity.enabled:
-            return preview
-        decision = self.trigger_liquidity_overlay.evaluate(
-            snapshot,
-            side=preview.side,
-            setup=preview.setup,
-            confidence=preview.confidence,
-        )
-        preview.setup_details = {
-            **dict(preview.setup_details or {}),
-            **self.trigger_liquidity_overlay.details_for_snapshot(snapshot, decision),
-        }
-        return preview
-
-    def _apply_trigger_liquidity_to_plan(
-        self,
-        plan: TradePlan,
-        snapshot: SymbolMarketSnapshot | None,
-    ) -> TradePlan | None:
-        if snapshot is None or not self.config.trigger_liquidity.enabled:
-            return plan
-        return self.trigger_liquidity_overlay.apply_to_plan(plan, snapshot)
 
     def _pod_a_planning_allocation(self, signals: list[object]) -> PodAllocation:
         base = self.capital_plan.pod_allocations[PodName.POD_A]

@@ -21,7 +21,6 @@ services:
       TRIDENT_LIVE_ALLOW_OPEN_ORDERS: ${TRIDENT_LIVE_ALLOW_OPEN_ORDERS:-}
       TRIDENT_LIVE_SKIP_USER_WS_CHECK: ${TRIDENT_LIVE_SKIP_USER_WS_CHECK:-}
       TRIDENT_ENABLE_HIP4_OUTCOME: ${TRIDENT_ENABLE_HIP4_OUTCOME:-true}
-      TRIDENT_TRIGGER_LIQUIDITY_SQL_API_KEY: ${TRIDENT_TRIGGER_LIQUIDITY_SQL_API_KEY:-}
     command:
       - python
       - -m
@@ -97,84 +96,6 @@ services:
       trident-api:
         condition: service_healthy
     restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-
-  trigger-liquidity-enricher:
-    build:
-      context: .
-      dockerfile: Dockerfile.trident
-    container_name: trident-trigger-liquidity-enricher
-    command:
-      - python
-      - -m
-      - app.live.trigger_liquidity_enricher
-      - --config
-      - ${TRIDENT_CONFIG_PATH:-config/trident.toml}
-      - --watch
-      - --poll-seconds
-      - "60"
-      - --status-output
-      - runtime/trigger_liquidity_enricher_status.json
-    volumes:
-      - ./config:/app/config:ro
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - ./runtime:/app/runtime
-    depends_on:
-      trident-api:
-        condition: service_healthy
-      trigger-liquidity-collector:
-        condition: service_started
-    restart: unless-stopped
-    profiles: ["trigger_liquidity"]
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-
-  trigger-liquidity-collector:
-    build:
-      context: .
-      dockerfile: Dockerfile.trident
-    container_name: trident-trigger-liquidity-collector
-    environment:
-      TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_URL: ${TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_URL:-}
-      TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_STREAM: ${TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_STREAM:-orders}
-      TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_BATCH_SIZE: ${TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_BATCH_SIZE:-200}
-      TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_INITIAL_LOOKBACK_BLOCKS: ${TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_INITIAL_LOOKBACK_BLOCKS:-2000}
-      TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_MAX_BLOCKS_PER_POLL: ${TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_MAX_BLOCKS_PER_POLL:-1000}
-      TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_TIMEOUT_SECONDS: ${TRIDENT_TRIGGER_LIQUIDITY_QUICKNODE_TIMEOUT_SECONDS:-10}
-    command:
-      - python
-      - -m
-      - app.live.trigger_liquidity_collector
-      - --node-source
-      - /hl-node/node_order_statuses/hourly
-      - --node-source
-      - data/node_order_statuses/hourly
-      - --output-dir
-      - data/trigger_liquidity
-      - --state-path
-      - runtime/trigger_liquidity_collector_state.json
-      - --status-output
-      - runtime/trigger_liquidity_collector_status.json
-      - --lookback-hours
-      - "6"
-      - --poll-seconds
-      - ${TRIDENT_TRIGGER_LIQUIDITY_POLL_SECONDS:-30}
-    volumes:
-      - ./config:/app/config:ro
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - ./runtime:/app/runtime
-      - ${TRIDENT_HL_NODE_ORDER_STATUSES_DIR:-./data/node_order_statuses/hourly}:/hl-node/node_order_statuses/hourly:ro
-    restart: unless-stopped
-    profiles: ["trigger_liquidity"]
     logging:
       driver: json-file
       options:

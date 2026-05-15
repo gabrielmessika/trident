@@ -68,26 +68,6 @@ HOOD = "@271"
 USPYX = "@189"
 CRCL = "@263"
 
-[trigger_liquidity]
-# Active in dry-run: Hyperliquid perp TP/SL trigger clusters can affect Pod A
-# simulated decisions. Pod B HIP-4 Outcome remains independent.
-enabled = true
-shadow_only = false
-source_path = "./data/trigger_liquidity"
-snapshot_output_dir = "./data/live_snapshots_trigger_liquidity"
-max_data_age_seconds = 300.0
-bucket_bps = 5.0
-lookahead_bps = 100.0
-min_cluster_notional_usd = 50000.0
-veto_enabled = true
-sizing_enabled = true
-confidence_boost_enabled = true
-veto_min_cascade_risk = 0.75
-reduce_min_cascade_risk = 0.50
-confidence_boost_min_cascade_risk = 0.60
-confidence_boost_delta = 0.03
-size_reduction_multiplier = 0.50
-
 [hyperliquid.market_cluster_overrides]
 PAXG = "gold"
 SPY = "index"

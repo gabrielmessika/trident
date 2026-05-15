@@ -19,7 +19,6 @@ from app.observability.api import (
     report_payload,
     state_payload,
     trades_html,
-    trigger_liquidity_payload,
 )
 from app.observability.metrics import MetricsRegistry
 from app.settings import load_config
@@ -668,7 +667,6 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("TRIDENT Control Center", html)
         self.assertIn(">Status</button>", html)
         self.assertIn(">Pod A</button>", html)
-        self.assertIn(">Trigger Liq</button>", html)
         self.assertIn(">Pod B HIP-4</button>", html)
         self.assertIn(">Pod C</button>", html)
         self.assertIn(">Activity</button>", html)
@@ -715,14 +713,11 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("Last updated:", html)
         self.assertIn("/api/state", html)
         self.assertIn("/api/report", html)
-        self.assertIn("/api/trigger-liquidity", html)
         self.assertIn("/hip4-outcome", html)
         self.assertIn("/trades", html)
         self.assertIn('data-tab-panel="status"', html)
-        self.assertIn('data-tab-panel="liquidity"', html)
         self.assertIn('data-tab-panel="pod_b"', html)
         self.assertIn('data-tab-panel="observation"', html)
-        self.assertIn("Heat map TP/SL", html)
         self.assertIn(">Observation</button>", html)
         self.assertIn("Synthèse observation HIP-4", html)
         self.assertIn("Marchés observés", html)
@@ -731,86 +726,6 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("Pod B HIP-4 Outcome", html)
         self.assertIn("Positions HIP-4 ouvertes", html)
         self.assertNotIn("pod breakout directionnel", html)
-
-    def test_trigger_liquidity_payload_and_dashboard_heatmap(self) -> None:
-        with TemporaryDirectory() as tmp:
-            snapshot_dir = Path(tmp)
-            (snapshot_dir / "latest.jsonl").write_text(
-                json.dumps(
-                    {
-                        "timestamp": "2026-05-13T00:00:00Z",
-                        "regime_snapshot": {
-                            "ready": True,
-                            "adx": 28.0,
-                            "atr_ratio": 1.1,
-                            "range_width_bps": 120.0,
-                            "structure_score": 0.55,
-                            "btc_impulse": True,
-                        },
-                        "symbols": [
-                            {
-                                "symbol": "BTC",
-                                "price": 100000.0,
-                                "ema_fast": 100200.0,
-                                "ema_slow": 99800.0,
-                                "vwap_distance_bps": 4.0,
-                                "structure_score": 0.65,
-                                "funding_rate": 0.0001,
-                                "spread_bps": 1.2,
-                                "btc_aligned": True,
-                                "trigger_liquidity_available": True,
-                                "nearest_stop_cluster_bps": 12.5,
-                                "nearest_stop_cluster_above_bps": 18.0,
-                                "nearest_stop_cluster_below_bps": 12.5,
-                                "nearest_tp_cluster_bps": 24.0,
-                                "nearest_tp_cluster_above_bps": 24.0,
-                                "nearest_tp_cluster_below_bps": 34.0,
-                                "stop_pressure_above": 4.0,
-                                "stop_pressure_below": 2.5,
-                                "tp_pressure_above": 1.2,
-                                "tp_pressure_below": 0.8,
-                                "trigger_asymmetry": 0.23,
-                                "cascade_risk_up": 0.72,
-                                "cascade_risk_down": 0.35,
-                                "trigger_data_age_seconds": 2.0,
-                                "total_trigger_notional_usd": 420000.0,
-                                "max_trigger_cluster_notional_usd": 220000.0,
-                            }
-                        ],
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            config = replace(
-                self.supervisor.config,
-                hyperliquid=replace(
-                    self.supervisor.config.hyperliquid,
-                    snapshot_output_dir=str(snapshot_dir),
-                ),
-                trigger_liquidity=replace(
-                    self.supervisor.config.trigger_liquidity,
-                    enabled=True,
-                    shadow_only=True,
-                    snapshot_output_dir=str(snapshot_dir),
-                    max_data_age_seconds=10.0,
-                ),
-            )
-            supervisor = TridentSupervisor(
-                config=config,
-                profile="trident",
-                mode="observation",
-            )
-            payload = trigger_liquidity_payload(supervisor, MetricsRegistry())
-            self.assertEqual(payload["summary"]["available_symbol_count"], 1)
-            self.assertEqual(payload["summary"]["fresh_symbol_count"], 1)
-            self.assertEqual(payload["heatmap"][0]["symbol"], "BTC")
-            self.assertEqual(payload["heatmap"][0]["cascade_risk_up"], 0.72)
-
-            html = dashboard_html(supervisor, MetricsRegistry())
-            self.assertIn("BTC", html)
-            self.assertIn("220.0K", html)
-            self.assertIn("Cascade up", html)
 
     def test_hip4_outcome_page_and_payload_are_renderable(self) -> None:
         payload = hip4_outcome_payload()
