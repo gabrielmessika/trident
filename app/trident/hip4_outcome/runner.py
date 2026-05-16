@@ -26,10 +26,13 @@ from app.trident.hip4_outcome.models import (
     OutcomeExecutionResult,
     OutcomeMarket,
     OutcomeOpportunity,
+    OutcomeOrderBook,
     OutcomePosition,
+    OutcomeSideBook,
     ShortExpiryAssessment,
     ShortHorizonFeatures,
     SupervisorDecision,
+    outcome_coin,
     utc_now_iso,
 )
 from app.trident.hip4_outcome.parser import parse_outcome_markets, parse_outcome_observations
@@ -77,6 +80,7 @@ class HIP4OutcomeEdgePod:
         self._last_markets_seen = 0
         self._last_supported_underlyings: list[str] = []
         self._last_market_observation: dict[str, Any] = {}
+        self._last_named_outcome_basket_watchlist: list[dict[str, Any]] = []
         self._embedded_observer_threads: list[threading.Thread] = []
         self._embedded_observer_stop = threading.Event()
         self._embedded_observer_lock = threading.Lock()
@@ -135,6 +139,9 @@ class HIP4OutcomeEdgePod:
             "short_expiry_ready_count": 0,
             "short_expiry_watchlist": [],
             "next_short_expiry_seconds": None,
+            "named_outcome_baskets": 0,
+            "named_outcome_basket_opportunities": 0,
+            "named_outcome_basket_watchlist": [],
             "decision_reasons": {},
             "opportunity_mix": {},
             "operator_brief": {},
@@ -310,6 +317,87 @@ class HIP4OutcomeEdgePod:
                         self._log_trades(market=market, opportunity=opportunity, result=result)
                         executed_this_loop += 1
                         summary["executed"] = int(summary["executed"]) + 1
+            stage_started = time.monotonic()
+            named_basket_opportunities = self._named_outcome_basket_opportunities(
+                payload=outcome_meta,
+                anchor_markets=markets,
+                now_ts=now_ts,
+            )
+            timings["edge_detection_ms"] += _elapsed_ms(stage_started)
+            summary["named_outcome_baskets"] = len(named_basket_opportunities)
+            summary["named_outcome_basket_opportunities"] = len(named_basket_opportunities)
+            summary["named_outcome_basket_watchlist"] = list(
+                self._last_named_outcome_basket_watchlist
+            )
+            summary["opportunities"] = int(summary["opportunities"]) + len(
+                named_basket_opportunities
+            )
+            opportunity_mix.update(
+                opportunity.edge_type for _, _, opportunity in named_basket_opportunities
+            )
+            for basket_market, basket_book, opportunity in sorted(
+                named_basket_opportunities,
+                key=lambda item: item[2].net_edge,
+                reverse=True,
+            ):
+                reference = reference_prices.get(basket_market.underlying.upper())
+                reference_price = 0.0 if reference is None else reference.price
+                if reference is not None:
+                    opportunity.metadata.update(reference.to_metadata())
+                self._record_edge_decay(
+                    opportunity=opportunity,
+                    reference_price=reference_price,
+                    now_ts=now_ts,
+                )
+                self._log_opportunity(
+                    opportunity=opportunity,
+                    market=basket_market,
+                    reference_price=reference_price,
+                    now_ts=now_ts,
+                )
+                decision = self.risk_manager.evaluate(
+                    opportunity=opportunity,
+                    market=basket_market,
+                    order_book=basket_book,
+                    open_positions=self._active_positions_for_mode(),
+                    now_ts=now_ts,
+                )
+                if decision.approved:
+                    decision = self._apply_capital_guard(decision)
+                decision_reasons[decision.reason] += 1
+                self._log_decision(opportunity=opportunity, decision=decision)
+                if not decision.approved:
+                    continue
+                summary["approved"] = int(summary["approved"]) + 1
+                if executed_this_loop >= self.config.max_opportunities_per_loop:
+                    continue
+                stage_started = time.monotonic()
+                result = self._execute(
+                    opportunity=opportunity,
+                    market=basket_market,
+                    order_book=basket_book,
+                    decision=decision,
+                )
+                self._record_execution_result(
+                    market=basket_market,
+                    opportunity=opportunity,
+                    decision=decision,
+                    result=result,
+                )
+                timings["execution_ms"] += _elapsed_ms(stage_started)
+
+                if result.filled:
+                    position = self._position_from_execution(
+                        market=basket_market,
+                        opportunity=opportunity,
+                        decision=decision,
+                        result=result,
+                    )
+                    self.positions.append(position)
+                    self.state_store.save_positions(self.positions)
+                    self._log_trades(market=basket_market, opportunity=opportunity, result=result)
+                    executed_this_loop += 1
+                    summary["executed"] = int(summary["executed"]) + 1
             stage_started = time.monotonic()
             self._settle_expired_positions(now_ts=now_ts, reference_prices=reference_prices)
             timings["settlement_ms"] = _elapsed_ms(stage_started)
@@ -717,6 +805,231 @@ class HIP4OutcomeEdgePod:
                 underlyings.append(position.underlying)
         return list(dict.fromkeys(item.upper() for item in underlyings if item))
 
+    def _named_outcome_basket_opportunities(
+        self,
+        *,
+        payload: object,
+        anchor_markets: list[OutcomeMarket],
+        now_ts: int,
+    ) -> list[tuple[OutcomeMarket, OutcomeOrderBook, OutcomeOpportunity]]:
+        self._last_named_outcome_basket_watchlist = []
+        if not self.config.enable_named_outcome_basket:
+            return []
+        if self.config.mode == "testnet":
+            return []
+        anchors_by_outcome = {
+            market.outcome: market
+            for market in anchor_markets
+            if market.class_name == "priceBinary"
+            and market.expiry_ts > now_ts + self.config.min_time_to_expiry_seconds
+        }
+        if not anchors_by_outcome:
+            return []
+
+        opportunities: list[tuple[OutcomeMarket, OutcomeOrderBook, OutcomeOpportunity]] = []
+        current_anchor: OutcomeMarket | None = None
+        current_group: list[Any] = []
+
+        def flush_group() -> None:
+            nonlocal current_group
+            if current_anchor is not None and current_group:
+                opportunities.extend(
+                    self._build_named_no_basket_opportunity(
+                        anchor_market=current_anchor,
+                        observations=current_group,
+                        now_ts=now_ts,
+                    )
+                )
+            current_group = []
+
+        for observation in parse_outcome_observations(payload):
+            if observation.outcome in anchors_by_outcome:
+                flush_group()
+                current_anchor = anchors_by_outcome[observation.outcome]
+                continue
+            if observation.class_name == "namedOutcome":
+                if current_anchor is not None:
+                    current_group.append(observation)
+                continue
+            if observation.class_name == "fallback":
+                continue
+            if observation.support_status in {"trading_supported", "paper_supported"}:
+                flush_group()
+                current_anchor = None
+        flush_group()
+        return opportunities
+
+    def _build_named_no_basket_opportunity(
+        self,
+        *,
+        anchor_market: OutcomeMarket,
+        observations: list[Any],
+        now_ts: int,
+    ) -> list[tuple[OutcomeMarket, OutcomeOrderBook, OutcomeOpportunity]]:
+        min_count = max(int(self.config.named_outcome_basket_min_count), 2)
+        unique_by_outcome = {
+            int(observation.outcome): observation
+            for observation in observations
+            if getattr(observation, "outcome", None) is not None
+        }
+        ordered = sorted(
+            unique_by_outcome.values(),
+            key=lambda item: (
+                10**9 if item.bucket_index is None else int(item.bucket_index),
+                int(item.outcome or 0),
+            ),
+        )
+        if len(ordered) < min_count:
+            return []
+
+        legs: list[dict[str, object]] = []
+        for observation in ordered:
+            leg = self._named_no_basket_leg(observation)
+            if leg is not None:
+                legs.append(leg)
+        if len(legs) < min_count:
+            return []
+
+        unit_cost = round(sum(float(leg["ask"]) for leg in legs), 8)
+        conservative_payout = float(len(legs) - 1)
+        gross_edge = round(conservative_payout - unit_cost, 8)
+        estimated_fees = round(
+            conservative_payout * max(float(self.config.outcome_settlement_fee_rate), 0.0),
+            8,
+        )
+        estimated_slippage = round(float(self.config.estimated_slippage) * len(legs), 8)
+        net_edge = round(
+            gross_edge - estimated_fees - estimated_slippage - float(self.config.safety_margin),
+            8,
+        )
+        watch_row = {
+            "anchor_market_id": anchor_market.market_id,
+            "underlying": anchor_market.underlying,
+            "expiry_ts": anchor_market.expiry_ts,
+            "expiry_iso": anchor_market.expiry_iso,
+            "leg_count": len(legs),
+            "unit_cost": unit_cost,
+            "conservative_payout": conservative_payout,
+            "gross_edge": gross_edge,
+            "net_edge": net_edge,
+            "named_outcomes": [leg["outcome"] for leg in legs],
+            "readiness": "ready",
+        }
+        if gross_edge < self.config.min_gross_edge or net_edge < self.config.min_net_edge:
+            watch_row["readiness"] = "below_edge_threshold"
+            self._append_named_basket_watch_row(watch_row)
+            return []
+
+        max_qty_by_depth = min(
+            float(leg["ask_depth_usdc"]) / float(leg["ask"])
+            for leg in legs
+            if float(leg["ask"]) > 0
+        )
+        requested_size = round(
+            min(float(self.config.max_position_usdc), max_qty_by_depth * unit_cost),
+            6,
+        )
+        if requested_size <= 0:
+            watch_row["readiness"] = "no_available_depth_or_size"
+            self._append_named_basket_watch_row(watch_row)
+            return []
+        watch_row["requested_size_usdc"] = requested_size
+        self._append_named_basket_watch_row(watch_row)
+
+        leg_ids = "-".join(str(leg["outcome"]) for leg in legs)
+        market_id = f"{anchor_market.market_id}:NAMED_NO_BASKET:{leg_ids}"
+        basket_market = OutcomeMarket(
+            market_id=market_id,
+            outcome=anchor_market.outcome,
+            name="Named outcome NO basket",
+            description=f"anchor:{anchor_market.market_id}|legs:{leg_ids}",
+            underlying=anchor_market.underlying,
+            strike=anchor_market.strike,
+            expiry_ts=anchor_market.expiry_ts,
+            period=anchor_market.period,
+            class_name="namedOutcomeBasket",
+            settlement_source="named_outcome_basket_conservative",
+            side_names=("Named YES", "Named NO basket"),
+            raw={
+                "anchor": dict(anchor_market.raw),
+                "legs": [dict(leg) for leg in legs],
+            },
+        )
+        order_book = OutcomeOrderBook(
+            market_id=market_id,
+            yes=OutcomeSideBook(coin="", bid=None, ask=None),
+            no=OutcomeSideBook(coin="", bid=None, ask=None),
+        )
+        opportunity = OutcomeOpportunity(
+            market_id=market_id,
+            outcome=anchor_market.outcome,
+            underlying=anchor_market.underlying,
+            side="BUY_NAMED_NO_BASKET",
+            edge_type="NAMED_OUTCOME_NO_BASKET",
+            gross_edge=gross_edge,
+            estimated_fees=estimated_fees,
+            estimated_slippage=estimated_slippage,
+            net_edge=net_edge,
+            confidence=0.9,
+            requested_size_usdc=requested_size,
+            max_loss_usdc=requested_size,
+            expiry_ts=anchor_market.expiry_ts,
+            reason=(
+                "NamedOutcome NO basket ask below conservative payout: "
+                f"{unit_cost:.6f} < {conservative_payout:.6f}"
+            ),
+            metadata={
+                "basket_legs": legs,
+                "basket_leg_count": len(legs),
+                "basket_unit_cost": unit_cost,
+                "basket_conservative_payout": conservative_payout,
+                "basket_group_anchor_market_id": anchor_market.market_id,
+                "basket_group_anchor_outcome": anchor_market.outcome,
+                "basket_named_outcomes": [leg["outcome"] for leg in legs],
+                "settlement_policy": "conservative_named_outcome_no_basket",
+                "assumption": "at_most_one_named_outcome_true",
+                "strike": anchor_market.strike,
+                "time_to_expiry_seconds": anchor_market.expiry_ts - now_ts,
+            },
+        )
+        return [(basket_market, order_book, opportunity)]
+
+    def _named_no_basket_leg(self, observation: Any) -> dict[str, object] | None:
+        try:
+            outcome = int(observation.outcome)
+        except (TypeError, ValueError):
+            return None
+        coins = observation.coins if isinstance(observation.coins, tuple) else ()
+        coin = str(coins[1]) if len(coins) >= 2 else outcome_coin(outcome, 1)
+        book = parse_side_book(
+            self.info_client.fetch_l2_book(coin),
+            max_slippage=self.config.max_order_slippage,
+        )
+        if book.ask is None or book.ask <= 0:
+            return None
+        return {
+            "outcome": outcome,
+            "index": observation.bucket_index,
+            "name": observation.name,
+            "description": observation.description,
+            "coin": coin,
+            "side_name": "NO",
+            "bid": book.bid,
+            "ask": book.ask,
+            "ask_size": book.ask_size,
+            "ask_depth_usdc": book.ask_depth_usdc,
+            "spread": book.spread,
+            "time_ms": book.time_ms,
+        }
+
+    def _append_named_basket_watch_row(self, row: dict[str, object]) -> None:
+        self._last_named_outcome_basket_watchlist.append(dict(row))
+        self._last_named_outcome_basket_watchlist = sorted(
+            self._last_named_outcome_basket_watchlist,
+            key=lambda item: float(item.get("net_edge", -10**9)),
+            reverse=True,
+        )[:10]
+
     def _execute(
         self,
         *,
@@ -787,6 +1100,9 @@ class HIP4OutcomeEdgePod:
                 continue
             if now_ts < position.expiry_ts + self.config.settlement_grace_seconds:
                 continue
+            if position.edge_type == "NAMED_OUTCOME_NO_BASKET":
+                changed = self._settle_named_no_basket_position(position) or changed
+                continue
             reference = reference_prices.get(position.underlying.upper())
             reference_price = None if reference is None else reference.price
             strike = _position_strike(position)
@@ -826,6 +1142,30 @@ class HIP4OutcomeEdgePod:
         if changed:
             self.state_store.save_positions(self.positions)
             self._write_settlement_summary()
+
+    def _settle_named_no_basket_position(self, position: OutcomePosition) -> bool:
+        no_quantities = [
+            float(fill.token_qty)
+            for fill in position.fills
+            if fill.side_name.upper() == "NO" and fill.token_qty > 0
+        ]
+        if not no_quantities:
+            return False
+        payout = max(sum(no_quantities) - max(no_quantities), 0.0)
+        position.status = "estimated_settled"
+        position.settled_at = utc_now_iso()
+        position.estimated_payout_usdc = round(payout, 8)
+        position.metadata["settlement"] = {
+            "result": "CONSERVATIVE_NAMED_NO_BASKET",
+            "source": "conservative_named_outcome_basket",
+            "fee_model": self._fee_model_payload(),
+            "notes": "conservative_named_outcome_no_basket",
+            "leg_count": len(no_quantities),
+            "assumption": "at_most_one_named_outcome_true",
+        }
+        _apply_settlement_accounting(position, self.config)
+        self.event_logger.log_settlement(_settlement_row_from_position(position))
+        return True
 
     def _log_opportunity(
         self,

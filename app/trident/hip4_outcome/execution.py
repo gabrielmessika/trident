@@ -257,6 +257,14 @@ def build_order_legs(
             min_order_value_usdc=min_order_value_usdc,
             size_decimals=size_decimals,
         )
+    if opportunity.side == "BUY_NAMED_NO_BASKET":
+        return _named_no_basket_legs(
+            opportunity=opportunity,
+            approved_size_usdc=approved_size_usdc,
+            max_order_slippage=max_order_slippage,
+            min_order_value_usdc=min_order_value_usdc,
+            size_decimals=size_decimals,
+        )
     if opportunity.side != "BUY_BOTH":
         return []
     if order_book.yes.ask is None or order_book.no.ask is None:
@@ -332,6 +340,64 @@ def _single_leg(
             "expected_order_value_usdc": str((Decimal(str(qty)) * min_value_price).quantize(Decimal("0.00000001"))),
         }
     ]
+
+
+def _named_no_basket_legs(
+    *,
+    opportunity: OutcomeOpportunity,
+    approved_size_usdc: float,
+    max_order_slippage: float,
+    min_order_value_usdc: float,
+    size_decimals: int,
+) -> list[dict[str, object]]:
+    raw_legs = (
+        opportunity.metadata.get("basket_legs")
+        if isinstance(opportunity.metadata, dict)
+        else None
+    )
+    if not isinstance(raw_legs, list):
+        return []
+    legs: list[dict[str, object]] = []
+    unit_cost = Decimal("0")
+    for raw_leg in raw_legs:
+        if not isinstance(raw_leg, dict):
+            continue
+        coin = str(raw_leg.get("coin") or "")
+        try:
+            ask = float(raw_leg.get("ask"))
+        except (TypeError, ValueError):
+            continue
+        if not coin or ask <= 0:
+            continue
+        limit_price = min(ask * (1.0 + max_order_slippage), 0.99999)
+        unit_cost += Decimal(str(limit_price))
+        legs.append(
+            {
+                "coin": coin,
+                "side_name": str(raw_leg.get("side_name") or "NO").upper(),
+                "reference_price": ask,
+                "limit_price": round(limit_price, 8),
+            }
+        )
+    if not legs or unit_cost <= 0:
+        return []
+    qty = _quantize_size(Decimal(str(approved_size_usdc)) / unit_cost, size_decimals)
+    if qty <= 0:
+        return []
+    if min_order_value_usdc > 0:
+        min_value = Decimal(str(min_order_value_usdc))
+        for leg in legs:
+            min_value_price = _outcome_min_value_price(float(leg["limit_price"]))
+            if Decimal(str(qty)) * min_value_price < min_value:
+                return []
+    for leg in legs:
+        min_value_price = _outcome_min_value_price(float(leg["limit_price"]))
+        leg["token_qty"] = qty
+        leg["min_order_value_price"] = str(min_value_price)
+        leg["expected_order_value_usdc"] = str(
+            (Decimal(str(qty)) * min_value_price).quantize(Decimal("0.00000001"))
+        )
+    return legs
 
 
 def _outcome_min_value_price(limit_price: float) -> Decimal:

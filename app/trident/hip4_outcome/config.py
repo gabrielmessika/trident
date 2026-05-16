@@ -138,6 +138,8 @@ class Hip4OutcomeConfig:
     enable_model: bool = True
     enable_short_expiry: bool = True
     enable_price_bucket: bool = True
+    enable_named_outcome_basket: bool = False
+    named_outcome_basket_min_count: int = 2
     enable_market_observation: bool = True
     observe_unsupported_books: bool = True
     max_observation_markets_per_loop: int = 40
@@ -351,6 +353,14 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
         enable_price_bucket=env_bool(
             "HIP4_OUTCOME_ENABLE_PRICE_BUCKET",
             bool(section.get("enable_price_bucket", True)),
+        ),
+        enable_named_outcome_basket=env_bool(
+            "HIP4_OUTCOME_ENABLE_NAMED_OUTCOME_BASKET",
+            bool(section.get("enable_named_outcome_basket", False)),
+        ),
+        named_outcome_basket_min_count=env_int(
+            "HIP4_OUTCOME_NAMED_OUTCOME_BASKET_MIN_COUNT",
+            int(section.get("named_outcome_basket_min_count", 2)),
         ),
         enable_market_observation=env_bool(
             "HIP4_OUTCOME_ENABLE_MARKET_OBSERVATION",

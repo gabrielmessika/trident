@@ -18,9 +18,10 @@ loop_interval_seconds = 4
 request_timeout_seconds = 10
 info_requests_per_minute = 240
 
-# Mainnet paper is now the Pod B dry-run source of truth. Keep it scoped to BTC
-# until other mainnet outcome underlyings have enough observation history.
-include_underlyings = ["BTC"]
+# Mainnet paper is the Pod B dry-run source of truth. Empty list means accept
+# every tradable priceBinary returned by mainnet outcomeMeta; named outcomes are
+# promoted only by the conservative paper basket engine below.
+include_underlyings = []
 reference_price_sources = ["binance", "okx", "bybit", "coinbase", "kraken", "hyperliquid"]
 anchor_reference_to_hyperliquid = true
 max_source_deviation_bps = 50
@@ -37,6 +38,8 @@ enable_parity = true
 enable_model = true
 enable_short_expiry = true
 enable_price_bucket = true
+enable_named_outcome_basket = true
+named_outcome_basket_min_count = 2
 enable_market_observation = true
 observe_unsupported_books = true
 max_observation_markets_per_loop = 80

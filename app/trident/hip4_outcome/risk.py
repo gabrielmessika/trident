@@ -46,6 +46,8 @@ class OutcomeRiskManager:
             return self._reject("missing_settlement_source")
         if market.class_name == "priceBucket" and self.config.mode == "testnet":
             return self._reject("price_bucket_paper_only")
+        if market.class_name == "namedOutcomeBasket" and self.config.mode == "testnet":
+            return self._reject("named_outcome_basket_paper_only")
         blocked_slice = self._opportunity_slice_key(opportunity=opportunity, market=market)
         if blocked_slice in self._blocked_opportunity_slices:
             return self._reject(
@@ -128,6 +130,8 @@ class OutcomeRiskManager:
         opportunity: OutcomeOpportunity,
         order_book: OutcomeOrderBook,
     ) -> str | None:
+        if opportunity.side == "BUY_NAMED_NO_BASKET":
+            return self._basket_liquidity_reject_reason(opportunity)
         if opportunity.side in {"BUY_YES", "BUY_BOTH"}:
             if order_book.yes.ask is None:
                 return "missing_yes_ask"
@@ -154,6 +158,12 @@ class OutcomeRiskManager:
         min_order_value = max(float(self.config.min_order_value_usdc), 0.0)
         if min_order_value <= 0:
             return None
+        if opportunity.side == "BUY_NAMED_NO_BASKET":
+            return self._basket_min_order_reject_reason(
+                opportunity=opportunity,
+                approved_size_usdc=approved_size_usdc,
+                min_order_value=min_order_value,
+            )
         checks: list[tuple[str, float | None, float]] = []
         if opportunity.side == "BUY_YES":
             checks.append(("yes", order_book.yes.ask, approved_size_usdc))
@@ -184,6 +194,49 @@ class OutcomeRiskManager:
             qty = self._floor_size(spend_usdc / limit_price)
             if qty <= 0 or qty * self._min_value_price(limit_price) < min_order_value:
                 return f"below_exchange_min_order_value_{side_name}"
+        return None
+
+    def _basket_liquidity_reject_reason(self, opportunity: OutcomeOpportunity) -> str | None:
+        legs = _basket_legs(opportunity)
+        if not legs:
+            return "missing_named_basket_legs"
+        for leg in legs:
+            ask = _optional_float(leg.get("ask"))
+            if ask is None or ask <= 0:
+                return "missing_named_basket_no_ask"
+            depth = _optional_float(leg.get("ask_depth_usdc")) or 0.0
+            if depth < self.config.min_no_depth_usdc:
+                return "insufficient_named_basket_no_depth"
+            spread = _optional_float(leg.get("spread"))
+            if spread is not None and spread > self.config.max_spread:
+                return "named_basket_no_spread_too_wide"
+        return None
+
+    def _basket_min_order_reject_reason(
+        self,
+        *,
+        opportunity: OutcomeOpportunity,
+        approved_size_usdc: float,
+        min_order_value: float,
+    ) -> str | None:
+        legs = _basket_legs(opportunity)
+        if not legs:
+            return "below_exchange_min_order_value_named_basket"
+        limit_prices: list[float] = []
+        for leg in legs:
+            ask = _optional_float(leg.get("ask"))
+            if ask is None or ask <= 0:
+                return "below_exchange_min_order_value_named_basket"
+            limit_prices.append(min(ask * (1.0 + self.config.max_order_slippage), 0.99999))
+        unit_cost = sum(limit_prices)
+        if unit_cost <= 0:
+            return "below_exchange_min_order_value_named_basket"
+        qty = self._floor_size(approved_size_usdc / unit_cost)
+        if qty <= 0:
+            return "below_exchange_min_order_value_named_basket"
+        for limit_price in limit_prices:
+            if qty * self._min_value_price(limit_price) < min_order_value:
+                return "below_exchange_min_order_value_named_basket"
         return None
 
     def _floor_size(self, value: float) -> float:
@@ -298,6 +351,14 @@ def _optional_float(value: object) -> float | None:
     if not math.isfinite(parsed):
         return None
     return parsed
+
+
+def _basket_legs(opportunity: OutcomeOpportunity) -> list[dict[str, object]]:
+    metadata = opportunity.metadata if isinstance(opportunity.metadata, dict) else {}
+    raw_legs = metadata.get("basket_legs")
+    if not isinstance(raw_legs, list):
+        return []
+    return [leg for leg in raw_legs if isinstance(leg, dict)]
 
 
 def _compact_rejected_sources(value: object) -> list[dict[str, object]]:

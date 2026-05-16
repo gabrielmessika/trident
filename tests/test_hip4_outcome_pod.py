@@ -812,6 +812,45 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertEqual(len(legs), 2)
         self.assertEqual(legs[0]["token_qty"], legs[1]["token_qty"])
 
+    def test_builds_named_outcome_no_basket_order_legs(self) -> None:
+        market = self._market()
+        opportunity = OutcomeOpportunity(
+            market_id="BTC_GT_76775_20260502_0300:NAMED_NO_BASKET:10-11-12",
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_NAMED_NO_BASKET",
+            edge_type="NAMED_OUTCOME_NO_BASKET",
+            gross_edge=0.5,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.48,
+            confidence=0.9,
+            requested_size_usdc=12.0,
+            max_loss_usdc=12.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={
+                "basket_legs": [
+                    {"coin": "#101", "side_name": "NO", "ask": 0.4},
+                    {"coin": "#111", "side_name": "NO", "ask": 0.4},
+                    {"coin": "#121", "side_name": "NO", "ask": 0.4},
+                ]
+            },
+        )
+
+        legs = build_order_legs(
+            opportunity=opportunity,
+            market=market,
+            order_book=self._book(),
+            approved_size_usdc=12.0,
+            max_order_slippage=0.0,
+            size_decimals=0,
+        )
+
+        self.assertEqual(len(legs), 3)
+        self.assertEqual({leg["side_name"] for leg in legs}, {"NO"})
+        self.assertEqual({leg["token_qty"] for leg in legs}, {Decimal("10")})
+
     def test_order_legs_respect_min_order_value_after_rounding(self) -> None:
         market = self._market()
         book = self._book()
@@ -1018,6 +1057,8 @@ info_url = "https://api.hyperliquid-testnet.xyz/info"
 mode = "paper"
 include_underlyings = ["btc"]
 allow_testnet_orders = false
+enable_named_outcome_basket = true
+named_outcome_basket_min_count = 3
 
 [hip4_outcome.annualized_vol_by_underlying]
 BTC = 0.5
@@ -1037,6 +1078,8 @@ BTC = 0.5
             self.assertEqual(config.blocked_opportunity_slices, [])
             self.assertFalse(config.block_reference_divergence)
             self.assertTrue(config.enable_price_bucket)
+            self.assertTrue(config.enable_named_outcome_basket)
+            self.assertEqual(config.named_outcome_basket_min_count, 3)
             self.assertTrue(config.enable_market_observation)
 
     def test_loads_outcome_guardrails_from_config_and_env(self) -> None:
@@ -1277,6 +1320,149 @@ reference_divergence_edge_types = ["model"]
             self.assertEqual(rows[0]["class_name"], "namedOutcome")
             self.assertEqual(rows[0]["support_status"], "observe_only")
             self.assertIn("yes", rows[0]["books"])
+
+    def test_run_once_executes_named_outcome_no_basket_in_paper(self) -> None:
+        named_no_coins = {"#91021", "#91031", "#91041"}
+
+        class FakeInfoClient:
+            def fetch_all_mids(self):
+                return {"BTC": 80000.0}
+
+            def fetch_outcome_meta(self):
+                return {
+                    "outcomes": [
+                        {
+                            "outcome": 9100,
+                            "name": "Recurring",
+                            "description": (
+                                "class:priceBinary|underlying:BTC|expiry:20991231-0000|"
+                                "targetPrice:80000|period:1d"
+                            ),
+                            "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+                        },
+                        {
+                            "outcome": 9101,
+                            "name": "Recurring Fallback",
+                            "description": "other",
+                            "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+                        },
+                        {
+                            "outcome": 9102,
+                            "name": "Recurring Named Outcome",
+                            "description": "index:0",
+                            "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+                        },
+                        {
+                            "outcome": 9103,
+                            "name": "Recurring Named Outcome",
+                            "description": "index:1",
+                            "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+                        },
+                        {
+                            "outcome": 9104,
+                            "name": "Recurring Named Outcome",
+                            "description": "index:2",
+                            "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+                        },
+                    ]
+                }
+
+            def fetch_l2_book(self, coin: str):
+                ask = "0.40" if coin in named_no_coins else "0.55"
+                bid = "0.39" if coin in named_no_coins else "0.54"
+                return {
+                    "coin": coin,
+                    "time": 1,
+                    "levels": [
+                        [{"px": bid, "sz": "100", "n": 1}],
+                        [{"px": ask, "sz": "100", "n": 1}],
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                reference_price_sources=["hyperliquid"],
+                include_underlyings=[],
+                enable_late_expiry=False,
+                enable_parity=False,
+                enable_model=False,
+                enable_short_expiry=False,
+                enable_named_outcome_basket=True,
+                enable_market_observation=False,
+                max_time_to_expiry_minutes=100_000_000,
+                max_position_usdc=12.0,
+                max_total_outcome_exposure_usdc=100.0,
+                max_per_underlying_outcome_exposure_usdc=100.0,
+                min_yes_depth_usdc=1.0,
+                min_no_depth_usdc=1.0,
+                min_order_value_usdc=0.0,
+                min_gross_edge=0.01,
+                min_net_edge=0.001,
+            )
+            pod = HIP4OutcomeEdgePod(config, info_client=FakeInfoClient())  # type: ignore[arg-type]
+
+            summary = pod.run_once()
+
+            self.assertEqual(summary["named_outcome_baskets"], 1)
+            self.assertEqual(summary["executed"], 1)
+            self.assertEqual(summary["opportunity_mix"]["NAMED_OUTCOME_NO_BASKET"], 1)
+            self.assertEqual(summary["named_outcome_basket_watchlist"][0]["readiness"], "ready")
+            self.assertEqual(len(pod.positions), 1)
+            self.assertEqual(pod.positions[0].edge_type, "NAMED_OUTCOME_NO_BASKET")
+            self.assertEqual(len(pod.positions[0].fills), 3)
+            self.assertEqual({fill.side_name for fill in pod.positions[0].fills}, {"NO"})
+
+    def test_named_outcome_no_basket_settles_conservatively_in_paper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                settlement_grace_seconds=0,
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            position = OutcomePosition(
+                position_id="named-basket-1",
+                market_id="BTC_GT_80000_20991231_0000:NAMED_NO_BASKET:1-2-3",
+                outcome=9100,
+                underlying="BTC",
+                edge_type="NAMED_OUTCOME_NO_BASKET",
+                side="BUY_NAMED_NO_BASKET",
+                opened_at="2026-05-16T00:00:00Z",
+                expiry_ts=1,
+                cost_usdc=12.0,
+                max_loss_usdc=12.0,
+                net_edge=0.5,
+                confidence=0.9,
+                fills=[
+                    OutcomeFill("#11", "NO", Decimal("10"), 0.4, 4.0, "paper_filled"),
+                    OutcomeFill("#21", "NO", Decimal("10"), 0.4, 4.0, "paper_filled"),
+                    OutcomeFill("#31", "NO", Decimal("10"), 0.4, 4.0, "paper_filled"),
+                ],
+                metadata={"decision": {"execution_mode": "PAPER"}},
+            )
+            pod.positions = [position]
+
+            pod._settle_expired_positions(now_ts=2, reference_prices={})  # noqa: SLF001
+
+            self.assertEqual(position.status, "estimated_settled")
+            self.assertEqual(position.estimated_payout_usdc, 20.0)
+            self.assertEqual(position.estimated_gross_pnl_usdc, 8.0)
+            self.assertEqual(position.estimated_fee_usdc, 0.04)
+            self.assertEqual(position.estimated_pnl_usdc, 7.96)
+            self.assertEqual(
+                position.metadata["settlement"]["notes"],
+                "conservative_named_outcome_no_basket",
+            )
 
     def test_run_once_executes_embedded_observer_in_same_process(self) -> None:
         class FakeInfoClient:
@@ -2068,7 +2254,8 @@ reference_divergence_edge_types = ["model"]
         self.assertFalse(config.require_testnet_url)
         self.assertTrue(config.write_pod_b_alias_status)
         self.assertFalse(config.enforce_testnet_balance_check)
-        self.assertEqual(config.include_underlyings, ["BTC"])
+        self.assertEqual(config.include_underlyings, [])
+        self.assertTrue(config.enable_named_outcome_basket)
         self.assertIn("hip4_outcome_mainnet_paper", config.logs_dir)
         self.assertIn("hip4_outcome_mainnet_paper", config.state_path)
         self.assertIn("hip4_outcome_mainnet_paper", config.rate_limit_state_path)
