@@ -74,13 +74,14 @@ class PodARiskGateTests(unittest.TestCase):
         self.assertEqual(rule.min_ema50_distance_4h_atr, 2.0)
         self.assertEqual(rule.min_btc_overextension_score, 0.70)
 
-    def test_default_config_loads_hype_trend_pullback_veto(self) -> None:
+    def test_default_config_loads_hype_trend_pullback_veto_disabled(self) -> None:
         rule = next(
             rule
             for rule in self.config.pod_a.pattern_vetoes
             if rule.name == "hype_trend_pullback_long_targeted"
         )
 
+        self.assertFalse(rule.enabled)
         self.assertEqual(rule.symbols, ["HYPE"])
         self.assertEqual(rule.sides, ["long"])
         self.assertEqual(rule.setups, ["trend_pullback_long"])
@@ -100,7 +101,7 @@ class PodARiskGateTests(unittest.TestCase):
         )
         self.assertEqual(rules["mtf_1h_overextension_chase"].min_entry_vs_open_1h_bps, 50.0)
 
-    def test_rejects_hype_trend_pullback_targeted_veto(self) -> None:
+    def test_allows_hype_trend_pullback_after_targeted_veto_rollback(self) -> None:
         decisions = self.gate.evaluate_many(
             [
                 TradePlan(
@@ -120,8 +121,8 @@ class PodARiskGateTests(unittest.TestCase):
         )
 
         self.assertEqual(len(decisions), 1)
-        self.assertFalse(decisions[0].accepted)
-        self.assertEqual(decisions[0].reason, "pattern_veto_hype_trend_pullback_long_targeted")
+        self.assertTrue(decisions[0].accepted)
+        self.assertEqual(decisions[0].reason, "accepted")
 
     def test_rejects_xrp_overextension_targeted_veto(self) -> None:
         decisions = self.gate.evaluate_many(

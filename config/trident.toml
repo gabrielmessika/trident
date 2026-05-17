@@ -481,7 +481,9 @@ min_btc_overextension_score = 0.70
 
 [[pod_a.pattern_vetoes]]
 name = "hype_trend_pullback_long_targeted"
-enabled = true
+# 2026-05-17 latest-fetch replay: disabling this veto added +14.72 USD
+# versus keeping it active. Keep the rule parked for future review.
+enabled = false
 symbols = ["HYPE"]
 sides = ["long"]
 setups = ["trend_pullback_long"]

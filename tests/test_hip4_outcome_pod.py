@@ -1146,20 +1146,9 @@ reference_divergence_edge_types = ["model"]
         self.assertTrue(config.anchor_reference_to_hyperliquid)
         self.assertNotIn("HYPE", config.reference_price_sources_by_underlying)
         self.assertFalse(config.enable_model)
-        self.assertIn(
-            "HYPE:LATE_EXPIRY:BUY_YES",
-            config.blocked_opportunity_slices,
-        )
-        self.assertIn(
-            "HYPE:MODEL:BUY_YES",
-            config.blocked_opportunity_slices,
-        )
-        self.assertIn(
-            "HYPE:SHORT_EXPIRY:BUY_YES",
-            config.blocked_opportunity_slices,
-        )
-        self.assertTrue(config.block_reference_divergence)
-        self.assertEqual(config.reference_divergence_underlyings, ["HYPE"])
+        self.assertEqual(config.blocked_opportunity_slices, [])
+        self.assertFalse(config.block_reference_divergence)
+        self.assertEqual(config.reference_divergence_underlyings, [])
         self.assertEqual(config.reference_divergence_max_bps, 250.0)
         self.assertEqual(config.reference_divergence_min_rejected_sources, 2)
         self.assertTrue(config.enable_embedded_observers)

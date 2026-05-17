@@ -144,5 +144,7 @@ Only buy-side outcome trades are implemented: `BUY_YES`, `BUY_NO`, and `BUY_BOTH
 No shorting or martingale logic exists in this pod.
 
 `blocked_opportunity_slices` uses `UNDERLYING:EDGE_TYPE:SIDE` values. The
-testnet config currently blocks `HYPE:LATE_EXPIRY:BUY_YES`, based on the
-2026-05-05 run review; mainnet observer remains unblocked for comparison.
+HYPE-specific testnet blocks from the early review were removed after the
+testnet data was judged non-representative; mainnet paper is now the active
+dry-run profile and should stay unblocked unless a mainnet-paper review proves
+an entry-time guardrail.
