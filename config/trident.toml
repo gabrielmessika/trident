@@ -19,6 +19,7 @@ message_timeout_seconds = 20.0
 heartbeat_interval_seconds = 25.0
 max_idle_heartbeats = 2
 info_requests_per_minute = 60
+private_info_requests_per_minute = 30
 ws_connects_per_minute = 6
 ws_messages_per_second = 8
 shared_rate_limit_jitter_seconds = 0.1
@@ -134,6 +135,7 @@ dry_run_spread_multiplier = 0.5
 live_order_slippage_bps = 8.0
 live_close_slippage_bps = 12.0
 live_max_order_notional_usd = 50.0
+live_order_actions_per_minute = 12
 live_require_protective_orders = true
 # Grace appliquee seulement quand un pod perd le droit d'ouvrir sur un symbol
 # et qu'il doit encore sortir proprement de la position existante.

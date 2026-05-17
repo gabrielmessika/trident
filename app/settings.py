@@ -62,6 +62,7 @@ class ExecutionConfig:
     live_order_slippage_bps: float = 8.0
     live_close_slippage_bps: float = 12.0
     live_max_order_notional_usd: float = 50.0
+    live_order_actions_per_minute: int = 12
     live_require_protective_orders: bool = True
     routing_revoke_grace_minutes: int = 0
     routing_revoke_grace_minutes_by_symbol: dict[str, int] = field(default_factory=dict)
@@ -151,6 +152,7 @@ class HyperliquidConfig:
     heartbeat_interval_seconds: float = 25.0
     max_idle_heartbeats: int = 2
     info_requests_per_minute: int = 60
+    private_info_requests_per_minute: int = 30
     ws_connects_per_minute: int = 6
     ws_messages_per_second: int = 8
     shared_rate_limit_jitter_seconds: float = 0.1
@@ -1132,6 +1134,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             info_requests_per_minute=int(
                 hyperliquid_data.get("info_requests_per_minute", 60)
             ),
+            private_info_requests_per_minute=int(
+                hyperliquid_data.get("private_info_requests_per_minute", 30)
+            ),
             ws_connects_per_minute=int(
                 hyperliquid_data.get("ws_connects_per_minute", 6)
             ),
@@ -1296,6 +1301,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 ),
                 live_max_order_notional_usd=float(
                     execution_data.get("live_max_order_notional_usd", 50.0)
+                ),
+                live_order_actions_per_minute=int(
+                    execution_data.get("live_order_actions_per_minute", 12)
                 ),
                 live_require_protective_orders=bool(
                     execution_data.get("live_require_protective_orders", True)

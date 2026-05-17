@@ -1,12 +1,12 @@
 # TRIDENT - Readiness passage live
 
-Date de revue: 2026-04-29
+Date de revue: 2026-04-29. Mise à jour live hybride: 2026-05-17.
 
-Verdict code: **canary live Pod A + Pod C préparé**, **dry-run prolongé recommandé avant activation**.
+Verdict code: **canary live Pod A + Pod C préparé**, avec **Pod B HIP-4 maintenu en mainnet paper**.
 
-Verdict opérationnel: **no-go tant que le preflight live ne passe pas sur le
-serveur avec les vrais credentials, un compte/subaccount propre, `orderUpdates`
-connecté et une semaine de dry-run supplémentaire relue**.
+Verdict opérationnel: **go technique conditionnel**. Le démarrage live reste
+bloqué tant que le preflight live ne passe pas sur le serveur avec les vrais
+credentials, un compte/subaccount propre et `orderUpdates` connecté.
 
 Cette revue consolide les documents TRIDENT, tbot et gbot pour éviter de
 répéter les erreurs déjà observées: état exchange non prioritaire au redémarrage,
@@ -24,12 +24,16 @@ comme zéro position, fill/triggers incomplets, websocket utilisateur absent.
 ## Etat actuel
 
 TRIDENT garde son architecture de **dry-run sur données live** par défaut, mais
-dispose maintenant d'un chemin live Pod A + Pod C séparé:
+dispose maintenant d'un chemin live hybride:
 
 - `--mode dry-run` reste le mode par défaut;
-- `--mode live` lance Pod A + Pod C par défaut et refuse Pod B;
+- `--mode live` lance Pod A + Pod C en vrais ordres et garde Pod B HIP-4 en
+  mainnet paper;
 - le démarrage live exécute un preflight bloquant par pod avant de lancer les
   services;
+- le serveur force `HIP4_OUTCOME_CONFIG=config/hip4_outcome_mainnet_paper.toml`,
+  `HIP4_OUTCOME_MODE=paper` et `HIP4_OUTCOME_ALLOW_TESTNET_ORDERS=false` en
+  mode live;
 - les runners Pod A/Pod C live ne tronquent pas le journal, ne ferment pas les
   positions à l'arrêt du process, et persistent chacun leur état live:
   `runtime/trident/live_state_pod_a.json` et
@@ -39,8 +43,8 @@ Les scripts de déploiement acceptent maintenant un mode explicite:
 
 - `./deploy.sh --start --mode dry-run` démarre le dry-run préparatoire;
 - `./deploy.sh --mode live` prépare un build/config live sans démarrage;
-- `./deploy.sh --start --mode live --without-pod-b` démarre Pod A + Pod C
-  seulement si le preflight live passe.
+- `./deploy.sh --start --mode live --without-funding` démarre Pod A + Pod C
+  en live et Pod B HIP-4 en paper seulement si le preflight live passe.
 
 ## Protections P0 implémentées
 
@@ -156,6 +160,14 @@ Leçons gbot/tbot:
 - les réponses d'ordre doivent être parsées strictement;
 - tout champ critique manquant doit bloquer le trading réel.
 
+Implémenté pour le canary A/C:
+
+- les lectures privées passent par le rate limiter partagé
+  `private_info_requests_per_minute`;
+- les actions live `order/cancel` passent par
+  `live_order_actions_per_minute`;
+- un signal 429/rate-limit ouvre le breaker partagé avant nouvelle tentative.
+
 ### 7. Deploy live sans ambiguïté
 
 Un live sûr doit avoir:
@@ -175,7 +187,8 @@ Implémenté:
 
 - `TRIDENT_ACCOUNT_ADDRESS`, `TRIDENT_SECRET_KEY`, `TRIDENT_VAULT_ADDRESS`;
 - confirmation obligatoire `TRIDENT_LIVE_CONFIRM=I_UNDERSTAND_REAL_ORDERS`;
-- `scripts/trident_server.sh` refuse live avec Pod B;
+- `scripts/trident_server.sh` autorise Pod B seulement via
+  `hip4-outcome-dry-run` force en `paper`;
 - preflight Docker obligatoire avant `start/update/restart --mode live`.
 
 ## Préflight live requis
@@ -185,7 +198,7 @@ Implémenté:
 - version serveur égale au commit attendu;
 - `TRIDENT_CONFIG_PATH` attendu;
 - `TRIDENT_MODE=live` uniquement au moment du vrai canary;
-- Pod B désactivé au premier live réel;
+- Pod B HIP-4 actif seulement en mainnet paper;
 - Pod C activé comme Pod A si la commande ne passe pas `--without-pod-c`;
 - snapshots frais;
 - funding/OI frais si utilisés par les gates;
@@ -248,23 +261,25 @@ python -m app.live.preflight --config config/trident.toml --pod pod_a
 python -m app.live.preflight --config config/trident.toml --pod pod_c
 ```
 
-Commande canary live, après la semaine de dry-run:
+Commande canary live, après validation du preflight:
 
 ```bash
-./deploy.sh --start --mode live --without-pod-b --without-funding
+./deploy.sh --start --mode live --without-funding
 ```
 
 ## Plan de préparation recommandé
 
-1. Garder le serveur en `--mode dry-run` pendant la semaine prévue.
-2. Déployer la version live-ready en dry-run.
+1. Relire le dernier fetch dry-run et confirmer qu'il n'y a pas de 429/breaker
+   ouvert.
+2. Déployer la version live-ready en dry-run si une validation finale est
+   souhaitée.
 3. Configurer `.env.trident` côté serveur avec l'API wallet.
 4. Exécuter le preflight live sans démarrer les pods live.
 5. Confirmer que le compte/subaccount ne contient aucune position inconnue.
 6. Confirmer que `orderUpdates` est sain.
 7. Revoir les journaux dry-run après redeploy.
-8. Canary live: Pod A + Pod C, capital isolé/minimal, symboles limités, max
-   notional très bas, close-only/kill-switch validés.
+8. Canary live: Pod A + Pod C en vrais ordres, Pod B HIP-4 en paper, capital
+   isolé/minimal, symboles limités, max notional très bas, close-only/kill-switch validés.
 9. Revoir les fills réels et les écarts exchange/journal.
 10. Elargir seulement après plusieurs sessions propres.
 
@@ -279,7 +294,7 @@ Go live uniquement si:
 - equity exchange est cohérente avec le dashboard;
 - ordre open, close reduce-only, cancel, trigger, cancel+replace et partial fill
   sont testés;
-- `deploy.sh --start --mode live --without-pod-b` passe le
+- `deploy.sh --start --mode live --without-funding` passe le
   preflight sans override dangereux.
 
 Avant ça, le mode opérable reste le **dry-run préparatoire**.

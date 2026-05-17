@@ -34,9 +34,11 @@ Par défaut :
 - `--without-hip4-outcome` est conservé comme alias de `--without-pod-b`
 
 Sécurité live :
-- `--mode live` lance Pod A + Pod C par défaut et refuse Pod B HIP-4.
-- pour démarrer en live, utilisez aussi `--without-pod-b`;
-  le serveur lance un preflight par pod: credentials + reconciliation + orderUpdates.
+- `--mode live` lance Pod A + Pod C en vrais ordres et garde Pod B HIP-4
+  en mainnet paper par défaut.
+- le serveur force `HIP4_OUTCOME_CONFIG=config/hip4_outcome_mainnet_paper.toml`
+  et `HIP4_OUTCOME_MODE=paper` en live, puis lance un preflight Pod A/Pod C:
+  credentials + reconciliation + orderUpdates.
 - pour un live Pod A seul, ajoutez aussi `--without-pod-c`.
 
 Compatibilité :
@@ -192,7 +194,6 @@ case "$MODE" in
 esac
 
 if [ "$MODE" = "live" ]; then
-    ENABLE_HIP4_OUTCOME=""
     ENABLE_HIP4_MAINNET_OBSERVER=""
 fi
 
@@ -326,8 +327,8 @@ else
     echo "  ./deploy.sh --start --mode dry-run --config config/trident_crypto_launch_fast_crypto_only.toml"
     echo "  ./deploy.sh --start --mode dry-run --config config/trident_crypto_launch_fast_crypto_only.toml --fresh-start"
     echo "  ./deploy.sh --mode live --config config/trident.toml"
-    echo "  ./deploy.sh --start --mode live --without-pod-b --without-funding"
-    echo "  ./deploy.sh --start --mode live --without-pod-b --without-pod-c --without-funding"
+    echo "  ./deploy.sh --start --mode live --without-funding"
+    echo "  ./deploy.sh --start --mode live --without-pod-c --without-funding"
     echo "  ./deploy.sh --start --without-pod-c"
     echo "  ./deploy.sh --start --without-funding"
 fi

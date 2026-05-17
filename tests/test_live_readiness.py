@@ -4,12 +4,161 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.execution.live import parse_order_result
-from app.hyperliquid.private_state import parse_account_state
+from app.execution.live import (
+    LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY,
+    LiveExecutionVenue,
+    parse_order_result,
+)
+from app.hyperliquid.private_state import (
+    HyperliquidCredentials,
+    HyperliquidPrivateInfoClient,
+    parse_account_state,
+)
 from app.live.preflight import build_parser, run_preflight
 from app.live.reconciliation import reconcile_exchange_state
 from app.live.state_store import LiveStateStore, open_position_from_metadata
 from app.portfolio.directional_state import DirectionalPortfolioState
+from app.settings import load_config
+
+
+class _FakeLimiterStats:
+    circuit_open_count = 0
+
+
+class _FakeRateLimiter:
+    def __init__(self) -> None:
+        self.stats = _FakeLimiterStats()
+        self.acquires: list[dict[str, object]] = []
+        self.successes: list[str] = []
+        self.rate_limits: list[str] = []
+
+    def acquire(
+        self,
+        key: str,
+        *,
+        capacity: int,
+        window_seconds: float,
+        sleep_fn,
+        cost: float = 1.0,
+    ) -> float:
+        self.acquires.append(
+            {
+                "key": key,
+                "capacity": capacity,
+                "window_seconds": window_seconds,
+                "cost": cost,
+            }
+        )
+        return 0.0
+
+    def record_success(self, key: str) -> None:
+        self.successes.append(key)
+
+    def record_rate_limit(
+        self,
+        key: str,
+        *,
+        threshold: int,
+        breaker_seconds: float,
+    ) -> None:
+        self.rate_limits.append(key)
+
+
+class _FakePrivateInfoSdk:
+    def user_state(self, address: str) -> dict[str, object]:
+        return {"marginSummary": {"accountValue": "1000", "totalMarginUsed": "0"}}
+
+    def spot_user_state(self, address: str) -> dict[str, object]:
+        return {"balances": []}
+
+    def open_orders(self, address: str) -> list[object]:
+        return []
+
+    def frontend_open_orders(self, address: str) -> list[object]:
+        return []
+
+    def user_fills_by_time(
+        self,
+        address: str,
+        start_ms: int,
+        *,
+        aggregate_by_time: bool = False,
+    ) -> list[object]:
+        return []
+
+
+class _FakePrivateAccountClient:
+    def fetch_account_state(self, *, fills_lookback_hours: float = 24.0, **_: object):
+        return parse_account_state(
+            account_address="0x0000000000000000000000000000000000000000",
+            user_state={
+                "marginSummary": {
+                    "accountValue": "1000",
+                    "totalMarginUsed": "0",
+                }
+            },
+            spot_state={"balances": []},
+            open_orders=[],
+            frontend_open_orders=[],
+            recent_fills=[],
+        )
+
+
+class _FakeExchange:
+    def __init__(self, *, rate_limited: bool = False) -> None:
+        self.rate_limited = rate_limited
+        self.orders: list[dict[str, object]] = []
+        self.cancels: list[tuple[str, int]] = []
+
+    def order(
+        self,
+        symbol: str,
+        is_buy: bool,
+        size: float,
+        limit_px: float,
+        order_type: dict[str, object],
+        *,
+        reduce_only: bool,
+        cloid: object,
+    ) -> dict[str, object]:
+        self.orders.append(
+            {
+                "symbol": symbol,
+                "is_buy": is_buy,
+                "size": size,
+                "limit_px": limit_px,
+                "reduce_only": reduce_only,
+            }
+        )
+        if self.rate_limited:
+            return {
+                "status": "ok",
+                "response": {
+                    "type": "order",
+                    "data": {"statuses": [{"error": "rate limit exceeded"}]},
+                },
+            }
+        return {
+            "status": "ok",
+            "response": {
+                "type": "order",
+                "data": {
+                    "statuses": [
+                        {
+                            "filled": {
+                                "oid": 7,
+                                "totalSz": str(size),
+                                "avgPx": str(limit_px),
+                            }
+                        }
+                    ]
+                },
+            },
+        }
+
+    def cancel(self, symbol: str, oid: int) -> dict[str, object]:
+        self.cancels.append((symbol, oid))
+        return {"status": "ok"}
 
 
 class LiveReadinessTests(unittest.TestCase):
@@ -312,6 +461,99 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertEqual(float(filled.filled_size), 0.1)
         self.assertEqual(rejected.status, "error")
         self.assertIn("reduce only", rejected.error or "")
+
+    def test_private_info_client_uses_shared_rate_limiter(self) -> None:
+        config = load_config("config/trident.toml").hyperliquid
+        config.private_info_requests_per_minute = 5
+        limiter = _FakeRateLimiter()
+        client = HyperliquidPrivateInfoClient(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+            ),
+            info_client=_FakePrivateInfoSdk(),
+            now_ms_fn=lambda: 1_000_000,
+            sleep_fn=lambda _: None,
+            rate_limiter=limiter,
+        )
+
+        state = client.fetch_account_state()
+
+        self.assertEqual(state.account_value_usd, 1000.0)
+        self.assertEqual(len(limiter.acquires), 5)
+        self.assertTrue(
+            all(call["key"] == "http_private_info" for call in limiter.acquires)
+        )
+        self.assertTrue(all(call["capacity"] == 5 for call in limiter.acquires))
+
+    def test_live_exchange_actions_use_order_rate_limiter(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_order_actions_per_minute = 7
+        limiter = _FakeRateLimiter()
+        exchange = _FakeExchange()
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(),  # type: ignore[arg-type]
+            order_rate_limiter=limiter,
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.open_fill(
+            symbol="ETH",
+            side="long",
+            mid_price=100.0,
+            spread_bps=1.0,
+            notional_usd=10.0,
+            timestamp="2026-05-17T00:00:00Z",
+        )
+        venue.orders_by_symbol["ETH"] = {"protective_oids": {"sl": 123}}
+        venue._cancel_known_protective_orders("ETH")
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(exchange.cancels, [("ETH", 123)])
+        self.assertEqual(len(limiter.acquires), 2)
+        self.assertTrue(
+            all(
+                call["key"] == LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY
+                for call in limiter.acquires
+            )
+        )
+        self.assertTrue(all(call["capacity"] == 7 for call in limiter.acquires))
+        self.assertEqual(limiter.successes, [LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY] * 2)
+
+    def test_live_exchange_rate_limit_response_opens_shared_breaker(self) -> None:
+        config = load_config("config/trident.toml")
+        limiter = _FakeRateLimiter()
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=_FakeExchange(rate_limited=True),
+            private_info_client=_FakePrivateAccountClient(),  # type: ignore[arg-type]
+            order_rate_limiter=limiter,
+            sleep_fn=lambda _: None,
+        )
+
+        result = venue._submit_order(
+            symbol="ETH",
+            is_buy=True,
+            size=0.1,
+            limit_px=100.0,
+            reduce_only=False,
+            cloid="0x00000000000000000000000000000001",
+        )
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(limiter.rate_limits, [LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY])
 
     def test_preflight_blocks_without_credentials(self) -> None:
         old_env = dict(os.environ)

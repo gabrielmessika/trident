@@ -7,13 +7,15 @@ Date: `2026-05-17`
 - `ACTIVE_SINGLE_SOURCE_OF_TRUTH`
 - Ce fichier est la feuille de route courante. Les autres documents sont des archives, des notes de recherche, ou des details d'implementation.
 - En cas de contradiction avec un ancien doc, ce fichier gagne.
-- Objectif actuel: exploiter Pod A comme moteur PnL principal en dry-run mainnet,
-  garder Pod C stable, et faire tourner Pod B HIP-4 Outcome en dry-run mainnet
-  paper, comme pod independant, sans cannibaliser Pod A.
+- Objectif actuel: pouvoir lancer un canary live reel `Pod A` + `Pod C` avec
+  garde-fous stricts, tout en gardant `Pod B HIP-4 Outcome` en mainnet paper,
+  comme pod independant, sans cannibaliser Pod A.
 
 ## Lecture Rapide
 
-- Prod/dry-run principal: `config/trident.toml`.
+- Config prod/dry-run principale: `config/trident.toml`.
+- Mode cible live hybride: `Pod A` crypto core et `Pod C` tradfi en vrais
+  ordres apres preflight; `Pod B HIP-4 Outcome` reste `paper` mainnet.
 - Pods actifs dry-run: `Pod A` crypto core avec `a_grade_enabled`, `Pod B HIP-4 Outcome`, `Pod C` tradfi.
 - Pod B historique directionnel: legacy / non demarre par defaut.
 - Nouveau Pod B: `HIP4OutcomeEdgePod`, branche HIP-4 outcome en mainnet paper.
@@ -408,16 +410,22 @@ Etat d'observation et execution:
 
 Commandes utiles:
 
+Deploiement live hybride A/C live + B mainnet paper:
+
+```bash
+./deploy.sh --start --mode live --config config/trident.toml --without-funding
+```
+
 Deploiement dry-run complet avec le nouveau Pod B:
 
 ```bash
-./deploy.sh --start --config config/trident.toml --fresh-start
+./deploy.sh --start --mode dry-run --config config/trident.toml --fresh-start
 ```
 
 Couper le nouveau Pod B HIP-4:
 
 ```bash
-./deploy.sh --start --config config/trident.toml --without-pod-b
+./deploy.sh --start --mode dry-run --config config/trident.toml --without-pod-b
 ```
 
 ```bash
@@ -657,14 +665,20 @@ Ces pistes ne doivent plus apparaitre comme roadmap active. Elles restent seulem
 
 ## Roadmap Courante
 
-### 1. Operer Pod B HIP-4 En Mainnet Paper
+### 1. Lancer Le Mode Hybride A/C Live + B Paper
 
-- Deployer les changements via `./deploy.sh --start --mode dry-run` depuis le poste local.
-- Lancer le bot complet sans `--without-pod-b`.
-- Verifier que le service actif est `hip4-outcome-dry-run`, pas `pod-b-live`.
+- Deployer les changements via `./deploy.sh --start --mode live --without-funding`
+  depuis le poste local, apres validation des credentials et du preflight.
+- Lancer le bot complet sans `--without-pod-b`: Pod B doit rester HIP-4 paper,
+  pas le legacy `pod-b-live`.
+- Verifier que les services actifs sont `pod-a-live`, `pod-c-live` et
+  `hip4-outcome-dry-run`.
 - Verifier que le config runtime est
   `config/hip4_outcome_mainnet_paper.toml`, que le mode expose est `paper`, et
   que `allow_testnet_orders = false`.
+- Verifier que `runtime/hyperliquid_rate_limits.json` est persistant entre les
+  runs et que les compteurs private info / exchange action ne montrent pas de
+  breaker ouvert.
 - Verifier que `/api/hip4-outcome.blocked_opportunity_slices` est vide.
 - Suivre `/hip4-outcome`:
   - edges par type
@@ -751,8 +765,18 @@ Priorite apres plusieurs runs mainnet paper:
 ### 6. Deploiement / Rollback
 
 - S'assurer que le serveur utilise `config/trident.toml`.
-- Verifier que le dry-run lance bien HIP-4 comme Pod B en mode `paper`, sans
-  mode execution mainnet et sans `HIP4_OUTCOME_ALLOW_TESTNET_ORDERS=true`.
+- Chemin live hybride attendu: `./deploy.sh --start --mode live --without-funding`
+  lance `pod-a-live` et `pod-c-live` en mode `live`, plus
+  `hip4-outcome-dry-run` en `paper`.
+- Le script serveur force `HIP4_OUTCOME_CONFIG=config/hip4_outcome_mainnet_paper.toml`,
+  `HIP4_OUTCOME_MODE=paper` et `HIP4_OUTCOME_ALLOW_TESTNET_ORDERS=false` quand
+  `TRIDENT_MODE=live`.
+- Verifier que HIP-4 reste le Pod B paper, sans mode execution mainnet et sans
+  `HIP4_OUTCOME_ALLOW_TESTNET_ORDERS=true`.
+- Garde-fous rate limit ajoutes pour le live A/C:
+  - lectures privees HL cadencees par `private_info_requests_per_minute`;
+  - actions `order/cancel` cadencees par `live_order_actions_per_minute`;
+  - breaker partage sur signal 429/rate-limit.
 - Garder un rollback simple:
   - couper le Pod B HIP-4 avec `--without-pod-b`
   - `--without-hip4-outcome` reste accepte comme alias historique

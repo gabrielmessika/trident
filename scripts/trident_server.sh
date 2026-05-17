@@ -32,8 +32,9 @@ Compatibilité :
   --with-hip4-mainnet-observer / --without-hip4-mainnet-observer contrôle l'observateur mainnet séparé.
 
 Sécurité live :
-  --mode dry-run est le défaut. --mode live lance Pod A + Pod C par défaut,
-  refuse Pod B HIP-4, puis lance un preflight credentials + reconciliation + orderUpdates.
+  --mode dry-run est le défaut. --mode live lance Pod A + Pod C en vrais
+  ordres, garde Pod B HIP-4 en mainnet paper, puis lance un preflight
+  credentials + reconciliation + orderUpdates pour Pod A/Pod C.
 EOF
 }
 
@@ -148,7 +149,6 @@ case "$MODE" in
 esac
 
 if [ "$MODE" = "live" ]; then
-    ENABLE_HIP4_OUTCOME=""
     ENABLE_HIP4_MAINNET_OBSERVER=""
 fi
 
@@ -167,6 +167,14 @@ if [ -f ".env.trident" ]; then
 fi
 
 compose() {
+    local hip4_mode="${HIP4_OUTCOME_MODE:-paper}"
+    local hip4_config="${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}"
+    local hip4_allow_testnet_orders="${HIP4_OUTCOME_ALLOW_TESTNET_ORDERS:-false}"
+    if [ "$MODE" = "live" ]; then
+        hip4_mode="paper"
+        hip4_config="config/hip4_outcome_mainnet_paper.toml"
+        hip4_allow_testnet_orders="false"
+    fi
     TRIDENT_ENABLE_POD_A="true" \
     TRIDENT_ENABLE_POD_B="" \
     TRIDENT_ENABLE_POD_C="${ENABLE_POD_C:+true}" \
@@ -174,6 +182,9 @@ compose() {
     TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER="${ENABLE_HIP4_MAINNET_OBSERVER:+true}" \
     TRIDENT_MODE="${MODE}" \
     TRIDENT_CONFIG_PATH="${CONFIG_PATH}" \
+    HIP4_OUTCOME_MODE="${hip4_mode}" \
+    HIP4_OUTCOME_CONFIG="${hip4_config}" \
+    HIP4_OUTCOME_ALLOW_TESTNET_ORDERS="${hip4_allow_testnet_orders}" \
     docker compose "${COMPOSE_ENV_ARGS[@]}" -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"
 }
 
@@ -331,9 +342,8 @@ guard_live_start() {
     if [ "$MODE" != "live" ]; then
         return 0
     fi
-    if [ -n "$ENABLE_POD_B" ]; then
-        error "Mode live refuse: Pod B HIP-4 est réservé au dry-run mainnet paper. Relance avec --without-pod-b."
-        exit 1
+    if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ]; then
+        info "Mode live hybride: Pod B HIP-4 sera force en mainnet paper (aucun ordre HIP-4)."
     fi
 
     local pod_a_state_path="${TRIDENT_LIVE_STATE_PATH_POD_A:-${TRIDENT_LIVE_STATE_PATH:-runtime/trident/live_state_pod_a.json}}"

@@ -5,7 +5,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 from app.execution.dry_run import DryRunFill
 from app.hyperliquid.private_state import (
@@ -14,11 +14,17 @@ from app.hyperliquid.private_state import (
     HyperliquidPrivateInfoClient,
     sdk_base_url_from_info_url,
 )
-from app.live.errors import HyperliquidAPIError
+from app.hyperliquid.rate_limiter import SharedRateLimiter, jitter_seconds
+from app.live.errors import (
+    HyperliquidAPIError,
+    HyperliquidRateLimitError,
+    is_rate_limit_message,
+)
 from app.settings import AppConfig
 from app.trident.types import TradePlan
 
 logger = logging.getLogger(__name__)
+LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY = "exchange_action:live_order"
 
 
 @dataclass(slots=True)
@@ -60,6 +66,8 @@ class LiveExecutionVenue:
         *,
         exchange_client: Any | None = None,
         private_info_client: HyperliquidPrivateInfoClient | None = None,
+        order_rate_limiter: Any | None = None,
+        sleep_fn: Callable[[float], None] | None = None,
     ) -> None:
         errors = credentials.validate_for_trading()
         if errors:
@@ -71,6 +79,14 @@ class LiveExecutionVenue:
             config.hyperliquid,
             credentials,
         )
+        self.sleep_fn = sleep_fn or time.sleep
+        self.order_rate_limiter = order_rate_limiter or SharedRateLimiter(
+            config.hyperliquid.rate_limit_state_path,
+            jitter_fn=lambda seconds: jitter_seconds(
+                seconds,
+                config.hyperliquid.shared_rate_limit_jitter_seconds,
+            ),
+        )
         self.order_slippage_bps = float(
             getattr(config.trident.execution, "live_order_slippage_bps", 8.0)
         )
@@ -79,6 +95,9 @@ class LiveExecutionVenue:
         )
         self.max_order_notional_usd = float(
             getattr(config.trident.execution, "live_max_order_notional_usd", 50.0)
+        )
+        self.order_actions_per_minute = int(
+            getattr(config.trident.execution, "live_order_actions_per_minute", 12)
         )
         self.require_protective_orders = bool(
             getattr(config.trident.execution, "live_require_protective_orders", True)
@@ -241,6 +260,7 @@ class LiveExecutionVenue:
         cloid: str,
         order_type: dict[str, object] | None = None,
     ) -> LiveOrderResult:
+        self._acquire_exchange_action(action="order")
         try:
             from hyperliquid.utils.types import Cloid
             raw = self.exchange_client.order(
@@ -253,8 +273,20 @@ class LiveExecutionVenue:
                 cloid=Cloid.from_str(cloid),
             )
         except Exception as exc:
+            self._record_exchange_action_exception(exc)
+            if is_rate_limit_message(str(exc)):
+                raise HyperliquidRateLimitError(
+                    f"Hyperliquid order rate limit for {symbol}: {exc}"
+                ) from exc
             raise HyperliquidAPIError(f"Hyperliquid order call failed for {symbol}: {exc}") from exc
-        return parse_order_result(raw, cloid=cloid)
+        result = parse_order_result(raw, cloid=cloid)
+        if (result.error and is_rate_limit_message(result.error)) or is_rate_limit_message(
+            str(raw)
+        ):
+            self._record_exchange_action_rate_limit()
+        else:
+            self._record_exchange_action_success()
+        return result
 
     def _place_protective_orders(
         self,
@@ -337,9 +369,54 @@ class LiveExecutionVenue:
             if oid is None:
                 continue
             try:
-                self.exchange_client.cancel(symbol, int(oid))
+                self._cancel_order(symbol, int(oid))
             except Exception as exc:
                 logger.warning("Failed to cancel protective oid=%s for %s: %s", oid, symbol, exc)
+
+    def _cancel_order(self, symbol: str, oid: int) -> object:
+        self._acquire_exchange_action(action="cancel")
+        try:
+            raw = self.exchange_client.cancel(symbol, oid)
+        except Exception as exc:
+            self._record_exchange_action_exception(exc)
+            if is_rate_limit_message(str(exc)):
+                raise HyperliquidRateLimitError(
+                    f"Hyperliquid cancel rate limit for {symbol}: {exc}"
+                ) from exc
+            raise
+        if is_rate_limit_message(str(raw)):
+            self._record_exchange_action_rate_limit()
+        else:
+            self._record_exchange_action_success()
+        return raw
+
+    def _acquire_exchange_action(self, *, action: str) -> None:
+        waited = self.order_rate_limiter.acquire(
+            LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY,
+            capacity=max(int(self.order_actions_per_minute), 1),
+            window_seconds=60.0,
+            sleep_fn=self.sleep_fn,
+        )
+        if waited > 0:
+            logger.warning(
+                "Live exchange action throttled for %.2fs before %s",
+                waited,
+                action,
+            )
+
+    def _record_exchange_action_success(self) -> None:
+        self.order_rate_limiter.record_success(LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY)
+
+    def _record_exchange_action_rate_limit(self) -> None:
+        self.order_rate_limiter.record_rate_limit(
+            LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY,
+            threshold=self.config.hyperliquid.circuit_breaker_threshold,
+            breaker_seconds=self.config.hyperliquid.circuit_breaker_seconds,
+        )
+
+    def _record_exchange_action_exception(self, exc: Exception) -> None:
+        if is_rate_limit_message(str(exc)):
+            self._record_exchange_action_rate_limit()
 
     def _remaining_position_size(self, symbol: str) -> Decimal:
         try:

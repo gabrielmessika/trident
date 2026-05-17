@@ -5,11 +5,16 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
+from app.hyperliquid.rate_limiter import SharedRateLimiter, jitter_seconds
 from app.hyperliquid.symbols import normalize_hl_symbol
-from app.live.errors import HyperliquidAPIError
+from app.live.errors import (
+    HyperliquidAPIError,
+    HyperliquidRateLimitError,
+    is_rate_limit_message,
+)
 from app.settings import HyperliquidConfig
 
 
@@ -184,6 +189,16 @@ class ExchangeAccountState:
         return list(by_key.values())
 
 
+@dataclass(slots=True)
+class HyperliquidPrivateInfoStats:
+    request_count: int = 0
+    throttle_wait_count: int = 0
+    throttle_wait_seconds: float = 0.0
+    rate_limit_count: int = 0
+    circuit_open_count: int = 0
+    last_error: str | None = None
+
+
 class HyperliquidPrivateInfoClient:
     """Read-only private Hyperliquid account client.
 
@@ -198,11 +213,22 @@ class HyperliquidPrivateInfoClient:
         *,
         info_client: Any | None = None,
         now_ms_fn: Any | None = None,
+        sleep_fn: Callable[[float], None] | None = None,
+        rate_limiter: Any | None = None,
     ) -> None:
         self.config = config
         self.credentials = credentials
         self._info_client = info_client
         self._now_ms_fn = now_ms_fn or (lambda: int(time.time() * 1000))
+        self.sleep_fn = sleep_fn or time.sleep
+        self.stats = HyperliquidPrivateInfoStats()
+        self.rate_limiter = rate_limiter or SharedRateLimiter(
+            config.rate_limit_state_path,
+            jitter_fn=lambda seconds: jitter_seconds(
+                seconds,
+                config.shared_rate_limit_jitter_seconds,
+            ),
+        )
 
     @property
     def info_client(self) -> Any:
@@ -232,16 +258,22 @@ class HyperliquidPrivateInfoClient:
 
         address = self.credentials.account_address
         try:
-            user_state = self.info_client.user_state(address)
-            spot_state = self.info_client.spot_user_state(address)
-            open_orders = self.info_client.open_orders(address)
-            frontend_orders = self.info_client.frontend_open_orders(address)
+            user_state = self._call_private_info(self.info_client.user_state, address)
+            spot_state = self._call_private_info(self.info_client.spot_user_state, address)
+            open_orders = self._call_private_info(self.info_client.open_orders, address)
+            frontend_orders = self._call_private_info(
+                self.info_client.frontend_open_orders,
+                address,
+            )
             start_ms = self._now_ms_fn() - int(max(fills_lookback_hours, 0.0) * 3600_000)
-            fills = self.info_client.user_fills_by_time(
+            fills = self._call_private_info(
+                self.info_client.user_fills_by_time,
                 address,
                 start_ms,
                 aggregate_by_time=aggregate_fills_by_time,
             )
+        except HyperliquidAPIError:
+            raise
         except Exception as exc:
             raise HyperliquidAPIError(f"Hyperliquid private info request failed: {exc}") from exc
 
@@ -253,6 +285,49 @@ class HyperliquidPrivateInfoClient:
             frontend_open_orders=frontend_orders,
             recent_fills=fills,
         )
+
+    def _call_private_info(
+        self,
+        fn: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        key = "http_private_info"
+        waited = self.rate_limiter.acquire(
+            key,
+            capacity=max(int(self.config.private_info_requests_per_minute), 1),
+            window_seconds=60.0,
+            sleep_fn=self.sleep_fn,
+        )
+        self.stats.request_count += 1
+        if waited > 0:
+            self.stats.throttle_wait_count += 1
+            self.stats.throttle_wait_seconds = round(
+                self.stats.throttle_wait_seconds + waited,
+                4,
+            )
+        limiter_stats = getattr(self.rate_limiter, "stats", None)
+        self.stats.circuit_open_count = int(
+            getattr(limiter_stats, "circuit_open_count", 0)
+        )
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as exc:
+            message = str(exc)
+            self.stats.last_error = message
+            if is_rate_limit_message(message):
+                self.stats.rate_limit_count += 1
+                self.rate_limiter.record_rate_limit(
+                    key,
+                    threshold=self.config.circuit_breaker_threshold,
+                    breaker_seconds=self.config.circuit_breaker_seconds,
+                )
+                raise HyperliquidRateLimitError(
+                    f"Hyperliquid private info rate limit: {message}"
+                ) from exc
+            raise
+        self.rate_limiter.record_success(key)
+        return result
 
 
 def parse_account_state(

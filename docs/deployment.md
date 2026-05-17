@@ -156,15 +156,19 @@ Pour préparer un build/config live sans démarrer les services :
 ./deploy.sh --mode live --config config/trident.toml
 ```
 
-Le premier démarrage live réel lance Pod A + Pod C et passe par un preflight
-exchange/WS obligatoire pour chaque pod. Pod B reste exclu :
+Le premier démarrage live réel lance Pod A + Pod C en vrais ordres, garde Pod B
+HIP-4 en mainnet paper, et passe par un preflight exchange/WS obligatoire pour
+Pod A/Pod C :
 
 ```bash
-./deploy.sh --start --mode live --without-pod-b --without-funding
+./deploy.sh --start --mode live --without-funding
 ```
 
 Il échoue fail-closed si les credentials, la reconciliation exchange ou le flux
-`orderUpdates` ne sont pas prêts.
+`orderUpdates` ne sont pas prêts. En `--mode live`, le serveur force
+`HIP4_OUTCOME_CONFIG=config/hip4_outcome_mainnet_paper.toml`,
+`HIP4_OUTCOME_MODE=paper` et `HIP4_OUTCOME_ALLOW_TESTNET_ORDERS=false` pour
+Pod B.
 
 Pour un live Pod A seul, ajouter `--without-pod-c`.
 
@@ -188,8 +192,9 @@ Pour démarrer tout sauf Pod B :
 
 Important :
 
-- Pod B est maintenant un pod directionnel breakout pilote par le superviseur et expose son runtime via `logs/pod_b_live_status.json`
-- le service Docker `pod-b-live` lance maintenant `app.live.pod_b_live_runner` directement
+- Pod B actif par défaut désigne maintenant `hip4-outcome-dry-run` en mainnet
+  paper; le service Docker `pod-b-live` reste legacy sous profil
+  `legacy_pod_b`
 - Pod C utilise maintenant un panier Tradfi builder-dex actif dans la config; le démarrer sans lui reste utile seulement si on veut un run minimal ou si on désactive explicitement son scope
 - en dry-run courant, `Pod C` active aussi `cluster_aware_v2_enabled = true`:
   - `oil` en longs de pullback
@@ -201,9 +206,10 @@ Important :
 - le collecteur funding global écrit aussi `logs/funding_collector_status.json`
 - le collecteur funding Tradfi écrit `logs/tradfi_funding_collector_status.json`
 - les noms `pod-a-live`, `pod-b-live`, `pod-c-live` sont des noms de services Docker historiques
-- aujourd'hui, `Pod A`, `Pod B` et `Pod C` tournent encore en dry-run / paper trading par défaut
+- aujourd'hui, `Pod A`, `Pod B` et `Pod C` tournent en dry-run / paper trading
+  par défaut
 - le chemin live réel est préparé pour un canary `Pod A` + `Pod C`; `Pod B`
-  reste exclu du premier lancement live
+  reste inclus seulement comme HIP-4 mainnet paper
 - l'UI `System` montre désormais explicitement:
   - `Data collectors` pour la santé des services funding
   - `Pod C scope visibility` pour voir quels symbols Tradfi sont configures, observes, tradables et routes
@@ -337,7 +343,7 @@ Point pratique :
 
 ```bash
 ./scripts/trident_server.sh status --without-pod-c
-./scripts/trident_server.sh logs --without-pod-c pod-b-live
+./scripts/trident_server.sh logs --without-pod-c hip4-outcome-dry-run
 ```
 
 Scripts raccourcis également disponibles :
@@ -542,7 +548,8 @@ La revue générée par défaut est écrite dans :
 
 - ne pas commiter de secrets
 - si le dashboard est expose publiquement, considerer qu'il revele l'etat runtime et le PnL
-- Pod B est maintenant un pod directionnel breakout, avec runtime status dans `logs/pod_b_live_status.json`
+- Pod B courant est HIP-4 Outcome en mainnet paper, avec runtime status dans
+  `logs/pod_b_live_status.json`
 - Pod C ne doit pas être modifié par réflexe sans revérifier son univers builder-dex, ses caps live et son replay associé
 - le rate limiter partagé HL vit sur disque et doit rester persistant entre les runs
 - l'univers observe est plus large qu'au bootstrap, mais le coût live augmente vraiment avec chaque coin ajoute:
