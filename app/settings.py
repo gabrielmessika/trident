@@ -4,6 +4,7 @@ import os
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -1052,10 +1053,53 @@ def _pod_b_pattern_watchers(raw: object) -> list[PodBPatternRuleConfig]:
     return _pod_b_pattern_rules(raw)
 
 
+def _deep_merge_config(
+    base: dict[str, Any],
+    override: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if key == "extends":
+            continue
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_config(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_config_data(
+    config_path: Path,
+    *,
+    seen: set[Path] | None = None,
+) -> dict[str, Any]:
+    resolved_path = config_path.expanduser()
+    if not resolved_path.is_absolute():
+        resolved_path = resolved_path.resolve()
+    seen_paths = seen or set()
+    if resolved_path in seen_paths:
+        raise ValueError(f"Circular config extends detected for {resolved_path}")
+    seen_paths.add(resolved_path)
+    with resolved_path.open("rb") as handle:
+        data: dict[str, Any] = tomllib.load(handle)
+    extends = data.get("extends")
+    if extends is None:
+        return data
+    if not isinstance(extends, str) or not extends.strip():
+        raise ValueError(f"Invalid config extends in {resolved_path}: {extends!r}")
+    parent_path = Path(extends)
+    if not parent_path.is_absolute():
+        parent_path = resolved_path.parent / parent_path
+    return _deep_merge_config(
+        _load_config_data(parent_path, seen=seen_paths),
+        data,
+    )
+
+
 def load_config(path: str | Path | None = None) -> AppConfig:
     config_path = Path(path or os.getenv("TRIDENT_CONFIG_PATH", "config/trident.toml"))
-    with config_path.open("rb") as handle:
-        data = tomllib.load(handle)
+    data = _load_config_data(config_path)
 
     general_data = data.get("general", {})
     hyperliquid_data = data.get("hyperliquid", {})

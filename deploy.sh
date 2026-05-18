@@ -14,18 +14,20 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start]
+Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--network mainnet|testnet] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start]
 
 Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
 - build Docker sur le serveur
 - optionnellement démarre les services
 - permet de choisir explicitement le mode dry-run/live et le fichier de config
+- `--network testnet` sélectionne `config/trident_testnet.toml` par défaut
 - `--fresh-start` purge les journaux/statuts live avant démarrage
 
 Par défaut :
 - host SSH : trident-hetzner
 - mode : dry-run
+- réseau A/C : mainnet
 - démarrage avec `--start` : API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding en dry-run
 - `--without-pod-b` retire le Pod B HIP-4
 - `--with-hip4-mainnet-observer` ajoute l'ancien observateur HIP-4 mainnet séparé
@@ -35,7 +37,9 @@ Par défaut :
 
 Sécurité live :
 - `--mode live` lance Pod A + Pod C en vrais ordres et garde Pod B HIP-4
-  en mainnet paper par défaut.
+  en mainnet paper par défaut. Le réseau A/C est choisi par `--network`.
+- `--mode live --network testnet` lance les vrais ordres Pod A/Pod C sur
+  Hyperliquid testnet, avec une config et des state files séparés.
 - le serveur force `HIP4_OUTCOME_CONFIG=config/hip4_outcome_mainnet_paper.toml`
   et `HIP4_OUTCOME_MODE=paper` en live, puis lance un preflight Pod A/Pod C:
   credentials + reconciliation + orderUpdates.
@@ -53,6 +57,8 @@ IDENTITY_FILE="${TRIDENT_DEPLOY_IDENTITY:-${HOME}/.ssh/trident_hetzner_ed25519}"
 DEPLOY_DIR="/opt/trident"
 START=""
 MODE="${TRIDENT_MODE:-dry-run}"
+EXCHANGE_NETWORK="${TRIDENT_EXCHANGE_NETWORK:-mainnet}"
+CONFIG_PATH_EXPLICIT="${TRIDENT_CONFIG_PATH:+true}"
 CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
 ENABLE_POD_B="true"
 ENABLE_POD_C="true"
@@ -80,13 +86,38 @@ selected_pods_label() {
     printf '%s' "$joined"
 }
 
+resolve_network_config() {
+    case "$EXCHANGE_NETWORK" in
+        mainnet|testnet)
+            ;;
+        *)
+            error "Réseau invalide: ${EXCHANGE_NETWORK}. Valeurs attendues: mainnet ou testnet."
+            exit 1
+            ;;
+    esac
+
+    if [ "$EXCHANGE_NETWORK" = "testnet" ] && [ -z "$CONFIG_PATH_EXPLICIT" ]; then
+        CONFIG_PATH="config/trident_testnet.toml"
+    elif [ "$EXCHANGE_NETWORK" = "mainnet" ] && [ -z "$CONFIG_PATH_EXPLICIT" ]; then
+        CONFIG_PATH="config/trident.toml"
+    fi
+
+    if [ "$EXCHANGE_NETWORK" = "testnet" ] && [[ "$CONFIG_PATH" != *testnet* ]]; then
+        warn "Réseau testnet demandé avec une config non-testnet (${CONFIG_PATH}); vérifie les endpoints Hyperliquid."
+    elif [ "$EXCHANGE_NETWORK" = "mainnet" ] && [[ "$CONFIG_PATH" == *testnet* ]]; then
+        warn "Réseau mainnet demandé avec une config testnet (${CONFIG_PATH}); vérifie les endpoints Hyperliquid."
+    fi
+}
+
 selected_server_flags() {
     local flags=""
     local quoted_config
     local quoted_mode
+    local quoted_network
     quoted_mode="$(printf '%q' "$MODE")"
+    quoted_network="$(printf '%q' "$EXCHANGE_NETWORK")"
     quoted_config="$(printf '%q' "$CONFIG_PATH")"
-    flags="${flags} --mode ${quoted_mode} --config ${quoted_config}"
+    flags="${flags} --mode ${quoted_mode} --network ${quoted_network} --config ${quoted_config}"
     [ -z "$ENABLE_POD_B" ] && flags="${flags} --without-pod-b"
     [ -z "$ENABLE_POD_C" ] && flags="${flags} --without-pod-c"
     [ -z "$ENABLE_FUNDING" ] && flags="${flags} --without-funding"
@@ -118,8 +149,17 @@ while [ $# -gt 0 ]; do
             MODE="$2"
             shift 2
             ;;
+        --network|--exchange-network)
+            EXCHANGE_NETWORK="$2"
+            shift 2
+            ;;
+        --testnet)
+            EXCHANGE_NETWORK="testnet"
+            shift
+            ;;
         --config)
             CONFIG_PATH="$2"
+            CONFIG_PATH_EXPLICIT="true"
             shift 2
             ;;
         --with-pod-b)
@@ -197,6 +237,8 @@ if [ "$MODE" = "live" ]; then
     ENABLE_HIP4_MAINNET_OBSERVER=""
 fi
 
+resolve_network_config
+
 if [ ! -f "$IDENTITY_FILE" ]; then
     error "Clé SSH introuvable: $IDENTITY_FILE"
     exit 1
@@ -244,7 +286,9 @@ deploy_code() {
         --exclude='data/server_archive' \
         --exclude='data/replay_reports' \
         --exclude='data/live_snapshots' \
+        --exclude='data/live_snapshots_testnet' \
         --exclude='data/live_features' \
+        --exclude='data/live_features_testnet' \
         --exclude='data/funding_history' \
         --exclude='data/research' \
         --exclude='server-data' \
@@ -286,6 +330,7 @@ start_remote() {
     extra_args="$(selected_server_flags)"
     info "Services demandés: $(selected_pods_label)"
     info "Mode demandé: ${MODE}"
+    info "Réseau A/C demandé: ${EXCHANGE_NETWORK}"
     info "Config demandée: ${CONFIG_PATH}"
     ssh_remote "cd ${DEPLOY_DIR} && ./scripts/trident_server.sh start${extra_args}"
     ok "Services démarrés"
@@ -314,6 +359,7 @@ echo ""
 if [ -n "$START" ]; then
     echo "Services actifs sur ${HOST}: $(selected_pods_label)"
     echo "  Mode actif : ${MODE}"
+    echo "  Réseau A/C actif : ${EXCHANGE_NETWORK}"
     echo "  Config active : ${CONFIG_PATH}"
     echo "  SSH : ssh -i ${IDENTITY_FILE} ${SSH_USER}@${HOST}"
     echo "  Dashboard public : http://<server-ip-or-dns>:3000/dashboard"
@@ -327,6 +373,7 @@ else
     echo "  ./deploy.sh --start --mode dry-run --config config/trident_crypto_launch_fast_crypto_only.toml"
     echo "  ./deploy.sh --start --mode dry-run --config config/trident_crypto_launch_fast_crypto_only.toml --fresh-start"
     echo "  ./deploy.sh --mode live --config config/trident.toml"
+    echo "  ./deploy.sh --start --mode live --network testnet --without-funding"
     echo "  ./deploy.sh --start --mode live --without-funding"
     echo "  ./deploy.sh --start --mode live --without-pod-c --without-funding"
     echo "  ./deploy.sh --start --without-pod-c"

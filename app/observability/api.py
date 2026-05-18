@@ -39,6 +39,13 @@ from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
 
+def _exchange_network_from_url(info_url: object) -> str:
+    normalized = str(info_url or "").strip().lower()
+    if "hyperliquid-testnet" in normalized or "testnet" in normalized:
+        return "testnet"
+    return "mainnet"
+
+
 def _latest_snapshot_status(snapshot_dir: Path = Path("data/live_snapshots")) -> dict[str, object]:
     files = sorted(snapshot_dir.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
     if not files:
@@ -67,6 +74,13 @@ def _latest_snapshot_status(snapshot_dir: Path = Path("data/live_snapshots")) ->
         "age_minutes": round(age_minutes, 2),
         "path": str(latest),
     }
+
+
+def _latest_snapshot_status_for_payload(snapshot: dict[str, object]) -> dict[str, object]:
+    exchange = snapshot.get("exchange", {})
+    if isinstance(exchange, dict) and exchange.get("snapshot_output_dir"):
+        return _latest_snapshot_status(Path(str(exchange["snapshot_output_dir"])))
+    return _latest_snapshot_status()
 
 
 def _tail_jsonl_records(
@@ -1462,7 +1476,7 @@ def _dashboard_status_items(
     runtime_report: dict[str, object],
 ) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
-    snapshot_status = _latest_snapshot_status()
+    snapshot_status = _latest_snapshot_status_for_payload(snapshot)
     items.append(snapshot_status)
 
     healthy_count = int(runtime_report.get("healthy_pod_count", 0))
@@ -1529,14 +1543,30 @@ def _dashboard_status_items(
         }
     )
 
-    fill_count = int(runtime_report.get("total_fill_count", 0))
-    realized_pnl = float(runtime_report.get("realized_pnl_usd", 0.0))
-    if fill_count > 0:
+    pod_reports = [
+        item
+        for item in runtime_report.get("pods", [])
+        if isinstance(item, dict)
+    ]
+    ac_fill_count = sum(
+        int(item.get("total_fill_count", 0) or 0)
+        for item in pod_reports
+        if item.get("pod") in {"pod_a", "pod_c"}
+    )
+    pod_b_fill_count = sum(
+        int(item.get("total_fill_count", 0) or 0)
+        for item in pod_reports
+        if item.get("pod") == "pod_b"
+    )
+    if ac_fill_count > 0 or pod_b_fill_count > 0:
         items.append(
             {
                 "status": "good",
                 "label": "Activité visible",
-                "comment": f"{fill_count} exécution(s), PnL réalisé {realized_pnl:.4f} USD.",
+                "comment": (
+                    f"A/C {ac_fill_count} exécution(s); "
+                    f"Pod B {pod_b_fill_count} exécution(s) dans son ledger séparé."
+                ),
             }
         )
     else:
@@ -1561,7 +1591,7 @@ def _dashboard_commentary(
     collector_enabled = int(runtime_report.get("enabled_service_count", 0))
     collector_healthy = int(runtime_report.get("healthy_service_count", 0))
     fill_count = int(runtime_report.get("total_fill_count", 0))
-    latest_snapshot = _latest_snapshot_status()
+    latest_snapshot = _latest_snapshot_status_for_payload(snapshot)
     if latest_snapshot["status"] == "bad":
         return "Collector en retard. Vérifie la collecte live et les logs API."
     if healthy < enabled:
@@ -1590,6 +1620,7 @@ def health_payload(supervisor: TridentSupervisor) -> dict[str, object]:
         "version": VERSION,
         "profile": supervisor.profile,
         "mode": supervisor.mode,
+        "exchange_network": _exchange_network_from_url(supervisor.config.hyperliquid.info_url),
         "regime": regime,
         "kill_switch_active": supervisor.kill_switch.is_active,
     }
@@ -1598,6 +1629,8 @@ def health_payload(supervisor: TridentSupervisor) -> dict[str, object]:
 def state_payload(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry,
+    *,
+    include_stats: bool = True,
 ) -> dict[str, object]:
     refreshed_from_snapshots = _refresh_supervisor_from_latest_snapshot(supervisor)
     supervisor.sync_pod_b()
@@ -1607,6 +1640,12 @@ def state_payload(
         snapshot,
         allow_runtime_authority_override=not refreshed_from_snapshots,
     )
+    snapshot["exchange"] = {
+        "network": _exchange_network_from_url(supervisor.config.hyperliquid.info_url),
+        "info_url": supervisor.config.hyperliquid.info_url,
+        "ws_url": supervisor.config.hyperliquid.ws_url,
+        "snapshot_output_dir": supervisor.config.hyperliquid.snapshot_output_dir,
+    }
     snapshot["metrics"] = metrics.snapshot()
     runtime_report = build_runtime_report(
         supervisor,
@@ -1614,7 +1653,8 @@ def state_payload(
         runtime_snapshot=snapshot,
     ).to_dict()
     snapshot["runtime_report"] = runtime_report
-    snapshot["stats"] = _temporal_stats_payload(snapshot, runtime_report)
+    if include_stats:
+        snapshot["stats"] = _temporal_stats_payload(snapshot, runtime_report)
     return snapshot
 
 
@@ -2319,7 +2359,7 @@ def _control_center_html(
     pod_c_summary = pod_summary("pod_c")
     pod_summaries = (pod_a_summary, pod_b_summary, pod_c_summary)
 
-    latest_snapshot = _latest_snapshot_status()
+    latest_snapshot = _latest_snapshot_status_for_payload(snapshot)
     enabled_count = int(runtime_report.get("enabled_pod_count", 0))
     healthy_count = int(runtime_report.get("healthy_pod_count", 0))
     conflict_count = int(snapshot["metrics"]["ownership_conflict_count"])
@@ -4803,6 +4843,920 @@ def _control_center_html(
 </html>"""
 
 
+_legacy_control_center_html = _control_center_html
+
+
+def _control_center_html(
+    supervisor: TridentSupervisor,
+    metrics: MetricsRegistry,
+    *,
+    active_tab: str,
+    title: str,
+    subtitle: str,
+) -> str:
+    snapshot = state_payload(supervisor, metrics, include_stats=False)
+    runtime_report = snapshot.get("runtime_report", {})
+    if not isinstance(runtime_report, dict):
+        runtime_report = {}
+    refreshed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    refresh_seconds = 10
+    status_items = _dashboard_status_items(snapshot, runtime_report)
+    commentary = _dashboard_commentary(snapshot, runtime_report)
+    exchange_payload = snapshot.get("exchange", {})
+    if not isinstance(exchange_payload, dict):
+        exchange_payload = {}
+    exchange_network = str(exchange_payload.get("network") or "-")
+    open_rows = _open_position_rows(snapshot)
+    event_rows = _trade_event_rows(snapshot)
+    pod_trade_summary_rows = {
+        pod_name: _pod_trade_summary(snapshot.get(f"{pod_name}_runtime"), pod=pod_name)
+        for pod_name in ("pod_a", "pod_b", "pod_c")
+    }
+    health_map = {
+        str(item.get("pod")): item
+        for item in snapshot.get("pod_health", [])
+        if isinstance(item, dict) and item.get("pod") is not None
+    }
+    runtime_pod_map = {
+        str(item.get("pod")): item
+        for item in runtime_report.get("pods", [])
+        if isinstance(item, dict) and item.get("pod") is not None
+    }
+
+    def fmt_number(value: object, digits: int = 2, *, fallback: str = "-") -> str:
+        parsed = _float_or_none(value)
+        if parsed is None:
+            return fallback
+        return f"{parsed:.{digits}f}"
+
+    def fmt_signed_usd(value: object, digits: int = 4) -> str:
+        parsed = _float_or_none(value)
+        if parsed is None:
+            return "-"
+        return f"{parsed:+.{digits}f}"
+
+    def fmt_pct(value: object, digits: int = 1) -> str:
+        parsed = _float_or_none(value)
+        if parsed is None:
+            return "-"
+        return f"{parsed * 100:.{digits}f}%"
+
+    def runtime_mode(pod_name: str) -> str:
+        runtime_payload = snapshot.get(f"{pod_name}_runtime")
+        if isinstance(runtime_payload, dict) and runtime_payload.get("mode") not in (None, ""):
+            return str(runtime_payload["mode"])
+        pods = snapshot.get("pods", {})
+        pod_cfg = pods.get(pod_name, {}) if isinstance(pods, dict) else {}
+        if isinstance(pod_cfg, dict) and pod_cfg.get("runtime_mode") not in (None, ""):
+            return str(pod_cfg["runtime_mode"])
+        return str(snapshot.get("mode") or "-")
+
+    def mode_tone(mode: object) -> str:
+        normalized = str(mode or "").lower()
+        if normalized == "live":
+            return "good"
+        if normalized in {"dry-run", "paper", "observer", "observation"}:
+            return "neutral"
+        return "warn"
+
+    def render_metric_cards(cards: list[dict[str, object]]) -> str:
+        return "".join(
+            (
+                "<article class='metric-card'>"
+                f"<span>{escape(str(card.get('label', '-')))}</span>"
+                f"<strong>{escape(str(card.get('value', '-')))}</strong>"
+                f"<small>{escape(str(card.get('note', '-')))}</small>"
+                "</article>"
+            )
+            for card in cards
+        )
+
+    def pod_summary(pod_name: str) -> dict[str, object]:
+        pods_cfg = snapshot.get("pods", {})
+        pod_cfg = pods_cfg.get(pod_name, {}) if isinstance(pods_cfg, dict) else {}
+        pod_report = runtime_pod_map.get(pod_name, {})
+        pod_health = health_map.get(pod_name, {})
+        enabled = bool(
+            pod_cfg.get("enabled", pod_report.get("enabled", False))
+            if isinstance(pod_cfg, dict)
+            else pod_report.get("enabled", False)
+        )
+        healthy = bool(pod_report.get("healthy", pod_health.get("healthy", False)))
+        process_state = _display_process_state(pod_report.get("process_state"))
+        if not enabled:
+            tone = "neutral"
+            badge = "Off"
+            comment = "Pod coupé."
+        elif healthy:
+            tone = "good"
+            badge = "OK"
+            comment = "Runtime frais."
+        elif process_state in {"running", "completed"}:
+            tone = "warn"
+            badge = "Check"
+            comment = str(pod_health.get("message") or "Pod à vérifier.")
+        else:
+            tone = "bad"
+            badge = "KO"
+            comment = str(pod_health.get("message") or "Statut runtime absent ou obsolète.")
+        position_count = int(pod_report.get("position_count", 0) or 0)
+        preview_count = int(pod_report.get("preview_count", 0) or 0)
+        if enabled and position_count > 0:
+            comment = f"{position_count} position(s) ouverte(s)."
+        elif enabled and preview_count > 0:
+            comment = f"{preview_count} signal(aux), 0 position."
+        owned_symbols = pod_report.get(
+            "owned_symbols",
+            pod_cfg.get("owned_symbols", []) if isinstance(pod_cfg, dict) else [],
+        )
+        if not isinstance(owned_symbols, list):
+            owned_symbols = []
+        return {
+            "pod": pod_name,
+            "label": "Pod B HIP-4" if pod_name == "pod_b" else _pod_label(pod_name),
+            "tone": tone,
+            "badge": badge,
+            "comment": comment,
+            "mode": runtime_mode(pod_name),
+            "process_state": process_state,
+            "owned_symbols": [str(symbol) for symbol in owned_symbols],
+            "target_pct": float(
+                pod_report.get(
+                    "target_pct",
+                    pod_cfg.get("target_pct", 0.0) if isinstance(pod_cfg, dict) else 0.0,
+                )
+                or 0.0
+            ),
+            "target_usd": float(
+                pod_report.get(
+                    "target_usd",
+                    pod_cfg.get("target_usd", 0.0) if isinstance(pod_cfg, dict) else 0.0,
+                )
+                or 0.0
+            ),
+            "preview_count": preview_count,
+            "position_count": position_count,
+            "open_order_count": int(pod_report.get("open_order_count", 0) or 0),
+            "total_fill_count": int(pod_report.get("total_fill_count", 0) or 0),
+            "realized_pnl_usd": float(pod_report.get("realized_pnl_usd", 0.0) or 0.0),
+            "total_unrealized_pnl_usd": float(
+                pod_report.get("total_unrealized_pnl_usd", 0.0) or 0.0
+            ),
+            "win_count": int(pod_report.get("win_count", 0) or 0),
+            "loss_count": int(pod_report.get("loss_count", 0) or 0),
+            "win_rate": pod_report.get("win_rate"),
+        }
+
+    summaries = {pod: pod_summary(pod) for pod in ("pod_a", "pod_b", "pod_c")}
+    pod_a_summary = summaries["pod_a"]
+    pod_b_summary = summaries["pod_b"]
+    pod_c_summary = summaries["pod_c"]
+    ac_realized = pod_a_summary["realized_pnl_usd"] + pod_c_summary["realized_pnl_usd"]
+    ac_unrealized = (
+        pod_a_summary["total_unrealized_pnl_usd"]
+        + pod_c_summary["total_unrealized_pnl_usd"]
+    )
+    pod_b_visible = pod_b_summary["realized_pnl_usd"] + pod_b_summary["total_unrealized_pnl_usd"]
+    enabled_count = int(runtime_report.get("enabled_pod_count", 0) or 0)
+    healthy_count = int(runtime_report.get("healthy_pod_count", 0) or 0)
+    conflict_count = (
+        int(snapshot.get("metrics", {}).get("ownership_conflict_count", 0))
+        if isinstance(snapshot.get("metrics"), dict)
+        else 0
+    )
+    latest_snapshot = _latest_snapshot_status_for_payload(snapshot)
+    if latest_snapshot["status"] == "bad" or conflict_count > 0:
+        global_tone = "bad"
+        global_label = "Agir"
+    elif healthy_count < enabled_count:
+        global_tone = "warn"
+        global_label = "Surveiller"
+    else:
+        global_tone = "good"
+        global_label = "OK"
+
+    summary_cards = render_metric_cards(
+        [
+            {"label": "Régime", "value": str(snapshot.get("regime", "-")), "note": "État de marché courant"},
+            {"label": "Pods", "value": f"{healthy_count}/{enabled_count}", "note": "Pods sains sur pods actifs"},
+            {
+                "label": "A/C risque",
+                "value": f"{int(pod_a_summary['position_count']) + int(pod_c_summary['position_count'])} pos",
+                "note": "Sleeve Pod A + Pod C uniquement",
+            },
+            {
+                "label": "A/C PnL réalisé",
+                "value": f"{ac_realized:.4f} USD",
+                "note": "Pod A + Pod C seulement",
+            },
+            {
+                "label": "A/C PnL latent",
+                "value": f"{ac_unrealized:.4f} USD",
+                "note": "Positions ouvertes A/C",
+            },
+            {
+                "label": "Pod B PnL visible",
+                "value": f"{pod_b_visible:.4f} USD",
+                "note": f"Ledger séparé · mode {pod_b_summary['mode']}",
+            },
+            {
+                "label": "Cash",
+                "value": f"{float(snapshot.get('capital_plan', {}).get('cash_usd', 0.0)):.2f} USD",
+                "note": "Capital non déployé",
+            },
+        ]
+    )
+    ledger_cards = render_metric_cards(
+        [
+            {
+                "label": "Sleeve A/C",
+                "value": f"{ac_realized + ac_unrealized:.4f} USD",
+                "note": "Réalisé + latent A/C, sans Pod B",
+            },
+            {
+                "label": "Pod B indépendant",
+                "value": f"{pod_b_visible:.4f} USD",
+                "note": "Paper/dry-run/testnet selon son runtime",
+            },
+            {
+                "label": "PNL total",
+                "value": "désactivé",
+                "note": "Un live et un dry-run ne décrivent pas le même capital",
+            },
+        ]
+    )
+
+    focus_items: list[dict[str, str]] = []
+    if latest_snapshot["status"] == "bad":
+        focus_items.append(
+            {
+                "tone": "bad",
+                "label": "Maintenant",
+                "title": "Collector en retard",
+                "comment": str(latest_snapshot["comment"]),
+            }
+        )
+    if conflict_count > 0:
+        focus_items.append(
+            {
+                "tone": "bad",
+                "label": "Maintenant",
+                "title": "Corriger l'ownership",
+                "comment": f"{conflict_count} conflit(s) détecté(s) entre pods.",
+            }
+        )
+    for pod in summaries.values():
+        if str(pod["tone"]) in {"warn", "bad"}:
+            focus_items.append(
+                {
+                    "tone": str(pod["tone"]),
+                    "label": "Vérifier",
+                    "title": f"{pod['label']} à vérifier",
+                    "comment": str(pod["comment"]),
+                }
+            )
+    if not focus_items:
+        focus_items.append(
+            {
+                "tone": "good",
+                "label": "RAS",
+                "title": "Runtime stable",
+                "comment": "Statuts frais. Les résultats A/C et Pod B restent séparés.",
+            }
+        )
+    focus_tone = (
+        "bad"
+        if any(item["tone"] == "bad" for item in focus_items)
+        else "warn"
+        if any(item["tone"] == "warn" for item in focus_items)
+        else "good"
+    )
+    focus_rows = "".join(
+        (
+            "<article class='focus-item'>"
+            f"<div><span class='dot dot-{escape(str(item['tone']))}'></span>"
+            f"<strong>{escape(str(item['title']))}</strong>"
+            f"<small>{escape(str(item['comment']))}</small></div>"
+            f"<span class='focus-tag focus-tag-{escape(str(item['tone']))}'>{escape(str(item['label']))}</span>"
+            "</article>"
+        )
+        for item in focus_items[:4]
+    )
+    status_rows = "".join(
+        (
+            f"<article class='status-card status-card-{escape(str(item['status']))}'>"
+            f"<div>{_status_badge(str(item['status']), str(item['label']))}</div>"
+            f"<p>{escape(str(item['comment']))}</p>"
+            "</article>"
+        )
+        for item in status_items
+    )
+
+    def render_coin_summary_rows(rows: list[dict[str, object]]) -> str:
+        if not rows:
+            return "<tr><td colspan='8'>Aucun trade par coin visible pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(item.get('symbol', '-')))}</td>"
+                f"<td>{escape(str(item.get('side', '-')))}</td>"
+                f"<td>{int(item.get('closed_trade_count', 0) or 0)}</td>"
+                f"<td>{int(item.get('open_position_count', 0) or 0)}</td>"
+                f"<td>{fmt_pct(item.get('win_rate'))}</td>"
+                f"<td>{fmt_signed_usd(item.get('realized_pnl_usd'))}</td>"
+                f"<td>{fmt_signed_usd(item.get('unrealized_pnl_usd'))}</td>"
+                f"<td>{fmt_signed_usd(item.get('total_pnl_usd'))}</td>"
+                "</tr>"
+            )
+            for item in rows
+        )
+
+    def render_preview_list(items: object) -> str:
+        if not isinstance(items, list) or not items:
+            return "<p class='soft-note'>Aucun signal en attente pour le moment.</p>"
+        rows = []
+        for item in items[:8]:
+            if not isinstance(item, dict):
+                continue
+            parts = [escape(str(item.get("symbol", "-")))]
+            side = str(item.get("side", "")).strip().upper()
+            setup = str(item.get("setup", "")).strip()
+            if side:
+                parts.append(escape(side))
+            if setup:
+                parts.append(escape(setup))
+            confidence = item.get("confidence")
+            if confidence not in (None, ""):
+                parts.append(f"conf {float(confidence):.2f}")
+            summary = str(item.get("reason_summary", "")).strip()
+            if summary:
+                rows.append(f"<li>{' · '.join(parts)}<br><span>{escape(summary)}</span></li>")
+            else:
+                rows.append(f"<li>{' · '.join(parts)}</li>")
+        return (
+            f"<ul class='simple-list'>{''.join(rows)}</ul>"
+            if rows
+            else "<p class='soft-note'>Aucun signal en attente pour le moment.</p>"
+        )
+
+    def render_review_list(items: object) -> str:
+        if not isinstance(items, list):
+            return "<p class='soft-note'>Aucun filtre notable pour le moment.</p>"
+        filtered = [
+            item
+            for item in items
+            if isinstance(item, dict)
+            and str(item.get("status", "")) in {"filtered", "shadow_blocked_by_routing"}
+        ]
+        if not filtered:
+            return "<p class='soft-note'>Aucun filtre notable pour le moment.</p>"
+        rows = []
+        for item in filtered[:6]:
+            parts = [escape(str(item.get("symbol", "-")))]
+            side = str(item.get("preferred_side") or item.get("side") or "").strip().upper()
+            if side and side != "NEUTRAL":
+                parts.append(escape(side))
+            if item.get("setup"):
+                parts.append(escape(str(item.get("setup"))))
+            rows.append(
+                f"<li>{' · '.join(parts)}<br><span>{escape(str(item.get('reason_summary', '-')))}</span></li>"
+            )
+        return f"<ul class='simple-list'>{''.join(rows)}</ul>"
+
+    def render_directional_open_rows(pod_name: str) -> str:
+        rows = [
+            item
+            for item in open_rows
+            if str(item.get("pod")) == pod_name and str(item.get("status")) == "open"
+        ]
+        if not rows:
+            return "<tr><td colspan='12'>Aucune position ouverte visible pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(item.get('symbol', '-')))}</td>"
+                f"<td>{escape(str(item.get('side', '-')))}</td>"
+                f"<td>{escape(_humanize_setup_reason(item.get('open_reason')))}</td>"
+                f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('current_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('current_notional_usd'), 2)}</td>"
+                f"<td>{fmt_number(item.get('margin_usd'), 2)}</td>"
+                f"<td>{fmt_number(_directional_take_profit_price(item), 6)}</td>"
+                f"<td>{fmt_number(_directional_stop_price(item), 6)}</td>"
+                f"<td>{fmt_signed_usd(item.get('unrealized_pnl_usd'))}</td>"
+                f"<td>{escape(_directional_trailing_status(item))}</td>"
+                f"<td>{escape(str(item.get('opened_at') or '-'))}</td>"
+                "</tr>"
+            )
+            for item in rows
+        )
+
+    def render_directional_closed_rows(pod_name: str) -> str:
+        rows = [
+            item
+            for item in event_rows
+            if str(item.get("pod")) == pod_name and str(item.get("status")) == "closed"
+        ]
+        if not rows:
+            return "<tr><td colspan='10'>Aucun trade fermé visible pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(item.get('closed_at') or item.get('timestamp') or '-'))}</td>"
+                f"<td>{escape(str(item.get('symbol', '-')))}</td>"
+                f"<td>{escape(str(item.get('side', '-')))}</td>"
+                f"<td>{escape(_humanize_setup_reason(item.get('open_reason')))}</td>"
+                f"<td>{escape(_humanize_close_reason(item.get('close_reason')))}</td>"
+                f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('exit_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
+                f"<td>{_format_leverage(item.get('leverage'))}</td>"
+                f"<td>{fmt_signed_usd(item.get('pnl_usd'))}</td>"
+                "</tr>"
+            )
+            for item in rows
+        )
+
+    def render_hip4_open_rows() -> str:
+        rows = [
+            item
+            for item in open_rows
+            if str(item.get("pod")) == "pod_b" and str(item.get("status")) == "open"
+        ]
+        if not rows:
+            return "<tr><td colspan='9'>Aucune position Pod B ouverte visible pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(item.get('symbol', '-')))}</td>"
+                f"<td>{escape(str(item.get('side', '-')))}</td>"
+                f"<td>{escape(str(item.get('open_reason', '-')))}</td>"
+                f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
+                f"<td>{fmt_number(item.get('margin_usd'), 2)}</td>"
+                f"<td>{fmt_signed_usd(item.get('unrealized_pnl_usd'))}</td>"
+                f"<td>{fmt_number(item.get('confidence'), 4)}</td>"
+                f"<td>{escape(str(item.get('opened_at') or '-'))}</td>"
+                "</tr>"
+            )
+            for item in rows
+        )
+
+    def render_hip4_closed_rows() -> str:
+        runtime_payload = snapshot.get("pod_b_runtime")
+        settled_rows = []
+        if isinstance(runtime_payload, dict) and isinstance(runtime_payload.get("settled_positions"), list):
+            settled_rows = [item for item in runtime_payload["settled_positions"] if isinstance(item, dict)]
+        if not settled_rows:
+            return "<tr><td colspan='9'>Aucun settlement ou trade fermé Pod B visible pour le moment.</td></tr>"
+        rows = []
+        for item in reversed(settled_rows[-16:]):
+            pnl = _first_float(item, "estimated_pnl_usdc", "net_pnl_usdc", "pnl_usdc", "pnl_usd")
+            rows.append(
+                "<tr>"
+                f"<td>{escape(str(item.get('settled_at') or item.get('closed_at') or item.get('ts') or '-'))}</td>"
+                f"<td>{escape(str(item.get('underlying') or item.get('symbol') or '-'))}</td>"
+                f"<td>{escape(str(item.get('market_id') or '-'))}</td>"
+                f"<td>{escape(str(item.get('side') or '-'))}</td>"
+                f"<td>{escape(str(item.get('result') or item.get('status') or '-'))}</td>"
+                f"<td>{fmt_number(item.get('cost_usdc') or item.get('cost_usd'), 2)}</td>"
+                f"<td>{fmt_number(item.get('payout_usdc'), 2)}</td>"
+                f"<td>{fmt_signed_usd(pnl)}</td>"
+                f"<td>{escape(str(item.get('notes') or item.get('reason') or '-'))}</td>"
+                "</tr>"
+            )
+        return "".join(rows)
+
+    def pod_header_metrics(summary: dict[str, object]) -> str:
+        return render_metric_cards(
+            [
+                {"label": "Mode", "value": str(summary["mode"]), "note": "Ledger affiché séparément"},
+                {"label": "Status", "value": str(summary["badge"]), "note": str(summary["comment"])},
+                {
+                    "label": "Target",
+                    "value": f"{float(summary['target_usd']):.2f} USD",
+                    "note": f"{float(summary['target_pct']):.2f} du capital",
+                },
+                {"label": "Open", "value": str(summary["position_count"]), "note": "Positions ouvertes"},
+                {"label": "Signals", "value": str(summary["preview_count"]), "note": "Previews visibles"},
+                {"label": "Exec", "value": str(summary["total_fill_count"]), "note": "Trades/fills observés"},
+                {
+                    "label": "Win rate",
+                    "value": fmt_pct(summary.get("win_rate")),
+                    "note": f"{summary['win_count']} win · {summary['loss_count']} loss",
+                },
+                {
+                    "label": "Realized PnL",
+                    "value": f"{float(summary['realized_pnl_usd']):.4f} USD",
+                    "note": f"Mode {summary['mode']} uniquement",
+                },
+            ]
+        )
+
+    def render_pod_card(summary: dict[str, object]) -> str:
+        symbols = ", ".join(escape(str(symbol)) for symbol in summary["owned_symbols"]) or "-"
+        deep_link = (
+            "<a class='text-link' href='/hip4-outcome'>Détail HIP-4</a>"
+            if summary["pod"] == "pod_b"
+            else f"<button class='text-link' type='button' data-jump-tab='{escape(str(summary['pod']))}'>Voir l'onglet</button>"
+        )
+        return (
+            f"<article class='pod-card pod-card-{escape(str(summary['tone']))}'>"
+            "<div class='pod-card-head'>"
+            f"<span class='dot dot-{escape(str(summary['tone']))}'></span>"
+            f"<div><h3>{escape(str(summary['label']))}</h3><p>{escape(str(summary['comment']))}</p></div>"
+            "</div>"
+            f"<div class='pod-card-meta'>{_status_badge(str(summary['tone']), str(summary['badge']))}"
+            f"<span class='mode-chip mode-chip-{escape(mode_tone(summary['mode']))}'>Mode {escape(str(summary['mode']))}</span></div>"
+            "<dl class='pod-facts'>"
+            f"<div><dt>Symbols</dt><dd>{symbols}</dd></div>"
+            f"<div><dt>Allocation</dt><dd>{float(summary['target_pct']):.2f} · {float(summary['target_usd']):.2f} USD</dd></div>"
+            f"<div><dt>Ouvert</dt><dd>{int(summary['position_count'])} pos · {int(summary['open_order_count'])} ordres</dd></div>"
+            f"<div><dt>Exécution</dt><dd>{int(summary['total_fill_count'])} exec · {float(summary['realized_pnl_usd']):.4f} USD</dd></div>"
+            "</dl>"
+            f"{deep_link}"
+            "</article>"
+        )
+
+    pod_cards = "".join(render_pod_card(summaries[pod]) for pod in ("pod_a", "pod_b", "pod_c"))
+    status_panel_html = f"""
+      <section class="tab-panel{' is-active' if active_tab == 'status' else ''}" data-tab-panel="status">
+        <div class="band band-{escape(global_tone)}">
+          <div class="section-head"><div><h2>{escape(global_label)}</h2><p>{escape(commentary)}</p></div>{_status_badge(global_tone, global_label)}</div>
+          <div class="metric-grid">{summary_cards}</div>
+        </div>
+        <section class="panel panel-{escape(focus_tone)}">
+          <div class="section-head"><h2>À faire maintenant</h2><p>Liste courte. Si tu ne lis qu'un bloc, c'est celui-ci.</p></div>
+          <div class="focus-grid">{focus_rows}</div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h2>Ledgers séparés</h2><p>Pas de PnL total quand A/C et Pod B ne tournent pas dans le même mode.</p></div>
+          <div class="metric-grid">{ledger_cards}</div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h2>Status</h2><p>Collecte, santé des pods, ownership et activité récente.</p></div>
+          <div class="status-grid">{status_rows}</div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h2>Pods</h2><p>Chaque pod a son onglet détail. Pod B conserve son ledger indépendant.</p></div>
+          <div class="pod-grid">{pod_cards}</div>
+        </section>
+      </section>"""
+
+    def render_directional_pod_panel(pod_name: str, summary: dict[str, object]) -> str:
+        preview_key = f"{pod_name}_signal_preview"
+        review_key = f"{pod_name}_signal_review"
+        return f"""
+      <section class="tab-panel{' is-active' if active_tab == pod_name else ''}" data-tab-panel="{escape(pod_name)}">
+        <div class="band band-{escape(str(summary['tone']))}">
+          <div class="section-head">
+            <div><h2>{escape(str(summary['label']))}</h2><p>Positions ouvertes, trades fermés, signal preview et filtres. PnL lu uniquement dans le ledger de ce pod.</p></div>
+            <span class="mode-chip mode-chip-{escape(mode_tone(summary['mode']))}">Mode {escape(str(summary['mode']))}</span>
+          </div>
+          <div class="metric-grid">{pod_header_metrics(summary)}</div>
+        </div>
+        <div class="two-col">
+          <section class="panel">
+            <div class="section-head"><h3>Performance par coin</h3><p>Trades fermés et positions ouvertes du pod, regroupés par coin et par sens.</p></div>
+            <div class="table-wrap"><table><thead><tr>{_table_header("Coin", "Sous-jacent ou symbole tradé.")}{_table_header("Sens", "Long, short ou mixed selon les données disponibles.")}{_table_header("Trades", "Trades fermés visibles.")}{_table_header("Ouvert", "Positions encore ouvertes.")}{_table_header("Win rate", "Win / trades fermés avec PnL connu.")}{_table_header("PnL réalisé", "PnL du pod uniquement.")}{_table_header("PnL latent", "PnL latent du pod uniquement.")}{_table_header("PnL visible", "Réalisé + latent du pod uniquement.")}</tr></thead><tbody>{render_coin_summary_rows(pod_trade_summary_rows[pod_name])}</tbody></table></div>
+          </section>
+          <section class="panel">
+            <div class="section-head"><h3>Signaux et filtres</h3><p>Ce qui est proposé ou bloqué avant exécution.</p></div>
+            <h4>Signal preview</h4>{render_preview_list(snapshot.get(preview_key))}
+            <h4>Pourquoi filtré</h4>{render_review_list(snapshot.get(review_key))}
+          </section>
+        </div>
+        <section class="panel">
+          <div class="section-head"><h3>Trades ouverts</h3><p>Prix courant, marge, TP/SL, PnL latent et trailing.</p></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Symbol", "Marché actuellement détenu par le pod.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison ouverture", "Setup qui a ouvert le trade.")}{_table_header("Prix entrée", "Prix moyen d'entrée.")}{_table_header("Prix courant", "Dernier prix live vu.")}{_table_header("Valeur USD", "Valeur notionnelle actuelle.")}{_table_header("Marge", "Capital immobilisé.")}{_table_header("Prix TP", "Take profit théorique.")}{_table_header("Prix SL", "Stop loss actuel.")}{_table_header("Unrealized PnL", "PnL latent au dernier prix.")}{_table_header("Trailing TP", "État du trailing.")}{_table_header("Ouvert le", "Horodatage d'ouverture.")}</tr></thead><tbody>{render_directional_open_rows(pod_name)}</tbody></table></div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h3>Trades fermés récents</h3><p>Raisons d'ouverture et de fermeture en clair.</p></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Fermé le", "Horodatage de sortie.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens porté.")}{_table_header("Raison ouverture", "Setup d'entrée.")}{_table_header("Raison fermeture", "Cause de sortie.")}{_table_header("Prix entrée", "Prix d'entrée.")}{_table_header("Prix sortie", "Prix de sortie.")}{_table_header("Notional USD", "Notionnelle cible.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("PnL USD", "Résultat net du trade.")}</tr></thead><tbody>{render_directional_closed_rows(pod_name)}</tbody></table></div>
+        </section>
+      </section>"""
+
+    pod_b_panel_html = f"""
+      <section class="tab-panel{' is-active' if active_tab == 'pod_b' else ''}" data-tab-panel="pod_b">
+        <div class="band band-{escape(str(pod_b_summary['tone']))}">
+          <div class="section-head">
+            <div><h2>Pod B HIP-4</h2><p>Pod indépendant. Ses positions et settlements sont visibles ici, mais son PnL reste séparé du compte A/C.</p></div>
+            <span class="mode-chip mode-chip-{escape(mode_tone(pod_b_summary['mode']))}">Mode {escape(str(pod_b_summary['mode']))}</span>
+          </div>
+          <div class="metric-grid">{pod_header_metrics(pod_b_summary)}</div>
+          <div class="link-row"><a class="text-link" href="/hip4-outcome">Ouvrir la page HIP-4 complète</a><a class="text-link" href="/hip4-outcome#observation">Observation HIP-4</a></div>
+        </div>
+        <section class="panel">
+          <div class="section-head"><h3>Performance par coin</h3><p>Settlements, estimations paper et positions ouvertes du Pod B uniquement.</p></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Coin", "Sous-jacent outcome.")}{_table_header("Sens", "BUY_YES normalisé long, BUY_NO normalisé short.")}{_table_header("Trades", "Settlements visibles.")}{_table_header("Ouvert", "Positions ouvertes.")}{_table_header("Win rate", "Win rate Pod B uniquement.")}{_table_header("PnL réalisé", "PnL Pod B réalisé/settled.")}{_table_header("PnL latent", "PnL estimé des positions ouvertes.")}{_table_header("PnL visible", "Réalisé + latent Pod B uniquement.")}</tr></thead><tbody>{render_coin_summary_rows(pod_trade_summary_rows["pod_b"])}</tbody></table></div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h3>Positions ouvertes</h3><p>Marchés outcome actuellement portés par Pod B.</p></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Side", "Sens du signal.")}{_table_header("Raison", "Marché, edge ou raison d'ouverture.")}{_table_header("Entry", "Prix moyen si disponible.")}{_table_header("Cost", "Coût engagé.")}{_table_header("Max loss", "Budget de perte max si disponible.")}{_table_header("Est. PnL", "PnL estimé localement.")}{_table_header("Conf", "Confiance du signal.")}{_table_header("Opened", "Horodatage d'ouverture.")}</tr></thead><tbody>{render_hip4_open_rows()}</tbody></table></div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h3>Settlements / trades fermés</h3><p>Historique Pod B sans mélange avec A/C.</p></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Settled", "Horodatage du settlement.")}{_table_header("Underlying", "Sous-jacent.")}{_table_header("Market", "Identifiant marché.")}{_table_header("Side", "Sens acheté.")}{_table_header("Result", "Résultat outcome.")}{_table_header("Cost", "Coût engagé.")}{_table_header("Payout", "Payout.")}{_table_header("PnL", "PnL Pod B uniquement.")}{_table_header("Notes", "Contexte ou méthode.")}</tr></thead><tbody>{render_hip4_closed_rows()}</tbody></table></div>
+        </section>
+      </section>"""
+
+    def render_activity_open_rows() -> str:
+        if not open_rows:
+            return "<tr><td colspan='11'>Aucune position ouverte visible pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr data-filter-status='open' "
+                f"data-filter-pod='{escape(str(item['pod']))}'>"
+                f"<td>{escape(str(item['pod']))}</td>"
+                f"<td>{escape(str(item['symbol']))}</td>"
+                f"<td>{escape(str(item['side']))}</td>"
+                f"<td>{escape(str(item['open_reason']))}</td>"
+                f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
+                f"<td>{_format_leverage(item.get('leverage'))}</td>"
+                f"<td>{fmt_number(item.get('confidence'), 2)}</td>"
+                f"<td>{fmt_number(item.get('stop_bps'), 1)}</td>"
+                f"<td>{escape(str(item.get('time_stop_hours') or '-'))}</td>"
+                f"<td>{escape(str(item.get('opened_at') or '-'))}</td>"
+                "</tr>"
+            )
+            for item in open_rows
+        )
+
+    def render_activity_event_rows() -> str:
+        if not event_rows:
+            return "<tr><td colspan='12'>Aucun évènement de trade récent visible pour le moment.</td></tr>"
+        return "".join(
+            (
+                "<tr "
+                f"data-filter-status=\"{'closed' if str(item.get('status')) == 'closed' else 'open'}\" "
+                f"data-filter-pod='{escape(str(item['pod']))}'>"
+                f"<td>{escape(str(item.get('timestamp') or '-'))}</td>"
+                f"<td>{escape(str(item['pod']))}</td>"
+                f"<td>{escape(str(item['symbol']))}</td>"
+                f"<td>{escape(str(item['side']))}</td>"
+                f"<td>{escape(str(item['status']))}</td>"
+                f"<td>{escape(str(item.get('open_reason') or '-'))}</td>"
+                f"<td>{escape(str(item.get('close_reason') or '-'))}</td>"
+                f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('exit_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
+                f"<td>{_format_leverage(item.get('leverage'))}</td>"
+                f"<td>{fmt_signed_usd(item.get('pnl_usd'))}</td>"
+                "</tr>"
+            )
+            for item in event_rows
+        )
+
+    activity_panel_html = f"""
+      <section class="tab-panel{' is-active' if active_tab == 'activity' else ''}" data-tab-panel="activity">
+        <section class="panel">
+          <div class="section-head"><h2>Activity</h2><p>Positions ouvertes et évènements récents, filtrables par pod.</p></div>
+          <div class="filter-row" aria-label="Filtres activity">
+            <button class="filter-chip is-active" type="button" data-filter-group="status" data-filter-value="open">Open</button>
+            <button class="filter-chip is-active" type="button" data-filter-group="status" data-filter-value="closed">Closed</button>
+            <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_a">Pod A</button>
+            <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_b">Pod B</button>
+            <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_c">Pod C</button>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h3>Open positions</h3><p>Ce qui est en risque maintenant, tous pods confondus, sans PnL agrégé.</p></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Pod", "Pod qui porte la position.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens.")}{_table_header("Open reason", "Pourquoi la position a été ouverte.")}{_table_header("Entry", "Prix d'entrée.")}{_table_header("Notional USD", "Valeur notionnelle.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("Confidence", "Confiance.")}{_table_header("Stop bps", "Distance du stop.")}{_table_header("Time stop h", "Durée max.")}{_table_header("Opened at", "Horodatage.")}</tr></thead><tbody>{render_activity_open_rows()}</tbody></table></div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h3>Recent trade events</h3><p>Sorties directionnelles récentes.</p></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Timestamp", "Horodatage.")}{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché.")}{_table_header("Side", "Sens.")}{_table_header("Status", "Statut.")}{_table_header("Open reason", "Raison d'ouverture.")}{_table_header("Close reason", "Raison de fermeture.")}{_table_header("Entry", "Prix d'entrée.")}{_table_header("Exit", "Prix de sortie.")}{_table_header("Notional USD", "Valeur notionnelle.")}{_table_header("Leverage", "Levier.")}{_table_header("PnL USD", "PnL du trade.")}</tr></thead><tbody>{render_activity_event_rows()}</tbody></table></div>
+        </section>
+      </section>"""
+
+    primary_tabs = [
+        ("status", "Status"),
+        ("pod_a", "Pod A"),
+        ("pod_b", "Pod B"),
+        ("pod_c", "Pod C"),
+        ("activity", "Activity"),
+    ]
+    tab_nav = "".join(
+        (
+            f"<button class='tab-button{' is-active' if key == active_tab else ''}' "
+            f"type='button' data-tab-button='{key}' aria-selected='{'true' if key == active_tab else 'false'}'>"
+            f"{escape(label)}</button>"
+        )
+        for key, label in primary_tabs
+    )
+    main_panels = (
+        status_panel_html
+        + render_directional_pod_panel("pod_a", pod_a_summary)
+        + pod_b_panel_html
+        + render_directional_pod_panel("pod_c", pod_c_summary)
+        + activity_panel_html
+    )
+
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(title)}</title>
+  <style>
+    :root {{
+      --bg: #f5f7fa;
+      --surface: #ffffff;
+      --surface-soft: #f0f4f7;
+      --text: #16212b;
+      --muted: #5f6f7d;
+      --line: #d7e0e7;
+      --accent: #0f766e;
+      --good: #16743f;
+      --good-soft: #e1f5e8;
+      --warn: #9a6700;
+      --warn-soft: #fff1cb;
+      --bad: #a12d2f;
+      --bad-soft: #ffe3e3;
+      --neutral: #64748b;
+      --neutral-soft: #e8edf3;
+      --shadow: 0 12px 28px rgba(22, 33, 43, 0.07);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; color: var(--text); font-family: "IBM Plex Sans", "Segoe UI", sans-serif; background: var(--bg); }}
+    main {{ max-width: 1380px; margin: 0 auto; padding: 22px 18px 48px; }}
+    h1, h2, h3, h4 {{ margin: 0; letter-spacing: 0; }}
+    p {{ margin: 0; color: var(--muted); line-height: 1.5; }}
+    a {{ color: var(--accent); font-weight: 800; text-decoration: none; }}
+    a:hover, .text-link:hover {{ text-decoration: underline; }}
+    .hero, .band, .panel, .metric-card, .status-card, .pod-card, .focus-item {{ background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }}
+    .hero {{ padding: 18px; display: grid; gap: 14px; }}
+    .hero h1 {{ font-size: 2rem; line-height: 1.1; }}
+    .chip-row, .hero-links, .link-row, .filter-row, .tab-nav {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
+    .chip, .mode-chip {{ display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 0.9rem; font-weight: 800; }}
+    .mode-chip-good {{ background: var(--good-soft); color: var(--good); }}
+    .mode-chip-warn {{ background: var(--warn-soft); color: var(--warn); }}
+    .mode-chip-neutral {{ background: var(--neutral-soft); color: var(--neutral); }}
+    .badge {{ display: inline-block; padding: 5px 9px; border-radius: 999px; font-size: 0.86rem; font-weight: 800; }}
+    .badge-good {{ background: var(--good-soft); color: var(--good); }}
+    .badge-warn {{ background: var(--warn-soft); color: var(--warn); }}
+    .badge-bad {{ background: var(--bad-soft); color: var(--bad); }}
+    .badge-neutral {{ background: var(--neutral-soft); color: var(--neutral); }}
+    .tab-shell {{ margin-top: 16px; display: grid; gap: 14px; }}
+    .tab-nav {{ background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px; position: sticky; top: 10px; z-index: 10; }}
+    .tab-button, .filter-chip, .text-link {{ border: 0; background: transparent; color: var(--muted); border-radius: 6px; padding: 9px 12px; font: inherit; font-weight: 800; cursor: pointer; }}
+    .tab-button.is-active, .filter-chip.is-active {{ background: var(--accent); color: #fff; }}
+    .text-link {{ color: var(--accent); padding: 0; }}
+    .tab-panel {{ display: none; gap: 14px; }}
+    .tab-panel.is-active {{ display: grid; }}
+    .band, .panel {{ padding: 18px; overflow: hidden; }}
+    .band-good, .panel-good {{ border-color: rgba(22, 116, 63, 0.26); }}
+    .band-warn, .panel-warn {{ border-color: rgba(154, 103, 0, 0.28); }}
+    .band-bad, .panel-bad {{ border-color: rgba(161, 45, 47, 0.28); }}
+    .section-head {{ display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 14px; }}
+    .metric-grid, .status-grid, .pod-grid, .focus-grid, .two-col {{ display: grid; gap: 12px; }}
+    .metric-grid {{ grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }}
+    .status-grid {{ grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }}
+    .pod-grid {{ grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }}
+    .focus-grid {{ grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }}
+    .two-col {{ grid-template-columns: minmax(0, 1fr) minmax(320px, 0.85fr); align-items: start; }}
+    .metric-card, .status-card, .pod-card, .focus-item {{ padding: 14px; }}
+    .metric-card span, .metric-card small, .focus-item small {{ color: var(--muted); line-height: 1.4; }}
+    .metric-card strong {{ display: block; margin-top: 6px; font-size: 1.35rem; line-height: 1.15; }}
+    .focus-item {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }}
+    .focus-item strong {{ display: block; margin-left: 20px; }}
+    .focus-item small {{ display: block; margin: 5px 0 0 20px; }}
+    .focus-tag {{ padding: 5px 9px; border-radius: 999px; font-size: 0.82rem; font-weight: 800; }}
+    .focus-tag-good {{ background: var(--good-soft); color: var(--good); }}
+    .focus-tag-warn {{ background: var(--warn-soft); color: var(--warn); }}
+    .focus-tag-bad {{ background: var(--bad-soft); color: var(--bad); }}
+    .pod-card-head {{ display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; }}
+    .pod-card-head p {{ margin-top: 5px; }}
+    .pod-card-meta {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }}
+    .pod-facts {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0 0 12px; }}
+    .pod-facts div {{ border-top: 1px solid var(--line); padding-top: 8px; }}
+    .pod-facts dt {{ font-size: 0.78rem; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; font-weight: 800; }}
+    .pod-facts dd {{ margin: 0; font-weight: 700; line-height: 1.35; }}
+    .dot {{ width: 10px; height: 10px; border-radius: 999px; margin-top: 6px; flex: none; display: inline-block; }}
+    .dot-good {{ background: var(--good); }}
+    .dot-warn {{ background: var(--warn); }}
+    .dot-bad {{ background: var(--bad); }}
+    .dot-neutral {{ background: var(--neutral); }}
+    .soft-note, .simple-list {{ color: var(--muted); line-height: 1.55; }}
+    .simple-list {{ margin: 0 0 12px; padding-left: 18px; }}
+    .simple-list span {{ color: var(--muted); }}
+    .table-wrap {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 0.92rem; min-width: 780px; background: var(--surface); }}
+    th, td {{ text-align: left; padding: 10px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }}
+    th {{ color: var(--muted); font-weight: 800; background: var(--surface-soft); }}
+    .th-with-tooltip {{ display: inline-flex; align-items: center; gap: 6px; position: relative; }}
+    .tooltip-trigger {{ width: 18px; height: 18px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--accent); font-size: 0.72rem; font-weight: 800; line-height: 1; padding: 0; cursor: help; }}
+    .tooltip-bubble {{ position: absolute; left: 0; top: calc(100% + 8px); width: min(260px, 42vw); padding: 10px 12px; border-radius: 8px; background: #16212b; color: #fff; font-size: 0.84rem; line-height: 1.4; opacity: 0; pointer-events: none; transform: translateY(-4px); transition: opacity 120ms ease, transform 120ms ease; z-index: 20; }}
+    .th-with-tooltip:hover .tooltip-bubble, .th-with-tooltip:focus-within .tooltip-bubble {{ opacity: 1; transform: translateY(0); }}
+    .is-hidden {{ display: none; }}
+    @media (max-width: 920px) {{ main {{ padding: 14px 10px 36px; }} .tab-nav {{ position: static; }} .two-col, .pod-facts {{ grid-template-columns: 1fr; }} .hero h1 {{ font-size: 1.6rem; }} }}
+  </style>
+</head>
+<body data-default-tab="{escape(active_tab)}" data-refresh-seconds="{refresh_seconds}">
+  <main>
+    <header class="hero">
+      <div class="chip-row">
+        <span class="chip">Version {escape(VERSION)}</span>
+        <span class="chip">Profile {escape(str(snapshot.get('profile', '-')))}</span>
+        <span class="chip">Mode supervisor {escape(str(snapshot.get('mode', '-')))}</span>
+        <span class="chip">Réseau A/C {escape(exchange_network)}</span>
+        <span class="chip">Régime {escape(str(snapshot.get('regime', '-')))}</span>
+        <span class="chip">Auto-refresh {refresh_seconds}s</span>
+      </div>
+      <h1>{escape(title)}</h1>
+      <p>{escape(subtitle)}</p>
+      <div class="hero-links">
+        <span>Last updated: {escape(refreshed_at)}</span>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/trades">Activity</a>
+        <a href="/stats">Stats</a>
+        <a href="/system">System</a>
+        <a href="/hip4-outcome">Pod B HIP-4</a>
+        <a href="/hip4-outcome#observation">Observation</a>
+        <a href="/api/state">API state</a>
+        <a href="/api/report">API report</a>
+      </div>
+    </header>
+    <div class="tab-shell">
+      <nav class="tab-nav" aria-label="Navigation principale">{tab_nav}</nav>
+      {main_panels}
+    </div>
+  </main>
+  <script>
+    (() => {{
+      const body = document.body;
+      const refreshSeconds = Number(body.dataset.refreshSeconds || "0");
+      const buttons = Array.from(document.querySelectorAll("[data-tab-button]"));
+      const panels = Array.from(document.querySelectorAll("[data-tab-panel]"));
+      const validTabs = new Set(buttons.map((button) => button.dataset.tabButton).filter(Boolean));
+      const jumpButtons = Array.from(document.querySelectorAll("[data-jump-tab]"));
+      const activeFilters = {{
+        status: new Set(["open", "closed"]),
+        pod: new Set(["pod_a", "pod_b", "pod_c"]),
+      }};
+      const filterButtons = Array.from(document.querySelectorAll("[data-filter-group]"));
+      const filterRows = Array.from(document.querySelectorAll("tr[data-filter-status][data-filter-pod]"));
+
+      function normalizedTab(tabName) {{
+        return validTabs.has(tabName) ? tabName : body.dataset.defaultTab || "status";
+      }}
+
+      function setTab(tabName, updateHash = true) {{
+        const next = normalizedTab(tabName);
+        buttons.forEach((button) => {{
+          const active = button.dataset.tabButton === next;
+          button.classList.toggle("is-active", active);
+          button.setAttribute("aria-selected", active ? "true" : "false");
+        }});
+        panels.forEach((panel) => {{
+          panel.classList.toggle("is-active", panel.dataset.tabPanel === next);
+        }});
+        if (updateHash) {{
+          history.replaceState(null, "", `#${{next}}`);
+        }}
+      }}
+
+      function refreshFilterRows() {{
+        filterRows.forEach((row) => {{
+          const visible = activeFilters.status.has(row.dataset.filterStatus) && activeFilters.pod.has(row.dataset.filterPod);
+          row.classList.toggle("is-hidden", !visible);
+        }});
+      }}
+
+      buttons.forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tabButton)));
+      jumpButtons.forEach((button) => button.addEventListener("click", () => setTab(button.dataset.jumpTab || "status")));
+      filterButtons.forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const set = activeFilters[button.dataset.filterGroup];
+          const value = button.dataset.filterValue;
+          if (!set || !value) return;
+          if (set.has(value)) {{
+            if (set.size === 1) return;
+            set.delete(value);
+            button.classList.remove("is-active");
+          }} else {{
+            set.add(value);
+            button.classList.add("is-active");
+          }}
+          refreshFilterRows();
+        }});
+      }});
+      setTab((window.location.hash || "").replace("#", "") || body.dataset.defaultTab || "status", false);
+      refreshFilterRows();
+      window.addEventListener("hashchange", () => setTab((window.location.hash || "").replace("#", ""), false));
+      if (Number.isFinite(refreshSeconds) && refreshSeconds > 0) {{
+        window.setTimeout(() => {{
+          const target = `${{window.location.pathname}}${{window.location.search}}${{window.location.hash}}`;
+          window.location.replace(target);
+        }}, refreshSeconds * 1000);
+      }}
+    }})();
+  </script>
+</body>
+</html>"""
+
+
 def dashboard_html(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry,
@@ -4813,8 +5767,8 @@ def dashboard_html(
         active_tab="status",
         title="TRIDENT Control Center",
         subtitle=(
-            "Une seule interface pour piloter les trois pods : un onglet Status très lisible pour savoir "
-            "si tout tourne bien, puis un onglet détail par pod et un onglet système pour les informations opératoires."
+            "Cockpit volontairement resserré : Status, un onglet détail par pod, Activity, et aucun PnL total "
+            "quand Pod B tourne dans un ledger indépendant."
         ),
     )
 
@@ -4831,6 +5785,36 @@ def trades_html(
         subtitle=(
             "Vue activity ouverte directement sur l'onglet exécution. Les détails par pod restent accessibles "
             "dans les autres onglets sans changer d'interface."
+        ),
+    )
+
+
+def stats_html(
+    supervisor: TridentSupervisor,
+    metrics: MetricsRegistry,
+) -> str:
+    return _legacy_control_center_html(
+        supervisor,
+        metrics,
+        active_tab="stats",
+        title="TRIDENT Stats",
+        subtitle=(
+            "Page dédiée aux statistiques temporelles. Elle n'est plus rendue au chargement du cockpit principal."
+        ),
+    )
+
+
+def system_html(
+    supervisor: TridentSupervisor,
+    metrics: MetricsRegistry,
+) -> str:
+    return _legacy_control_center_html(
+        supervisor,
+        metrics,
+        active_tab="system",
+        title="TRIDENT System",
+        subtitle=(
+            "Page dédiée aux détails opératoires : runtime, collectors, ownership, routing et métriques brutes."
         ),
     )
 
@@ -5869,6 +6853,8 @@ def build_handler(
                 "/": lambda: dashboard_html(supervisor, metrics),
                 "/dashboard": lambda: dashboard_html(supervisor, metrics),
                 "/trades": lambda: trades_html(supervisor, metrics),
+                "/stats": lambda: stats_html(supervisor, metrics),
+                "/system": lambda: system_html(supervisor, metrics),
                 "/hip4-outcome": lambda: hip4_outcome_html(supervisor, metrics),
             }
             if self.path in html_routes:

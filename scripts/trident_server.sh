@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--network mainnet|testnet] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start] [service]
 
 Actions:
   start     démarre l'API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding par défaut en dry-run
@@ -33,8 +33,10 @@ Compatibilité :
 
 Sécurité live :
   --mode dry-run est le défaut. --mode live lance Pod A + Pod C en vrais
-  ordres, garde Pod B HIP-4 en mainnet paper, puis lance un preflight
-  credentials + reconciliation + orderUpdates pour Pod A/Pod C.
+  ordres sur le réseau A/C choisi, garde Pod B HIP-4 en mainnet paper,
+  puis lance un preflight credentials + reconciliation + orderUpdates pour Pod A/Pod C.
+  --network testnet sélectionne config/trident_testnet.toml par défaut et
+  isole les state files live Pod A/Pod C du mainnet.
 EOF
 }
 
@@ -62,8 +64,64 @@ ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
 ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-}"
 FRESH_START=""
 MODE="${TRIDENT_MODE:-dry-run}"
+EXCHANGE_NETWORK="${TRIDENT_EXCHANGE_NETWORK:-mainnet}"
+CONFIG_PATH_EXPLICIT="${TRIDENT_CONFIG_PATH:+true}"
 CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}"
 SERVICE_ARG=""
+
+resolve_network_config() {
+    case "$EXCHANGE_NETWORK" in
+        mainnet|testnet)
+            ;;
+        *)
+            error "Réseau invalide: ${EXCHANGE_NETWORK}. Valeurs attendues: mainnet ou testnet."
+            exit 1
+            ;;
+    esac
+
+    if [ "$EXCHANGE_NETWORK" = "testnet" ] && [ -z "$CONFIG_PATH_EXPLICIT" ]; then
+        CONFIG_PATH="config/trident_testnet.toml"
+    elif [ "$EXCHANGE_NETWORK" = "mainnet" ] && [ -z "$CONFIG_PATH_EXPLICIT" ]; then
+        CONFIG_PATH="config/trident.toml"
+    fi
+
+    if [ "$EXCHANGE_NETWORK" = "testnet" ] && [[ "$CONFIG_PATH" != *testnet* ]]; then
+        warn "Réseau testnet demandé avec une config non-testnet (${CONFIG_PATH}); vérifie les endpoints Hyperliquid."
+    elif [ "$EXCHANGE_NETWORK" = "mainnet" ] && [[ "$CONFIG_PATH" == *testnet* ]]; then
+        warn "Réseau mainnet demandé avec une config testnet (${CONFIG_PATH}); vérifie les endpoints Hyperliquid."
+    fi
+}
+
+pod_a_live_state_path() {
+    if [ "$EXCHANGE_NETWORK" = "testnet" ]; then
+        printf '%s' "${TRIDENT_LIVE_STATE_PATH_POD_A:-runtime/trident/live_state_testnet_pod_a.json}"
+        return
+    fi
+    local global_path="${TRIDENT_LIVE_STATE_PATH:-runtime/trident/live_state_pod_a.json}"
+    printf '%s' "${TRIDENT_LIVE_STATE_PATH_POD_A:-$global_path}"
+}
+
+pod_c_live_state_path() {
+    if [ "$EXCHANGE_NETWORK" = "testnet" ]; then
+        printf '%s' "${TRIDENT_LIVE_STATE_PATH_POD_C:-runtime/trident/live_state_testnet_pod_c.json}"
+        return
+    fi
+    printf '%s' "${TRIDENT_LIVE_STATE_PATH_POD_C:-runtime/trident/live_state_pod_c.json}"
+}
+
+guard_network_config() {
+    if [ "$EXCHANGE_NETWORK" != "testnet" ]; then
+        return 0
+    fi
+    if [ ! -f "$CONFIG_PATH" ]; then
+        error "Config testnet introuvable: ${CONFIG_PATH}"
+        exit 1
+    fi
+    if ! grep -q "hyperliquid-testnet" "$CONFIG_PATH"; then
+        error "Réseau testnet demandé mais ${CONFIG_PATH} ne contient pas d'endpoint hyperliquid-testnet."
+        exit 1
+    fi
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -91,11 +149,20 @@ while [ $# -gt 0 ]; do
             ;;
         --config)
             CONFIG_PATH="$2"
+            CONFIG_PATH_EXPLICIT="true"
             shift 2
             ;;
         --mode)
             MODE="$2"
             shift 2
+            ;;
+        --network|--exchange-network)
+            EXCHANGE_NETWORK="$2"
+            shift 2
+            ;;
+        --testnet)
+            EXCHANGE_NETWORK="testnet"
+            shift
             ;;
         --without-pod-b)
             ENABLE_POD_B=""
@@ -152,6 +219,8 @@ if [ "$MODE" = "live" ]; then
     ENABLE_HIP4_MAINNET_OBSERVER=""
 fi
 
+resolve_network_config
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -170,6 +239,10 @@ compose() {
     local hip4_mode="${HIP4_OUTCOME_MODE:-paper}"
     local hip4_config="${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}"
     local hip4_allow_testnet_orders="${HIP4_OUTCOME_ALLOW_TESTNET_ORDERS:-false}"
+    local pod_a_state_path
+    local pod_c_state_path
+    pod_a_state_path="$(pod_a_live_state_path)"
+    pod_c_state_path="$(pod_c_live_state_path)"
     if [ "$MODE" = "live" ]; then
         hip4_mode="paper"
         hip4_config="config/hip4_outcome_mainnet_paper.toml"
@@ -181,7 +254,10 @@ compose() {
     TRIDENT_ENABLE_HIP4_OUTCOME="${ENABLE_HIP4_OUTCOME:+true}" \
     TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER="${ENABLE_HIP4_MAINNET_OBSERVER:+true}" \
     TRIDENT_MODE="${MODE}" \
+    TRIDENT_EXCHANGE_NETWORK="${EXCHANGE_NETWORK}" \
     TRIDENT_CONFIG_PATH="${CONFIG_PATH}" \
+    TRIDENT_LIVE_STATE_PATH_POD_A="${pod_a_state_path}" \
+    TRIDENT_LIVE_STATE_PATH_POD_C="${pod_c_state_path}" \
     HIP4_OUTCOME_MODE="${hip4_mode}" \
     HIP4_OUTCOME_CONFIG="${hip4_config}" \
     HIP4_OUTCOME_ALLOW_TESTNET_ORDERS="${hip4_allow_testnet_orders}" \
@@ -345,9 +421,16 @@ guard_live_start() {
     if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ]; then
         info "Mode live hybride: Pod B HIP-4 sera force en mainnet paper (aucun ordre HIP-4)."
     fi
+    if [ "$EXCHANGE_NETWORK" = "testnet" ]; then
+        info "Mode live testnet: Pod A/Pod C placeront de vrais ordres sur Hyperliquid testnet, sans ordre mainnet A/C."
+    else
+        info "Mode live mainnet: Pod A/Pod C placeront de vrais ordres sur Hyperliquid mainnet."
+    fi
 
-    local pod_a_state_path="${TRIDENT_LIVE_STATE_PATH_POD_A:-${TRIDENT_LIVE_STATE_PATH:-runtime/trident/live_state_pod_a.json}}"
-    local pod_c_state_path="${TRIDENT_LIVE_STATE_PATH_POD_C:-runtime/trident/live_state_pod_c.json}"
+    local pod_a_state_path
+    local pod_c_state_path
+    pod_a_state_path="$(pod_a_live_state_path)"
+    pod_c_state_path="$(pod_c_live_state_path)"
 
     info "Preflight live Pod A: credentials, reconciliation exchange, websocket orderUpdates..."
     local pod_a_args=(
@@ -381,6 +464,7 @@ guard_live_start() {
 
 case "$ACTION" in
     start)
+        guard_network_config
         guard_live_start
         require_runtime_files
         mapfile -t SERVICES < <(default_services)
@@ -391,7 +475,12 @@ case "$ACTION" in
         fi
         info "Démarrage: ${SERVICES[*]}"
         info "Mode: ${MODE}"
+        info "Réseau A/C: ${EXCHANGE_NETWORK}"
         info "Config: ${CONFIG_PATH}"
+        if [ "$MODE" = "live" ]; then
+            info "State Pod A: $(pod_a_live_state_path)"
+            [ -n "$ENABLE_POD_C" ] && info "State Pod C: $(pod_c_live_state_path)"
+        fi
         compose up -d --force-recreate "${SERVICES[@]}"
         ok "Services démarrés"
         ;;
@@ -402,19 +491,23 @@ case "$ACTION" in
         ok "Services arrêtés"
         ;;
     restart)
+        guard_network_config
         guard_live_start
         mapfile -t SERVICES < <(default_services)
         info "Redémarrage: ${SERVICES[*]}"
         info "Mode: ${MODE}"
+        info "Réseau A/C: ${EXCHANGE_NETWORK}"
         compose restart "${SERVICES[@]}"
         ok "Services redémarrés"
         ;;
     update)
+        guard_network_config
         guard_live_start
         require_runtime_files
         mapfile -t SERVICES < <(default_services)
         info "Rebuild + redémarrage: ${SERVICES[*]}"
         info "Mode: ${MODE}"
+        info "Réseau A/C: ${EXCHANGE_NETWORK}"
         info "Config: ${CONFIG_PATH}"
         compose build
         compose up -d "${SERVICES[@]}"

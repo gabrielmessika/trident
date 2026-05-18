@@ -29,6 +29,8 @@ dispose maintenant d'un chemin live hybride:
 - `--mode dry-run` reste le mode par défaut;
 - `--mode live` lance Pod A + Pod C en vrais ordres et garde Pod B HIP-4 en
   mainnet paper;
+- `--network testnet` bascule Pod A + Pod C sur Hyperliquid testnet via
+  `config/trident_testnet.toml`;
 - le démarrage live exécute un preflight bloquant par pod avant de lancer les
   services;
 - le serveur force `HIP4_OUTCOME_CONFIG=config/hip4_outcome_mainnet_paper.toml`,
@@ -37,12 +39,16 @@ dispose maintenant d'un chemin live hybride:
 - les runners Pod A/Pod C live ne tronquent pas le journal, ne ferment pas les
   positions à l'arrêt du process, et persistent chacun leur état live:
   `runtime/trident/live_state_pod_a.json` et
-  `runtime/trident/live_state_pod_c.json`.
+  `runtime/trident/live_state_pod_c.json`. En testnet, les scripts utilisent
+  `runtime/trident/live_state_testnet_pod_a.json` et
+  `runtime/trident/live_state_testnet_pod_c.json` par défaut.
 
 Les scripts de déploiement acceptent maintenant un mode explicite:
 
 - `./deploy.sh --start --mode dry-run` démarre le dry-run préparatoire;
 - `./deploy.sh --mode live` prépare un build/config live sans démarrage;
+- `./deploy.sh --start --mode live --network testnet --without-funding`
+  démarre Pod A + Pod C en vrais ordres testnet;
 - `./deploy.sh --start --mode live --without-funding` démarre Pod A + Pod C
   en live et Pod B HIP-4 en paper seulement si le preflight live passe.
 

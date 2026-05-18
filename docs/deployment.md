@@ -164,6 +164,15 @@ Pod A/Pod C :
 ./deploy.sh --start --mode live --without-funding
 ```
 
+Pour tester cette même architecture sur Hyperliquid testnet avant le mainnet :
+
+```bash
+./deploy.sh --start --mode live --network testnet --without-funding
+```
+
+Ce chemin sélectionne `config/trident_testnet.toml` par défaut et isole les
+state files A/C dans `runtime/trident/live_state_testnet_pod_*.json`.
+
 Il échoue fail-closed si les credentials, la reconciliation exchange ou le flux
 `orderUpdates` ne sont pas prêts. En `--mode live`, le serveur force
 `HIP4_OUTCOME_CONFIG=config/hip4_outcome_mainnet_paper.toml`,
@@ -266,6 +275,12 @@ Démarrer tout en dry-run :
 
 ```bash
 ./scripts/trident_server.sh start --mode dry-run
+```
+
+Démarrer Pod A + Pod C en vrais ordres testnet :
+
+```bash
+./scripts/trident_server.sh start --mode live --network testnet --without-funding
 ```
 
 Démarrer tout sauf Pod B :

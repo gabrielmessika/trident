@@ -1,0 +1,32 @@
+extends = "trident.toml"
+
+# Profil de smoke-test live sur Hyperliquid testnet pour Pod A + Pod C.
+# `--mode live --network testnet` place de vrais ordres sur le testnet,
+# avec des endpoints, snapshots, rate limits et state files séparés du mainnet.
+
+[hyperliquid]
+ws_url = "wss://api.hyperliquid-testnet.xyz/ws"
+info_url = "https://api.hyperliquid-testnet.xyz/info"
+rate_limit_state_path = "./runtime/hyperliquid_testnet_rate_limits.json"
+snapshot_output_dir = "./data/live_snapshots_testnet"
+pod_b_feature_output_dir = "./data/live_features_testnet/pod_b"
+
+# Univers volontairement réduit aux perps les plus probables du testnet.
+# ETH reste crypto pour Pod A; BTC/SOL sont mappés sur des clusters Pod C
+# afin de tester l'architecture A/C sans dépendre des marchés XYZ mainnet.
+observation_universe = ["BTC", "ETH", "SOL"]
+default_coins = ["BTC", "ETH", "SOL"]
+
+[hyperliquid.market_cluster_overrides]
+BTC = "index"
+SOL = "gold"
+
+[hyperliquid.cluster_leaders]
+crypto = ["ETH"]
+index = ["BTC"]
+gold = ["SOL"]
+
+[trident.routing.symbol_pod_overrides]
+ETH = "pod_a"
+BTC = "pod_c"
+SOL = "pod_c"
