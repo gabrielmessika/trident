@@ -53,6 +53,11 @@ Date: `2026-05-19`
 - Regle de promotion: aucune logique HIP-4 ne passe en execution mainnet sans
   dataset mainnet complet, calibration, replay comparable, dry-run mainnet
   propre, preflight separe, caps tiny-size et confirmation manuelle.
+- Decision live A/C: le burn-in `live/testnet` est relance proprement depuis
+  le redeploiement du `2026-05-19T13:03:35Z`, apres correction du bug
+  `triggerPx` et recovery state SOL. Si aucun incident bloquant n'apparait
+  pendant `72h`, reevaluation des criteres de passage mainnet tiny-size le
+  `2026-05-22T13:03:35Z`.
 
 ## Reference Prod Courante
 
@@ -858,6 +863,43 @@ Priorite apres plusieurs runs mainnet paper:
   `TRIDENT_MODE=live`.
 - Verifier que HIP-4 reste le Pod B paper, sans mode execution mainnet et sans
   `HIP4_OUTCOME_ALLOW_TESTNET_ORDERS=true`.
+
+Critères de passage A/C en mainnet tiny-size:
+
+- Fenetre minimale: `72h` propres apres le redeploiement stable du
+  `2026-05-19T13:03:35Z`; prochaine reevaluation cible:
+  `2026-05-22T13:03:35Z`.
+- `pod-a-live`, `pod-c-live` et `trident-api` up en continu, sans crash loop et
+  avec `RestartCount=0` depuis le dernier redeploiement, sauf restart manuel
+  explicitement documente pour test de recovery.
+- Runtime A/C frais en continu dans `/api/state` et `/api/report`:
+  `runtime status fresh`, `healthy=true`, `live_trading_paused=false`.
+- Reconciliation A/C propre: `ready=true`, `reasons=[]`,
+  `unknown_exchange_positions=[]`, `missing_exchange_positions=[]`,
+  `side_mismatches=[]`, `open_orders=[]` ou uniquement des orders connus par le
+  state store.
+- Au moins deux redemarrages/reconciliations propres avec positions exchange
+  existantes, dont un cas ou Pod A voit une position connue par Pod C comme
+  `external_known_positions`.
+- Au moins un cycle reel `open -> close` sur Pod A et un cycle reel
+  `open -> close` sur Pod C en testnet apres le fix `triggerPx`, avec state
+  local persiste et PnL/fills coherents dans le pod et le superviseur.
+- Les erreurs transitoires Hyperliquid testnet (`502`, websocket reconnect,
+  timeout) doivent seulement pauser les entrees puis revenir a `ready=true`;
+  aucun fill reel ne doit rester sans state local, et aucun ordre protecteur
+  requis ne doit echouer sans emergency close.
+- Fetch serveur post-burn-in complet: `/health`, `/api/state`, `/api/report`,
+  `/api/metrics`, logs Docker, runtime states, snapshots et journals recuperes;
+  review sans `Traceback`, sans `Decimal is not JSON serializable`, sans
+  divergence A/C live vs state store.
+- Rejouer la baseline/replay seulement si le fetch serveur ou la config ont
+  change; sinon documenter que la promotion mainnet ne modifie pas la strategie,
+  seulement le reseau et les caps.
+- Mainnet uniquement tiny-size et manuel: config `config/trident.toml`,
+  `--mode live --network mainnet --without-funding`, caps de notional live
+  verifies, preflight Pod A et Pod C separes OK, confirmation operateur requise.
+- Pod B HIP-4 reste `mainnet paper`; aucune execution HIP-4 mainnet n'est
+  incluse dans cette promotion A/C.
 - Garde-fous rate limit ajoutes pour le live A/C:
   - lectures privees HL cadencees par `private_info_requests_per_minute`;
   - actions `order/cancel` cadencees par `live_order_actions_per_minute`;
