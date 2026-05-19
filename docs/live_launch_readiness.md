@@ -1,12 +1,14 @@
 # TRIDENT - Readiness passage live
 
-Date de revue: 2026-04-29. Mise à jour live hybride: 2026-05-17.
+Date de revue: 2026-04-29. Mise à jour live hybride: 2026-05-19.
 
-Verdict code: **canary live Pod A + Pod C préparé**, avec **Pod B HIP-4 maintenu en mainnet paper**.
+Verdict code: **canary live testnet Pod A + Pod C testé avec restart et
+position exchange existante**, avec **Pod B HIP-4 maintenu en mainnet paper**.
 
-Verdict opérationnel: **go technique conditionnel**. Le démarrage live reste
-bloqué tant que le preflight live ne passe pas sur le serveur avec les vrais
-credentials, un compte/subaccount propre et `orderUpdates` connecté.
+Verdict opérationnel: **go technique testnet validé, mainnet encore
+conditionnel**. Le démarrage mainnet reste bloqué tant que le preflight live ne
+passe pas sur le serveur avec les vrais credentials mainnet, un
+compte/subaccount propre et `orderUpdates` connecté.
 
 Cette revue consolide les documents TRIDENT, tbot et gbot pour éviter de
 répéter les erreurs déjà observées: état exchange non prioritaire au redémarrage,
@@ -42,6 +44,10 @@ dispose maintenant d'un chemin live hybride:
   `runtime/trident/live_state_pod_c.json`. En testnet, les scripts utilisent
   `runtime/trident/live_state_testnet_pod_a.json` et
   `runtime/trident/live_state_testnet_pod_c.json` par défaut.
+- validation serveur `2026-05-19`: restart de `pod-a-live` et `pod-c-live` en
+  `live/testnet` avec une position BTC deja ouverte cote Hyperliquid. Pod C l'a
+  reprise; Pod A l'a classee position externe connue; aucune position inconnue
+  ni open order inconnu n'a bloque la reconciliation.
 
 Les scripts de déploiement acceptent maintenant un mode explicite:
 
@@ -72,10 +78,17 @@ le bot doit se mettre en pause et conserver l'état précédent.
 Implémenté dans:
 
 - `app/hyperliquid/private_state.py`;
+- `app/live/exchange_position_metrics.py`;
 - `app/live/reconciliation.py`;
 - `app/live/preflight.py`;
 - `app/live/pod_a_live_runner.py`;
 - `app/live/pod_c_live_runner.py`.
+
+Mise à jour `2026-05-19`: quand une position live existe deja, le state local
+est realigne sur les vraies valeurs Hyperliquid. Le notionnel d'entree local
+est `abs(size) * entryPx`; le status runtime lit `positionValue`,
+`marginUsed`, `unrealizedPnl`, levier et isolation depuis l'exchange quand ces
+valeurs sont disponibles.
 
 ### 2. Websocket utilisateur en source primaire de fills
 
@@ -136,6 +149,8 @@ Implémenté pour le canary:
 
 - ordres IOC via SDK officiel Hyperliquid;
 - close reduce-only;
+- close reduce-only size depuis la taille exacte de la position exchange quand
+  elle est disponible;
 - SL/TP reduce-only trigger après fill d'entrée;
 - cancel des triggers connus après close;
 - parsing strict des réponses `filled`, `resting`, `error`.
@@ -254,6 +269,7 @@ envoyer d'ordre d'ouverture.
 
 - dashboard affiche mode réel;
 - dashboard distingue dry-run PnL et exchange PnL;
+- `Status > Pods` affiche le PnL realise et le PnL latent par pod;
 - alertes pour WS down, API down, 429, fill drift, orphan orders, equity drift,
   stale snapshots, kill-switch actif;
 - journal parseable après restart;
@@ -283,11 +299,13 @@ Commande canary live, après validation du preflight:
 4. Exécuter le preflight live sans démarrer les pods live.
 5. Confirmer que le compte/subaccount ne contient aucune position inconnue.
 6. Confirmer que `orderUpdates` est sain.
-7. Revoir les journaux dry-run après redeploy.
-8. Canary live: Pod A + Pod C en vrais ordres, Pod B HIP-4 en paper, capital
+7. Terminer le burn-in `live/testnet`: restart avec position existante,
+   sync exchange, close reduce-only, reopen minimal, logs sans drift.
+8. Revoir les journaux dry-run après redeploy.
+9. Canary live mainnet: Pod A + Pod C en vrais ordres, Pod B HIP-4 en paper, capital
    isolé/minimal, symboles limités, max notional très bas, close-only/kill-switch validés.
-9. Revoir les fills réels et les écarts exchange/journal.
-10. Elargir seulement après plusieurs sessions propres.
+10. Revoir les fills réels et les écarts exchange/journal.
+11. Elargir seulement après plusieurs sessions propres.
 
 ## Critère go/no-go
 

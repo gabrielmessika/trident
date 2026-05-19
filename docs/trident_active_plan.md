@@ -1,21 +1,39 @@
 # TRIDENT Active Plan
 
-Date: `2026-05-17`
+Date: `2026-05-19`
 
 ## Status
 
 - `ACTIVE_SINGLE_SOURCE_OF_TRUTH`
 - Ce fichier est la feuille de route courante. Les autres documents sont des archives, des notes de recherche, ou des details d'implementation.
 - En cas de contradiction avec un ancien doc, ce fichier gagne.
-- Objectif actuel: pouvoir lancer un canary live reel `Pod A` + `Pod C` avec
-  garde-fous stricts, tout en gardant `Pod B HIP-4 Outcome` en mainnet paper,
-  comme pod independant, sans cannibaliser Pod A.
+- Objectif actuel: transformer le canary live testnet `Pod A` + `Pod C` valide
+  techniquement en burn-in propre, puis preparer le canary mainnet tiny-size.
+  `Pod B HIP-4 Outcome` reste en mainnet paper, comme pod independant, sans
+  cannibaliser Pod A.
 
 ## Lecture Rapide
 
 - Config prod/dry-run principale: `config/trident.toml`.
 - Mode cible live hybride: `Pod A` crypto core et `Pod C` tradfi en vrais
   ordres apres preflight; `Pod B HIP-4 Outcome` reste `paper` mainnet.
+- Etat serveur `2026-05-19`: `Pod A` + `Pod C` ont ete redemarres en
+  `live/testnet` avec une position BTC deja ouverte cote Hyperliquid. La
+  reconciliation a repris BTC dans Pod C, Pod A l'a classee
+  `external_known_positions`, et aucun `unknown_exchange_positions`,
+  `missing_exchange_positions` ou open order inconnu n'a ete observe.
+- Les valeurs exchange sont maintenant prioritaires pour les positions live
+  existantes:
+  - `target_notional_usd` local = `abs(size) * entryPx`;
+  - `current_notional_usd` = `positionValue`;
+  - `margin_usd` = `marginUsed`;
+  - `unrealized_pnl_usd` = `unrealizedPnl`;
+  - levier/isolation viennent aussi de Hyperliquid quand disponibles.
+- Le close live reduce-only utilise la taille exacte de la position exchange,
+  au lieu de reconstruire une taille depuis un notionnel local potentiellement
+  stale.
+- La page `Status > Pods` affiche maintenant `PnL realise` et `PnL latent` dans
+  la carte de chaque pod.
 - Pods actifs dry-run: `Pod A` crypto core avec `a_grade_enabled`, `Pod B HIP-4 Outcome`, `Pod C` tradfi.
 - Pod B historique directionnel: legacy / non demarre par defaut.
 - Nouveau Pod B: `HIP4OutcomeEdgePod`, branche HIP-4 outcome en mainnet paper.
@@ -65,9 +83,19 @@ Resultat officiel courant avec `evo11_a_grade_boost_wider_exits`:
 |---:|---:|---:|---:|
 | `+859.83 USD` | `+780.72` | `0.00` | `+79.11` |
 
+Rejeu du meme input avec le repo/config courants le `2026-05-19`:
+
+| Total | Pod A | Pod B | Pod C |
+|---:|---:|---:|---:|
+| `+872.74 USD` | `+793.63` | `0.00` | `+79.11` |
+
 Notes importantes:
 
 - L'input de reference couvre `2026-04-05T19:45:00Z -> 2026-05-13T07:56:49Z`.
+- La baseline officielle archivee reste `+859.83 USD`, mais le replay actuel
+  du meme JSONL sort `+872.74 USD` (`+12.91`). L'ecart vient uniquement de
+  `6` trades `HYPE trend_pullback_long` Pod A reintroduits par le rollback du
+  veto HYPE; Pod C reste strictement inchange a `+79.11 USD`.
 - L'input courant saute plusieurs dates sans collecte locale (`2026-04-19`,
   `2026-04-28`, `2026-04-29`, `2026-05-09 -> 2026-05-11`).
 - Les replays de parite doivent inclure `collector + maintenance_refresh`; le collector-only n'est pas suffisant.
@@ -87,7 +115,18 @@ Notes importantes:
 
 ### Pod A - Crypto Core
 
-Statut: actif, reference principale crypto.
+Statut: actif, reference principale crypto. Chemin live/testnet valide
+techniquement avec reconciliation exchange stricte.
+
+Point live `2026-05-19`:
+
+- redemarrage serveur en `live/testnet` teste avec une position BTC deja ouverte
+  cote Hyperliquid;
+- Pod A n'a pas repris BTC car la position etait connue par le state store Pod C;
+- rapport attendu observe: `external_known_positions=["BTC"]`, `ready=true`,
+  pas de position locale et `live_trading_paused=false`;
+- ne pas passer au canary mainnet tant que le burn-in testnet n'a pas plusieurs
+  cycles propres de restart, sync, close/reopen et review logs.
 
 Promu dans le profil repo:
 
@@ -111,7 +150,9 @@ Promu dans le profil repo:
   Decision prise apres rejet sur l'OOS `2026-04-30 -> 2026-05-05` (`-12.03`,
   `3` trades HYPE vetoes qui auraient ete gagnants) et latest fetch
   `2026-04-05 -> 2026-05-16` (`-14.72`, `13` vetoes). A ne pas confondre avec
-  les anciens blocages HYPE HIP-4, eux aussi retires.
+  les anciens blocages HYPE HIP-4, eux aussi retires. Le replay de la baseline
+  officielle du `2026-05-19` confirme l'impact attendu: `6` trades HYPE
+  reintroduits, `+12.91 USD`, Pod C inchange.
 - Leviers testes mais non promus:
   - `evo1_adaptive_exit`: negatif, coupe trop vite la convexite.
   - `evo2_fee_aware_be`: legerement negatif dans la baseline corrigee.
@@ -132,7 +173,18 @@ Principes:
 
 ### Pod C - Tradfi
 
-Statut: actif, quasi stabilise.
+Statut: actif, quasi stabilise. Canary `live/testnet` serveur en cours.
+
+Point live `2026-05-19`:
+
+- restart reel Pod C avec position BTC deja ouverte cote Hyperliquid: reprise OK;
+- state live Pod C mis a jour depuis Hyperliquid:
+  `entry_price=77326.0`, `target_notional_usd=94.33772`,
+  `margin_usd` et `unrealized_pnl_usd` lus depuis l'exchange;
+- status runtime Pod C utilise les valeurs exchange pour le PnL latent et la
+  valeur courante quand elles sont disponibles;
+- logs post-restart verifies sans `Traceback`, sans `Decimal is not JSON
+  serializable`, et sans echec de reconciliation.
 
 Backtest `Pod C off` du `2026-05-13`:
 
@@ -561,6 +613,39 @@ Regle:
   historique mainnet paper propre avec settlements exploitables.
 
 ## Validations Recentes
+
+Resultat courant `2026-05-19`:
+
+- Historique git relu depuis `2026-05-13`: les commits recents ont surtout
+  porte sur le live hybride A/C, le support testnet separe, le remplacement Pod
+  B par HIP-4 mainnet paper, la suppression de la piste trigger-liquidity, puis
+  le durcissement de la reconciliation live.
+- Tests locaux:
+  - `python -m py_compile app/live/exchange_position_metrics.py app/live/reconciliation.py app/execution/live.py app/live/pod_a_live_runner.py app/live/pod_c_live_runner.py app/persistence/journal.py`: OK.
+  - `.venv/bin/python -m unittest tests.test_live_readiness tests.test_pod_a_live_runner tests.test_journal tests.test_reporting tests.test_health`: `48` tests OK.
+- Replay baseline officielle avec repo/config courants:
+  - commande: `.venv/bin/python -m app.backtest.full_bot_replay --config config/trident.toml --input server-data/replay_inputs/external_reference_multisource_20260405_20260513_baseline.jsonl --report-output tmp/full_bot_baseline_current_20260519.json --summary-output tmp/full_bot_baseline_current_20260519.md`;
+  - `40632` records, `301` timestamps dupliques ignores, memes dates que la
+    reference archivee;
+  - total `+872.74 USD` vs `+859.83 USD` archive (`+12.91`);
+  - Pod A `+793.63` vs `+780.72`, `161` trades vs `155`;
+  - Pod B `0.00`, Pod C `+79.11` inchange;
+  - delta entierement explique par `6` trades `HYPE trend_pullback_long`
+    reintroduits apres rollback du veto HYPE.
+- Test serveur reel:
+  - rebuild + restart uniquement `pod-a-live` et `pod-c-live` en
+    `live/testnet`;
+  - position BTC deja ouverte cote Hyperliquid reprise par Pod C;
+  - Pod A classe BTC comme position externe connue;
+  - `/api/report` remonte Pod C `position_count=1` et
+    `total_unrealized_pnl_usd` depuis le status runtime;
+  - logs post-restart A/C sans `Traceback`, sans `TypeError`, sans echec de
+    reconciliation.
+- Fixs valides:
+  - journal JSONL compatible avec `Decimal` dans les fills live;
+  - payload open positions priorise les valeurs Hyperliquid;
+  - close live reduce-only utilise la taille exchange exacte;
+  - cartes `Status > Pods` affichent `PnL realise` et `PnL latent`.
 
 Validation code HIP-4, observation embedded et integration UI/dry-run:
 
