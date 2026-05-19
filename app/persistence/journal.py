@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Iterable
 
@@ -16,12 +19,26 @@ class JsonlJournal:
 
     def append(self, record: dict[str, object]) -> None:
         with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(record, default=_json_default) + "\n")
 
     def append_many(self, records: Iterable[dict[str, object]]) -> None:
         with self.path.open("a", encoding="utf-8") as handle:
             for record in records:
-                handle.write(json.dumps(record) + "\n")
+                handle.write(json.dumps(record, default=_json_default) + "\n")
+
+
+def _json_default(value: object) -> object:
+    if isinstance(value, Decimal):
+        if value.is_finite():
+            return int(value) if value == value.to_integral_value() else float(value)
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
 
 def build_signal_journal_record(

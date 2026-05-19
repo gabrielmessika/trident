@@ -89,18 +89,24 @@ class _FakePrivateInfoSdk:
 
 
 class _FakePrivateAccountClient:
-    def __init__(self, *, meta: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        meta: dict[str, object] | None = None,
+        user_state: dict[str, object] | None = None,
+    ) -> None:
         self.info_client = _FakeMetaInfoClient(meta or {"universe": []})
+        self.user_state = user_state or {
+            "marginSummary": {
+                "accountValue": "1000",
+                "totalMarginUsed": "0",
+            }
+        }
 
     def fetch_account_state(self, *, fills_lookback_hours: float = 24.0, **_: object):
         return parse_account_state(
             account_address="0x0000000000000000000000000000000000000000",
-            user_state={
-                "marginSummary": {
-                    "accountValue": "1000",
-                    "totalMarginUsed": "0",
-                }
-            },
+            user_state=self.user_state,
             spot_state={"balances": []},
             open_orders=[],
             frontend_open_orders=[],
@@ -299,7 +305,7 @@ class LiveReadinessTests(unittest.TestCase):
                                 "coin": "ETH",
                                 "szi": "0.1",
                                 "entryPx": "3000",
-                                "positionValue": "300",
+                                "positionValue": "330",
                                 "marginUsed": "60",
                                 "unrealizedPnl": "0",
                                 "leverage": {"type": "isolated", "value": 5},
@@ -592,6 +598,54 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(exchange.orders[0]["limit_px"], 2142.2)
         self.assertEqual(exchange.orders[0]["size"], 0.0466)
+
+    def test_live_close_uses_exact_exchange_position_size(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        exchange = _FakeExchange()
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "BTC", "szDecimals": 5}]},
+                user_state={
+                    "marginSummary": {"accountValue": "1000", "totalMarginUsed": "10"},
+                    "assetPositions": [
+                        {
+                            "position": {
+                                "coin": "BTC",
+                                "szi": "0.12345",
+                                "entryPx": "100",
+                                "positionValue": "12.5",
+                                "marginUsed": "1.25",
+                                "unrealizedPnl": "0.15",
+                                "leverage": {"type": "isolated", "value": 10},
+                            }
+                        }
+                    ],
+                },
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.close_fill(
+            symbol="BTC",
+            side="long",
+            mid_price=101.0,
+            spread_bps=1.0,
+            notional_usd=999.0,
+            timestamp="2026-05-19T00:00:00Z",
+        )
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(exchange.orders[0]["size"], 0.12345)
+        self.assertTrue(exchange.orders[0]["reduce_only"])
 
     def test_live_protective_triggers_use_hyperliquid_price_precision(self) -> None:
         config = load_config("config/trident.toml")

@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from app.hyperliquid.private_state import parse_account_state
 from app.live.pod_a_live_runner import PodALiveRunner
 from app.settings import load_config
 from app.trident.types import TradePlan
@@ -219,6 +220,60 @@ class PodALiveRunnerTests(unittest.TestCase):
             self.assertEqual(replay_runner.report.records_processed, 0)
             replay_positions = replay_runner._build_open_positions_payload()
             self.assertEqual(replay_positions[0]["current_price"], 3150.0)
+
+    def test_open_position_payload_prefers_exchange_position_values(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = PodALiveRunner(config, coins=["ETH"])
+        plan = TradePlan(
+            symbol="ETH",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.8,
+            target_notional_usd=200.0,
+            stop_bps=45.0,
+            time_stop_hours=24,
+        )
+        self.assertTrue(
+            runner.executor.portfolio.open_from_plan(
+                plan,
+                price=100.0,
+                entry_fee_usd=0.1,
+                timestamp="2026-05-19T00:00:00Z",
+            )
+        )
+        account_state = parse_account_state(
+            account_address="0x0000000000000000000000000000000000000000",
+            user_state={
+                "marginSummary": {"accountValue": "1000", "totalMarginUsed": "22"},
+                "assetPositions": [
+                    {
+                        "position": {
+                            "coin": "ETH",
+                            "szi": "2",
+                            "entryPx": "100",
+                            "positionValue": "220",
+                            "marginUsed": "22",
+                            "unrealizedPnl": "20",
+                            "leverage": {"type": "cross", "value": 10},
+                        }
+                    }
+                ],
+            },
+            spot_state={"balances": []},
+            open_orders=[],
+            frontend_open_orders=[],
+            recent_fills=[],
+        )
+        runner._latest_exchange_positions_by_symbol = dict(account_state.positions)
+
+        open_positions = runner._build_open_positions_payload()
+
+        self.assertEqual(open_positions[0]["current_price"], 110.0)
+        self.assertEqual(open_positions[0]["current_notional_usd"], 220.0)
+        self.assertEqual(open_positions[0]["unrealized_pnl_usd"], 20.0)
+        self.assertEqual(open_positions[0]["margin_usd"], 22.0)
+        self.assertEqual(open_positions[0]["effective_leverage"], 10.0)
+        self.assertFalse(open_positions[0]["isolated"])
 
     def test_live_runner_can_write_to_custom_status_path_for_specialized_shadow(self) -> None:
         config = load_config("config/trident.toml")

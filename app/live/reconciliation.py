@@ -4,6 +4,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from app.hyperliquid.private_state import ExchangeAccountState
+from app.live.exchange_position_metrics import (
+    apply_exchange_position_to_local,
+    exchange_entry_notional_usd,
+)
 from app.live.state_store import LiveStateStore, open_position_from_metadata
 from app.portfolio.directional_state import DirectionalPortfolioState
 
@@ -78,6 +82,8 @@ def reconcile_exchange_state(
             if local.side != exchange_position.side:
                 report.side_mismatches.append(symbol)
                 report.ready = False
+            else:
+                apply_exchange_position_to_local(local, exchange_position)
             continue
         metadata = state_store.metadata_for_symbol(symbol)
         if metadata is not None and recover_known_positions:
@@ -86,7 +92,7 @@ def reconcile_exchange_state(
                 symbol=symbol,
                 side=exchange_position.side,
                 entry_price=exchange_position.entry_price,
-                target_notional_usd=exchange_position.notional_usd,
+                target_notional_usd=exchange_entry_notional_usd(exchange_position),
                 margin_usd=exchange_position.margin_used_usd,
                 leverage=exchange_position.leverage,
             )
@@ -104,7 +110,7 @@ def reconcile_exchange_state(
                 symbol=symbol,
                 side=exchange_position.side,
                 entry_price=exchange_position.entry_price,
-                target_notional_usd=exchange_position.notional_usd,
+                target_notional_usd=exchange_entry_notional_usd(exchange_position),
                 margin_usd=exchange_position.margin_used_usd,
                 leverage=exchange_position.leverage,
             )

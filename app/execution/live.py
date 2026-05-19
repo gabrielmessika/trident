@@ -286,7 +286,9 @@ class LiveExecutionVenue:
             action="close",
             slippage_bps=self.close_slippage_bps,
         )
-        size = self._size_from_notional(notional_usd, limit_px, symbol=symbol)
+        size = self._close_size(symbol)
+        if size is None:
+            size = self._size_from_notional(notional_usd, limit_px, symbol=symbol)
         cloid = self._new_cloid()
         result = self._submit_order(
             symbol=symbol,
@@ -316,6 +318,23 @@ class LiveExecutionVenue:
             complete=self._remaining_position_size(symbol) == Decimal("0"),
             raw_response=result.raw,
         )
+
+    def _close_size(self, symbol: str) -> float | None:
+        try:
+            state = self.private_info_client.fetch_account_state(fills_lookback_hours=1.0)
+        except Exception as exc:
+            logger.warning(
+                "Live close size fallback for %s: exchange state unavailable: %s",
+                symbol,
+                exc,
+            )
+            return None
+        position = state.positions.get(symbol)
+        if position is None or position.size == 0:
+            return None
+        decimals = self._size_decimals(symbol)
+        size = self._round_size(float(abs(position.size)), decimals=decimals)
+        return size if size > 0 else None
 
     def _submit_order(
         self,

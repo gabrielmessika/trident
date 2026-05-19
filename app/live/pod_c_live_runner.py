@@ -13,8 +13,13 @@ from app.backtest.pod_report import PodABacktestReport
 from app.execution.directional_executor import DirectionalExecutor
 from app.execution.live import LiveExecutionVenue
 from app.hyperliquid.info_client import HyperliquidInfoClient, apply_live_asset_leverage_caps
-from app.hyperliquid.private_state import HyperliquidCredentials, HyperliquidPrivateInfoClient
+from app.hyperliquid.private_state import (
+    ExchangePosition,
+    HyperliquidCredentials,
+    HyperliquidPrivateInfoClient,
+)
 from app.live.collector import HyperliquidLiveCollector
+from app.live.exchange_position_metrics import exchange_current_price
 from app.live.reconciliation import ReconciliationReport, reconcile_exchange_state
 from app.live.replay_capture import (
     annotate_snapshot_record,
@@ -118,6 +123,7 @@ class PodCLiveRunner:
             )
         self.report = PodABacktestReport()
         self._latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
+        self._latest_exchange_positions_by_symbol: dict[str, ExchangePosition] = {}
         self._info_client = HyperliquidInfoClient(self.config.hyperliquid)
         self._last_record_monotonic = time.monotonic()
         self._last_market_data_refresh_monotonic = 0.0
@@ -197,6 +203,7 @@ class PodCLiveRunner:
         account_state = self._live_private_client.fetch_account_state(
             fills_lookback_hours=float(os.getenv("TRIDENT_LIVE_FILLS_LOOKBACK_HOURS", "24"))
         )
+        self._latest_exchange_positions_by_symbol = dict(account_state.positions)
         self.live_reconciliation_report = reconcile_exchange_state(
             account_state=account_state,
             portfolio=self.executor.portfolio,
@@ -251,6 +258,7 @@ class PodCLiveRunner:
             logger.warning("Pod C live exchange reconciliation failed; entries paused: %s", exc)
             self._live_trading_paused = True
             return False
+        self._latest_exchange_positions_by_symbol = dict(account_state.positions)
         report = reconcile_exchange_state(
             account_state=account_state,
             portfolio=self.executor.portfolio,
@@ -828,10 +836,21 @@ class PodCLiveRunner:
         positions: list[dict[str, object]] = []
         for position in self.executor.portfolio.open_positions.values():
             current_snapshot = self._latest_snapshots_by_symbol.get(position.symbol)
+            exchange_position = self._latest_exchange_positions_by_symbol.get(position.symbol)
             current_price = current_snapshot.price if current_snapshot is not None else None
             current_notional_usd = position.target_notional_usd
             unrealized_pnl_usd = 0.0
-            if current_price is not None and position.entry_price > 0:
+            margin_usd = position.margin_usd
+            leverage = position.effective_leverage
+            isolated = position.isolated
+            if exchange_position is not None:
+                current_price = exchange_current_price(exchange_position) or current_price
+                current_notional_usd = round(float(exchange_position.notional_usd), 4)
+                unrealized_pnl_usd = round(float(exchange_position.unrealized_pnl_usd), 4)
+                margin_usd = float(exchange_position.margin_used_usd)
+                leverage = float(exchange_position.leverage)
+                isolated = bool(exchange_position.isolated)
+            elif current_price is not None and position.entry_price > 0:
                 current_notional_usd = round(
                     position.target_notional_usd * (current_price / position.entry_price),
                     4,
@@ -850,13 +869,13 @@ class PodCLiveRunner:
                     "entry_price": position.entry_price,
                     "current_price": current_price,
                     "target_notional_usd": position.target_notional_usd,
-                    "margin_usd": position.margin_usd,
-                    "leverage": position.effective_leverage,
-                    "effective_leverage": position.effective_leverage,
+                    "margin_usd": margin_usd,
+                    "leverage": leverage,
+                    "effective_leverage": leverage,
                     "risk_budget_usd": position.risk_budget_usd,
                     "expected_loss_usd": position.expected_loss_usd,
                     "invalidation_price": position.invalidation_price,
-                    "isolated": position.isolated,
+                    "isolated": isolated,
                     "current_notional_usd": current_notional_usd,
                     "unrealized_pnl_usd": unrealized_pnl_usd,
                     "stop_bps": position.stop_bps,
