@@ -123,9 +123,16 @@ class _FakeMetaInfoClient:
 
 
 class _FakeExchange:
-    def __init__(self, *, rate_limited: bool = False, post_only_required: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        rate_limited: bool = False,
+        post_only_required: bool = False,
+        trigger_error: bool = False,
+    ) -> None:
         self.rate_limited = rate_limited
         self.post_only_required = post_only_required
+        self.trigger_error = trigger_error
         self.orders: list[dict[str, object]] = []
         self.cancels: list[tuple[str, int]] = []
 
@@ -140,6 +147,9 @@ class _FakeExchange:
         reduce_only: bool,
         cloid: object,
     ) -> dict[str, object]:
+        trigger = order_type.get("trigger")
+        if isinstance(trigger, dict) and not isinstance(trigger.get("triggerPx"), (int, float)):
+            raise ValueError("triggerPx must be numeric")
         self.orders.append(
             {
                 "symbol": symbol,
@@ -150,6 +160,14 @@ class _FakeExchange:
                 "reduce_only": reduce_only,
             }
         )
+        if self.trigger_error and isinstance(trigger, dict):
+            return {
+                "status": "ok",
+                "response": {
+                    "type": "order",
+                    "data": {"statuses": [{"error": "trigger rejected"}]},
+                },
+            }
         if self.rate_limited:
             return {
                 "status": "ok",
@@ -689,8 +707,52 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertEqual(exchange.orders[1]["limit_px"], 2132.6)
         self.assertEqual(
             exchange.orders[1]["order_type"],
-            {"trigger": {"isMarket": True, "triggerPx": "2132.6", "tpsl": "sl"}},
+            {"trigger": {"isMarket": True, "triggerPx": 2132.6, "tpsl": "sl"}},
         )
+
+    def test_optional_live_protective_trigger_failure_keeps_entry_fill(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        config.trident.execution.live_require_protective_orders = False
+        exchange = _FakeExchange(trigger_error=True)
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "SOL", "szDecimals": 2}]}
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.open_fill(
+            symbol="SOL",
+            side="long",
+            mid_price=85.0,
+            spread_bps=1.0,
+            notional_usd=10.0,
+            timestamp="2026-05-19T10:22:00Z",
+            plan=TradePlan(
+                symbol="SOL",
+                side="long",
+                setup="test_optional_protective",
+                confidence=0.8,
+                target_notional_usd=10.0,
+                stop_bps=45.0,
+                time_stop_hours=6,
+                take_profit_bps=80.0,
+            ),
+        )
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.protective_oids, {})
+        self.assertEqual(venue.orders_by_symbol["SOL"]["entry_oid"], 7)
+        self.assertEqual(len(exchange.orders), 3)
 
     def test_live_open_retries_post_only_after_upgrade_and_tracks_pending_order(self) -> None:
         config = load_config("config/trident.toml")

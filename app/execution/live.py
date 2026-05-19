@@ -423,24 +423,44 @@ class LiveExecutionVenue:
             return protective
         stop_price = self._stop_price(plan, fill.price)
         if stop_price > 0:
-            sl = self._submit_trigger(
-                symbol=fill.symbol,
-                side=plan.side,
-                trigger_price=stop_price,
-                size=float(fill.filled_size),
-                tpsl="sl",
-            )
-            protective["sl"] = sl.oid
+            try:
+                sl = self._submit_trigger(
+                    symbol=fill.symbol,
+                    side=plan.side,
+                    trigger_price=stop_price,
+                    size=float(fill.filled_size),
+                    tpsl="sl",
+                )
+                protective["sl"] = sl.oid
+            except HyperliquidAPIError:
+                logger.exception("Protective SL trigger failed for %s", fill.symbol)
+                if self.require_protective_orders:
+                    logger.error(
+                        "SL trigger missing after live entry; attempting emergency close for %s",
+                        fill.symbol,
+                    )
+                    self.close_fill(
+                        symbol=fill.symbol,
+                        side=plan.side,
+                        mid_price=fill.price,
+                        spread_bps=0.0,
+                        notional_usd=fill.notional_usd,
+                        timestamp=fill.timestamp,
+                    )
+                    raise
         if plan.take_profit_bps > 0:
             tp_price = self._take_profit_price(plan, fill.price)
-            tp = self._submit_trigger(
-                symbol=fill.symbol,
-                side=plan.side,
-                trigger_price=tp_price,
-                size=float(fill.filled_size),
-                tpsl="tp",
-            )
-            protective["tp"] = tp.oid
+            try:
+                tp = self._submit_trigger(
+                    symbol=fill.symbol,
+                    side=plan.side,
+                    trigger_price=tp_price,
+                    size=float(fill.filled_size),
+                    tpsl="tp",
+                )
+                protective["tp"] = tp.oid
+            except HyperliquidAPIError:
+                logger.exception("Protective TP trigger failed for %s", fill.symbol)
         if self.require_protective_orders and protective.get("sl") is None:
             logger.error("SL trigger missing after live entry; attempting emergency close for %s", fill.symbol)
             self.close_fill(
@@ -475,7 +495,7 @@ class LiveExecutionVenue:
             order_type={
                 "trigger": {
                     "isMarket": True,
-                    "triggerPx": str(self._round_price(trigger_price)),
+                    "triggerPx": self._round_price(trigger_price),
                     "tpsl": tpsl,
                 }
             },
