@@ -54,23 +54,34 @@ class LiveStateStore:
             current["orders"] = {
                 str(symbol).upper(): metadata
                 for symbol, metadata in orders.items()
-                if str(symbol).upper() in open_symbols
+                if str(symbol).upper() in open_symbols or _is_pending_entry_order(metadata)
             }
         else:
             existing_orders = current.get("orders", {})
             current["orders"] = {
                 str(symbol).upper(): metadata
                 for symbol, metadata in existing_orders.items()
-                if str(symbol).upper() in open_symbols
+                if str(symbol).upper() in open_symbols or _is_pending_entry_order(metadata)
             } if isinstance(existing_orders, dict) else {}
         self.save(current)
 
     def metadata_for_symbol(self, symbol: str) -> dict[str, Any] | None:
-        positions = self.load().get("positions", {})
+        payload = self.load()
+        positions = payload.get("positions", {})
         if not isinstance(positions, dict):
             return None
         metadata = positions.get(symbol.upper()) or positions.get(symbol)
         return metadata if isinstance(metadata, dict) else None
+
+    def pending_metadata_for_symbol(self, symbol: str) -> dict[str, Any] | None:
+        orders = self.load().get("orders", {})
+        if not isinstance(orders, dict):
+            return None
+        metadata = orders.get(symbol.upper()) or orders.get(symbol)
+        if not isinstance(metadata, dict):
+            return None
+        pending = metadata.get("pending_position")
+        return pending if isinstance(pending, dict) else None
 
 
 def default_live_state_path(pod: str) -> str:
@@ -96,6 +107,10 @@ def live_state_path_for_pod(pod: str, *, allow_global: bool = True) -> str:
 
 def _normalize_pod_name(pod: str) -> str:
     return str(pod).strip().lower().replace("-", "_")
+
+
+def _is_pending_entry_order(metadata: Any) -> bool:
+    return isinstance(metadata, dict) and isinstance(metadata.get("pending_position"), dict)
 
 
 def open_position_to_metadata(position: OpenPosition) -> dict[str, Any]:

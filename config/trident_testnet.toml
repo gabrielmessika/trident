@@ -36,14 +36,63 @@ ETH = "pod_a"
 BTC = "pod_c"
 SOL = "pod_c"
 
+[trident.risk]
+min_confidence = 0.30
+
+[trident.execution]
+live_max_order_notional_usd = 100.0
+live_require_protective_orders = false
+live_post_only_retry_on_upgrade = true
+live_post_only_buffer_bps = 2.0
+
+[trident.allocations.range_auction]
+pod_a = 0.05
+pod_b = 0.00
+pod_c = 0.05
+cash = 0.90
+
+[trident.allocations.dead_zone]
+pod_a = 0.05
+pod_b = 0.00
+pod_c = 0.05
+cash = 0.90
+
+[trident.allocations_cluster.index.range_auction]
+target_pct = 0.05
+
+[trident.allocations_cluster.index.dead_zone]
+target_pct = 0.05
+
+[trident.allocations_cluster.gold.range_auction]
+target_pct = 0.05
+
+[trident.allocations_cluster.gold.dead_zone]
+target_pct = 0.05
+
+[pod_a]
+allowed_setups = ["trend_pullback_long", "trend_pullback_short"]
+disabled_setups = ["bos_retest_short", "bos_retest_long", "liquidity_sweep_reclaim_short", "liquidity_sweep_reclaim_long", "vwap_reclaim_long"]
+blocked_regimes = []
+setup_allowed_regimes = ["TrendExpansion", "RangeAuction", "PanicSqueeze", "DeadZone"]
+min_setup_structure_score = 0.05
+setup_ema_tolerance_bps = 8.0
+risk_per_trade_pct = 0.00045
+
 [pod_c]
+cluster_aware_v2_enabled = false
 max_spread_bps = 18.0
 min_bucket_notional_usd = 25.0
 min_bucket_trade_count = 1
+min_confidence = 0.30
+min_trend_bps = 2.0
+min_structure_score = 0.05
+max_vwap_distance_bps = 18.0
+min_reclaim_distance_bps = 2.0
 min_activity_ratio = 0.35
+risk_per_trade_pct = 0.00060
 
 [pod_c.cluster_modes.index]
-allowed_setups = ["tradfi_continuation_long", "tradfi_continuation_short"]
+allowed_setups = ["tradfi_continuation_long", "tradfi_continuation_short", "tradfi_reclaim_long", "tradfi_reclaim_short"]
 
 [pod_c.cluster_modes.gold]
-allowed_setups = ["tradfi_continuation_long", "tradfi_continuation_short"]
+allowed_setups = ["tradfi_continuation_long", "tradfi_continuation_short", "tradfi_reclaim_long", "tradfi_reclaim_short"]

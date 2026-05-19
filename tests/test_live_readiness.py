@@ -19,6 +19,7 @@ from app.live.reconciliation import reconcile_exchange_state
 from app.live.state_store import LiveStateStore, open_position_from_metadata
 from app.portfolio.directional_state import DirectionalPortfolioState
 from app.settings import load_config
+from app.trident.types import TradePlan
 
 
 class _FakeLimiterStats:
@@ -88,6 +89,9 @@ class _FakePrivateInfoSdk:
 
 
 class _FakePrivateAccountClient:
+    def __init__(self, *, meta: dict[str, object] | None = None) -> None:
+        self.info_client = _FakeMetaInfoClient(meta or {"universe": []})
+
     def fetch_account_state(self, *, fills_lookback_hours: float = 24.0, **_: object):
         return parse_account_state(
             account_address="0x0000000000000000000000000000000000000000",
@@ -104,9 +108,18 @@ class _FakePrivateAccountClient:
         )
 
 
+class _FakeMetaInfoClient:
+    def __init__(self, meta: dict[str, object]) -> None:
+        self._meta = meta
+
+    def meta(self) -> dict[str, object]:
+        return self._meta
+
+
 class _FakeExchange:
-    def __init__(self, *, rate_limited: bool = False) -> None:
+    def __init__(self, *, rate_limited: bool = False, post_only_required: bool = False) -> None:
         self.rate_limited = rate_limited
+        self.post_only_required = post_only_required
         self.orders: list[dict[str, object]] = []
         self.cancels: list[tuple[str, int]] = []
 
@@ -127,6 +140,7 @@ class _FakeExchange:
                 "is_buy": is_buy,
                 "size": size,
                 "limit_px": limit_px,
+                "order_type": order_type,
                 "reduce_only": reduce_only,
             }
         )
@@ -136,6 +150,26 @@ class _FakeExchange:
                 "response": {
                     "type": "order",
                     "data": {"statuses": [{"error": "rate limit exceeded"}]},
+                },
+            }
+        if self.post_only_required and order_type != {"limit": {"tif": "Alo"}}:
+            return {
+                "status": "ok",
+                "response": {
+                    "type": "order",
+                    "data": {
+                        "statuses": [
+                            {"error": "Only post-only orders allowed immediately after network upgrade"}
+                        ]
+                    },
+                },
+            }
+        if self.post_only_required:
+            return {
+                "status": "ok",
+                "response": {
+                    "type": "order",
+                    "data": {"statuses": [{"resting": {"oid": 8}}]},
                 },
             }
         return {
@@ -526,6 +560,163 @@ class LiveReadinessTests(unittest.TestCase):
         )
         self.assertTrue(all(call["capacity"] == 7 for call in limiter.acquires))
         self.assertEqual(limiter.successes, [LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY] * 2)
+
+    def test_live_orders_use_hyperliquid_price_and_size_precision(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        exchange = _FakeExchange()
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "ETH", "szDecimals": 4}]}
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.open_fill(
+            symbol="ETH",
+            side="long",
+            mid_price=2140.45,
+            spread_bps=1.0,
+            notional_usd=100.0,
+            timestamp="2026-05-17T00:00:00Z",
+        )
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(exchange.orders[0]["limit_px"], 2142.2)
+        self.assertEqual(exchange.orders[0]["size"], 0.0466)
+
+    def test_live_protective_triggers_use_hyperliquid_price_precision(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        exchange = _FakeExchange()
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "ETH", "szDecimals": 4}]}
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.open_fill(
+            symbol="ETH",
+            side="long",
+            mid_price=2140.45,
+            spread_bps=1.0,
+            notional_usd=100.0,
+            timestamp="2026-05-17T00:00:00Z",
+            plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="test_mainnet_precision",
+                confidence=0.8,
+                target_notional_usd=100.0,
+                stop_bps=45.0,
+                time_stop_hours=6,
+                invalidation_price=2132.56789,
+            ),
+        )
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(exchange.orders[1]["limit_px"], 2132.6)
+        self.assertEqual(
+            exchange.orders[1]["order_type"],
+            {"trigger": {"isMarket": True, "triggerPx": "2132.6", "tpsl": "sl"}},
+        )
+
+    def test_live_open_retries_post_only_after_upgrade_and_tracks_pending_order(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        config.trident.execution.live_post_only_retry_on_upgrade = True
+        config.trident.execution.live_post_only_buffer_bps = 1.0
+        exchange = _FakeExchange(post_only_required=True)
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "BTC", "szDecimals": 5}]}
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.open_fill(
+            symbol="BTC",
+            side="long",
+            mid_price=100.0,
+            spread_bps=4.0,
+            notional_usd=50.0,
+            timestamp="2026-05-19T08:25:00Z",
+        )
+
+        self.assertIsNone(fill)
+        self.assertEqual(exchange.orders[0]["order_type"], {"limit": {"tif": "Ioc"}})
+        self.assertEqual(exchange.orders[1]["order_type"], {"limit": {"tif": "Alo"}})
+        self.assertEqual(exchange.orders[1]["limit_px"], 99.97)
+        self.assertEqual(venue.orders_by_symbol["BTC"]["entry_oid"], 8)
+        self.assertEqual(
+            venue.orders_by_symbol["BTC"]["pending_position"]["side"],  # type: ignore[index]
+            "long",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LiveStateStore(Path(tmpdir) / "live_state.json")
+            store.save_portfolio(DirectionalPortfolioState(), orders=venue.orders_by_symbol)
+            self.assertIn("BTC", store.load()["orders"])
+
+            portfolio = DirectionalPortfolioState()
+            report = reconcile_exchange_state(
+                account_state=parse_account_state(
+                    account_address="0x0000000000000000000000000000000000000000",
+                    user_state={
+                        "marginSummary": {
+                            "accountValue": "1000",
+                            "totalMarginUsed": "5",
+                        },
+                        "assetPositions": [
+                            {
+                                "position": {
+                                    "coin": "BTC",
+                                    "szi": "0.5",
+                                    "entryPx": "100",
+                                    "positionValue": "50",
+                                    "marginUsed": "5",
+                                    "unrealizedPnl": "0",
+                                    "leverage": {"type": "isolated", "value": 10},
+                                }
+                            }
+                        ],
+                    },
+                    spot_state={"balances": []},
+                    open_orders=[],
+                    frontend_open_orders=[],
+                    recent_fills=[],
+                ),
+                portfolio=portfolio,
+                state_store=store,
+            )
+            self.assertTrue(report.ready)
+            self.assertEqual(report.recovered_symbols, ["BTC"])
+            self.assertIn("BTC", portfolio.open_positions)
 
     def test_live_exchange_rate_limit_response_opens_shared_breaker(self) -> None:
         config = load_config("config/trident.toml")

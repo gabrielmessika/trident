@@ -4,7 +4,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any, Callable
 
 from app.execution.dry_run import DryRunFill
@@ -25,6 +25,7 @@ from app.trident.types import TradePlan
 
 logger = logging.getLogger(__name__)
 LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY = "exchange_action:live_order"
+POST_ONLY_UPGRADE_ERROR = "only post-only orders allowed immediately after network upgrade"
 
 
 @dataclass(slots=True)
@@ -102,8 +103,15 @@ class LiveExecutionVenue:
         self.require_protective_orders = bool(
             getattr(config.trident.execution, "live_require_protective_orders", True)
         )
+        self.post_only_retry_on_upgrade = bool(
+            getattr(config.trident.execution, "live_post_only_retry_on_upgrade", False)
+        )
+        self.post_only_buffer_bps = float(
+            getattr(config.trident.execution, "live_post_only_buffer_bps", 1.0)
+        )
         self.orders_by_symbol: dict[str, dict[str, object]] = {}
         self.last_block_reason_by_symbol: dict[str, str] = {}
+        self._size_decimals_by_symbol: dict[str, int] | None = None
 
     def _build_exchange_client(self) -> Any:
         try:
@@ -136,15 +144,22 @@ class LiveExecutionVenue:
         symbol = symbol.upper()
         if notional_usd <= 0 or mid_price <= 0:
             self.last_block_reason_by_symbol[symbol] = "invalid_notional_or_price"
+            logger.warning("Live open blocked for %s: invalid notional or price", symbol)
             return None
         if notional_usd > self.max_order_notional_usd:
             self.last_block_reason_by_symbol[symbol] = (
                 f"notional_above_live_cap:{notional_usd:.2f}>{self.max_order_notional_usd:.2f}"
             )
+            logger.warning(
+                "Live open blocked for %s: %s",
+                symbol,
+                self.last_block_reason_by_symbol[symbol],
+            )
             return None
         state = self.private_info_client.fetch_account_state(fills_lookback_hours=2.0)
         if self._has_exchange_exposure(state, symbol):
             self.last_block_reason_by_symbol[symbol] = "exchange_position_or_order_exists"
+            logger.warning("Live open blocked for %s: exchange exposure already exists", symbol)
             return None
         is_buy = side == "long"
         limit_px = self._limit_price(
@@ -153,7 +168,11 @@ class LiveExecutionVenue:
             action="open",
             slippage_bps=self.order_slippage_bps,
         )
-        size = self._size_from_notional(notional_usd, limit_px)
+        size = self._size_from_notional(notional_usd, limit_px, symbol=symbol)
+        if size <= 0:
+            self.last_block_reason_by_symbol[symbol] = "size_rounds_to_zero"
+            logger.warning("Live open blocked for %s: rounded size is zero", symbol)
+            return None
         cloid = self._new_cloid()
         result = self._submit_order(
             symbol=symbol,
@@ -163,8 +182,57 @@ class LiveExecutionVenue:
             reduce_only=False,
             cloid=cloid,
         )
+        if self._should_retry_post_only(result):
+            limit_px = self._post_only_limit_price(
+                mid_price,
+                side=side,
+                action="open",
+                spread_bps=spread_bps,
+            )
+            size = self._size_from_notional(notional_usd, limit_px, symbol=symbol)
+            if size <= 0:
+                self.last_block_reason_by_symbol[symbol] = "post_only_size_rounds_to_zero"
+                logger.warning("Live open blocked for %s: post-only rounded size is zero", symbol)
+                return None
+            result = self._submit_order(
+                symbol=symbol,
+                is_buy=is_buy,
+                size=size,
+                limit_px=limit_px,
+                reduce_only=False,
+                cloid=cloid,
+                order_type={"limit": {"tif": "Alo"}},
+            )
+            if result.status == "resting":
+                self._remember_pending_entry_order(
+                    symbol=symbol,
+                    side=side,
+                    size=size,
+                    limit_px=limit_px,
+                    notional_usd=notional_usd,
+                    timestamp=timestamp,
+                    cloid=cloid,
+                    result=result,
+                    plan=plan,
+                )
+                self.last_block_reason_by_symbol[symbol] = "entry_order_resting_post_only"
+                logger.warning(
+                    "Live open resting post-only for %s: oid=%s limit_px=%s size=%s",
+                    symbol,
+                    result.oid,
+                    limit_px,
+                    size,
+                )
+                return None
         if not result.filled:
             self.last_block_reason_by_symbol[symbol] = result.error or result.status
+            logger.warning(
+                "Live open not filled for %s: status=%s error=%s raw=%s",
+                symbol,
+                result.status,
+                result.error,
+                result.raw,
+            )
             return None
 
         actual_notional = float(result.filled_size) * result.avg_price
@@ -218,7 +286,7 @@ class LiveExecutionVenue:
             action="close",
             slippage_bps=self.close_slippage_bps,
         )
-        size = self._size_from_notional(notional_usd, limit_px)
+        size = self._size_from_notional(notional_usd, limit_px, symbol=symbol)
         cloid = self._new_cloid()
         result = self._submit_order(
             symbol=symbol,
@@ -288,6 +356,43 @@ class LiveExecutionVenue:
             self._record_exchange_action_success()
         return result
 
+    def _should_retry_post_only(self, result: LiveOrderResult) -> bool:
+        return (
+            self.post_only_retry_on_upgrade
+            and result.status == "error"
+            and POST_ONLY_UPGRADE_ERROR in str(result.error or "").lower()
+        )
+
+    def _remember_pending_entry_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size: float,
+        limit_px: float,
+        notional_usd: float,
+        timestamp: str | None,
+        cloid: str,
+        result: LiveOrderResult,
+        plan: TradePlan | None,
+    ) -> None:
+        self.orders_by_symbol[symbol] = {
+            "entry_oid": result.oid,
+            "entry_cloid": result.cloid or cloid,
+            "entry_status": result.status,
+            "entry_order_type": {"limit": {"tif": "Alo"}},
+            "entry_limit_px": limit_px,
+            "entry_size": size,
+            "pending_position": self._pending_position_metadata(
+                symbol=symbol,
+                side=side,
+                notional_usd=notional_usd,
+                timestamp=timestamp,
+                plan=plan,
+            ),
+            "last_open_response": result.raw,
+        }
+
     def _place_protective_orders(
         self,
         *,
@@ -345,13 +450,13 @@ class LiveExecutionVenue:
             symbol=symbol,
             is_buy=is_buy,
             size=size,
-            limit_px=self._round_wire(trigger_price),
+            limit_px=self._round_price(trigger_price),
             reduce_only=True,
             cloid=cloid,
             order_type={
                 "trigger": {
                     "isMarket": True,
-                    "triggerPx": str(self._round_wire(trigger_price)),
+                    "triggerPx": str(self._round_price(trigger_price)),
                     "tpsl": tpsl,
                 }
             },
@@ -446,24 +551,87 @@ class LiveExecutionVenue:
             sign = 1.0 if action == "open" else -1.0
         else:
             sign = -1.0 if action == "open" else 1.0
-        return self._round_wire(mid_price * (1.0 + sign * slippage_bps / 10_000.0))
+        return self._round_price(mid_price * (1.0 + sign * slippage_bps / 10_000.0))
 
-    def _size_from_notional(self, notional_usd: float, limit_px: float) -> float:
-        return self._round_wire(notional_usd / limit_px)
+    def _post_only_limit_price(
+        self,
+        mid_price: float,
+        *,
+        side: str,
+        action: str,
+        spread_bps: float,
+    ) -> float:
+        is_buy = (side == "long" and action == "open") or (
+            side == "short" and action == "close"
+        )
+        buffer_bps = max(float(spread_bps) / 2.0 + self.post_only_buffer_bps, 0.1)
+        sign = -1.0 if is_buy else 1.0
+        return self._round_price(mid_price * (1.0 + sign * buffer_bps / 10_000.0))
+
+    def _pending_position_metadata(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        notional_usd: float,
+        timestamp: str | None,
+        plan: TradePlan | None,
+    ) -> dict[str, object]:
+        if plan is None:
+            return {
+                "symbol": symbol,
+                "side": side,
+                "setup": "live_post_only_entry",
+                "confidence": 0.0,
+                "target_notional_usd": notional_usd,
+                "opened_at": timestamp,
+            }
+        return {
+            "symbol": plan.symbol,
+            "side": plan.side,
+            "setup": plan.setup,
+            "confidence": plan.confidence,
+            "target_notional_usd": plan.target_notional_usd,
+            "stop_bps": plan.stop_bps,
+            "time_stop_hours": plan.time_stop_hours,
+            "take_profit_bps": plan.take_profit_bps,
+            "break_even_trigger_bps": plan.break_even_trigger_bps,
+            "trailing_activation_bps": plan.trailing_activation_bps,
+            "trailing_distance_bps": plan.trailing_distance_bps,
+            "reentry_cooldown_minutes": plan.reentry_cooldown_minutes,
+            "margin_usd": plan.margin_usd,
+            "effective_leverage": plan.effective_leverage,
+            "risk_budget_usd": plan.risk_budget_usd,
+            "expected_loss_usd": plan.expected_loss_usd,
+            "invalidation_price": plan.invalidation_price,
+            "isolated": plan.isolated,
+            "setup_details": dict(plan.setup_details),
+            "opened_at": timestamp,
+        }
+
+    def _size_from_notional(
+        self,
+        notional_usd: float,
+        limit_px: float,
+        *,
+        symbol: str,
+    ) -> float:
+        decimals = self._size_decimals(symbol)
+        return self._round_size(notional_usd / limit_px, decimals=decimals)
 
     def _stop_price(self, plan: TradePlan, entry_price: float) -> float:
         if plan.invalidation_price and plan.invalidation_price > 0:
-            return self._round_wire(plan.invalidation_price)
+            return self._round_price(plan.invalidation_price)
         delta = plan.stop_bps / 10_000.0
         if plan.side == "long":
-            return self._round_wire(entry_price * (1.0 - delta))
-        return self._round_wire(entry_price * (1.0 + delta))
+            return self._round_price(entry_price * (1.0 - delta))
+        return self._round_price(entry_price * (1.0 + delta))
 
     def _take_profit_price(self, plan: TradePlan, entry_price: float) -> float:
         delta = plan.take_profit_bps / 10_000.0
         if plan.side == "long":
-            return self._round_wire(entry_price * (1.0 + delta))
-        return self._round_wire(entry_price * (1.0 - delta))
+            return self._round_price(entry_price * (1.0 + delta))
+        return self._round_price(entry_price * (1.0 - delta))
 
     def _new_cloid(self) -> str:
         millis = int(time.time() * 1000) & ((1 << 48) - 1)
@@ -472,6 +640,60 @@ class LiveExecutionVenue:
 
     def _round_wire(self, value: float) -> float:
         return float(f"{value:.8f}")
+
+    def _round_price(self, value: float) -> float:
+        try:
+            price = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return self._round_wire(value)
+        if price <= 0:
+            return 0.0
+        significant_quantum = Decimal("1e{}".format(price.adjusted() - 4))
+        rounded = price.quantize(significant_quantum, rounding=ROUND_HALF_UP)
+        if rounded.as_tuple().exponent < -6:
+            rounded = rounded.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+        return float(rounded)
+
+    def _round_size(self, value: float, *, decimals: int) -> float:
+        try:
+            size = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return self._round_wire(value)
+        if size <= 0:
+            return 0.0
+        bounded_decimals = max(0, min(int(decimals), 8))
+        quantum = Decimal("1").scaleb(-bounded_decimals)
+        return float(size.quantize(quantum, rounding=ROUND_DOWN))
+
+    def _size_decimals(self, symbol: str) -> int:
+        if self._size_decimals_by_symbol is None:
+            self._size_decimals_by_symbol = self._load_size_decimals()
+        return self._size_decimals_by_symbol.get(symbol.upper(), 8)
+
+    def _load_size_decimals(self) -> dict[str, int]:
+        try:
+            info_client = self.private_info_client.info_client
+            meta = info_client.meta() if hasattr(info_client, "meta") else None
+        except Exception as exc:
+            logger.warning("Unable to load Hyperliquid meta for size rounding: %s", exc)
+            return {}
+        if not isinstance(meta, dict):
+            return {}
+        universe = meta.get("universe", [])
+        if not isinstance(universe, list):
+            return {}
+        decimals_by_symbol: dict[str, int] = {}
+        for item in universe:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip().upper()
+            if not name:
+                continue
+            try:
+                decimals_by_symbol[name] = int(item.get("szDecimals", 8))
+            except (TypeError, ValueError):
+                continue
+        return decimals_by_symbol
 
 
 def parse_order_result(raw: object, *, cloid: str | None = None) -> LiveOrderResult:

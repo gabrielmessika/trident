@@ -5,6 +5,21 @@ from app.settings import load_config
 
 
 class SettingsConfigTests(unittest.TestCase):
+    def test_mainnet_config_keeps_live_safety_defaults(self) -> None:
+        config = load_config("config/trident.toml")
+
+        self.assertEqual(config.hyperliquid.info_url, "https://api.hyperliquid.xyz/info")
+        self.assertEqual(config.trident.risk.min_confidence, 0.50)
+        self.assertEqual(config.trident.execution.live_max_order_notional_usd, 50.0)
+        self.assertTrue(config.trident.execution.live_require_protective_orders)
+        self.assertFalse(config.trident.execution.live_post_only_retry_on_upgrade)
+        self.assertEqual(config.trident.execution.live_post_only_buffer_bps, 1.0)
+        self.assertEqual(config.pod_a.setup_allowed_regimes, ["TrendExpansion"])
+        self.assertEqual(config.pod_a.min_setup_structure_score, 0.40)
+        self.assertEqual(config.pod_a.setup_ema_tolerance_bps, 0.0)
+        self.assertTrue(config.pod_c.cluster_aware_v2_enabled)
+        self.assertEqual(config.pod_c.min_confidence, 0.66)
+
     def test_testnet_config_extends_main_config_and_switches_hyperliquid_network(self) -> None:
         config = load_config("config/trident_testnet.toml")
 
@@ -29,12 +44,44 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertEqual(config.trident.routing.symbol_pod_overrides["ETH"], "pod_a")
         self.assertTrue(config.pod_a.enabled)
         self.assertTrue(config.pod_c.enabled)
+        self.assertEqual(config.trident.risk.min_confidence, 0.30)
+        self.assertEqual(config.trident.execution.live_max_order_notional_usd, 100.0)
+        self.assertFalse(config.trident.execution.live_require_protective_orders)
+        self.assertTrue(config.trident.execution.live_post_only_retry_on_upgrade)
+        self.assertEqual(config.trident.execution.live_post_only_buffer_bps, 2.0)
+        self.assertEqual(config.trident.allocations.dead_zone.pod_a, 0.05)
+        self.assertEqual(config.trident.allocations.dead_zone.pod_c, 0.05)
+        self.assertEqual(
+            config.trident.allocations_cluster.clusters["index"].dead_zone.target_pct,
+            0.05,
+        )
+        self.assertEqual(
+            config.trident.allocations_cluster.clusters["gold"].dead_zone.target_pct,
+            0.05,
+        )
+        self.assertEqual(config.pod_a.blocked_regimes, [])
+        self.assertEqual(config.pod_a.min_setup_structure_score, 0.05)
+        self.assertEqual(config.pod_a.setup_ema_tolerance_bps, 8.0)
+        self.assertEqual(config.pod_a.risk_per_trade_pct, 0.00045)
+        self.assertIn("DeadZone", config.pod_a.setup_allowed_regimes)
+        self.assertIn("trend_pullback_short", config.pod_a.allowed_setups)
+        self.assertNotIn("trend_pullback_short", config.pod_a.disabled_setups)
+        self.assertFalse(config.pod_c.cluster_aware_v2_enabled)
         self.assertEqual(config.pod_c.max_spread_bps, 18.0)
         self.assertEqual(config.pod_c.min_bucket_notional_usd, 25.0)
         self.assertEqual(config.pod_c.min_bucket_trade_count, 1)
+        self.assertEqual(config.pod_c.min_confidence, 0.30)
+        self.assertEqual(config.pod_c.min_trend_bps, 2.0)
+        self.assertEqual(config.pod_c.min_structure_score, 0.05)
+        self.assertEqual(config.pod_c.risk_per_trade_pct, 0.00060)
         self.assertEqual(
             config.pod_c.cluster_modes["gold"].allowed_setups,
-            ["tradfi_continuation_long", "tradfi_continuation_short"],
+            [
+                "tradfi_continuation_long",
+                "tradfi_continuation_short",
+                "tradfi_reclaim_long",
+                "tradfi_reclaim_short",
+            ],
         )
 
 

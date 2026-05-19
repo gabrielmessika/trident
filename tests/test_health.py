@@ -692,6 +692,8 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("band-", html)
         self.assertIn("status-card-", html)
         self.assertIn("pod-card-", html)
+        self.assertIn("<dt>PnL réalisé</dt>", html)
+        self.assertIn("<dt>PnL latent</dt>", html)
         self.assertIn('data-refresh-seconds="10"', html)
         self.assertIn("network-chip", html)
         self.assertIn(">Mainnet</span>", html)

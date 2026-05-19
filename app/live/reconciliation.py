@@ -92,6 +92,24 @@ def reconcile_exchange_state(
             )
             report.recovered_symbols.append(symbol)
             continue
+        pending_metadata = state_store.pending_metadata_for_symbol(symbol)
+        if pending_metadata is not None and recover_known_positions:
+            metadata_side = str(pending_metadata.get("side", "")).lower()
+            if metadata_side in {"long", "short"} and metadata_side != exchange_position.side:
+                report.side_mismatches.append(symbol)
+                report.ready = False
+                continue
+            portfolio.open_positions[symbol] = open_position_from_metadata(
+                pending_metadata,
+                symbol=symbol,
+                side=exchange_position.side,
+                entry_price=exchange_position.entry_price,
+                target_notional_usd=exchange_position.notional_usd,
+                margin_usd=exchange_position.margin_used_usd,
+                leverage=exchange_position.leverage,
+            )
+            report.recovered_symbols.append(symbol)
+            continue
         external_metadata = _metadata_for_symbol(external_state_stores, symbol)
         if external_metadata is not None:
             metadata_side = str(external_metadata.get("side", "")).lower()

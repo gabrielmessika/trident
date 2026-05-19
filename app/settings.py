@@ -65,6 +65,8 @@ class ExecutionConfig:
     live_max_order_notional_usd: float = 50.0
     live_order_actions_per_minute: int = 12
     live_require_protective_orders: bool = True
+    live_post_only_retry_on_upgrade: bool = False
+    live_post_only_buffer_bps: float = 1.0
     routing_revoke_grace_minutes: int = 0
     routing_revoke_grace_minutes_by_symbol: dict[str, int] = field(default_factory=dict)
 
@@ -205,6 +207,9 @@ class PodAConfig:
     disabled_setups: list[str]
     blocked_regimes: list[str]
     allowed_setups_in_blocked_regimes: list[str]
+    setup_allowed_regimes: list[str] = field(default_factory=lambda: ["TrendExpansion"])
+    min_setup_structure_score: float = 0.40
+    setup_ema_tolerance_bps: float = 0.0
     guardrail_enabled: bool = False
     guardrail_lookback_trades: int = 3
     guardrail_min_closed_trades: int = 2
@@ -1352,6 +1357,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 live_require_protective_orders=bool(
                     execution_data.get("live_require_protective_orders", True)
                 ),
+                live_post_only_retry_on_upgrade=bool(
+                    execution_data.get("live_post_only_retry_on_upgrade", False)
+                ),
+                live_post_only_buffer_bps=float(
+                    execution_data.get("live_post_only_buffer_bps", 1.0)
+                ),
                 routing_revoke_grace_minutes=int(
                     execution_data.get("routing_revoke_grace_minutes", 0)
                 ),
@@ -1437,6 +1448,15 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             blocked_regimes=_str_list(pod_a_data.get("blocked_regimes", [])),
             allowed_setups_in_blocked_regimes=_str_list(
                 pod_a_data.get("allowed_setups_in_blocked_regimes", [])
+            ),
+            setup_allowed_regimes=_str_list(
+                pod_a_data.get("setup_allowed_regimes", ["TrendExpansion"])
+            ),
+            min_setup_structure_score=float(
+                pod_a_data.get("min_setup_structure_score", 0.40)
+            ),
+            setup_ema_tolerance_bps=float(
+                pod_a_data.get("setup_ema_tolerance_bps", 0.0)
             ),
             guardrail_enabled=bool(pod_a_data.get("guardrail_enabled", False)),
             guardrail_lookback_trades=int(

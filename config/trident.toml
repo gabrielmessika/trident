@@ -137,6 +137,8 @@ live_close_slippage_bps = 12.0
 live_max_order_notional_usd = 50.0
 live_order_actions_per_minute = 12
 live_require_protective_orders = true
+live_post_only_retry_on_upgrade = false
+live_post_only_buffer_bps = 1.0
 # Grace appliquee seulement quand un pod perd le droit d'ouvrir sur un symbol
 # et qu'il doit encore sortir proprement de la position existante.
 routing_revoke_grace_minutes = 60

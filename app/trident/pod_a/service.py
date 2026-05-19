@@ -578,20 +578,51 @@ class AnchorTrendService:
 
     def _is_long_setup(self, context: AnchorTrendContext) -> bool:
         return (
-            context.regime == "TrendExpansion"
-            and context.structure_score >= MIN_SETUP_STRUCTURE_SCORE
-            and context.price >= context.ema_fast >= context.ema_slow
+            self._setup_regime_allowed(context)
+            and context.structure_score >= self._min_setup_structure_score()
+            and self._ema_stack_bullish(context)
             and context.vwap_distance_bps >= -MAX_PULLBACK_DISTANCE_BPS
             and self._passes_indicator_vetoes(context, "long")
         )
 
     def _is_short_setup(self, context: AnchorTrendContext) -> bool:
         return (
-            context.regime == "TrendExpansion"
-            and context.structure_score <= -MIN_SETUP_STRUCTURE_SCORE
-            and context.price <= context.ema_fast <= context.ema_slow
+            self._setup_regime_allowed(context)
+            and context.structure_score <= -self._min_setup_structure_score()
+            and self._ema_stack_bearish(context)
             and context.vwap_distance_bps <= MAX_PULLBACK_DISTANCE_BPS
             and self._passes_indicator_vetoes(context, "short")
+        )
+
+    def _setup_regime_allowed(self, context: AnchorTrendContext) -> bool:
+        allowed = {
+            item.strip()
+            for item in self._config.pod_a.setup_allowed_regimes
+            if item.strip()
+        }
+        return not allowed or context.regime in allowed
+
+    def _min_setup_structure_score(self) -> float:
+        return max(float(self._config.pod_a.min_setup_structure_score), 0.0)
+
+    def _ema_tolerance(self, context: AnchorTrendContext) -> float:
+        return max(context.price, 0.0) * max(
+            float(self._config.pod_a.setup_ema_tolerance_bps),
+            0.0,
+        ) / 10_000.0
+
+    def _ema_stack_bullish(self, context: AnchorTrendContext) -> bool:
+        tolerance = self._ema_tolerance(context)
+        return (
+            context.price + tolerance >= context.ema_fast
+            and context.ema_fast + tolerance >= context.ema_slow
+        )
+
+    def _ema_stack_bearish(self, context: AnchorTrendContext) -> bool:
+        tolerance = self._ema_tolerance(context)
+        return (
+            context.price <= context.ema_fast + tolerance
+            and context.ema_fast <= context.ema_slow + tolerance
         )
 
     def _setup_allowed_for_symbol(self, setup: str, symbol: str | None) -> bool:
@@ -702,11 +733,11 @@ class AnchorTrendService:
         if abs(context.funding_rate) > max_abs_funding_rate_for_cluster(context.market_cluster):
             reasons.append("funding_too_extreme")
         if side == "long":
-            if context.regime != "TrendExpansion":
+            if not self._setup_regime_allowed(context):
                 reasons.append("regime_not_trend_expansion")
-            if context.structure_score < MIN_SETUP_STRUCTURE_SCORE:
+            if context.structure_score < self._min_setup_structure_score():
                 reasons.append("structure_too_weak_for_long")
-            if not (context.price >= context.ema_fast >= context.ema_slow):
+            if not self._ema_stack_bullish(context):
                 reasons.append("ema_stack_not_bullish")
             if context.vwap_distance_bps < -MAX_PULLBACK_DISTANCE_BPS:
                 reasons.append("pullback_too_deep")
@@ -720,11 +751,11 @@ class AnchorTrendService:
                 if context.stoch_rsi_k >= 0.94 and context.cci20 >= 180.0:
                     reasons.append("market_overextended")
         else:
-            if context.regime != "TrendExpansion":
+            if not self._setup_regime_allowed(context):
                 reasons.append("regime_not_trend_expansion")
-            if context.structure_score > -MIN_SETUP_STRUCTURE_SCORE:
+            if context.structure_score > -self._min_setup_structure_score():
                 reasons.append("structure_too_weak_for_short")
-            if not (context.price <= context.ema_fast <= context.ema_slow):
+            if not self._ema_stack_bearish(context):
                 reasons.append("ema_stack_not_bearish")
             if context.vwap_distance_bps > MAX_PULLBACK_DISTANCE_BPS:
                 reasons.append("pullback_too_deep")
