@@ -20,12 +20,22 @@ class SettingsConfigTests(unittest.TestCase):
             "./runtime/hyperliquid_testnet_rate_limits.json",
         )
         self.assertEqual(config.hyperliquid.observation_universe, ["BTC", "ETH", "SOL"])
+        self.assertEqual(config.hyperliquid.tradable_max_spread_bps, 25.0)
+        self.assertEqual(config.hyperliquid.tradable_min_bucket_notional_usd, 25.0)
+        self.assertEqual(config.hyperliquid.tradable_min_bucket_trade_count, 1)
         self.assertEqual(config.hyperliquid.market_cluster_overrides["BTC"], "index")
         self.assertEqual(config.hyperliquid.market_cluster_overrides["SOL"], "gold")
         self.assertEqual(config.trident.routing.symbol_pod_overrides["BTC"], "pod_c")
         self.assertEqual(config.trident.routing.symbol_pod_overrides["ETH"], "pod_a")
         self.assertTrue(config.pod_a.enabled)
         self.assertTrue(config.pod_c.enabled)
+        self.assertEqual(config.pod_c.max_spread_bps, 18.0)
+        self.assertEqual(config.pod_c.min_bucket_notional_usd, 25.0)
+        self.assertEqual(config.pod_c.min_bucket_trade_count, 1)
+        self.assertEqual(
+            config.pod_c.cluster_modes["gold"].allowed_setups,
+            ["tradfi_continuation_long", "tradfi_continuation_short"],
+        )
 
 
 if __name__ == "__main__":

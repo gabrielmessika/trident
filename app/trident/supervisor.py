@@ -1825,11 +1825,47 @@ class TridentSupervisor:
                     pod.value,
                 )
                 continue
+            if not self._routing_override_symbol_allowed_for_pod(symbol, pod):
+                logger.warning(
+                    "Ignoring routing override outside pod cluster scope; symbol=%s target=%s cluster=%s",
+                    symbol,
+                    pod.value,
+                    cluster_for_symbol(self.config, symbol),
+                )
+                continue
             symbols_by_pod.setdefault(pod, []).append(symbol)
         return {
             pod: sorted(symbols)
             for pod, symbols in symbols_by_pod.items()
         }
+
+    def _routing_override_symbol_allowed_for_pod(self, symbol: str, pod: PodName) -> bool:
+        if pod == PodName.POD_C:
+            return self.pod_c_service.is_eligible_symbol(
+                symbol,
+                cluster_for_symbol(self.config, symbol),
+            )
+        if pod == PodName.POD_A:
+            return self._override_symbol_matches_allowed_clusters(
+                symbol,
+                self.config.pod_a.allowed_market_clusters,
+            )
+        if pod == PodName.POD_B:
+            return self._override_symbol_matches_allowed_clusters(
+                symbol,
+                self.config.pod_b.allowed_market_clusters,
+            )
+        return False
+
+    def _override_symbol_matches_allowed_clusters(
+        self,
+        symbol: str,
+        allowed_clusters: list[str],
+    ) -> bool:
+        cluster_scope = normalize_cluster_names(allowed_clusters)
+        if not cluster_scope:
+            return False
+        return cluster_for_symbol(self.config, symbol) in cluster_scope
 
     def _log_pod_b_sync_changes(
         self,

@@ -16,6 +16,11 @@ pod_b_feature_output_dir = "./data/live_features_testnet/pod_b"
 # afin de tester l'architecture A/C sans dépendre des marchés XYZ mainnet.
 observation_universe = ["BTC", "ETH", "SOL"]
 default_coins = ["BTC", "ETH", "SOL"]
+# Le testnet HL est beaucoup moins liquide que le mainnet; ces seuils
+# gardent le smoke A/C vivant sans toucher aux gates mainnet.
+tradable_max_spread_bps = 25.0
+tradable_min_bucket_notional_usd = 25.0
+tradable_min_bucket_trade_count = 1
 
 [hyperliquid.market_cluster_overrides]
 BTC = "index"
@@ -30,3 +35,15 @@ gold = ["SOL"]
 ETH = "pod_a"
 BTC = "pod_c"
 SOL = "pod_c"
+
+[pod_c]
+max_spread_bps = 18.0
+min_bucket_notional_usd = 25.0
+min_bucket_trade_count = 1
+min_activity_ratio = 0.35
+
+[pod_c.cluster_modes.index]
+allowed_setups = ["tradfi_continuation_long", "tradfi_continuation_short"]
+
+[pod_c.cluster_modes.gold]
+allowed_setups = ["tradfi_continuation_long", "tradfi_continuation_short"]

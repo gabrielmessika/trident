@@ -37,6 +37,8 @@ Options:
   --output-dir <path>           Dossier de revue local. Defaut: <local-dir>/reviews/<timestamp>
   --log-lines N                 Nombre de lignes de logs Docker a rapatrier. Defaut: 300
   --snapshot-max-age-minutes N  Seuil de fraicheur pour la revue. Defaut: 15
+  --skip-replay-input           Ne concatene pas les snapshots en input full_bot_replay
+  --skip-hip4-review            Ne lance pas la revue HIP-4 lourde pendant la revue locale
   --skip-review                 Ne lance pas la revue locale apres fetch
   --dry-run                     Affiche ce qui serait fait sans telecharger
   -h, --help                    Affiche cette aide
@@ -50,6 +52,8 @@ LOGS_ONLY=""
 SNAPSHOTS_ONLY=""
 REVIEW_ONLY=""
 SKIP_REVIEW=""
+SKIP_REPLAY_INPUT="${TRIDENT_SKIP_REPLAY_INPUT:-}"
+SKIP_HIP4_REVIEW="${TRIDENT_SKIP_HIP4_REVIEW:-}"
 DRY_RUN=""
 LOG_LINES=300
 SNAPSHOT_MAX_AGE_MINUTES=15
@@ -83,6 +87,8 @@ while [[ $# -gt 0 ]]; do
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         --log-lines) LOG_LINES="$2"; shift 2 ;;
         --snapshot-max-age-minutes) SNAPSHOT_MAX_AGE_MINUTES="$2"; shift 2 ;;
+        --skip-replay-input) SKIP_REPLAY_INPUT="true"; shift ;;
+        --skip-hip4-review) SKIP_HIP4_REVIEW="true"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) error "Option inconnue: $1"; usage; exit 1 ;;
     esac
@@ -162,6 +168,19 @@ run_install_command() {
     fi
 
     "$@"
+}
+
+human_bytes() {
+    awk -v bytes="$1" 'BEGIN {
+        split("B KiB MiB GiB TiB", units, " ");
+        size = bytes + 0;
+        unit = 1;
+        while (size >= 1024 && unit < 5) {
+            size /= 1024;
+            unit++;
+        }
+        printf "%.1f %s", size, units[unit];
+    }'
 }
 
 install_rsync_if_missing() {
@@ -503,6 +522,11 @@ fetch_funding_history() {
 prepare_backtest_inputs() {
     info "Preparation d'un input local pret pour full_bot_replay..."
 
+    if [[ "${SKIP_REPLAY_INPUT}" == "true" ]]; then
+        warn "Preparation de l'input full-bot skippee (--skip-replay-input)"
+        return
+    fi
+
     local snapshot_files
     snapshot_files="$(find "${SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | sort)"
     if [[ -z "${snapshot_files}" ]]; then
@@ -516,9 +540,27 @@ prepare_backtest_inputs() {
         return
     fi
 
-    find "${SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | sort | while IFS= read -r file_path; do
-        cat "${file_path}"
-    done > "${FULL_BOT_REPLAY_INPUT}"
+    local snapshot_count total_bytes total_human tmp_input processed
+    snapshot_count="$(printf '%s\n' "${snapshot_files}" | wc -l | tr -d ' ')"
+    total_bytes="$(
+        find "${SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' -printf '%s\n' \
+            | awk '{sum += $1} END {printf "%.0f", sum}'
+    )"
+    total_human="$(human_bytes "${total_bytes}")"
+    tmp_input="${FULL_BOT_REPLAY_INPUT}.tmp"
+    processed=0
+
+    info "Concatenation de ${snapshot_count} snapshot(s) (~${total_human}); cela peut prendre un peu sur les gros fetchs."
+    rm -f "${tmp_input}"
+    : > "${tmp_input}"
+
+    while IFS= read -r file_path; do
+        processed=$((processed + 1))
+        info "  merge ${processed}/${snapshot_count}: $(basename "${file_path}")"
+        cat "${file_path}" >> "${tmp_input}"
+    done <<< "${snapshot_files}"
+
+    mv "${tmp_input}" "${FULL_BOT_REPLAY_INPUT}"
 
     local merged_lines
     merged_lines="$(wc -l < "${FULL_BOT_REPLAY_INPUT}" | tr -d ' ')"
@@ -596,6 +638,9 @@ run_review() {
         --snapshot-max-age-minutes "${SNAPSHOT_MAX_AGE_MINUTES}"
         --log-lines "${LOG_LINES}"
     )
+    if [[ "${SKIP_HIP4_REVIEW}" == "true" ]]; then
+        review_cmd+=(--skip-hip4-review)
+    fi
 
     if [[ "${DRY_RUN}" == "true" ]]; then
         printf '  [dry-run] %q ' "${review_cmd[@]}"
@@ -632,12 +677,15 @@ fetch_api_snapshot
 if [[ "${LOGS_ONLY}" != "true" ]]; then
     fetch_snapshots
     fetch_funding_history
-    prepare_backtest_inputs
 fi
 
 if [[ "${SNAPSHOTS_ONLY}" != "true" ]]; then
     fetch_logs_and_runtime
     fetch_docker_logs
+fi
+
+if [[ "${LOGS_ONLY}" != "true" ]]; then
+    prepare_backtest_inputs
 fi
 
 run_review

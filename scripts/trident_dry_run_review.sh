@@ -29,6 +29,7 @@ Options:
   --output-dir <path>           Repertoire local de sortie. Defaut: runtime/reviews/<timestamp>
   --snapshot-max-age-minutes N  Age max du dernier snapshot pour etre considere frais. Defaut: 15
   --log-lines N                 Nombre de lignes de logs a recuperer par service. Defaut: 120
+  --skip-hip4-review            Ne lance pas la revue HIP-4 outcome, utile pour diagnostiquer A/C vite
   -h, --help                    Affiche cette aide
 EOF
 }
@@ -42,6 +43,7 @@ LOG_LINES=120
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
 OUTPUT_DIR=""
 LOCAL_DIR=""
+SKIP_HIP4_REVIEW="${TRIDENT_SKIP_HIP4_REVIEW:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -76,6 +78,10 @@ while [ $# -gt 0 ]; do
         --log-lines)
             LOG_LINES="$2"
             shift 2
+            ;;
+        --skip-hip4-review)
+            SKIP_HIP4_REVIEW="true"
+            shift
             ;;
         -h|--help)
             usage
@@ -195,7 +201,10 @@ for name in targets:
 outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 PY
 
-    python3 - "${log_dir}" "${RAW_DIR}/hip4_files.txt" <<'PY'
+    if [ "${SKIP_HIP4_REVIEW}" = "true" ]; then
+        printf 'skipped\n' > "${RAW_DIR}/hip4_files.txt"
+    else
+        python3 - "${log_dir}" "${RAW_DIR}/hip4_files.txt" <<'PY'
 from pathlib import Path
 import sys
 
@@ -223,6 +232,7 @@ for directory in ("hip4_outcome_mainnet_paper", "hip4_outcome_testnet", "hip4_ou
         lines.append(f"logs/{directory}/{name}|{line_count}|{int(path.stat().st_mtime)}")
 outfile.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 PY
+    fi
 
     if [ -f "${runtime_dir}/pod_b_live_status.json" ]; then
         printf 'present\n' > "${RAW_DIR}/pod_b_runtime_present.txt"
@@ -316,6 +326,12 @@ capture_remote() {
 }
 
 run_hip4_outcome_run_review() {
+    if [ "${SKIP_HIP4_REVIEW}" = "true" ]; then
+        warn "Review HIP-4 outcome skippee (--skip-hip4-review)"
+        printf 'skipped\n' > "${HIP4_RUN_REVIEW_STATUS}"
+        return 0
+    fi
+
     if [ -z "${LOCAL_DIR}" ] || [ ! -d "${LOCAL_DIR}/logs" ]; then
         printf 'skipped:no_local_hip4_logs\n' > "${HIP4_RUN_REVIEW_STATUS}"
         return 0
@@ -391,7 +407,11 @@ else
     capture_remote "hip4_outcome_mainnet.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome-mainnet"
     capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && find data/live_snapshots -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
     capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
-    capture_remote "hip4_files.txt" "cd '${REMOTE_DIR}' && for d in logs/hip4_outcome_mainnet_paper logs/hip4_outcome_testnet logs/hip4_outcome_mainnet; do for f in \"\$d\"/decisions.jsonl \"\$d\"/opportunities.csv \"\$d\"/short_expiry_features.csv \"\$d\"/edge_decay.csv \"\$d\"/latency_stats.csv \"\$d\"/daily_summary.csv \"\$d\"/market_observations.jsonl \"\$d\"/settlements.csv \"\$d\"/trades.csv; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done; done"
+    if [ "${SKIP_HIP4_REVIEW}" = "true" ]; then
+        printf 'skipped\n' > "${RAW_DIR}/hip4_files.txt"
+    else
+        capture_remote "hip4_files.txt" "cd '${REMOTE_DIR}' && for d in logs/hip4_outcome_mainnet_paper logs/hip4_outcome_testnet logs/hip4_outcome_mainnet; do for f in \"\$d\"/decisions.jsonl \"\$d\"/opportunities.csv \"\$d\"/short_expiry_features.csv \"\$d\"/edge_decay.csv \"\$d\"/latency_stats.csv \"\$d\"/daily_summary.csv \"\$d\"/market_observations.jsonl \"\$d\"/settlements.csv \"\$d\"/trades.csv; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done; done"
+    fi
     capture_remote "pod_b_runtime_present.txt" "cd '${REMOTE_DIR}' && if [ -f logs/pod_b_live_status.json ]; then echo present; else echo missing; fi"
     capture_remote "api_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} trident-api 2>&1"
     capture_remote "pod_a_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-a-live 2>&1"

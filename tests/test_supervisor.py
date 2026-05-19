@@ -132,6 +132,55 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(snapshot["pods"]["pod_b"]["candidate_symbols"], ["GLD"])
         self.assertEqual(snapshot["pods"]["pod_c"]["candidate_symbols"], ["SPY"])
 
+    def test_supervisor_rejects_pod_c_crypto_routing_override(self) -> None:
+        self.config.hyperliquid.observation_universe = ["BTC"]
+        self.config.pod_a.enabled = True
+        self.config.pod_c.enabled = True
+        self.config.trident.routing.symbol_pod_overrides = {"BTC": "pod_c"}
+
+        supervisor = TridentSupervisor(
+            config=self.config,
+            profile="trident",
+            mode="observation",
+        )
+        supervisor.apply_regime_snapshot(
+            RegimeSnapshot(
+                ready=True,
+                adx=30.0,
+                atr_ratio=1.1,
+                range_width_bps=140.0,
+                structure_score=0.45,
+            )
+        )
+        supervisor.refresh_symbol_routing(
+            [
+                SymbolMarketSnapshot(
+                    symbol="BTC",
+                    price=68000.0,
+                    ema_fast=68100.0,
+                    ema_slow=67950.0,
+                    vwap_distance_bps=-3.0,
+                    structure_score=0.4,
+                    funding_rate=0.0,
+                    spread_bps=1.0,
+                    btc_aligned=True,
+                    book_imbalance=0.05,
+                    trade_flow_bias=0.04,
+                    bucket_volume=120.0,
+                    bucket_trade_count=100,
+                    bucket_range_bps=35.0,
+                    market_cluster="crypto",
+                )
+            ]
+        )
+
+        snapshot = supervisor.snapshot()
+        btc_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "BTC")
+        self.assertEqual(snapshot["pods"]["pod_a"]["owned_symbols"], ["BTC"])
+        self.assertEqual(snapshot["pods"]["pod_c"]["candidate_symbols"], [])
+        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], [])
+        self.assertEqual(btc_routing["owner"], "pod_a")
+
     def test_supervisor_keeps_active_symbol_in_managed_scope_when_unassigned(self) -> None:
         self.config.hyperliquid.observation_universe = ["BTC"]
         self.config.pod_a.enabled = True
@@ -1488,10 +1537,11 @@ class SupervisorTests(unittest.TestCase):
 
     def test_supervisor_applies_symbol_routing_override_to_pod_c(self) -> None:
         self.config.pod_c.enabled = True
+        self.config.hyperliquid.observation_universe = ["SPY"]
         self.config.trident.allocations.trend_expansion.pod_a = 0.75
         self.config.trident.allocations.trend_expansion.pod_b = 0.15
         self.config.trident.allocations.trend_expansion.pod_c = 0.10
-        self.config.trident.routing.symbol_pod_overrides["BTC"] = "pod_c"
+        self.config.trident.routing.symbol_pod_overrides["SPY"] = "pod_c"
         supervisor = TridentSupervisor(
             config=self.config,
             profile="trident",
@@ -1509,15 +1559,18 @@ class SupervisorTests(unittest.TestCase):
         supervisor.refresh_symbol_routing(
             [
                 SymbolMarketSnapshot(
-                    symbol="BTC",
-                    price=68000.0,
-                    ema_fast=68180.0,
-                    ema_slow=67920.0,
+                    symbol="SPY",
+                    price=510.0,
+                    ema_fast=511.8,
+                    ema_slow=508.9,
                     vwap_distance_bps=-4.0,
                     structure_score=0.66,
                     funding_rate=0.0001,
                     spread_bps=0.8,
-                    btc_aligned=True,
+                    btc_aligned=False,
+                    market_cluster="index",
+                    cluster_aligned=True,
+                    cluster_leader="SPY",
                     book_imbalance=0.07,
                     trade_flow_bias=0.05,
                     bucket_volume=120.0,
@@ -1528,25 +1581,25 @@ class SupervisorTests(unittest.TestCase):
         )
 
         snapshot = supervisor.snapshot()
-        btc_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "BTC")
-        btc_state = next(
-            item for item in snapshot["local_regime_by_symbol"] if item["symbol"] == "BTC"
+        spy_routing = next(item for item in snapshot["symbol_routing"] if item["symbol"] == "SPY")
+        spy_state = next(
+            item for item in snapshot["local_regime_by_symbol"] if item["symbol"] == "SPY"
         )
-        btc_ownership = next(
-            item for item in snapshot["symbol_ownership"] if item["symbol"] == "BTC"
+        spy_ownership = next(
+            item for item in snapshot["symbol_ownership"] if item["symbol"] == "SPY"
         )
 
-        self.assertEqual(snapshot["pods"]["pod_c"]["candidate_symbols"], ["BTC"])
-        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["BTC"])
-        self.assertEqual(btc_routing["owner"], "pod_c")
-        self.assertEqual(btc_routing["mode"], "manual_override")
-        self.assertTrue(btc_routing["override_active"])
-        self.assertEqual(btc_routing["override_owner"], "pod_c")
-        self.assertIn("manual_override", btc_routing["reason"])
-        self.assertTrue(btc_state["override_active"])
-        self.assertEqual(btc_state["override_owner"], "pod_c")
-        self.assertTrue(btc_ownership["override_active"])
-        self.assertEqual(btc_ownership["override_owner"], "pod_c")
+        self.assertEqual(snapshot["pods"]["pod_c"]["candidate_symbols"], ["SPY"])
+        self.assertEqual(snapshot["pods"]["pod_c"]["owned_symbols"], ["SPY"])
+        self.assertEqual(spy_routing["owner"], "pod_c")
+        self.assertEqual(spy_routing["mode"], "manual_override")
+        self.assertTrue(spy_routing["override_active"])
+        self.assertEqual(spy_routing["override_owner"], "pod_c")
+        self.assertIn("manual_override", spy_routing["reason"])
+        self.assertTrue(spy_state["override_active"])
+        self.assertEqual(spy_state["override_owner"], "pod_c")
+        self.assertTrue(spy_ownership["override_active"])
+        self.assertEqual(spy_ownership["override_owner"], "pod_c")
 
     def test_supervisor_builds_pod_c_allocations_from_cluster_budgets(self) -> None:
         self.config.pod_a.enabled = False

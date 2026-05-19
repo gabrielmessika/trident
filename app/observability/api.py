@@ -4911,6 +4911,43 @@ def _control_center_html(
             return str(pod_cfg["runtime_mode"])
         return str(snapshot.get("mode") or "-")
 
+    def normalized_network(value: object) -> str:
+        normalized = str(value or "").strip().lower()
+        if "testnet" in normalized:
+            return "testnet"
+        if "mainnet" in normalized:
+            return "mainnet"
+        return normalized if normalized in {"mainnet", "testnet"} else "-"
+
+    def pod_network(pod_name: str) -> str:
+        if pod_name in {"pod_a", "pod_c"}:
+            return normalized_network(exchange_network)
+        payloads = [
+            snapshot.get(f"{pod_name}_runtime"),
+            snapshot.get(f"{pod_name}_status"),
+            snapshot.get("pod_b_status") if pod_name == "pod_b" else None,
+        ]
+        for payload in payloads:
+            if not isinstance(payload, dict):
+                continue
+            if pod_name == "pod_b" and not runtime_status_is_fresh(payload):
+                continue
+            for key in ("network", "exchange_network", "info_url", "logs_dir", "status_path"):
+                candidate = normalized_network(payload.get(key))
+                if candidate in {"mainnet", "testnet"}:
+                    return candidate
+            if str(payload.get("mode") or "").strip().lower() == "testnet":
+                return "testnet"
+        return normalized_network(exchange_network)
+
+    def network_label(network: object) -> str:
+        normalized = normalized_network(network)
+        if normalized == "testnet":
+            return "Testnet"
+        if normalized == "mainnet":
+            return "Mainnet"
+        return "-"
+
     def mode_tone(mode: object) -> str:
         normalized = str(mode or "").lower()
         if normalized == "live":
@@ -4978,6 +5015,7 @@ def _control_center_html(
             "badge": badge,
             "comment": comment,
             "mode": runtime_mode(pod_name),
+            "network": pod_network(pod_name),
             "process_state": process_state,
             "owned_symbols": [str(symbol) for symbol in owned_symbols],
             "target_pct": float(
@@ -5367,6 +5405,7 @@ def _control_center_html(
             f"<div><h3>{escape(str(summary['label']))}</h3><p>{escape(str(summary['comment']))}</p></div>"
             "</div>"
             f"<div class='pod-card-meta'>{_status_badge(str(summary['tone']), str(summary['badge']))}"
+            f"<span class='network-chip network-chip-{escape(normalized_network(summary['network']))}'>{escape(network_label(summary['network']))}</span>"
             f"<span class='mode-chip mode-chip-{escape(mode_tone(summary['mode']))}'>Mode {escape(str(summary['mode']))}</span></div>"
             "<dl class='pod-facts'>"
             f"<div><dt>Symbols</dt><dd>{symbols}</dd></div>"
@@ -5589,10 +5628,13 @@ def _control_center_html(
     .hero {{ padding: 18px; display: grid; gap: 14px; }}
     .hero h1 {{ font-size: 2rem; line-height: 1.1; }}
     .chip-row, .hero-links, .link-row, .filter-row, .tab-nav {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
-    .chip, .mode-chip {{ display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 0.9rem; font-weight: 800; }}
+    .chip, .mode-chip, .network-chip {{ display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 0.9rem; font-weight: 800; }}
     .mode-chip-good {{ background: var(--good-soft); color: var(--good); }}
     .mode-chip-warn {{ background: var(--warn-soft); color: var(--warn); }}
     .mode-chip-neutral {{ background: var(--neutral-soft); color: var(--neutral); }}
+    .network-chip-mainnet {{ background: #e0f2fe; color: #075985; }}
+    .network-chip-testnet {{ background: #fef3c7; color: #92400e; }}
+    .network-chip-- {{ background: var(--neutral-soft); color: var(--neutral); }}
     .badge {{ display: inline-block; padding: 5px 9px; border-radius: 999px; font-size: 0.86rem; font-weight: 800; }}
     .badge-good {{ background: var(--good-soft); color: var(--good); }}
     .badge-warn {{ background: var(--warn-soft); color: var(--warn); }}
@@ -5702,7 +5744,61 @@ def _control_center_html(
         return validTabs.has(tabName) ? tabName : body.dataset.defaultTab || "status";
       }}
 
-      function setTab(tabName, updateHash = true) {{
+      function activeTabName() {{
+        const activeButton = buttons.find((button) => button.classList.contains("is-active"));
+        return normalizedTab(activeButton ? activeButton.dataset.tabButton : (window.location.hash || "").replace("#", ""));
+      }}
+
+      function scrollStorageKey(tabName) {{
+        return `trident:scroll:${{window.location.pathname}}:${{normalizedTab(tabName)}}`;
+      }}
+
+      function lastTabStorageKey() {{
+        return `trident:tab:${{window.location.pathname}}`;
+      }}
+
+      function saveScrollPosition(tabName = activeTabName()) {{
+        try {{
+          window.sessionStorage.setItem(scrollStorageKey(tabName), String(window.scrollY || 0));
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+
+      function saveActiveTab(tabName) {{
+        try {{
+          window.sessionStorage.setItem(lastTabStorageKey(), normalizedTab(tabName));
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+
+      function savedTabName() {{
+        try {{
+          return normalizedTab(window.sessionStorage.getItem(lastTabStorageKey()) || "");
+        }} catch (_error) {{
+          return body.dataset.defaultTab || "status";
+        }}
+      }}
+
+      function restoreScrollPosition(tabName = activeTabName()) {{
+        try {{
+          const raw = window.sessionStorage.getItem(scrollStorageKey(tabName));
+          if (raw === null) return;
+          const next = Number(raw);
+          if (!Number.isFinite(next) || next < 0) return;
+          window.requestAnimationFrame(() => {{
+            window.scrollTo(0, next);
+          }});
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+
+      function setTab(tabName, updateHash = true, remember = true) {{
+        if (remember) {{
+          saveScrollPosition();
+        }}
         const next = normalizedTab(tabName);
         buttons.forEach((button) => {{
           const active = button.dataset.tabButton === next;
@@ -5714,6 +5810,9 @@ def _control_center_html(
         }});
         if (updateHash) {{
           history.replaceState(null, "", `#${{next}}`);
+        }}
+        if (remember) {{
+          saveActiveTab(next);
         }}
       }}
 
@@ -5742,11 +5841,22 @@ def _control_center_html(
           refreshFilterRows();
         }});
       }});
-      setTab((window.location.hash || "").replace("#", "") || body.dataset.defaultTab || "status", false);
+      const hashTab = (window.location.hash || "").replace("#", "");
+      const initialTab = hashTab || savedTabName() || body.dataset.defaultTab || "status";
+      setTab(initialTab, false, false);
       refreshFilterRows();
-      window.addEventListener("hashchange", () => setTab((window.location.hash || "").replace("#", ""), false));
+      restoreScrollPosition(initialTab);
+      window.addEventListener("beforeunload", () => saveScrollPosition());
+      window.addEventListener("hashchange", () => {{
+        const next = (window.location.hash || "").replace("#", "");
+        if (validTabs.has(next)) {{
+          setTab(next, false);
+          restoreScrollPosition(next);
+        }}
+      }});
       if (Number.isFinite(refreshSeconds) && refreshSeconds > 0) {{
         window.setTimeout(() => {{
+          saveScrollPosition();
           const target = `${{window.location.pathname}}${{window.location.search}}${{window.location.hash}}`;
           window.location.replace(target);
         }}, refreshSeconds * 1000);
