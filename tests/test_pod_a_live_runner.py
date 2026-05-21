@@ -3,10 +3,12 @@ import json
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from app.hyperliquid.private_state import parse_account_state
 from app.live.pod_a_live_runner import PodALiveRunner
+from app.live.state_store import LiveStateStore
 from app.settings import load_config
 from app.trident.types import TradePlan
 
@@ -59,6 +61,32 @@ class _FakeInfoClient:
             for symbol, price in self._mids.items()
             if str(symbol).strip().upper() in requested
         }
+
+
+class _FakePrivateClient:
+    def __init__(self, account_state: object) -> None:
+        self.account_state = account_state
+
+    def fetch_account_state(self, *, fills_lookback_hours: float) -> object:
+        return self.account_state
+
+
+def _timestamp_ms(value: str) -> int:
+    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+
+
+def _account_state_with_recent_fills(fills: list[dict[str, object]]) -> object:
+    return parse_account_state(
+        account_address="0x0000000000000000000000000000000000000000",
+        user_state={
+            "marginSummary": {"accountValue": "1000", "totalMarginUsed": "0"},
+            "assetPositions": [],
+        },
+        spot_state={"balances": []},
+        open_orders=[],
+        frontend_open_orders=[],
+        recent_fills=fills,
+    )
 
 
 class PodALiveRunnerTests(unittest.TestCase):
@@ -274,6 +302,114 @@ class PodALiveRunnerTests(unittest.TestCase):
         self.assertEqual(open_positions[0]["margin_usd"], 22.0)
         self.assertEqual(open_positions[0]["effective_leverage"], 10.0)
         self.assertFalse(open_positions[0]["isolated"])
+
+    def test_live_sync_ignores_exchange_fills_before_local_open(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = PodALiveRunner(config, coins=["ETH"])
+        runner.mode = "live"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner.live_state_store = LiveStateStore(Path(tmpdir) / "live_state.json")
+            plan = TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.8,
+                target_notional_usd=100.0,
+                stop_bps=45.0,
+                time_stop_hours=24,
+            )
+            self.assertTrue(
+                runner.executor.portfolio.open_from_plan(
+                    plan,
+                    price=2132.51,
+                    entry_fee_usd=0.0,
+                    timestamp="2026-05-19T13:37:00Z",
+                )
+            )
+            runner._live_private_client = _FakePrivateClient(  # type: ignore[assignment]
+                _account_state_with_recent_fills(
+                    [
+                        {
+                            "coin": "ETH",
+                            "oid": 1,
+                            "side": "A",
+                            "dir": "Close Long",
+                            "sz": "0.0409",
+                            "px": "2123.1",
+                            "closedPnl": "-0.38",
+                            "fee": "0.01",
+                            "time": _timestamp_ms("2026-05-19T13:06:09Z"),
+                        }
+                    ]
+                )
+            )
+
+            changed = runner._sync_live_exchange_state(journal=None)
+
+            self.assertFalse(changed)
+            self.assertIn("ETH", runner.executor.portfolio.open_positions)
+            self.assertEqual(runner.executor.portfolio.closed_trades, [])
+
+    def test_live_sync_uses_post_open_close_fill_for_exchange_closed_position(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = PodALiveRunner(config, coins=["ETH"])
+        runner.mode = "live"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner.live_state_store = LiveStateStore(Path(tmpdir) / "live_state.json")
+            plan = TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.8,
+                target_notional_usd=100.0,
+                stop_bps=45.0,
+                time_stop_hours=24,
+            )
+            self.assertTrue(
+                runner.executor.portfolio.open_from_plan(
+                    plan,
+                    price=2132.51,
+                    entry_fee_usd=0.0,
+                    timestamp="2026-05-19T13:37:00Z",
+                )
+            )
+            runner._live_private_client = _FakePrivateClient(  # type: ignore[assignment]
+                _account_state_with_recent_fills(
+                    [
+                        {
+                            "coin": "ETH",
+                            "oid": 1,
+                            "side": "A",
+                            "dir": "Close Long",
+                            "sz": "0.0409",
+                            "px": "2123.1",
+                            "closedPnl": "-0.38",
+                            "fee": "0.01",
+                            "time": _timestamp_ms("2026-05-19T13:06:09Z"),
+                        },
+                        {
+                            "coin": "ETH",
+                            "oid": 2,
+                            "side": "A",
+                            "dir": "Close Long",
+                            "sz": "0.0409",
+                            "px": "2120.0",
+                            "closedPnl": "-0.58",
+                            "fee": "0.01",
+                            "time": _timestamp_ms("2026-05-19T13:45:00Z"),
+                        },
+                    ]
+                )
+            )
+
+            changed = runner._sync_live_exchange_state(journal=None)
+
+            self.assertTrue(changed)
+            self.assertNotIn("ETH", runner.executor.portfolio.open_positions)
+            trade = runner.executor.portfolio.closed_trades[-1]
+            self.assertEqual(trade.close_reason, "exchange_closed")
+            self.assertEqual(trade.closed_at, datetime.fromisoformat("2026-05-19T13:45:00+00:00"))
+            self.assertGreaterEqual(trade.closed_at, trade.opened_at)
 
     def test_live_runner_can_write_to_custom_status_path_for_specialized_shadow(self) -> None:
         config = load_config("config/trident.toml")

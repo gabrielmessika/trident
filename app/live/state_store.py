@@ -51,11 +51,20 @@ class LiveStateStore:
         }
         open_symbols = {str(symbol).upper() for symbol in current["positions"]}
         if orders is not None:
-            current["orders"] = {
+            existing_orders = current.get("orders", {})
+            next_orders = {
                 str(symbol).upper(): metadata
                 for symbol, metadata in orders.items()
                 if str(symbol).upper() in open_symbols or _is_pending_entry_order(metadata)
             }
+            if isinstance(existing_orders, dict):
+                for symbol, metadata in existing_orders.items():
+                    normalized = str(symbol).upper()
+                    if normalized not in next_orders and (
+                        normalized in open_symbols or _is_pending_entry_order(metadata)
+                    ):
+                        next_orders[normalized] = metadata
+            current["orders"] = next_orders
         else:
             existing_orders = current.get("orders", {})
             current["orders"] = {

@@ -1,6 +1,6 @@
 # TRIDENT Active Plan
 
-Date: `2026-05-19`
+Date: `2026-05-21`
 
 ## Status
 
@@ -17,11 +17,15 @@ Date: `2026-05-19`
 - Config prod/dry-run principale: `config/trident.toml`.
 - Mode cible live hybride: `Pod A` crypto core et `Pod C` tradfi en vrais
   ordres apres preflight; `Pod B HIP-4 Outcome` reste `paper` mainnet.
-- Etat serveur `2026-05-19`: `Pod A` + `Pod C` ont ete redemarres en
-  `live/testnet` avec une position BTC deja ouverte cote Hyperliquid. La
-  reconciliation a repris BTC dans Pod C, Pod A l'a classee
+- Etat serveur `2026-05-21`: redeploiement propre en `live/testnet` avec
+  `Pod A` + `Pod C` en vrais ordres testnet et `Pod B HIP-4 Outcome` force en
+  `mainnet paper`. Le baseline de burn-in repart du demarrage conteneur
+  `2026-05-21T06:07:35Z`.
+- Reconciliation post-redeploiement: `Pod C` a recupere la position SOL
+  existante depuis le state store, `Pod A` l'a classee
   `external_known_positions`, et aucun `unknown_exchange_positions`,
-  `missing_exchange_positions` ou open order inconnu n'a ete observe.
+  `missing_exchange_positions`, `side_mismatches`, `open_orders` inconnu ou
+  `trigger_orders` orphelin n'a ete observe.
 - Les valeurs exchange sont maintenant prioritaires pour les positions live
   existantes:
   - `target_notional_usd` local = `abs(size) * entryPx`;
@@ -54,10 +58,11 @@ Date: `2026-05-19`
   dataset mainnet complet, calibration, replay comparable, dry-run mainnet
   propre, preflight separe, caps tiny-size et confirmation manuelle.
 - Decision live A/C: le burn-in `live/testnet` est relance proprement depuis
-  le redeploiement du `2026-05-19T13:03:35Z`, apres correction du bug
-  `triggerPx` et recovery state SOL. Si aucun incident bloquant n'apparait
-  pendant `72h`, reevaluation des criteres de passage mainnet tiny-size le
-  `2026-05-22T13:03:35Z`.
+  le redeploiement du `2026-05-21T06:07:35Z`, apres correction de la selection
+  de fills de close stale et de la conservation des metadonnees d'ordres dans
+  le state store. Si aucun incident bloquant n'apparait pendant `72h`,
+  reevaluation des criteres de passage mainnet tiny-size le
+  `2026-05-24T06:07:35Z`.
 
 ## Reference Prod Courante
 
@@ -651,6 +656,26 @@ Resultat courant `2026-05-19`:
   - payload open positions priorise les valeurs Hyperliquid;
   - close live reduce-only utilise la taille exchange exacte;
   - cartes `Status > Pods` affichent `PnL realise` et `PnL latent`.
+- Redeploiement propre `2026-05-21`:
+  - ancien journal Pod A archive serveur dans
+    `logs/archive/20260521T055645Z_redeploy_base/`;
+  - `pod-a-live`, `pod-c-live`, `trident-api`, `hip4-outcome-dry-run` et
+    `tradfi-funding-collector` redemarres en `live/testnet --without-funding`,
+    `RestartCount=0` au demarrage de verification;
+  - `/health`: `status=ok`, `mode=live`, `exchange_network=testnet`,
+    `kill_switch_active=false`, version `3f56fd05 (2026-05-19 17:09)`;
+  - `/api/state`: Pod A `ready=true`, `live_trading_paused=false`,
+    `external_known_positions=["SOL"]`; Pod C `ready=true`,
+    `live_trading_paused=false`, `open_positions=["SOL"]`; pas de positions
+    inconnues/manquantes, pas d'ordres ouverts inconnus, pas de
+    `trigger_orders` orphelins;
+  - correction live validee: selection de close fills par timestamp/role
+    plausible, conservation des metadonnees d'ordres pour les positions
+    ouvertes non presentes dans la sauvegarde courante;
+  - logs post-base rapatries: Pod A `negative_holds=0`, dernier close ETH
+    `2026-05-21T06:00:18.384Z` apres open `2026-05-21T05:58:00Z`; Pod C
+    `negative_holds=0`, dernier close BTC `2026-05-21T06:03:00Z` apres open
+    `2026-05-21T05:49:00Z`.
 
 Validation code HIP-4, observation embedded et integration UI/dry-run:
 
@@ -867,8 +892,8 @@ Priorite apres plusieurs runs mainnet paper:
 Critères de passage A/C en mainnet tiny-size:
 
 - Fenetre minimale: `72h` propres apres le redeploiement stable du
-  `2026-05-19T13:03:35Z`; prochaine reevaluation cible:
-  `2026-05-22T13:03:35Z`.
+  `2026-05-21T06:07:35Z`; prochaine reevaluation cible:
+  `2026-05-24T06:07:35Z`.
 - `pod-a-live`, `pod-c-live` et `trident-api` up en continu, sans crash loop et
   avec `RestartCount=0` depuis le dernier redeploiement, sauf restart manuel
   explicitement documente pour test de recovery.

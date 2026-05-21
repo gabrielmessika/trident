@@ -142,11 +142,41 @@ copy_if_exists() {
     return 1
 }
 
+resolve_local_snapshot_dir() {
+    local base="$1"
+    local state_file="$2"
+    python3 - "${base}" "${state_file}" <<'PY'
+import json
+import sys
+from pathlib import Path, PurePosixPath
+
+base = Path(sys.argv[1])
+state_file = Path(sys.argv[2]) if sys.argv[2] else None
+raw = "data/live_snapshots"
+if state_file and state_file.exists():
+    try:
+        payload = json.loads(state_file.read_text(encoding="utf-8"))
+        exchange = payload.get("exchange", {}) if isinstance(payload, dict) else {}
+        if isinstance(exchange, dict) and exchange.get("snapshot_output_dir"):
+            raw = str(exchange["snapshot_output_dir"]).strip()
+    except Exception:
+        raw = "data/live_snapshots"
+if raw.startswith("./"):
+    raw = raw[2:]
+if raw.startswith("/") or any(token in raw for token in ("\0", "'", '"', "`", "$", "\\", "\n", "\r")):
+    raw = "data/live_snapshots"
+parts = PurePosixPath(raw).parts
+if ".." in parts or not raw.startswith("data/"):
+    raw = "data/live_snapshots"
+print(base / raw.removeprefix("data/"))
+PY
+}
+
 capture_local_review_inputs() {
     local base="$1"
     local latest_health latest_state latest_metrics latest_report latest_hip4 latest_hip4_mainnet
     local api_dir="${base}/api"
-    local snapshot_dir="${base}/live_snapshots"
+    local snapshot_dir
     local log_dir="${base}/logs"
     local runtime_dir="${base}/runtime"
     local docker_dir="${base}/docker"
@@ -157,6 +187,7 @@ capture_local_review_inputs() {
     latest_report="$(latest_local_file "${api_dir}/report-*.json")"
     latest_hip4="$(latest_local_file "${api_dir}/hip4-outcome-20*.json")"
     latest_hip4_mainnet="$(latest_local_file "${api_dir}/hip4-outcome-mainnet-*.json")"
+    snapshot_dir="$(resolve_local_snapshot_dir "${base}" "${latest_state}")"
 
     copy_if_exists "${latest_health}" "${RAW_DIR}/health.json" || : > "${RAW_DIR}/health.json"
     copy_if_exists "${latest_state}" "${RAW_DIR}/state.json" || : > "${RAW_DIR}/state.json"
@@ -164,6 +195,7 @@ capture_local_review_inputs() {
     copy_if_exists "${latest_report}" "${RAW_DIR}/report.json" || : > "${RAW_DIR}/report.json"
     copy_if_exists "${latest_hip4}" "${RAW_DIR}/hip4_outcome.json" || : > "${RAW_DIR}/hip4_outcome.json"
     copy_if_exists "${latest_hip4_mainnet}" "${RAW_DIR}/hip4_outcome_mainnet.json" || : > "${RAW_DIR}/hip4_outcome_mainnet.json"
+    printf '%s\n' "${snapshot_dir}" > "${RAW_DIR}/snapshot_source.txt"
 
     python3 - "${snapshot_dir}" "${RAW_DIR}/snapshot_files.txt" <<'PY'
 from pathlib import Path
@@ -405,7 +437,8 @@ else
     capture_remote "report.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/report"
     capture_remote "hip4_outcome.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome"
     capture_remote "hip4_outcome_mainnet.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome-mainnet"
-    capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && find data/live_snapshots -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
+    capture_remote "snapshot_source.txt" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state | python3 -c 'import json, sys; raw=str((json.load(sys.stdin).get(\"exchange\", {}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots"
+    capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && snapshot_dir=\$(curl -fsS http://127.0.0.1:3000/api/state | python3 -c 'import json, sys; raw=str((json.load(sys.stdin).get(\"exchange\", {}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots); find \"\${snapshot_dir}\" -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
     capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
     if [ "${SKIP_HIP4_REVIEW}" = "true" ]; then
         printf 'skipped\n' > "${RAW_DIR}/hip4_files.txt"
@@ -783,7 +816,7 @@ else:
     infra_failures.append("Container pod-a-live absent ou arrete")
 
 if latest_snapshot is None:
-    infra_failures.append("Aucun snapshot live trouve dans data/live_snapshots")
+    infra_failures.append("Aucun snapshot live trouve dans le snapshot_output_dir actif")
 else:
     age_minutes = float(latest_snapshot["age_minutes"])
     if age_minutes <= snapshot_max_age_minutes:

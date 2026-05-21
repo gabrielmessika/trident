@@ -97,6 +97,8 @@ done
 OUTPUT_DIR="${OUTPUT_DIR:-${LOCAL_DIR}/reviews/${TIMESTAMP_UTC}}"
 RAW_DIR="${LOCAL_DIR}/raw/${TIMESTAMP_UTC}"
 SNAPSHOT_DIR="${LOCAL_DIR}/live_snapshots"
+ACTIVE_SNAPSHOT_REMOTE_PATH="data/live_snapshots"
+ACTIVE_SNAPSHOT_DIR="${SNAPSHOT_DIR}"
 FUNDING_DIR="${LOCAL_DIR}/funding_history"
 LOG_DIR="${LOCAL_DIR}/logs"
 API_DIR="${LOCAL_DIR}/api"
@@ -364,6 +366,68 @@ build_snapshot_filter() {
     echo "${filter_file}"
 }
 
+normalize_snapshot_remote_path() {
+    local raw_path="$1"
+    python3 - "${REMOTE_DIR}" "${raw_path}" <<'PY'
+from pathlib import PurePosixPath
+import sys
+
+remote_dir = sys.argv[1].rstrip("/")
+raw = (sys.argv[2] or "data/live_snapshots").strip()
+if raw.startswith("./"):
+    raw = raw[2:]
+if remote_dir and raw.startswith(remote_dir + "/"):
+    raw = raw[len(remote_dir) + 1:]
+if raw.startswith("/") or any(token in raw for token in ("\0", "'", '"', "`", "$", "\\", "\n", "\r")):
+    raw = "data/live_snapshots"
+parts = PurePosixPath(raw).parts
+if ".." in parts or not raw.startswith("data/"):
+    raw = "data/live_snapshots"
+print(raw.rstrip("/") or "data/live_snapshots")
+PY
+}
+
+active_snapshot_remote_path() {
+    local latest_state raw_path
+    latest_state="$(find "${API_DIR}" -maxdepth 1 -type f -name 'state-*.json' 2>/dev/null | sort | tail -n 1)"
+    raw_path=""
+    if [[ -n "${latest_state}" ]]; then
+        raw_path="$(
+            python3 - "${latest_state}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    exchange = payload.get("exchange", {}) if isinstance(payload, dict) else {}
+    print(exchange.get("snapshot_output_dir", "") if isinstance(exchange, dict) else "")
+except Exception:
+    print("")
+PY
+        )"
+    fi
+    normalize_snapshot_remote_path "${raw_path:-data/live_snapshots}"
+}
+
+local_snapshot_dir_for_remote_path() {
+    local remote_path="$1"
+    local sub_path="${remote_path#data/}"
+    if [[ "${sub_path}" == "${remote_path}" || -z "${sub_path}" ]]; then
+        printf '%s\n' "${SNAPSHOT_DIR}"
+        return
+    fi
+    printf '%s\n' "${LOCAL_DIR}/${sub_path}"
+}
+
+active_snapshot_local_dir() {
+    local remote_path="${ACTIVE_SNAPSHOT_REMOTE_PATH:-}"
+    if [[ -z "${remote_path}" ]]; then
+        remote_path="$(active_snapshot_remote_path)"
+    fi
+    local_snapshot_dir_for_remote_path "${remote_path}"
+}
+
 fetch_api_snapshot() {
     info "Rapatriement des snapshots API courants..."
     local ts
@@ -474,28 +538,33 @@ fetch_optional_remote_dir() {
 
 fetch_snapshots() {
     info "Rapatriement des snapshots live..."
-    local remote_snapshot_dir="${REMOTE_DIR}/data/live_snapshots/"
-
-    if ! ssh_remote "test -d '${REMOTE_DIR}/data/live_snapshots'" 2>/dev/null; then
-        warn "Dossier data/live_snapshots absent sur le serveur"
-        return
-    fi
+    ACTIVE_SNAPSHOT_REMOTE_PATH="$(active_snapshot_remote_path)"
+    ACTIVE_SNAPSHOT_DIR="$(local_snapshot_dir_for_remote_path "${ACTIVE_SNAPSHOT_REMOTE_PATH}")"
+    local remote_snapshot_dir="${REMOTE_DIR}/${ACTIVE_SNAPSHOT_REMOTE_PATH}/"
+    mkdir -p "${ACTIVE_SNAPSHOT_DIR}"
 
     if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] %s -> %s/ (mode=%s)\n' "${remote_snapshot_dir}" "${SNAPSHOT_DIR}" "${MODE}"
+        printf '  [dry-run] %s -> %s/ (mode=%s)\n' "${remote_snapshot_dir}" "${ACTIVE_SNAPSHOT_DIR}" "${MODE}"
         return
     fi
 
+    if ! ssh_remote "test -d '${REMOTE_DIR}/${ACTIVE_SNAPSHOT_REMOTE_PATH}'" 2>/dev/null; then
+        warn "Dossier ${ACTIVE_SNAPSHOT_REMOTE_PATH} absent sur le serveur"
+        return
+    fi
+
+    info "Dossier snapshots actif: ${ACTIVE_SNAPSHOT_REMOTE_PATH} -> ${ACTIVE_SNAPSHOT_DIR}"
+
     if [[ "${MODE}" == "all" ]]; then
-        retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
+        retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${remote_snapshot_dir}" "${ACTIVE_SNAPSHOT_DIR}/"
     else
         local filter_file
         filter_file="$(build_snapshot_filter)"
-        retry_command 3 2 rsync_remote -azP --filter="merge ${filter_file}" "${SSH_TARGET}:${remote_snapshot_dir}" "${SNAPSHOT_DIR}/"
+        retry_command 3 2 rsync_remote -azP --filter="merge ${filter_file}" "${SSH_TARGET}:${remote_snapshot_dir}" "${ACTIVE_SNAPSHOT_DIR}/"
         rm -f "${filter_file}"
     fi
     local snapshot_count
-    snapshot_count="$(find "${SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | wc -l | tr -d ' ')"
+    snapshot_count="$(find "${ACTIVE_SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | wc -l | tr -d ' ')"
     ok "Snapshots live rapatries (${snapshot_count} fichier(s) locaux)"
 }
 
@@ -527,8 +596,9 @@ prepare_backtest_inputs() {
         return
     fi
 
-    local snapshot_files
-    snapshot_files="$(find "${SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | sort)"
+    local snapshot_dir snapshot_files
+    snapshot_dir="$(active_snapshot_local_dir)"
+    snapshot_files="$(find "${snapshot_dir}" -maxdepth 1 -type f -name '*.jsonl' | sort)"
     if [[ -z "${snapshot_files}" ]]; then
         warn "Aucun snapshot local disponible pour preparer un input de backtest"
         rm -f "${FULL_BOT_REPLAY_INPUT}"
@@ -543,7 +613,7 @@ prepare_backtest_inputs() {
     local snapshot_count total_bytes total_human tmp_input processed
     snapshot_count="$(printf '%s\n' "${snapshot_files}" | wc -l | tr -d ' ')"
     total_bytes="$(
-        find "${SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' -printf '%s\n' \
+        find "${snapshot_dir}" -maxdepth 1 -type f -name '*.jsonl' -printf '%s\n' \
             | awk '{sum += $1} END {printf "%.0f", sum}'
     )"
     total_human="$(human_bytes "${total_bytes}")"
@@ -699,12 +769,14 @@ echo
 if [[ "${DRY_RUN}" != "true" ]]; then
     total_size="$(du -sh "${LOCAL_DIR}" 2>/dev/null | awk '{print $1}')"
     total_files="$(find "${LOCAL_DIR}" -type f 2>/dev/null | wc -l | tr -d ' ')"
+    ACTIVE_SNAPSHOT_REMOTE_PATH="$(active_snapshot_remote_path)"
+    ACTIVE_SNAPSHOT_DIR="$(active_snapshot_local_dir)"
     echo "  Dossier : ${LOCAL_DIR}"
     echo "  Fichiers : ${total_files}"
     echo "  Taille : ${total_size}"
     echo
     echo "  Artefacts principaux :"
-    echo "    - snapshots live : ${SNAPSHOT_DIR}"
+    echo "    - snapshots live : ${ACTIVE_SNAPSHOT_DIR} (${ACTIVE_SNAPSHOT_REMOTE_PATH})"
     echo "    - funding history : ${FUNDING_DIR}"
     echo "    - logs applicatifs : ${LOG_DIR}"
     echo "    - logs HIP-4 paper : ${HIP4_LOG_DIR}"
@@ -733,7 +805,7 @@ if [[ "${DRY_RUN}" != "true" ]]; then
     echo
     if [[ -f "${FULL_BOT_REPLAY_INPUT}" ]]; then
         echo "  Commandes utiles :"
-        echo "    uv run python -m app.backtest.full_bot_replay --config config/trident.toml --input ${SNAPSHOT_DIR}"
+        echo "    uv run python -m app.backtest.full_bot_replay --config config/trident.toml --input ${ACTIVE_SNAPSHOT_DIR}"
         echo "    uv run python -m app.backtest.full_bot_replay --config config/trident.toml --input ${FULL_BOT_REPLAY_INPUT}"
         echo
     fi

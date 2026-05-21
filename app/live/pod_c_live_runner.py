@@ -19,6 +19,11 @@ from app.hyperliquid.private_state import (
     HyperliquidPrivateInfoClient,
 )
 from app.live.collector import HyperliquidLiveCollector
+from app.live.exchange_closed_fills import (
+    exchange_fill_timestamp,
+    known_exit_order_ids_for_symbol,
+    select_exchange_closed_fill,
+)
 from app.live.exchange_position_metrics import exchange_current_price
 from app.live.reconciliation import ReconciliationReport, reconcile_exchange_state
 from app.live.replay_capture import (
@@ -273,21 +278,23 @@ class PodCLiveRunner:
         for symbol in list(self.executor.portfolio.open_positions):
             if symbol in account_state.positions:
                 continue
-            fill = next((item for item in account_state.recent_fills if item.symbol == symbol), None)
-            price = fill.price if fill is not None and fill.price > 0 else 0.0
-            if price <= 0:
-                continue
-            timestamp = (
-                datetime.fromtimestamp((fill.timestamp_ms if fill else 0) / 1000, tz=timezone.utc)
-                .isoformat()
-                .replace("+00:00", "Z")
-                if fill is not None and fill.timestamp_ms > 0
-                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            position = self.executor.portfolio.open_positions[symbol]
+            fill = select_exchange_closed_fill(
+                position,
+                account_state.recent_fills,
+                known_order_ids=known_exit_order_ids_for_symbol(self.live_state_store, symbol),
             )
+            if fill is None:
+                logger.warning(
+                    "Pod C local %s position missing on exchange, but no post-open close fill was found; keeping local state",
+                    symbol,
+                )
+                continue
+            timestamp = exchange_fill_timestamp(fill)
             trade = self.executor.portfolio.close_position(
                 symbol,
-                price,
-                fill.fee_usd if fill is not None else 0.0,
+                fill.price,
+                fill.fee_usd,
                 timestamp,
                 "exchange_closed",
             )

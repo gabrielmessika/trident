@@ -489,6 +489,38 @@ class LiveReadinessTests(unittest.TestCase):
             store.save_portfolio(portfolio, orders=None)
             self.assertEqual(store.load()["orders"], {})
 
+    def test_live_state_save_merges_existing_open_order_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LiveStateStore(Path(tmpdir) / "pod_c_state.json")
+            store.save(
+                {
+                    "positions": {},
+                    "orders": {"BTC": {"protective_oids": {"sl": 111, "tp": 222}}},
+                    "events": [],
+                }
+            )
+            portfolio = DirectionalPortfolioState()
+            for symbol in ("BTC", "SOL"):
+                portfolio.open_positions[symbol] = open_position_from_metadata(
+                    {
+                        "symbol": symbol,
+                        "side": "long",
+                        "setup": "tradfi_cluster_long",
+                        "confidence": 0.7,
+                        "entry_price": 100,
+                        "target_notional_usd": 100,
+                    }
+                )
+
+            store.save_portfolio(
+                portfolio,
+                orders={"SOL": {"protective_oids": {"sl": 333, "tp": 444}}},
+            )
+            stored_orders = store.load()["orders"]
+
+            self.assertEqual(stored_orders["BTC"]["protective_oids"], {"sl": 111, "tp": 222})
+            self.assertEqual(stored_orders["SOL"]["protective_oids"], {"sl": 333, "tp": 444})
+
     def test_parse_order_result_detects_filled_and_error(self) -> None:
         filled = parse_order_result(
             {
