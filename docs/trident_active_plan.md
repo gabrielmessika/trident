@@ -460,8 +460,10 @@ Etat d'observation et execution:
 
 - Le mainnet paper a pris le relais du testnet comme source d'observation et
   de dry-run exploitable.
-- La derniere fenetre mainnet paper montre un petit PnL positif, mais seulement
-  `3` settlements calibres; ce n'est pas encore une preuve d'edge durable.
+- La derniere fenetre mainnet paper montre un PnL positif mais un echantillon
+  encore faible: review recalculee le `2026-05-21`, `8` trades /
+  `8` settlements, win rate `4/8 = 50%`, PnL `+72.6877`, PF `1.3653`,
+  Brier `0.2585`, statut `collect_more_data`.
 - Le testnet a valide les briques techniques: signatures, ordres IOC,
   reconciliation exchange, parsing de `Settlement.closedPnl`/`fee`, alias Pod B
   et UI.
@@ -582,6 +584,30 @@ Ce qui manque encore pour se rapprocher d'un bot type OpenClaw performant:
 - Une base de snapshots complete pour rejouer decisions, books, references, fills, settlements et edge decay.
 - Un mode mainnet execution explicite et separe de `paper`, seulement apres
   validation mainnet paper.
+- Gestion de sortie anticipee HIP-4:
+  - les outcomes sont des assets spot-like; sortir avant expiry revient a
+    vendre au bid le token YES/NO detenu;
+  - implementation cible d'abord `paper` mainnet: mark-to-book au bid,
+    comparaison contre une EV hold-to-settlement conservative, exits partiels
+    sur profit, exits totaux si le bid surpaie la fair value conservative ou
+    si la probabilite se degrade;
+  - aucune vente reelle testnet/mainnet sans executor sell dedie,
+    reconciliation spot, logs de fills et confirmation operateur.
+- Reservation `SHORT_EXPIRY`:
+  - le hold-to-settlement produit environ un trade daily par jour et bloque
+    souvent le marche via `market_already_open`;
+  - les exits anticipes doivent permettre de liberer l'inventaire avant la
+    derniere fenetre et de reserver une tranche de budget au moteur
+    short-expiry sans augmenter le notional par trade.
+- Passive maker / liquidity capture:
+  - etudier un mode ALO/GTC autour de la fair probability au lieu de seulement
+    traverser le spread;
+  - rester en shadow tant que l'adverse selection, les partial fills et le
+    risque d'inventaire ne sont pas mesures.
+- Extension `priceBucket` / `namedOutcome`:
+  - rester observation/paper tant que la resolution n'est pas replayable;
+  - prioriser un dataset complet books/references/settlements avant toute
+    execution reelle sur ces classes.
 
 ## Idees A Garder: Bot Prediction Market / Post Crypto_Jargon
 
@@ -835,10 +861,37 @@ Action:
 - Brier score, log-loss, buckets de calibration, loss review et guardrail
   simulation sont en place.
 - Continuer la collecte: la derniere review mainnet paper reste bloquee par
-  `3/20` settlements calibres, `3/5` expiries/marches et Brier `0.2695`.
+  `8/20` settlements calibres et Brier `0.2585`.
 - Faire du walk-forward par jour/expiry plutot que valider sur une seule fenetre.
 - N'autoriser fractional Kelly ou XGBoost qu'apres historique suffisant et stable.
 - Garder `max_position_usdc`, `max_total_outcome_exposure_usdc` et `max_per_underlying_outcome_exposure_usdc` comme hard caps meme si Kelly propose plus.
+
+### 3b. Tester Les Sorties Anticipees HIP-4
+
+- Objectif: sortir plus tot que settlement quand le carnet paie deja assez ou
+  quand l'edge a disparu, afin de reduire la duree d'inventaire et d'augmenter
+  le turnover paper sans augmenter le notional.
+- Priorite d'implementation: `mainnet_paper` uniquement, avec journal dedie
+  `early_exits.csv`.
+- En parallele, garder des experiences shadow paper-only, sans changer les
+  positions actives:
+  - `shadow_exit_policies.csv`: hold-to-settlement, take-profit partiel
+    +25/+35/+50%, sortie EV conservative, sortie defensive, sortie derniere
+    fenetre 5/10/15 minutes;
+  - `shadow_sizing.csv`: fractional Kelly virtuel/cappe pour estimer le sizing
+    avant de toucher au notional actif;
+  - `shadow_maker_quotes.csv`: quotes passive/maker virtuelles pour mesurer les
+    cas ou le spread pourrait etre capture sans envoyer d'ordre reel.
+- Regles initiales:
+  - sortie partielle au bid sur ROI positif materialise;
+  - sortie totale si le bid est superieur a l'EV conservative de hold;
+  - sortie totale defensive si la probabilite de win conservative tombe sous
+    seuil et que le bid recupere encore assez de valeur;
+  - cooldown de re-entry sur le meme marche apres sortie totale pour eviter le
+    churn.
+- Comparer apres plusieurs jours: hold-to-settlement historique vs early-exit
+  paper, PnL, max drawdown, turnover, Brier/calibration et opportunites
+  `SHORT_EXPIRY` debloquees.
 
 ### 4. Ameliorer La Latence HIP-4 Seulement Si Necessaire
 

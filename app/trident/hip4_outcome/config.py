@@ -55,6 +55,20 @@ def _int_list(raw: object) -> list[int]:
     return parsed
 
 
+def _float_list(raw: object) -> list[float]:
+    if not isinstance(raw, list):
+        return []
+    parsed: list[float] = []
+    for item in raw:
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            parsed.append(value)
+    return parsed
+
+
 def _float_map(raw: object) -> dict[str, float]:
     if not isinstance(raw, dict):
         return {}
@@ -129,6 +143,29 @@ class Hip4OutcomeConfig:
     safety_margin: float = 0.01
     min_gross_edge: float = 0.025
     min_net_edge: float = 0.015
+    enable_early_exit: bool = False
+    early_exit_probability_haircut: float = 0.03
+    early_exit_min_ev_premium: float = 0.02
+    early_exit_min_ev_exit_roi: float = 0.05
+    early_exit_take_profit_roi: float = 0.35
+    early_exit_take_profit_fraction: float = 0.5
+    early_exit_full_take_profit_roi: float = 0.80
+    early_exit_stop_probability: float = 0.35
+    early_exit_stop_max_loss_roi: float = 0.35
+    early_exit_free_short_window_seconds: int = 420
+    early_exit_free_short_window_min_roi: float = 0.0
+    early_exit_reentry_cooldown_seconds: int = 600
+    enable_shadow_exit_policies: bool = False
+    shadow_exit_take_profit_rois: list[float] = field(default_factory=lambda: [0.25, 0.35, 0.50])
+    shadow_exit_short_window_seconds: list[int] = field(default_factory=lambda: [300, 600, 900])
+    shadow_exit_partial_fraction: float = 0.5
+    enable_shadow_sizing: bool = False
+    shadow_sizing_bankroll_usdc: float = 25.0
+    shadow_sizing_kelly_fraction_cap: float = 0.25
+    shadow_sizing_probability_haircut: float = 0.03
+    enable_shadow_maker_quotes: bool = False
+    shadow_maker_price_improvement: float = 0.01
+    shadow_maker_min_net_edge: float = 0.01
     late_expiry_window_minutes: int = 20
     strike_buffer_bps: float = 8.0
     max_late_yes_price: float = 0.97
@@ -330,6 +367,47 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
         safety_margin=float(section.get("safety_margin", 0.01)),
         min_gross_edge=float(section.get("min_gross_edge", 0.025)),
         min_net_edge=float(section.get("min_net_edge", 0.015)),
+        enable_early_exit=env_bool(
+            "HIP4_OUTCOME_ENABLE_EARLY_EXIT",
+            bool(section.get("enable_early_exit", False)),
+        ),
+        early_exit_probability_haircut=float(section.get("early_exit_probability_haircut", 0.03)),
+        early_exit_min_ev_premium=float(section.get("early_exit_min_ev_premium", 0.02)),
+        early_exit_min_ev_exit_roi=float(section.get("early_exit_min_ev_exit_roi", 0.05)),
+        early_exit_take_profit_roi=float(section.get("early_exit_take_profit_roi", 0.35)),
+        early_exit_take_profit_fraction=float(section.get("early_exit_take_profit_fraction", 0.5)),
+        early_exit_full_take_profit_roi=float(section.get("early_exit_full_take_profit_roi", 0.80)),
+        early_exit_stop_probability=float(section.get("early_exit_stop_probability", 0.35)),
+        early_exit_stop_max_loss_roi=float(section.get("early_exit_stop_max_loss_roi", 0.35)),
+        early_exit_free_short_window_seconds=int(section.get("early_exit_free_short_window_seconds", 420)),
+        early_exit_free_short_window_min_roi=float(section.get("early_exit_free_short_window_min_roi", 0.0)),
+        early_exit_reentry_cooldown_seconds=int(section.get("early_exit_reentry_cooldown_seconds", 600)),
+        enable_shadow_exit_policies=env_bool(
+            "HIP4_OUTCOME_ENABLE_SHADOW_EXIT_POLICIES",
+            bool(section.get("enable_shadow_exit_policies", False)),
+        ),
+        shadow_exit_take_profit_rois=_float_list(
+            section.get("shadow_exit_take_profit_rois", [0.25, 0.35, 0.50])
+        ),
+        shadow_exit_short_window_seconds=_int_list(
+            section.get("shadow_exit_short_window_seconds", [300, 600, 900])
+        ),
+        shadow_exit_partial_fraction=float(section.get("shadow_exit_partial_fraction", 0.5)),
+        enable_shadow_sizing=env_bool(
+            "HIP4_OUTCOME_ENABLE_SHADOW_SIZING",
+            bool(section.get("enable_shadow_sizing", False)),
+        ),
+        shadow_sizing_bankroll_usdc=float(
+            section.get("shadow_sizing_bankroll_usdc", section.get("pod_b_budget_usdc", 25.0))
+        ),
+        shadow_sizing_kelly_fraction_cap=float(section.get("shadow_sizing_kelly_fraction_cap", 0.25)),
+        shadow_sizing_probability_haircut=float(section.get("shadow_sizing_probability_haircut", 0.03)),
+        enable_shadow_maker_quotes=env_bool(
+            "HIP4_OUTCOME_ENABLE_SHADOW_MAKER_QUOTES",
+            bool(section.get("enable_shadow_maker_quotes", False)),
+        ),
+        shadow_maker_price_improvement=float(section.get("shadow_maker_price_improvement", 0.01)),
+        shadow_maker_min_net_edge=float(section.get("shadow_maker_min_net_edge", 0.01)),
         late_expiry_window_minutes=int(section.get("late_expiry_window_minutes", 20)),
         strike_buffer_bps=float(section.get("strike_buffer_bps", 8.0)),
         max_late_yes_price=float(section.get("max_late_yes_price", 0.97)),

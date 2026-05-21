@@ -129,6 +129,8 @@ Exclusions principales :
 - `data/live_snapshots`
 - `data/funding_history`
 - `data/research`
+- `server-data`
+- `tmp`
 - `docs/pod_funding_research_latest.json`
 - `docs/pod_funding_research_latest.md`
 - `docs/pod_liq_research_latest.json`

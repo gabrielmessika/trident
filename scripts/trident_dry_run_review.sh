@@ -247,6 +247,10 @@ targets = [
     "opportunities.csv",
     "short_expiry_features.csv",
     "edge_decay.csv",
+    "early_exits.csv",
+    "shadow_exit_policies.csv",
+    "shadow_sizing.csv",
+    "shadow_maker_quotes.csv",
     "latency_stats.csv",
     "daily_summary.csv",
     "market_observations.jsonl",
@@ -443,7 +447,7 @@ else
     if [ "${SKIP_HIP4_REVIEW}" = "true" ]; then
         printf 'skipped\n' > "${RAW_DIR}/hip4_files.txt"
     else
-        capture_remote "hip4_files.txt" "cd '${REMOTE_DIR}' && for d in logs/hip4_outcome_mainnet_paper logs/hip4_outcome_testnet logs/hip4_outcome_mainnet; do for f in \"\$d\"/decisions.jsonl \"\$d\"/opportunities.csv \"\$d\"/short_expiry_features.csv \"\$d\"/edge_decay.csv \"\$d\"/latency_stats.csv \"\$d\"/daily_summary.csv \"\$d\"/market_observations.jsonl \"\$d\"/settlements.csv \"\$d\"/trades.csv; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done; done"
+        capture_remote "hip4_files.txt" "cd '${REMOTE_DIR}' && for d in logs/hip4_outcome_mainnet_paper logs/hip4_outcome_testnet logs/hip4_outcome_mainnet; do for f in \"\$d\"/decisions.jsonl \"\$d\"/opportunities.csv \"\$d\"/short_expiry_features.csv \"\$d\"/edge_decay.csv \"\$d\"/early_exits.csv \"\$d\"/shadow_exit_policies.csv \"\$d\"/shadow_sizing.csv \"\$d\"/shadow_maker_quotes.csv \"\$d\"/latency_stats.csv \"\$d\"/daily_summary.csv \"\$d\"/market_observations.jsonl \"\$d\"/settlements.csv \"\$d\"/trades.csv; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done; done"
     fi
     capture_remote "pod_b_runtime_present.txt" "cd '${REMOTE_DIR}' && if [ -f logs/pod_b_live_status.json ]; then echo present; else echo missing; fi"
     capture_remote "api_log_tail.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} trident-api 2>&1"
@@ -1092,6 +1096,19 @@ if container_is_running("trident-hip4-outcome-dry-run") or container_is_running(
             pod_b_checks.append(f"Artefact HIP-4 present: {required_file} ({line_count} lignes)")
         else:
             pod_b_warnings.append(f"Artefact HIP-4 vide: {required_file}")
+
+    for optional_file in (
+        f"{hip4_primary_logs_dir}/early_exits.csv",
+        f"{hip4_primary_logs_dir}/shadow_exit_policies.csv",
+        f"{hip4_primary_logs_dir}/shadow_sizing.csv",
+        f"{hip4_primary_logs_dir}/shadow_maker_quotes.csv",
+    ):
+        file_info = hip4_files.get(optional_file)
+        if file_info is None:
+            continue
+        line_count = as_int(file_info.get("line_count"))
+        if line_count > 0:
+            pod_b_checks.append(f"Artefact HIP-4 optionnel present: {optional_file} ({line_count} lignes)")
 
     if pod_b_log_patterns["traceback"] == 0:
         pod_b_checks.append("Pas de traceback recent dans les logs Pod B")

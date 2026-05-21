@@ -292,6 +292,7 @@ deploy_code() {
         --exclude='data/funding_history' \
         --exclude='data/research' \
         --exclude='server-data' \
+        --exclude='tmp' \
         --exclude='docs/pod_funding_research_latest.json' \
         --exclude='docs/pod_funding_research_latest.md' \
         --exclude='docs/pod_liq_research_latest.json' \

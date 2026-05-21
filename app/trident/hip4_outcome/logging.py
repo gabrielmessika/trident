@@ -17,6 +17,10 @@ class OutcomeEventLogger:
         self.settlements_path = self.logs_dir / "settlements.csv"
         self.latency_path = self.logs_dir / "latency_stats.csv"
         self.edge_decay_path = self.logs_dir / "edge_decay.csv"
+        self.early_exits_path = self.logs_dir / "early_exits.csv"
+        self.shadow_exit_policies_path = self.logs_dir / "shadow_exit_policies.csv"
+        self.shadow_sizing_path = self.logs_dir / "shadow_sizing.csv"
+        self.shadow_maker_quotes_path = self.logs_dir / "shadow_maker_quotes.csv"
         self.short_expiry_features_path = self.logs_dir / "short_expiry_features.csv"
         self.reconciliation_path = self.logs_dir / "reconciliation.jsonl"
         self.daily_summary_path = self.logs_dir / "daily_summary.csv"
@@ -126,6 +130,144 @@ class OutcomeEventLogger:
                 "yes_ask",
                 "no_ask",
                 "source_count",
+            ],
+            row,
+        )
+
+    def log_early_exit(self, row: dict[str, Any]) -> None:
+        self._append_csv(
+            self.early_exits_path,
+            [
+                "ts",
+                "market_id",
+                "outcome",
+                "underlying",
+                "side",
+                "action",
+                "reason",
+                "position_status_before",
+                "exit_fraction",
+                "token_qty",
+                "exit_price",
+                "gross_exit_usdc",
+                "fee_usdc",
+                "net_exit_usdc",
+                "cost_basis_usdc",
+                "realized_pnl_usdc",
+                "exit_roi",
+                "hold_ev_usdc",
+                "win_probability",
+                "conservative_win_probability",
+                "bid",
+                "ask",
+                "reference_price",
+                "strike",
+                "seconds_left",
+            ],
+            row,
+        )
+
+    def log_shadow_exit_policy(self, row: dict[str, Any]) -> None:
+        self._append_csv(
+            self.shadow_exit_policies_path,
+            [
+                "ts",
+                "event_type",
+                "policy",
+                "market_id",
+                "outcome",
+                "underlying",
+                "side",
+                "action",
+                "reason",
+                "position_status",
+                "result",
+                "remaining_qty_before",
+                "exit_fraction",
+                "token_qty",
+                "exit_price",
+                "gross_exit_usdc",
+                "fee_usdc",
+                "net_exit_usdc",
+                "settlement_payout_usdc",
+                "total_payout_usdc",
+                "cost_basis_usdc",
+                "gross_pnl_usdc",
+                "realized_pnl_usdc",
+                "net_pnl_usdc",
+                "exit_roi",
+                "hold_ev_usdc",
+                "win_probability",
+                "conservative_win_probability",
+                "bid",
+                "ask",
+                "reference_price",
+                "strike",
+                "seconds_left",
+            ],
+            row,
+        )
+
+    def log_shadow_sizing(self, row: dict[str, Any]) -> None:
+        self._append_csv(
+            self.shadow_sizing_path,
+            [
+                "ts",
+                "market_id",
+                "outcome",
+                "underlying",
+                "edge_type",
+                "side",
+                "decision_approved",
+                "decision_reason",
+                "active_requested_size_usdc",
+                "active_approved_size_usdc",
+                "win_probability",
+                "conservative_win_probability",
+                "entry_price",
+                "net_edge",
+                "confidence",
+                "bankroll_usdc",
+                "kelly_fraction",
+                "capped_kelly_fraction",
+                "kelly_size_usdc",
+                "half_kelly_size_usdc",
+                "capped_kelly_size_usdc",
+                "max_position_usdc",
+                "max_total_outcome_exposure_usdc",
+                "seconds_left",
+            ],
+            row,
+        )
+
+    def log_shadow_maker_quote(self, row: dict[str, Any]) -> None:
+        self._append_csv(
+            self.shadow_maker_quotes_path,
+            [
+                "ts",
+                "market_id",
+                "outcome",
+                "underlying",
+                "edge_type",
+                "side",
+                "decision_approved",
+                "decision_reason",
+                "would_quote",
+                "reason",
+                "bid",
+                "ask",
+                "mid_price",
+                "maker_price",
+                "maker_edge",
+                "maker_net_edge",
+                "spread_capture",
+                "quote_size_usdc",
+                "quote_token_qty",
+                "min_order_ok",
+                "win_probability",
+                "reference_price",
+                "strike",
+                "seconds_left",
             ],
             row,
         )

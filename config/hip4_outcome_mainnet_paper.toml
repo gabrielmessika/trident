@@ -84,6 +84,35 @@ safety_margin = 0.01
 min_gross_edge = 0.025
 min_net_edge = 0.015
 
+# Paper-only position management: simulate selling held YES/NO inventory at the
+# visible bid before expiry when the book already pays enough or the edge fades.
+enable_early_exit = true
+early_exit_probability_haircut = 0.03
+early_exit_min_ev_premium = 0.02
+early_exit_min_ev_exit_roi = 0.05
+early_exit_take_profit_roi = 0.35
+early_exit_take_profit_fraction = 0.5
+early_exit_full_take_profit_roi = 0.80
+early_exit_stop_probability = 0.35
+early_exit_stop_max_loss_roi = 0.35
+early_exit_free_short_window_seconds = 420
+early_exit_free_short_window_min_roi = 0.0
+early_exit_reentry_cooldown_seconds = 600
+
+# Paper-only parallel experiments. These write shadow CSV/state metadata but do
+# not change the active paper position sizing or execution policy.
+enable_shadow_exit_policies = true
+shadow_exit_take_profit_rois = [0.25, 0.35, 0.50]
+shadow_exit_short_window_seconds = [300, 600, 900]
+shadow_exit_partial_fraction = 0.5
+enable_shadow_sizing = true
+shadow_sizing_bankroll_usdc = 500
+shadow_sizing_kelly_fraction_cap = 0.25
+shadow_sizing_probability_haircut = 0.03
+enable_shadow_maker_quotes = true
+shadow_maker_price_improvement = 0.01
+shadow_maker_min_net_edge = 0.01
+
 default_annualized_vol = 0.85
 max_position_usdc = 50
 pod_b_budget_usdc = 500

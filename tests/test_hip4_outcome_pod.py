@@ -25,6 +25,7 @@ from app.trident.hip4_outcome.models import (
     OutcomeFill,
     OutcomeOpportunity,
     OutcomePosition,
+    ProbabilityEstimate,
     ShortHorizonFeatures,
     SupervisorDecision,
     outcome_asset_id,
@@ -1452,6 +1453,341 @@ reference_divergence_edge_types = ["model"]
                 position.metadata["settlement"]["notes"],
                 "conservative_named_outcome_no_basket",
             )
+
+    def test_paper_early_exit_partially_sells_winner_and_settles_remainder(self) -> None:
+        market = self._market()
+        book = build_order_book(
+            market_id=market.market_id,
+            yes_payload={
+                "coin": market.yes_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.56", "sz": "100", "n": 1}],
+                    [{"px": "0.58", "sz": "100", "n": 1}],
+                ],
+            },
+            no_payload={
+                "coin": market.no_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.41", "sz": "100", "n": 1}],
+                    [{"px": "0.43", "sz": "100", "n": 1}],
+                ],
+            },
+            max_slippage=0.03,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                enable_early_exit=True,
+                early_exit_take_profit_roi=0.35,
+                early_exit_full_take_profit_roi=2.0,
+                early_exit_min_ev_exit_roi=1.0,
+                early_exit_take_profit_fraction=0.5,
+                min_order_value_usdc=0.0,
+                settlement_grace_seconds=0,
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            position = OutcomePosition(
+                position_id="paper-early-exit-1",
+                market_id=market.market_id,
+                outcome=market.outcome,
+                underlying=market.underlying,
+                edge_type="MODEL",
+                side="BUY_YES",
+                opened_at="2026-05-01T00:00:00Z",
+                expiry_ts=market.expiry_ts,
+                cost_usdc=40.0,
+                max_loss_usdc=40.0,
+                net_edge=0.1,
+                confidence=0.9,
+                fills=[OutcomeFill(market.yes_coin, "YES", Decimal("100"), 0.4, 40.0, "paper_filled")],
+                metadata={
+                    "decision": {"execution_mode": "PAPER"},
+                    "signal": {"metadata": {"strike": market.strike}},
+                },
+            )
+            pod.positions = [position]
+
+            summary: dict[str, object] = {}
+            closed = pod._manage_early_exits_for_market(  # noqa: SLF001
+                market=market,
+                order_book=book,
+                probability=ProbabilityEstimate(
+                    market_id=market.market_id,
+                    probability_yes=0.95,
+                    model_name="test",
+                    confidence=0.9,
+                    inputs={},
+                ),
+                short_assessment=None,
+                reference_price=77000.0,
+                now_ts=market.expiry_ts - 3600,
+                summary=summary,
+            )
+
+            self.assertFalse(closed)
+            self.assertEqual(position.status, "open")
+            self.assertEqual(summary["early_exits"], 1)
+            self.assertEqual(position.metadata["early_exits"][0]["token_qty"], "50")
+
+            quote = type("Quote", (), {"price": 77000.0})()
+            pod._settle_expired_positions(  # noqa: SLF001
+                now_ts=market.expiry_ts + 1,
+                reference_prices={"BTC": quote},
+            )
+
+            self.assertEqual(position.status, "estimated_settled")
+            self.assertAlmostEqual(position.estimated_payout_usdc, 78.0)
+            self.assertAlmostEqual(position.estimated_fee_usdc, 0.156)
+            self.assertAlmostEqual(position.estimated_pnl_usdc, 37.844)
+
+    def test_paper_early_exit_can_fully_close_at_bid(self) -> None:
+        market = self._market()
+        book = build_order_book(
+            market_id=market.market_id,
+            yes_payload={
+                "coin": market.yes_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.21", "sz": "100", "n": 1}],
+                    [{"px": "0.23", "sz": "100", "n": 1}],
+                ],
+            },
+            no_payload={
+                "coin": market.no_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.75", "sz": "100", "n": 1}],
+                    [{"px": "0.77", "sz": "100", "n": 1}],
+                ],
+            },
+            max_slippage=0.03,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                enable_early_exit=True,
+                early_exit_full_take_profit_roi=0.5,
+                min_order_value_usdc=0.0,
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            position = OutcomePosition(
+                position_id="paper-early-exit-2",
+                market_id=market.market_id,
+                outcome=market.outcome,
+                underlying=market.underlying,
+                edge_type="MODEL",
+                side="BUY_NO",
+                opened_at="2026-05-01T00:00:00Z",
+                expiry_ts=market.expiry_ts,
+                cost_usdc=40.0,
+                max_loss_usdc=40.0,
+                net_edge=0.1,
+                confidence=0.9,
+                fills=[OutcomeFill(market.no_coin, "NO", Decimal("100"), 0.4, 40.0, "paper_filled")],
+                metadata={
+                    "decision": {"execution_mode": "PAPER"},
+                    "signal": {"metadata": {"strike": market.strike}},
+                },
+            )
+            pod.positions = [position]
+
+            summary: dict[str, object] = {}
+            closed = pod._manage_early_exits_for_market(  # noqa: SLF001
+                market=market,
+                order_book=book,
+                probability=ProbabilityEstimate(
+                    market_id=market.market_id,
+                    probability_yes=0.2,
+                    model_name="test",
+                    confidence=0.9,
+                    inputs={},
+                ),
+                short_assessment=None,
+                reference_price=76000.0,
+                now_ts=market.expiry_ts - 3600,
+                summary=summary,
+            )
+
+            self.assertTrue(closed)
+            self.assertEqual(position.status, "early_exited")
+            self.assertEqual(summary["early_exits"], 1)
+            self.assertAlmostEqual(position.estimated_payout_usdc, 75.0)
+            self.assertAlmostEqual(position.estimated_fee_usdc, 0.15)
+            self.assertAlmostEqual(position.estimated_pnl_usdc, 34.85)
+            self.assertTrue((root / "logs" / "early_exits.csv").exists())
+
+    def test_shadow_exit_policy_tracks_virtual_exit_and_settlement(self) -> None:
+        market = self._market()
+        book = build_order_book(
+            market_id=market.market_id,
+            yes_payload={
+                "coin": market.yes_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.56", "sz": "100", "n": 1}],
+                    [{"px": "0.58", "sz": "100", "n": 1}],
+                ],
+            },
+            no_payload={
+                "coin": market.no_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.41", "sz": "100", "n": 1}],
+                    [{"px": "0.43", "sz": "100", "n": 1}],
+                ],
+            },
+            max_slippage=0.03,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                enable_shadow_exit_policies=True,
+                shadow_exit_take_profit_rois=[0.25],
+                shadow_exit_short_window_seconds=[],
+                min_order_value_usdc=0.0,
+                settlement_grace_seconds=0,
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            position = OutcomePosition(
+                position_id="paper-shadow-exit-1",
+                market_id=market.market_id,
+                outcome=market.outcome,
+                underlying=market.underlying,
+                edge_type="MODEL",
+                side="BUY_YES",
+                opened_at="2026-05-01T00:00:00Z",
+                expiry_ts=market.expiry_ts,
+                cost_usdc=40.0,
+                max_loss_usdc=40.0,
+                net_edge=0.1,
+                confidence=0.9,
+                fills=[OutcomeFill(market.yes_coin, "YES", Decimal("100"), 0.4, 40.0, "paper_filled")],
+                metadata={
+                    "decision": {"execution_mode": "PAPER"},
+                    "signal": {"metadata": {"strike": market.strike}},
+                },
+            )
+            pod.positions = [position]
+
+            summary: dict[str, object] = {}
+            pod._manage_shadow_exit_policies_for_market(  # noqa: SLF001
+                market=market,
+                order_book=book,
+                probability=ProbabilityEstimate(
+                    market_id=market.market_id,
+                    probability_yes=0.95,
+                    model_name="test",
+                    confidence=0.9,
+                    inputs={},
+                ),
+                short_assessment=None,
+                reference_price=77000.0,
+                now_ts=market.expiry_ts - 3600,
+                summary=summary,
+            )
+
+            self.assertEqual(position.status, "open")
+            self.assertEqual(summary["shadow_exit_policy_exits"], 1)
+            state = position.metadata["shadow_exit_policies"]["tp_25_partial"]
+            self.assertEqual(state["exits"][0]["token_qty"], "50")
+            self.assertTrue((root / "logs" / "shadow_exit_policies.csv").exists())
+
+            quote = type("Quote", (), {"price": 77000.0})()
+            settle_summary: dict[str, object] = {}
+            pod._settle_expired_positions(  # noqa: SLF001
+                now_ts=market.expiry_ts + 1,
+                reference_prices={"BTC": quote},
+                summary=settle_summary,
+            )
+
+            settlement = position.metadata["shadow_exit_policies"]["tp_25_partial"]["settlement"]
+            self.assertAlmostEqual(settlement["total_payout_usdc"], 78.0)
+            self.assertAlmostEqual(settlement["fee_usdc"], 0.156)
+            self.assertAlmostEqual(settlement["net_pnl_usdc"], 37.844)
+            self.assertGreaterEqual(settle_summary["shadow_exit_policy_settlements"], 1)
+
+    def test_shadow_sizing_and_maker_quote_logs_are_paper_only(self) -> None:
+        market = self._market()
+        book = self._book()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                enable_shadow_sizing=True,
+                enable_shadow_maker_quotes=True,
+                shadow_sizing_bankroll_usdc=500,
+                min_order_value_usdc=0.0,
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            opportunity = OutcomeOpportunity(
+                market_id=market.market_id,
+                outcome=market.outcome,
+                underlying=market.underlying,
+                side="BUY_YES",
+                edge_type="MODEL",
+                gross_edge=0.46,
+                estimated_fees=0.0014,
+                estimated_slippage=0.005,
+                net_edge=0.44,
+                confidence=0.9,
+                requested_size_usdc=25.0,
+                max_loss_usdc=25.0,
+                expiry_ts=market.expiry_ts,
+                reason="test",
+                metadata={"probability_yes": 0.70, "yes_ask": book.yes.ask},
+            )
+            decision = SupervisorDecision(
+                approved=True,
+                approved_size_usdc=20.0,
+                reason="local_outcome_risk_ok",
+                execution_mode="PAPER",
+            )
+            summary: dict[str, object] = {}
+
+            pod._log_shadow_sizing(  # noqa: SLF001
+                opportunity=opportunity,
+                market=market,
+                order_book=book,
+                decision=decision,
+                reference_price=77000.0,
+                now_ts=market.expiry_ts - 3600,
+                summary=summary,
+            )
+            pod._log_shadow_maker_quote(  # noqa: SLF001
+                opportunity=opportunity,
+                market=market,
+                order_book=book,
+                decision=decision,
+                reference_price=77000.0,
+                now_ts=market.expiry_ts - 3600,
+                summary=summary,
+            )
+
+            self.assertEqual(summary["shadow_sizing_evaluations"], 1)
+            self.assertEqual(summary["shadow_maker_quotes"], 1)
+            self.assertTrue((root / "logs" / "shadow_sizing.csv").exists())
+            self.assertTrue((root / "logs" / "shadow_maker_quotes.csv").exists())
 
     def test_run_once_executes_embedded_observer_in_same_process(self) -> None:
         class FakeInfoClient:

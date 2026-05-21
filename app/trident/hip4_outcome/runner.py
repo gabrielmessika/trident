@@ -6,6 +6,7 @@ import time
 from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +134,14 @@ class HIP4OutcomeEdgePod:
             "approved": 0,
             "executed": 0,
             "open_positions": len(self._active_positions_for_mode()),
+            "early_exit_evaluations": 0,
+            "early_exits": 0,
+            "early_exit_net_usdc": 0.0,
+            "shadow_exit_policy_evaluations": 0,
+            "shadow_exit_policy_exits": 0,
+            "shadow_exit_policy_settlements": 0,
+            "shadow_sizing_evaluations": 0,
+            "shadow_maker_quotes": 0,
             "short_expiry_markets": 0,
             "short_expiry_assessments": 0,
             "short_expiry_best_net_edge": None,
@@ -248,6 +257,30 @@ class HIP4OutcomeEdgePod:
                         assessment=short_assessment,
                         now_ts=now_ts,
                     )
+                self._manage_shadow_exit_policies_for_market(
+                    market=market,
+                    order_book=order_book,
+                    probability=probability,
+                    short_assessment=short_assessment,
+                    reference_price=reference_price,
+                    now_ts=now_ts,
+                    summary=summary,
+                )
+                early_exit_closed = self._manage_early_exits_for_market(
+                    market=market,
+                    order_book=order_book,
+                    probability=probability,
+                    short_assessment=short_assessment,
+                    reference_price=reference_price,
+                    now_ts=now_ts,
+                    summary=summary,
+                )
+                if early_exit_closed or self._recent_early_exit_for_market(
+                    market.market_id,
+                    now_ts=now_ts,
+                ):
+                    decision_reasons["early_exit_reentry_cooldown"] += 1
+                    continue
                 opportunities = self.edge_detector.detect(
                     market=market,
                     order_book=order_book,
@@ -284,6 +317,24 @@ class HIP4OutcomeEdgePod:
                     if decision.approved:
                         decision = self._apply_capital_guard(decision)
                     decision_reasons[decision.reason] += 1
+                    self._log_shadow_sizing(
+                        opportunity=opportunity,
+                        market=market,
+                        order_book=order_book,
+                        decision=decision,
+                        reference_price=reference_price,
+                        now_ts=now_ts,
+                        summary=summary,
+                    )
+                    self._log_shadow_maker_quote(
+                        opportunity=opportunity,
+                        market=market,
+                        order_book=order_book,
+                        decision=decision,
+                        reference_price=reference_price,
+                        now_ts=now_ts,
+                        summary=summary,
+                    )
                     self._log_decision(opportunity=opportunity, decision=decision)
                     if not decision.approved:
                         continue
@@ -365,6 +416,24 @@ class HIP4OutcomeEdgePod:
                 if decision.approved:
                     decision = self._apply_capital_guard(decision)
                 decision_reasons[decision.reason] += 1
+                self._log_shadow_sizing(
+                    opportunity=opportunity,
+                    market=basket_market,
+                    order_book=basket_book,
+                    decision=decision,
+                    reference_price=reference_price,
+                    now_ts=now_ts,
+                    summary=summary,
+                )
+                self._log_shadow_maker_quote(
+                    opportunity=opportunity,
+                    market=basket_market,
+                    order_book=basket_book,
+                    decision=decision,
+                    reference_price=reference_price,
+                    now_ts=now_ts,
+                    summary=summary,
+                )
                 self._log_decision(opportunity=opportunity, decision=decision)
                 if not decision.approved:
                     continue
@@ -399,7 +468,11 @@ class HIP4OutcomeEdgePod:
                     executed_this_loop += 1
                     summary["executed"] = int(summary["executed"]) + 1
             stage_started = time.monotonic()
-            self._settle_expired_positions(now_ts=now_ts, reference_prices=reference_prices)
+            self._settle_expired_positions(
+                now_ts=now_ts,
+                reference_prices=reference_prices,
+                summary=summary,
+            )
             timings["settlement_ms"] = _elapsed_ms(stage_started)
 
             stage_started = time.monotonic()
@@ -1056,6 +1129,473 @@ class HIP4OutcomeEdgePod:
             )
         return OutcomeExecutionResult(status="observer_signal_only")
 
+    def _manage_shadow_exit_policies_for_market(
+        self,
+        *,
+        market: OutcomeMarket,
+        order_book: OutcomeOrderBook,
+        probability: Any,
+        short_assessment: ShortExpiryAssessment | None,
+        reference_price: float,
+        now_ts: int,
+        summary: dict[str, Any],
+    ) -> None:
+        if not self.config.enable_shadow_exit_policies or self.config.mode != "paper":
+            return
+        policies = _shadow_exit_policy_specs(self.config)
+        if not policies:
+            return
+        changed = False
+        for position in list(self._positions_for_mode()):
+            if position.market_id != market.market_id:
+                continue
+            if position.status not in {"open", "early_exited"}:
+                continue
+            if now_ts >= position.expiry_ts + self.config.settlement_grace_seconds:
+                continue
+            for policy in policies:
+                row = self._shadow_exit_policy_row(
+                    position=position,
+                    market=market,
+                    order_book=order_book,
+                    probability=probability,
+                    short_assessment=short_assessment,
+                    reference_price=reference_price,
+                    now_ts=now_ts,
+                    policy=policy,
+                )
+                if row is None:
+                    continue
+                summary["shadow_exit_policy_evaluations"] = (
+                    int(summary.get("shadow_exit_policy_evaluations", 0)) + 1
+                )
+                if row["action"] == "hold":
+                    continue
+                self._apply_shadow_exit_policy(position=position, row=row)
+                self.event_logger.log_shadow_exit_policy(row)
+                summary["shadow_exit_policy_exits"] = (
+                    int(summary.get("shadow_exit_policy_exits", 0)) + 1
+                )
+                changed = True
+        if changed:
+            self.state_store.save_positions(self.positions)
+
+    def _shadow_exit_policy_row(
+        self,
+        *,
+        position: OutcomePosition,
+        market: OutcomeMarket,
+        order_book: OutcomeOrderBook,
+        probability: Any,
+        short_assessment: ShortExpiryAssessment | None,
+        reference_price: float,
+        now_ts: int,
+        policy: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        policy_name = str(policy.get("policy", "")).strip()
+        if not policy_name:
+            return None
+        policy_state = _shadow_exit_policy_state(position, policy_name)
+        if str(policy_state.get("status", "open")) in {"closed", "settled"}:
+            return None
+        side_name = _single_position_side_name(position)
+        if side_name is None:
+            return None
+        side_book = order_book.yes if side_name == "YES" else order_book.no
+        bid = side_book.bid
+        ask = side_book.ask
+        remaining_qty = _shadow_remaining_token_qty(position, side_name, policy_name)
+        if remaining_qty <= 0:
+            return None
+        seconds_left = max(market.expiry_ts - now_ts, 0)
+        win_probability = _position_win_probability(
+            side_name=side_name,
+            probability_yes=float(getattr(probability, "probability_yes", 0.5)),
+            short_assessment=short_assessment,
+            seconds_left=seconds_left,
+            short_window_seconds=self.config.short_expiry_window_seconds,
+        )
+        conservative_probability = max(
+            min(win_probability - max(float(self.config.early_exit_probability_haircut), 0.0), 1.0),
+            0.0,
+        )
+        fee_rate = max(float(self.config.outcome_settlement_fee_rate), 0.0)
+        hold_ev_usdc = round(float(remaining_qty) * conservative_probability * (1.0 - fee_rate), 8)
+        action = "hold"
+        reason = "shadow_hold"
+        exit_fraction = 0.0
+        if bid is None or bid <= 0:
+            reason = "missing_exit_bid"
+        else:
+            gross_full = float(remaining_qty) * float(bid)
+            fee_full = gross_full * fee_rate
+            net_full = gross_full - fee_full
+            full_cost_basis = _cost_basis_for_exit(position, side_name, remaining_qty)
+            full_exit_roi = (
+                (net_full - full_cost_basis) / full_cost_basis
+                if full_cost_basis > 0
+                else 0.0
+            )
+            kind = str(policy.get("kind", "hold"))
+            if kind == "take_profit_partial":
+                threshold = float(policy.get("roi", 1.0))
+                if _shadow_exit_entries(position, policy_name):
+                    reason = "shadow_policy_already_exited"
+                elif full_exit_roi >= threshold:
+                    action = "partial_exit"
+                    reason = f"shadow_take_profit_{int(round(threshold * 100))}"
+                    exit_fraction = max(
+                        min(float(self.config.shadow_exit_partial_fraction), 1.0),
+                        0.0,
+                    )
+            elif kind == "ev_full":
+                if (
+                    hold_ev_usdc > 0
+                    and net_full >= hold_ev_usdc * (1.0 + float(self.config.early_exit_min_ev_premium))
+                    and full_exit_roi >= float(self.config.early_exit_min_ev_exit_roi)
+                ):
+                    action = "full_exit"
+                    reason = "shadow_bid_over_conservative_hold_ev"
+                    exit_fraction = 1.0
+            elif kind == "last_window_full":
+                window = int(policy.get("window_seconds", 0))
+                if (
+                    seconds_left <= window
+                    and full_exit_roi >= float(self.config.early_exit_free_short_window_min_roi)
+                ):
+                    action = "full_exit"
+                    reason = f"shadow_last_{window}s_window"
+                    exit_fraction = 1.0
+            elif kind == "prob_stop_full":
+                if (
+                    conservative_probability <= float(self.config.early_exit_stop_probability)
+                    and full_exit_roi >= -float(self.config.early_exit_stop_max_loss_roi)
+                ):
+                    action = "full_exit"
+                    reason = "shadow_probability_stop"
+                    exit_fraction = 1.0
+            else:
+                reason = "shadow_hold_to_settlement"
+
+        exit_qty = Decimal("0")
+        if action != "hold" and bid is not None and bid > 0:
+            exit_qty = _quantized_exit_qty(
+                remaining_qty,
+                fraction=exit_fraction,
+                size_decimals=self.config.outcome_size_decimals,
+            )
+            if exit_qty <= 0:
+                action = "hold"
+                reason = "shadow_exit_size_zero_after_rounding"
+            elif _effective_exit_order_value(exit_qty, float(bid)) < float(self.config.min_order_value_usdc):
+                action = "hold"
+                reason = "shadow_exit_below_exchange_min_order_value"
+                exit_qty = Decimal("0")
+
+        gross_exit_usdc = round(float(exit_qty) * float(bid or 0.0), 8)
+        fee_usdc = round(gross_exit_usdc * fee_rate, 8)
+        net_exit_usdc = round(gross_exit_usdc - fee_usdc, 8)
+        cost_basis_usdc = round(_cost_basis_for_exit(position, side_name, exit_qty), 8)
+        realized_pnl_usdc = round(net_exit_usdc - cost_basis_usdc, 8)
+        exit_roi = (
+            round(realized_pnl_usdc / cost_basis_usdc, 8)
+            if cost_basis_usdc > 0
+            else 0.0
+        )
+        return {
+            "ts": utc_now_iso(),
+            "event_type": "exit",
+            "policy": policy_name,
+            "market_id": market.market_id,
+            "outcome": market.outcome,
+            "underlying": market.underlying,
+            "side": position.side,
+            "action": action,
+            "reason": reason,
+            "position_status": position.status,
+            "result": "",
+            "remaining_qty_before": str(remaining_qty),
+            "exit_fraction": round(exit_fraction, 8),
+            "token_qty": str(exit_qty),
+            "exit_price": bid,
+            "gross_exit_usdc": gross_exit_usdc,
+            "fee_usdc": fee_usdc,
+            "net_exit_usdc": net_exit_usdc,
+            "settlement_payout_usdc": 0.0,
+            "total_payout_usdc": net_exit_usdc,
+            "cost_basis_usdc": cost_basis_usdc,
+            "gross_pnl_usdc": round(gross_exit_usdc - cost_basis_usdc, 8),
+            "realized_pnl_usdc": realized_pnl_usdc,
+            "net_pnl_usdc": realized_pnl_usdc,
+            "exit_roi": exit_roi,
+            "hold_ev_usdc": hold_ev_usdc,
+            "win_probability": round(win_probability, 8),
+            "conservative_win_probability": round(conservative_probability, 8),
+            "bid": bid,
+            "ask": ask,
+            "reference_price": reference_price,
+            "strike": market.strike,
+            "seconds_left": seconds_left,
+            "_side_name": side_name,
+        }
+
+    def _apply_shadow_exit_policy(self, *, position: OutcomePosition, row: dict[str, Any]) -> None:
+        policy_name = str(row["policy"])
+        state = _ensure_shadow_exit_policy_state(position, policy_name)
+        exits = state.get("exits")
+        if not isinstance(exits, list):
+            exits = []
+        exits.append(
+            {
+                "ts": row["ts"],
+                "action": row["action"],
+                "reason": row["reason"],
+                "side_name": str(row.get("_side_name", "")),
+                "token_qty": row["token_qty"],
+                "exit_price": row["exit_price"],
+                "gross_exit_usdc": row["gross_exit_usdc"],
+                "fee_usdc": row["fee_usdc"],
+                "net_exit_usdc": row["net_exit_usdc"],
+                "cost_basis_usdc": row["cost_basis_usdc"],
+                "realized_pnl_usdc": row["realized_pnl_usdc"],
+                "exit_roi": row["exit_roi"],
+            }
+        )
+        state["exits"] = exits
+        state["status"] = "closed" if row["action"] == "full_exit" else "open"
+        state["last_event_at"] = row["ts"]
+
+    def _manage_early_exits_for_market(
+        self,
+        *,
+        market: OutcomeMarket,
+        order_book: OutcomeOrderBook,
+        probability: Any,
+        short_assessment: ShortExpiryAssessment | None,
+        reference_price: float,
+        now_ts: int,
+        summary: dict[str, Any],
+    ) -> bool:
+        if not self.config.enable_early_exit or self.config.mode != "paper":
+            return False
+        changed = False
+        full_exited = False
+        for position in list(self._active_positions_for_mode()):
+            if position.market_id != market.market_id:
+                continue
+            row = self._early_exit_row(
+                position=position,
+                market=market,
+                order_book=order_book,
+                probability=probability,
+                short_assessment=short_assessment,
+                reference_price=reference_price,
+                now_ts=now_ts,
+            )
+            if row is None:
+                continue
+            summary["early_exit_evaluations"] = int(summary.get("early_exit_evaluations", 0)) + 1
+            if row["action"] != "hold":
+                self._apply_paper_early_exit(position=position, row=row)
+                summary["early_exits"] = int(summary.get("early_exits", 0)) + 1
+                summary["early_exit_net_usdc"] = round(
+                    float(summary.get("early_exit_net_usdc", 0.0)) + float(row["net_exit_usdc"]),
+                    8,
+                )
+                changed = True
+                full_exited = full_exited or row["action"] == "full_exit"
+            self.event_logger.log_early_exit(row)
+        if changed:
+            self.state_store.save_positions(self.positions)
+            self._write_settlement_summary()
+        return full_exited
+
+    def _early_exit_row(
+        self,
+        *,
+        position: OutcomePosition,
+        market: OutcomeMarket,
+        order_book: OutcomeOrderBook,
+        probability: Any,
+        short_assessment: ShortExpiryAssessment | None,
+        reference_price: float,
+        now_ts: int,
+    ) -> dict[str, Any] | None:
+        side_name = _single_position_side_name(position)
+        if side_name is None:
+            return None
+        side_book = order_book.yes if side_name == "YES" else order_book.no
+        bid = side_book.bid
+        ask = side_book.ask
+        remaining_qty = _remaining_token_qty(position, side_name)
+        if remaining_qty <= 0:
+            return None
+        win_probability = _position_win_probability(
+            side_name=side_name,
+            probability_yes=float(getattr(probability, "probability_yes", 0.5)),
+            short_assessment=short_assessment,
+            seconds_left=max(market.expiry_ts - now_ts, 0),
+            short_window_seconds=self.config.short_expiry_window_seconds,
+        )
+        conservative_probability = max(
+            min(win_probability - max(float(self.config.early_exit_probability_haircut), 0.0), 1.0),
+            0.0,
+        )
+        fee_rate = max(float(self.config.outcome_settlement_fee_rate), 0.0)
+        hold_ev_usdc = round(float(remaining_qty) * conservative_probability * (1.0 - fee_rate), 8)
+        action = "hold"
+        reason = "early_exit_hold"
+        exit_fraction = 0.0
+        if bid is None or bid <= 0:
+            reason = "missing_exit_bid"
+        else:
+            gross_full = float(remaining_qty) * float(bid)
+            fee_full = gross_full * fee_rate
+            net_full = gross_full - fee_full
+            full_cost_basis = _cost_basis_for_exit(position, side_name, remaining_qty)
+            full_exit_roi = (
+                (net_full - full_cost_basis) / full_cost_basis
+                if full_cost_basis > 0
+                else 0.0
+            )
+            if full_exit_roi >= float(self.config.early_exit_full_take_profit_roi):
+                action = "full_exit"
+                reason = "full_take_profit"
+                exit_fraction = 1.0
+            elif (
+                hold_ev_usdc > 0
+                and net_full >= hold_ev_usdc * (1.0 + float(self.config.early_exit_min_ev_premium))
+                and full_exit_roi >= float(self.config.early_exit_min_ev_exit_roi)
+            ):
+                action = "full_exit"
+                reason = "bid_over_conservative_hold_ev"
+                exit_fraction = 1.0
+            elif (
+                conservative_probability <= float(self.config.early_exit_stop_probability)
+                and full_exit_roi >= -float(self.config.early_exit_stop_max_loss_roi)
+            ):
+                action = "full_exit"
+                reason = "probability_stop"
+                exit_fraction = 1.0
+            elif (
+                market.expiry_ts - now_ts <= int(self.config.early_exit_free_short_window_seconds)
+                and full_exit_roi >= float(self.config.early_exit_free_short_window_min_roi)
+            ):
+                action = "full_exit"
+                reason = "free_short_expiry_window"
+                exit_fraction = 1.0
+            elif (
+                full_exit_roi >= float(self.config.early_exit_take_profit_roi)
+                and not _has_partial_take_profit_exit(position)
+            ):
+                action = "partial_exit"
+                reason = "partial_take_profit"
+                exit_fraction = max(min(float(self.config.early_exit_take_profit_fraction), 1.0), 0.0)
+            else:
+                exit_fraction = 0.0
+
+        exit_qty = Decimal("0")
+        if action != "hold" and bid is not None and bid > 0:
+            exit_qty = _quantized_exit_qty(
+                remaining_qty,
+                fraction=exit_fraction,
+                size_decimals=self.config.outcome_size_decimals,
+            )
+            if exit_qty <= 0:
+                action = "hold"
+                reason = "exit_size_zero_after_rounding"
+            elif _effective_exit_order_value(exit_qty, float(bid)) < float(self.config.min_order_value_usdc):
+                action = "hold"
+                reason = "exit_below_exchange_min_order_value"
+                exit_qty = Decimal("0")
+
+        gross_exit_usdc = round(float(exit_qty) * float(bid or 0.0), 8)
+        fee_usdc = round(gross_exit_usdc * fee_rate, 8)
+        net_exit_usdc = round(gross_exit_usdc - fee_usdc, 8)
+        cost_basis_usdc = round(_cost_basis_for_exit(position, side_name, exit_qty), 8)
+        realized_pnl_usdc = round(net_exit_usdc - cost_basis_usdc, 8)
+        exit_roi = round(
+            realized_pnl_usdc / cost_basis_usdc,
+            8,
+        ) if cost_basis_usdc > 0 else 0.0
+        return {
+            "ts": utc_now_iso(),
+            "market_id": market.market_id,
+            "outcome": market.outcome,
+            "underlying": market.underlying,
+            "side": position.side,
+            "action": action,
+            "reason": reason,
+            "position_status_before": position.status,
+            "exit_fraction": round(exit_fraction, 8),
+            "token_qty": str(exit_qty),
+            "exit_price": bid,
+            "gross_exit_usdc": gross_exit_usdc,
+            "fee_usdc": fee_usdc,
+            "net_exit_usdc": net_exit_usdc,
+            "cost_basis_usdc": cost_basis_usdc,
+            "realized_pnl_usdc": realized_pnl_usdc,
+            "exit_roi": exit_roi,
+            "hold_ev_usdc": hold_ev_usdc,
+            "win_probability": round(win_probability, 8),
+            "conservative_win_probability": round(conservative_probability, 8),
+            "bid": bid,
+            "ask": ask,
+            "reference_price": reference_price,
+            "strike": market.strike,
+            "seconds_left": max(market.expiry_ts - now_ts, 0),
+            "_side_name": side_name,
+        }
+
+    def _apply_paper_early_exit(self, *, position: OutcomePosition, row: dict[str, Any]) -> None:
+        side_name = str(row.pop("_side_name", ""))
+        entry = {
+            "ts": row["ts"],
+            "action": row["action"],
+            "reason": row["reason"],
+            "side_name": side_name,
+            "token_qty": row["token_qty"],
+            "exit_price": row["exit_price"],
+            "gross_exit_usdc": row["gross_exit_usdc"],
+            "fee_usdc": row["fee_usdc"],
+            "net_exit_usdc": row["net_exit_usdc"],
+            "cost_basis_usdc": row["cost_basis_usdc"],
+            "realized_pnl_usdc": row["realized_pnl_usdc"],
+            "exit_roi": row["exit_roi"],
+        }
+        exits = position.metadata.get("early_exits")
+        if not isinstance(exits, list):
+            exits = []
+        exits.append(entry)
+        position.metadata["early_exits"] = exits
+        if row["action"] != "full_exit":
+            return
+        position.status = "early_exited"
+        position.settled_at = str(row["ts"])
+        position.estimated_payout_usdc = 0.0
+        position.metadata["settlement"] = {
+            "result": "EARLY_EXIT",
+            "source": "paper_early_exit_bid",
+            "settlement_payout_usdc": 0.0,
+            "fee_model": self._fee_model_payload(),
+            "notes": str(row["reason"]),
+        }
+        _apply_settlement_accounting(position, self.config)
+
+    def _recent_early_exit_for_market(self, market_id: str, *, now_ts: int) -> bool:
+        cooldown = max(int(self.config.early_exit_reentry_cooldown_seconds), 0)
+        if cooldown <= 0:
+            return False
+        for position in self._positions_for_mode():
+            if position.market_id != market_id or position.status != "early_exited":
+                continue
+            exited_ms = _iso_to_epoch_ms(str(position.settled_at or ""))
+            if exited_ms is None:
+                continue
+            if now_ts - int(exited_ms / 1000) <= cooldown:
+                return True
+        return False
+
     def _position_from_execution(
         self,
         *,
@@ -1091,10 +1631,22 @@ class HIP4OutcomeEdgePod:
             },
         )
 
-    def _settle_expired_positions(self, *, now_ts: int, reference_prices: dict[str, Any]) -> None:
+    def _settle_expired_positions(
+        self,
+        *,
+        now_ts: int,
+        reference_prices: dict[str, Any],
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        changed = self._settle_expired_shadow_exit_policies(
+            now_ts=now_ts,
+            reference_prices=reference_prices,
+            summary=summary,
+        )
         if self.config.mode == "testnet":
+            if changed:
+                self.state_store.save_positions(self.positions)
             return
-        changed = False
         for position in self.positions:
             if position.status != "open":
                 continue
@@ -1114,13 +1666,12 @@ class HIP4OutcomeEdgePod:
                 result_yes = lower <= reference_price <= upper
             else:
                 result_yes = bool(strike is not None and reference_price > strike)
+            remaining_qty = _remaining_token_qty_by_side(position)
             payout = 0.0
-            for fill in position.fills:
-                side_name = fill.side_name.upper()
-                if side_name == "YES" and result_yes:
-                    payout += float(fill.token_qty)
-                if side_name == "NO" and not result_yes:
-                    payout += float(fill.token_qty)
+            if result_yes:
+                payout += float(remaining_qty.get("YES", Decimal("0")))
+            else:
+                payout += float(remaining_qty.get("NO", Decimal("0")))
             position.status = "estimated_settled"
             position.settled_at = utc_now_iso()
             position.estimated_payout_usdc = round(payout, 8)
@@ -1129,6 +1680,7 @@ class HIP4OutcomeEdgePod:
                 "reference_price": reference_price,
                 "fee_model": self._fee_model_payload(),
                 "notes": "estimated_from_reference_price",
+                "settlement_payout_usdc": round(payout, 8),
             }
             if bucket is not None:
                 settlement_payload["bucket_lower"] = bucket[0]
@@ -1142,6 +1694,113 @@ class HIP4OutcomeEdgePod:
         if changed:
             self.state_store.save_positions(self.positions)
             self._write_settlement_summary()
+
+    def _settle_expired_shadow_exit_policies(
+        self,
+        *,
+        now_ts: int,
+        reference_prices: dict[str, Any],
+        summary: dict[str, Any] | None,
+    ) -> bool:
+        if not self.config.enable_shadow_exit_policies or self.config.mode != "paper":
+            return False
+        policies = _shadow_exit_policy_specs(self.config)
+        if not policies:
+            return False
+        changed = False
+        for position in self._positions_for_mode():
+            if now_ts < position.expiry_ts + self.config.settlement_grace_seconds:
+                continue
+            side_name = _single_position_side_name(position)
+            if side_name is None:
+                continue
+            if position.edge_type == "NAMED_OUTCOME_NO_BASKET":
+                continue
+            reference = reference_prices.get(position.underlying.upper())
+            reference_price = None if reference is None else reference.price
+            strike = _position_strike(position)
+            bucket = _position_price_bucket(position)
+            if reference_price is None or (strike is None and bucket is None):
+                continue
+            if bucket is not None:
+                result_yes = bucket[0] <= reference_price <= bucket[1]
+            else:
+                result_yes = bool(strike is not None and reference_price > strike)
+            result = "YES" if result_yes else "NO"
+            for policy in policies:
+                policy_name = str(policy.get("policy", "")).strip()
+                if not policy_name:
+                    continue
+                state = _ensure_shadow_exit_policy_state(position, policy_name)
+                if str(state.get("status", "open")) == "settled":
+                    continue
+                remaining_qty = _shadow_remaining_token_qty(position, side_name, policy_name)
+                settlement_payout = (
+                    float(remaining_qty)
+                    if (result_yes and side_name == "YES") or (not result_yes and side_name == "NO")
+                    else 0.0
+                )
+                early_gross, early_fee = _shadow_exit_cash_totals(position, policy_name)
+                settlement_fee = settlement_payout * max(float(self.config.outcome_settlement_fee_rate), 0.0)
+                total_fee = round(early_fee + settlement_fee, 8)
+                total_payout = round(early_gross + settlement_payout, 8)
+                gross_pnl = round(total_payout - float(position.cost_usdc or 0.0), 8)
+                net_pnl = round(gross_pnl - total_fee, 8)
+                row = {
+                    "ts": utc_now_iso(),
+                    "event_type": "settlement",
+                    "policy": policy_name,
+                    "market_id": position.market_id,
+                    "outcome": position.outcome,
+                    "underlying": position.underlying,
+                    "side": position.side,
+                    "action": "settlement",
+                    "reason": "shadow_policy_settlement",
+                    "position_status": position.status,
+                    "result": result,
+                    "remaining_qty_before": str(remaining_qty),
+                    "exit_fraction": 0.0,
+                    "token_qty": "0",
+                    "exit_price": "",
+                    "gross_exit_usdc": early_gross,
+                    "fee_usdc": total_fee,
+                    "net_exit_usdc": round(early_gross - early_fee, 8),
+                    "settlement_payout_usdc": round(settlement_payout, 8),
+                    "total_payout_usdc": total_payout,
+                    "cost_basis_usdc": position.cost_usdc,
+                    "gross_pnl_usdc": gross_pnl,
+                    "realized_pnl_usdc": net_pnl,
+                    "net_pnl_usdc": net_pnl,
+                    "exit_roi": round(net_pnl / float(position.cost_usdc), 8)
+                    if float(position.cost_usdc or 0.0) > 0
+                    else 0.0,
+                    "hold_ev_usdc": "",
+                    "win_probability": "",
+                    "conservative_win_probability": "",
+                    "bid": "",
+                    "ask": "",
+                    "reference_price": reference_price,
+                    "strike": strike,
+                    "seconds_left": max(position.expiry_ts - now_ts, 0),
+                }
+                state["status"] = "settled"
+                state["settled_at"] = row["ts"]
+                state["settlement"] = {
+                    "result": result,
+                    "reference_price": reference_price,
+                    "settlement_payout_usdc": round(settlement_payout, 8),
+                    "total_payout_usdc": total_payout,
+                    "fee_usdc": total_fee,
+                    "gross_pnl_usdc": gross_pnl,
+                    "net_pnl_usdc": net_pnl,
+                }
+                self.event_logger.log_shadow_exit_policy(row)
+                if summary is not None:
+                    summary["shadow_exit_policy_settlements"] = (
+                        int(summary.get("shadow_exit_policy_settlements", 0)) + 1
+                    )
+                changed = True
+        return changed
 
     def _settle_named_no_basket_position(self, position: OutcomePosition) -> bool:
         no_quantities = [
@@ -1166,6 +1825,172 @@ class HIP4OutcomeEdgePod:
         _apply_settlement_accounting(position, self.config)
         self.event_logger.log_settlement(_settlement_row_from_position(position))
         return True
+
+    def _log_shadow_sizing(
+        self,
+        *,
+        opportunity: OutcomeOpportunity,
+        market: OutcomeMarket,
+        order_book: OutcomeOrderBook,
+        decision: SupervisorDecision,
+        reference_price: float,
+        now_ts: int,
+        summary: dict[str, Any],
+    ) -> None:
+        if not self.config.enable_shadow_sizing or self.config.mode != "paper":
+            return
+        entry_price = _opportunity_entry_price(opportunity, order_book)
+        if entry_price is None or entry_price <= 0 or entry_price >= 1.0:
+            return
+        win_probability = _opportunity_win_probability(opportunity)
+        if win_probability is None:
+            return
+        conservative_probability = max(
+            min(win_probability - max(float(self.config.shadow_sizing_probability_haircut), 0.0), 1.0),
+            0.0,
+        )
+        kelly_fraction = _binary_kelly_fraction(conservative_probability, entry_price)
+        capped_fraction = min(
+            max(kelly_fraction, 0.0),
+            max(float(self.config.shadow_sizing_kelly_fraction_cap), 0.0),
+        )
+        bankroll = max(float(self.config.shadow_sizing_bankroll_usdc), 0.0)
+        max_position = max(float(self.config.max_position_usdc), 0.0)
+        kelly_size = bankroll * max(kelly_fraction, 0.0)
+        half_kelly_size = bankroll * max(kelly_fraction, 0.0) * 0.5
+        capped_kelly_size = min(bankroll * capped_fraction, max_position)
+        self.event_logger.log_shadow_sizing(
+            {
+                "ts": utc_now_iso(),
+                "market_id": opportunity.market_id,
+                "outcome": opportunity.outcome,
+                "underlying": opportunity.underlying,
+                "edge_type": opportunity.edge_type,
+                "side": opportunity.side,
+                "decision_approved": decision.approved,
+                "decision_reason": decision.reason,
+                "active_requested_size_usdc": opportunity.requested_size_usdc,
+                "active_approved_size_usdc": decision.approved_size_usdc,
+                "win_probability": round(win_probability, 8),
+                "conservative_win_probability": round(conservative_probability, 8),
+                "entry_price": round(entry_price, 8),
+                "net_edge": opportunity.net_edge,
+                "confidence": opportunity.confidence,
+                "bankroll_usdc": bankroll,
+                "kelly_fraction": round(kelly_fraction, 8),
+                "capped_kelly_fraction": round(capped_fraction, 8),
+                "kelly_size_usdc": round(kelly_size, 8),
+                "half_kelly_size_usdc": round(min(half_kelly_size, max_position), 8),
+                "capped_kelly_size_usdc": round(capped_kelly_size, 8),
+                "max_position_usdc": self.config.max_position_usdc,
+                "max_total_outcome_exposure_usdc": self.config.max_total_outcome_exposure_usdc,
+                "seconds_left": market.expiry_ts - now_ts,
+            }
+        )
+        summary["shadow_sizing_evaluations"] = int(summary.get("shadow_sizing_evaluations", 0)) + 1
+
+    def _log_shadow_maker_quote(
+        self,
+        *,
+        opportunity: OutcomeOpportunity,
+        market: OutcomeMarket,
+        order_book: OutcomeOrderBook,
+        decision: SupervisorDecision,
+        reference_price: float,
+        now_ts: int,
+        summary: dict[str, Any],
+    ) -> None:
+        if not self.config.enable_shadow_maker_quotes or self.config.mode != "paper":
+            return
+        if opportunity.side not in {"BUY_YES", "BUY_NO"}:
+            return
+        side_book = order_book.yes if opportunity.side == "BUY_YES" else order_book.no
+        win_probability = _opportunity_win_probability(opportunity)
+        if win_probability is None:
+            return
+        bid = side_book.bid
+        ask = side_book.ask
+        maker_price: float | None = None
+        reason = "shadow_maker_quote_ok"
+        if ask is None or ask <= 0:
+            reason = "missing_ask"
+        elif bid is None or bid <= 0:
+            maker_price = max(min(ask - float(self.config.shadow_maker_price_improvement), 0.99999), 0.00001)
+            reason = "synthetic_bid_from_ask"
+        else:
+            spread = max(ask - bid, 0.0)
+            if spread <= 0:
+                reason = "non_positive_spread"
+            else:
+                improvement = min(spread / 2.0, max(float(self.config.shadow_maker_price_improvement), 0.0))
+                maker_price = min(bid + improvement, ask - 0.00001)
+        maker_edge = None if maker_price is None else win_probability - maker_price
+        maker_net_edge = (
+            None
+            if maker_edge is None
+            else round(
+                maker_edge
+                - win_probability * max(float(self.config.outcome_settlement_fee_rate), 0.0)
+                - float(self.config.safety_margin),
+                8,
+            )
+        )
+        quote_size = min(
+            float(decision.approved_size_usdc if decision.approved else opportunity.requested_size_usdc),
+            float(self.config.max_position_usdc),
+            float(self.config.max_total_outcome_exposure_usdc),
+        )
+        quote_qty = (
+            _quantized_token_qty_for_spend(quote_size, maker_price, self.config.outcome_size_decimals)
+            if maker_price is not None
+            else Decimal("0")
+        )
+        min_order_ok = (
+            maker_price is not None
+            and quote_qty > 0
+            and _effective_exit_order_value(quote_qty, maker_price) >= float(self.config.min_order_value_usdc)
+        )
+        would_quote = (
+            maker_price is not None
+            and ask is not None
+            and maker_price < ask
+            and maker_net_edge is not None
+            and maker_net_edge >= float(self.config.shadow_maker_min_net_edge)
+            and quote_size > 0
+            and min_order_ok
+        )
+        if not would_quote and reason == "shadow_maker_quote_ok":
+            reason = "maker_edge_or_size_too_low"
+        self.event_logger.log_shadow_maker_quote(
+            {
+                "ts": utc_now_iso(),
+                "market_id": opportunity.market_id,
+                "outcome": opportunity.outcome,
+                "underlying": opportunity.underlying,
+                "edge_type": opportunity.edge_type,
+                "side": opportunity.side,
+                "decision_approved": decision.approved,
+                "decision_reason": decision.reason,
+                "would_quote": would_quote,
+                "reason": reason,
+                "bid": bid,
+                "ask": ask,
+                "mid_price": _midpoint(bid, ask),
+                "maker_price": maker_price,
+                "maker_edge": None if maker_edge is None else round(maker_edge, 8),
+                "maker_net_edge": maker_net_edge,
+                "spread_capture": None if maker_price is None or ask is None else round(ask - maker_price, 8),
+                "quote_size_usdc": round(quote_size, 8),
+                "quote_token_qty": str(quote_qty),
+                "min_order_ok": min_order_ok,
+                "win_probability": round(win_probability, 8),
+                "reference_price": reference_price,
+                "strike": market.strike,
+                "seconds_left": market.expiry_ts - now_ts,
+            }
+        )
+        if would_quote:
+            summary["shadow_maker_quotes"] = int(summary.get("shadow_maker_quotes", 0)) + 1
 
     def _log_opportunity(
         self,
@@ -1400,7 +2225,7 @@ class HIP4OutcomeEdgePod:
     def _sync_settlement_accounting(self) -> None:
         changed = False
         for position in self.positions:
-            if position.status not in {"estimated_settled", "settled"}:
+            if position.status not in {"estimated_settled", "settled", "early_exited"}:
                 continue
             if _is_exchange_settlement(position):
                 continue
@@ -1413,7 +2238,7 @@ class HIP4OutcomeEdgePod:
         rows = [
             _settlement_row_from_position(position)
             for position in self.positions
-            if position.status in {"estimated_settled", "settled"}
+            if position.status in {"estimated_settled", "settled", "early_exited"}
         ]
         if not rows and self.event_logger.settlements_path.exists():
             return
@@ -1481,7 +2306,7 @@ class HIP4OutcomeEdgePod:
             "settled_positions": [
                 position.to_dict()
                 for position in self.positions
-                if position.status in {"estimated_settled", "settled"}
+                if position.status in {"estimated_settled", "settled", "early_exited"}
                 and _position_execution_mode(position) == self.config.mode.upper()
             ],
             "fee_model": self._fee_model_payload(),
@@ -1516,7 +2341,7 @@ class HIP4OutcomeEdgePod:
         settled_positions = [
             position
             for position in mode_positions
-            if position.status in {"estimated_settled", "settled"}
+            if position.status in {"estimated_settled", "settled", "early_exited"}
         ]
         settlement_payout_usdc = round(
             sum(float(position.estimated_payout_usdc) for position in settled_positions),
@@ -1847,6 +2672,291 @@ def _position_price_bucket(position: OutcomePosition) -> tuple[float, float] | N
     return lower, upper
 
 
+def _single_position_side_name(position: OutcomePosition) -> str | None:
+    if position.side == "BUY_YES":
+        return "YES"
+    if position.side == "BUY_NO":
+        return "NO"
+    sides = {fill.side_name.upper() for fill in position.fills if fill.token_qty > 0}
+    if len(sides) == 1:
+        side_name = next(iter(sides))
+        if side_name in {"YES", "NO"}:
+            return side_name
+    return None
+
+
+def _position_win_probability(
+    *,
+    side_name: str,
+    probability_yes: float,
+    short_assessment: ShortExpiryAssessment | None,
+    seconds_left: int,
+    short_window_seconds: int,
+) -> float:
+    probability_yes = max(min(float(probability_yes), 1.0), 0.0)
+    if short_assessment is not None and seconds_left <= max(int(short_window_seconds), 0):
+        probability_yes = max(min(float(short_assessment.probability_yes), 1.0), 0.0)
+    if side_name == "YES":
+        return probability_yes
+    if side_name == "NO":
+        return 1.0 - probability_yes
+    return 0.0
+
+
+def _entry_token_qty_by_side(position: OutcomePosition) -> dict[str, Decimal]:
+    totals = {"YES": Decimal("0"), "NO": Decimal("0")}
+    for fill in position.fills:
+        side_name = fill.side_name.upper()
+        if side_name in totals and fill.token_qty > 0:
+            totals[side_name] += fill.token_qty
+    return totals
+
+
+def _remaining_token_qty_by_side(position: OutcomePosition) -> dict[str, Decimal]:
+    remaining = _entry_token_qty_by_side(position)
+    for item in _early_exit_entries(position):
+        side_name = str(item.get("side_name", "")).upper()
+        if side_name not in remaining:
+            continue
+        try:
+            qty = Decimal(str(item.get("token_qty", "0")))
+        except Exception:
+            qty = Decimal("0")
+        remaining[side_name] = max(remaining[side_name] - qty, Decimal("0"))
+    return remaining
+
+
+def _remaining_token_qty(position: OutcomePosition, side_name: str) -> Decimal:
+    return _remaining_token_qty_by_side(position).get(side_name.upper(), Decimal("0"))
+
+
+def _early_exit_entries(position: OutcomePosition) -> list[dict[str, Any]]:
+    exits = position.metadata.get("early_exits")
+    if not isinstance(exits, list):
+        return []
+    return [item for item in exits if isinstance(item, dict)]
+
+
+def _early_exit_cash_totals(position: OutcomePosition) -> tuple[float, float]:
+    gross = 0.0
+    fee = 0.0
+    for item in _early_exit_entries(position):
+        gross += _float_from_any(item.get("gross_exit_usdc"), 0.0)
+        fee += _float_from_any(item.get("fee_usdc"), 0.0)
+    return round(gross, 8), round(fee, 8)
+
+
+def _cost_basis_for_exit(position: OutcomePosition, side_name: str, exit_qty: Decimal) -> float:
+    if exit_qty <= 0:
+        return 0.0
+    side_name = side_name.upper()
+    entry_qty = _entry_token_qty_by_side(position).get(side_name, Decimal("0"))
+    if entry_qty <= 0:
+        return 0.0
+    side_cost = sum(
+        float(fill.cost_usdc)
+        for fill in position.fills
+        if fill.side_name.upper() == side_name and fill.token_qty > 0
+    )
+    return round(side_cost * float(exit_qty / entry_qty), 8)
+
+
+def _quantized_exit_qty(
+    remaining_qty: Decimal,
+    *,
+    fraction: float,
+    size_decimals: int,
+) -> Decimal:
+    if remaining_qty <= 0 or fraction <= 0:
+        return Decimal("0")
+    if fraction >= 0.999999:
+        return remaining_qty
+    decimals = max(int(size_decimals), 0)
+    quantum = Decimal("1") if decimals == 0 else Decimal("1").scaleb(-decimals)
+    return (remaining_qty * Decimal(str(fraction))).quantize(quantum, rounding=ROUND_DOWN)
+
+
+def _effective_exit_order_value(exit_qty: Decimal, price: float) -> float:
+    effective_price = max(min(float(price), 1.0 - float(price)), 0.00000001)
+    return float(exit_qty) * effective_price
+
+
+def _has_partial_take_profit_exit(position: OutcomePosition) -> bool:
+    for item in _early_exit_entries(position):
+        if item.get("action") == "partial_exit" or item.get("reason") == "partial_take_profit":
+            return True
+    return False
+
+
+def _shadow_exit_policy_specs(config: Hip4OutcomeConfig) -> list[dict[str, Any]]:
+    policies: list[dict[str, Any]] = [{"policy": "hold_to_settlement", "kind": "hold"}]
+    seen: set[str] = {"hold_to_settlement"}
+    for roi in sorted({round(float(value), 6) for value in config.shadow_exit_take_profit_rois if value > 0}):
+        name = f"tp_{int(round(roi * 100))}_partial"
+        if name in seen:
+            continue
+        policies.append({"policy": name, "kind": "take_profit_partial", "roi": roi})
+        seen.add(name)
+    for window in sorted({int(value) for value in config.shadow_exit_short_window_seconds if value > 0}):
+        name = f"last_{int(window / 60)}m_full" if window % 60 == 0 else f"last_{window}s_full"
+        if name in seen:
+            continue
+        policies.append({"policy": name, "kind": "last_window_full", "window_seconds": window})
+        seen.add(name)
+    for item in (
+        {"policy": "ev_plus_2pct_full", "kind": "ev_full"},
+        {"policy": "prob_stop_full", "kind": "prob_stop_full"},
+    ):
+        if str(item["policy"]) not in seen:
+            policies.append(item)
+            seen.add(str(item["policy"]))
+    return policies
+
+
+def _shadow_exit_policies_payload(position: OutcomePosition) -> dict[str, Any]:
+    payload = position.metadata.get("shadow_exit_policies")
+    if not isinstance(payload, dict):
+        payload = {}
+        position.metadata["shadow_exit_policies"] = payload
+    return payload
+
+
+def _shadow_exit_policy_state(position: OutcomePosition, policy: str) -> dict[str, Any]:
+    payload = position.metadata.get("shadow_exit_policies")
+    if not isinstance(payload, dict):
+        return {}
+    state = payload.get(policy)
+    return state if isinstance(state, dict) else {}
+
+
+def _ensure_shadow_exit_policy_state(position: OutcomePosition, policy: str) -> dict[str, Any]:
+    payload = _shadow_exit_policies_payload(position)
+    state = payload.get(policy)
+    if not isinstance(state, dict):
+        state = {"status": "open", "exits": []}
+        payload[policy] = state
+    exits = state.get("exits")
+    if not isinstance(exits, list):
+        state["exits"] = []
+    if not state.get("status"):
+        state["status"] = "open"
+    return state
+
+
+def _shadow_exit_entries(position: OutcomePosition, policy: str) -> list[dict[str, Any]]:
+    state = _shadow_exit_policy_state(position, policy)
+    exits = state.get("exits")
+    if not isinstance(exits, list):
+        return []
+    return [item for item in exits if isinstance(item, dict)]
+
+
+def _shadow_remaining_token_qty(position: OutcomePosition, side_name: str, policy: str) -> Decimal:
+    remaining = _entry_token_qty_by_side(position).get(side_name.upper(), Decimal("0"))
+    for item in _shadow_exit_entries(position, policy):
+        if str(item.get("side_name", "")).upper() != side_name.upper():
+            continue
+        try:
+            qty = Decimal(str(item.get("token_qty", "0")))
+        except Exception:
+            qty = Decimal("0")
+        remaining = max(remaining - qty, Decimal("0"))
+    return remaining
+
+
+def _shadow_exit_cash_totals(position: OutcomePosition, policy: str) -> tuple[float, float]:
+    gross = 0.0
+    fee = 0.0
+    for item in _shadow_exit_entries(position, policy):
+        gross += _float_from_any(item.get("gross_exit_usdc"), 0.0)
+        fee += _float_from_any(item.get("fee_usdc"), 0.0)
+    return round(gross, 8), round(fee, 8)
+
+
+def _opportunity_entry_price(
+    opportunity: OutcomeOpportunity,
+    order_book: OutcomeOrderBook,
+) -> float | None:
+    if opportunity.side == "BUY_YES":
+        return order_book.yes.ask or _optional_float(opportunity.metadata.get("yes_ask"))
+    if opportunity.side == "BUY_NO":
+        return order_book.no.ask or _optional_float(opportunity.metadata.get("no_ask"))
+    if opportunity.side == "BUY_BOTH":
+        yes_ask = order_book.yes.ask or _optional_float(opportunity.metadata.get("yes_ask"))
+        no_ask = order_book.no.ask or _optional_float(opportunity.metadata.get("no_ask"))
+        if yes_ask is None or no_ask is None:
+            return None
+        return yes_ask + no_ask
+    return None
+
+
+def _opportunity_win_probability(opportunity: OutcomeOpportunity) -> float | None:
+    metadata = opportunity.metadata
+    if opportunity.edge_type in {"LATE_EXPIRY", "PARITY"}:
+        return 1.0
+    if opportunity.side == "BUY_YES":
+        probability = _first_float(
+            metadata,
+            ("short_probability_yes", "probability_bucket", "probability_yes"),
+        )
+        return None if probability is None else max(min(probability, 1.0), 0.0)
+    if opportunity.side == "BUY_NO":
+        direct_no = _first_float(metadata, ("probability_outside_bucket", "probability_no"))
+        if direct_no is not None:
+            return max(min(direct_no, 1.0), 0.0)
+        probability_yes = _first_float(
+            metadata,
+            ("short_probability_yes", "probability_bucket", "probability_yes"),
+        )
+        return None if probability_yes is None else max(min(1.0 - probability_yes, 1.0), 0.0)
+    return None
+
+
+def _first_float(payload: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _optional_float(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _optional_float(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _binary_kelly_fraction(win_probability: float, entry_price: float) -> float:
+    price = max(min(float(entry_price), 0.999999), 0.000001)
+    probability = max(min(float(win_probability), 1.0), 0.0)
+    return max((probability - price) / max(1.0 - price, 0.000001), 0.0)
+
+
+def _quantized_token_qty_for_spend(
+    spend_usdc: float,
+    price: float | None,
+    size_decimals: int,
+) -> Decimal:
+    if price is None or price <= 0 or spend_usdc <= 0:
+        return Decimal("0")
+    decimals = max(int(size_decimals), 0)
+    quantum = Decimal("1") if decimals == 0 else Decimal("1").scaleb(-decimals)
+    return (Decimal(str(spend_usdc)) / Decimal(str(price))).quantize(quantum, rounding=ROUND_DOWN)
+
+
+def _midpoint(bid: float | None, ask: float | None) -> float | None:
+    if bid is not None and ask is not None:
+        return round(max(min((float(bid) + float(ask)) / 2.0, 1.0), 0.0), 8)
+    if bid is not None:
+        return round(max(min(float(bid), 1.0), 0.0), 8)
+    if ask is not None:
+        return round(max(min(float(ask), 1.0), 0.0), 8)
+    return None
+
+
 def _position_execution_mode(position: OutcomePosition) -> str:
     metadata = position.metadata.get("decision", {})
     if isinstance(metadata, dict):
@@ -1862,21 +2972,36 @@ def _apply_settlement_accounting(
 ) -> bool:
     if _is_exchange_settlement(position):
         return False
-    payout = max(float(position.estimated_payout_usdc or 0.0), 0.0)
-    gross_pnl = round(payout - float(position.cost_usdc or 0.0), 8)
-    fee = round(payout * max(float(config.outcome_settlement_fee_rate), 0.0), 8)
-    net_pnl = round(gross_pnl - fee, 8)
-    changed = (
-        position.estimated_fee_usdc != fee
-        or position.estimated_gross_pnl_usdc != gross_pnl
-        or position.estimated_pnl_usdc != net_pnl
-    )
-    position.estimated_fee_usdc = fee
-    position.estimated_gross_pnl_usdc = gross_pnl
-    position.estimated_pnl_usdc = net_pnl
     settlement = position.metadata.get("settlement")
     if not isinstance(settlement, dict):
         settlement = {}
+    early_gross, early_fee = _early_exit_cash_totals(position)
+    if early_gross > 0 or early_fee > 0:
+        settlement_payout = _float_from_any(
+            settlement.get("settlement_payout_usdc"),
+            max(float(position.estimated_payout_usdc or 0.0), 0.0),
+        )
+        settlement["settlement_payout_usdc"] = round(settlement_payout, 8)
+        payout = round(settlement_payout + early_gross, 8)
+        fee = round(
+            settlement_payout * max(float(config.outcome_settlement_fee_rate), 0.0) + early_fee,
+            8,
+        )
+    else:
+        payout = max(float(position.estimated_payout_usdc or 0.0), 0.0)
+        fee = round(payout * max(float(config.outcome_settlement_fee_rate), 0.0), 8)
+    gross_pnl = round(payout - float(position.cost_usdc or 0.0), 8)
+    net_pnl = round(gross_pnl - fee, 8)
+    changed = (
+        position.estimated_payout_usdc != payout
+        or position.estimated_fee_usdc != fee
+        or position.estimated_gross_pnl_usdc != gross_pnl
+        or position.estimated_pnl_usdc != net_pnl
+    )
+    position.estimated_payout_usdc = payout
+    position.estimated_fee_usdc = fee
+    position.estimated_gross_pnl_usdc = gross_pnl
+    position.estimated_pnl_usdc = net_pnl
     expected_fee_model = {
         "open_fee_rate": float(config.outcome_open_fee_rate),
         "settlement_fee_rate": float(config.outcome_settlement_fee_rate),

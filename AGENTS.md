@@ -62,3 +62,4 @@ agents de code.
   confirmation explicite si une action peut envoyer de vrais ordres.
 - Respecter les changements non lies deja presents dans le worktree.
 - Garder les docs projet en francais quand elles prolongent les docs existantes.
+- Toute modification doit vérifier si les scripts de déploiement et de fetching de données sont impactés, et les mettre à jour si nécessaire.

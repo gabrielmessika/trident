@@ -782,6 +782,11 @@ if [[ "${DRY_RUN}" != "true" ]]; then
     echo "    - logs HIP-4 paper : ${HIP4_LOG_DIR}"
     echo "    - logs HIP-4 testnet : ${HIP4_TESTNET_LOG_DIR}"
     echo "    - logs HIP-4 mainnet paper : ${HIP4_MAINNET_PAPER_LOG_DIR}"
+    for hip4_shadow_file in early_exits.csv shadow_exit_policies.csv shadow_sizing.csv shadow_maker_quotes.csv; do
+        if [[ -f "${HIP4_MAINNET_PAPER_LOG_DIR}/${hip4_shadow_file}" ]]; then
+            echo "      - ${hip4_shadow_file} : ${HIP4_MAINNET_PAPER_LOG_DIR}/${hip4_shadow_file}"
+        fi
+    done
     echo "    - runtime statuses : ${RUNTIME_DIR}"
     echo "    - configs serveur : ${CONFIG_DIR}"
     echo "    - hydra docs : ${HYDRA_DOCS_DIR}"
