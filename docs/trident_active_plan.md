@@ -802,6 +802,48 @@ Regles de promotion:
   rapatrier, mettre a jour les scripts de deploiement, `scripts/fetch_trident_data.sh`
   et `scripts/trident_dry_run_review.sh`.
 
+Cadrage API et couts indicatifs:
+
+- Releve de prix API effectue le `2026-05-23`; a revalider avant tout budget
+  engage, car les tarifs et noms de modeles evoluent regulierement.
+- Fournisseurs envisageables: OpenAI API, Anthropic Claude API, Gemini API.
+  Pas de fine-tuning requis au depart; utiliser une cle API dediee, stockee
+  hors repo, et des appels offline/post-fetch uniquement.
+- Ne pas envoyer les logs bruts au LLM. Le dossier
+  `server-data/logs/hip4_outcome_mainnet_paper/` pese environ `678M` dans le
+  workspace courant, principalement `market_observations.jsonl` et
+  `decisions.jsonl`; le bon design est de pre-agreger localement puis de donner
+  au LLM les rapports, tables agregees et echantillons cibles.
+- Prix de reference releves le `2026-05-23`:
+  - OpenAI `gpt-5.4-mini`: environ `$0.75/M` tokens input et `$4.50/M` output.
+  - OpenAI `gpt-5.4`: environ `$2.50/M` input et `$15/M` output.
+  - OpenAI `gpt-5.5`: environ `$5/M` input et `$30/M` output.
+  - Anthropic Claude Sonnet 4.6: environ `$3/M` input et `$15/M` output.
+  - Gemini 3.1 Flash-Lite: environ `$0.25/M` input et `$1.50/M` output.
+- Ordres de grandeur par run quotidien, si les donnees sont agregees avant
+  appel LLM:
+  - review legere quotidienne (`~50k` input / `~5k` output): environ
+    `$0.02/j` sur modele tres cheap, `$0.06/j` sur mini conseille, et
+    `$0.20-$0.40/j` sur modele fort.
+  - review HIP-4 approfondie (`~200k` input / `~10k` output): environ
+    `$0.07/j` sur modele tres cheap, `$0.20/j` sur mini conseille, et
+    `$0.65-$1.30/j` sur modele fort.
+  - multi-agent `4-6` roles (`~800k-1.2M` input / `~40k-60k` output):
+    environ `$0.26-$0.39/j` sur modele tres cheap, `$0.78-$1.17/j` sur mini
+    conseille, et `$2.60-$7.80/j` sur modele fort.
+  - envoi brut des logs HIP-4 courants (`~170M` tokens input estimes):
+    environ `$43/j` sur modele tres cheap, `$128/j` sur mini conseille, et
+    `$425-$850+/j` sur modele fort; a eviter.
+- Ordres de grandeur mensuels si lance tous les jours:
+  - review legere mini: environ `$2/mois`.
+  - review approfondie mini: environ `$6/mois`.
+  - multi-agent mini quotidien: environ `$25-$35/mois`.
+  - multi-agent fort quotidien: environ `$80-$235/mois`.
+- Recommandation courante: commencer par un seul rapporteur offline combinant
+  `OperatorReporter` et `LossReviewAnalyst` sur un modele mini, puis reserver
+  un modele fort uniquement pour relire une courte liste d'hypotheses avant
+  replay comparable.
+
 ## Idees A Garder: Bot Prediction Market / Post Crypto_Jargon
 
 Verdict:
