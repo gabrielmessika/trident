@@ -42,6 +42,8 @@ def _str_list_map(raw: object) -> dict[str, list[str]]:
 
 
 def _int_list(raw: object) -> list[int]:
+    if isinstance(raw, str):
+        raw = [item for item in raw.split(",")]
     if not isinstance(raw, list):
         return []
     parsed: list[int] = []
@@ -56,6 +58,8 @@ def _int_list(raw: object) -> list[int]:
 
 
 def _float_list(raw: object) -> list[float]:
+    if isinstance(raw, str):
+        raw = [item for item in raw.split(",")]
     if not isinstance(raw, list):
         return []
     parsed: list[float] = []
@@ -150,6 +154,7 @@ class Hip4OutcomeConfig:
     early_exit_take_profit_roi: float = 0.35
     early_exit_take_profit_fraction: float = 0.5
     early_exit_full_take_profit_roi: float = 0.80
+    enable_early_exit_probability_stop: bool = True
     early_exit_stop_probability: float = 0.35
     early_exit_stop_max_loss_roi: float = 0.35
     early_exit_free_short_window_seconds: int = 420
@@ -185,6 +190,19 @@ class Hip4OutcomeConfig:
     embedded_observer_config_paths: list[str] = field(default_factory=list)
     embedded_observer_once_timeout_seconds: float = 20.0
     blocked_opportunity_slices: list[str] = field(default_factory=list)
+    enable_shock_guard: bool = True
+    shock_guard_windows_seconds: list[int] = field(
+        default_factory=lambda: [900, 3600, 14400, 86400, 259200, 604800]
+    )
+    shock_guard_adverse_move_bps: list[float] = field(
+        default_factory=lambda: [80.0, 150.0, 250.0, 300.0, 300.0, 400.0]
+    )
+    shock_guard_history_seconds: int = 604800
+    shock_guard_sample_interval_seconds: int = 900
+    shock_guard_price_history_limit: int = 1200
+    shock_guard_edge_types: list[str] = field(
+        default_factory=lambda: ["MODEL", "LATE_EXPIRY", "SHORT_EXPIRY"]
+    )
     block_reference_divergence: bool = False
     reference_divergence_max_bps: float = 50.0
     reference_divergence_min_rejected_sources: int = 1
@@ -377,6 +395,10 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
         early_exit_take_profit_roi=float(section.get("early_exit_take_profit_roi", 0.35)),
         early_exit_take_profit_fraction=float(section.get("early_exit_take_profit_fraction", 0.5)),
         early_exit_full_take_profit_roi=float(section.get("early_exit_full_take_profit_roi", 0.80)),
+        enable_early_exit_probability_stop=env_bool(
+            "HIP4_OUTCOME_ENABLE_EARLY_EXIT_PROBABILITY_STOP",
+            bool(section.get("enable_early_exit_probability_stop", True)),
+        ),
         early_exit_stop_probability=float(section.get("early_exit_stop_probability", 0.35)),
         early_exit_stop_max_loss_roi=float(section.get("early_exit_stop_max_loss_roi", 0.35)),
         early_exit_free_short_window_seconds=int(section.get("early_exit_free_short_window_seconds", 420)),
@@ -468,6 +490,41 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
                 "HIP4_OUTCOME_BLOCKED_OPPORTUNITY_SLICES",
                 section.get("blocked_opportunity_slices", []),
             )
+        ),
+        enable_shock_guard=env_bool(
+            "HIP4_OUTCOME_ENABLE_SHOCK_GUARD",
+            bool(section.get("enable_shock_guard", True)),
+        ),
+        shock_guard_windows_seconds=_int_list(
+            env_value(
+                "HIP4_OUTCOME_SHOCK_GUARD_WINDOWS_SECONDS",
+                section.get("shock_guard_windows_seconds", [900, 3600, 14400, 86400, 259200, 604800]),
+            )
+        ),
+        shock_guard_adverse_move_bps=_float_list(
+            env_value(
+                "HIP4_OUTCOME_SHOCK_GUARD_ADVERSE_MOVE_BPS",
+                section.get("shock_guard_adverse_move_bps", [80, 150, 250, 300, 300, 400]),
+            )
+        ),
+        shock_guard_history_seconds=env_int(
+            "HIP4_OUTCOME_SHOCK_GUARD_HISTORY_SECONDS",
+            int(section.get("shock_guard_history_seconds", 604800)),
+        ),
+        shock_guard_sample_interval_seconds=env_int(
+            "HIP4_OUTCOME_SHOCK_GUARD_SAMPLE_INTERVAL_SECONDS",
+            int(section.get("shock_guard_sample_interval_seconds", 900)),
+        ),
+        shock_guard_price_history_limit=env_int(
+            "HIP4_OUTCOME_SHOCK_GUARD_PRICE_HISTORY_LIMIT",
+            int(section.get("shock_guard_price_history_limit", 1200)),
+        ),
+        shock_guard_edge_types=_str_list(
+            env_value(
+                "HIP4_OUTCOME_SHOCK_GUARD_EDGE_TYPES",
+                section.get("shock_guard_edge_types", ["MODEL", "LATE_EXPIRY", "SHORT_EXPIRY"]),
+            ),
+            upper=True,
         ),
         block_reference_divergence=env_bool(
             "HIP4_OUTCOME_BLOCK_REFERENCE_DIVERGENCE",

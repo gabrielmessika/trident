@@ -195,6 +195,7 @@ capture_local_review_inputs() {
     copy_if_exists "${latest_report}" "${RAW_DIR}/report.json" || : > "${RAW_DIR}/report.json"
     copy_if_exists "${latest_hip4}" "${RAW_DIR}/hip4_outcome.json" || : > "${RAW_DIR}/hip4_outcome.json"
     copy_if_exists "${latest_hip4_mainnet}" "${RAW_DIR}/hip4_outcome_mainnet.json" || : > "${RAW_DIR}/hip4_outcome_mainnet.json"
+    copy_if_exists "${runtime_dir}/trident_deployment_profile.json" "${RAW_DIR}/deployment_profile.json" || : > "${RAW_DIR}/deployment_profile.json"
     printf '%s\n' "${snapshot_dir}" > "${RAW_DIR}/snapshot_source.txt"
 
     python3 - "${snapshot_dir}" "${RAW_DIR}/snapshot_files.txt" <<'PY'
@@ -439,6 +440,7 @@ else
     capture_remote "state.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state"
     capture_remote "metrics.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/metrics"
     capture_remote "report.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/report"
+    capture_remote "deployment_profile.json" "cd '${REMOTE_DIR}' && cat logs/trident_deployment_profile.json 2>/dev/null || true"
     capture_remote "hip4_outcome.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome"
     capture_remote "hip4_outcome_mainnet.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome-mainnet"
     capture_remote "snapshot_source.txt" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state | python3 -c 'import json, sys; raw=str((json.load(sys.stdin).get(\"exchange\", {}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots"
@@ -635,6 +637,12 @@ def service_report(report: dict[str, object], service_name: str) -> dict[str, ob
     return None
 
 
+def deployment_flag_is_false(value: object) -> bool:
+    if isinstance(value, bool):
+        return not value
+    return str(value).strip().lower() in {"0", "false", "no", "off", "disabled", ""}
+
+
 def nested_report(payload: dict[str, object], key: str) -> dict[str, object]:
     node = payload.get(key, {})
     if not isinstance(node, dict):
@@ -694,6 +702,7 @@ docker_ps = parse_docker_ps(read_text("docker_ps.txt"))
 state = load_json("state.json") or {}
 metrics = load_json("metrics.json") or {}
 report = load_json("report.json") or {}
+deployment_profile = load_json("deployment_profile.json") or {}
 hip4_outcome = load_json("hip4_outcome.json") or {}
 hip4_run_review = load_output_json("hip4_outcome_run_review.json") or {}
 health = load_json("health.json") or {}
@@ -726,6 +735,11 @@ pod_b_runtime_report = nested_report(state, "pod_b_status")
 pod_c_runtime_report = nested_report(state, "pod_c_runtime")
 funding_service_report = service_report(report, "funding_collector") or {}
 tradfi_funding_service_report = service_report(report, "tradfi_funding_collector") or {}
+funding_service_state = str(funding_service_report.get("process_state", "")).strip().lower()
+funding_service_enabled = bool(funding_service_report.get("enabled", True))
+funding_profile_disabled = deployment_flag_is_false(
+    deployment_profile.get("funding_collector_enabled", True)
+)
 pod_a_economics = summarize_pod_economics(pod_a_report)
 pod_b_economics = summarize_pod_economics(pod_b_report)
 pod_c_economics = summarize_pod_economics(pod_c_report)
@@ -777,6 +791,20 @@ stages: list[StageResult] = []
 def container_is_running(name: str) -> bool:
     status = docker_ps.get(name, "")
     return status.startswith("Up")
+
+
+funding_container_running = (
+    container_is_running("trident-funding-collector")
+    or container_is_running("funding-collector")
+)
+funding_collector_intentionally_absent = (
+    not funding_service_enabled
+    or funding_profile_disabled
+    or (
+        funding_service_state in {"", "missing", "disabled"}
+        and not funding_container_running
+    )
+)
 
 
 def append_stage(
@@ -839,7 +867,16 @@ else:
         "Logs API recentes contiennent des erreurs/tracebacks"
     )
 
-if bool(funding_service_report.get("healthy", False)):
+if funding_collector_intentionally_absent:
+    if funding_profile_disabled or not funding_service_enabled:
+        infra_checks.append(
+            "Funding Collector global marque desactive par le profil de deploiement (--without-funding)"
+        )
+    else:
+        infra_checks.append(
+            "Funding Collector global absent/non lance; traite comme optionnel (coherent avec --without-funding)"
+        )
+elif bool(funding_service_report.get("healthy", False)):
     infra_checks.append("Funding Collector remonte healthy dans /api/report")
 else:
     infra_failures.append("Funding Collector non healthy dans /api/report")
@@ -850,7 +887,9 @@ if tradfi_funding_service_report:
     else:
         infra_failures.append("Tradfi Funding Collector non healthy dans /api/report")
 
-if funding_collector_log_patterns["traceback"] > 0 or funding_collector_log_patterns["connection"] > 0:
+if funding_collector_intentionally_absent:
+    infra_checks.append("Logs Funding Collector ignores car le collecteur global n'est pas lance")
+elif funding_collector_log_patterns["traceback"] > 0 or funding_collector_log_patterns["connection"] > 0:
     infra_warnings.append(
         "Funding Collector a des erreurs reseau recentes dans les logs Docker"
     )
@@ -1436,6 +1475,7 @@ summary = {
     "latest_snapshot": latest_snapshot,
     "latest_business_date": latest_business_date,
     "ownership_conflict_count": ownership_conflicts,
+    "deployment_profile": deployment_profile,
     "hip4_run_review": {
         "status": hip4_run_readiness.get("status"),
         "recommendation": hip4_run_readiness.get("recommendation"),
@@ -1465,6 +1505,8 @@ md_lines = [
     f"- latest_snapshot: `{latest_snapshot}`",
     f"- latest_business_date: `{latest_business_date}`",
     f"- ownership_conflict_count: `{ownership_conflicts}`",
+    f"- deployment_mode: `{deployment_profile.get('mode', 'unknown')}`",
+    f"- funding_collector_enabled: `{deployment_profile.get('funding_collector_enabled', 'unknown')}`",
     "",
 ]
 if hip4_run_review:

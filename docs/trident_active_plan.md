@@ -393,6 +393,19 @@ Review mainnet paper / calibration:
 - Aucun blocage HYPE HIP-4 n'est actif en mainnet paper. Les anciens blocages
   HYPE testnet ont ete retires parce que le testnet n'est plus une source de
   performance representative.
+- Decision dry-run `2026-05-23`: pas de blocage statique par coin/cote
+  (`blocked_opportunity_slices = []`). Un `shock_guard` global est active pour
+  tous les `priceBinary` Pod B: il rejette `BUY_YES` si l'underlying subit un
+  choc baissier sur les fenetres configurees, et `BUY_NO` si le choc est
+  haussier. Fenetres courantes: `15m`, `1h`, `4h`, `1d`, `3d`, `7d`;
+  seuils adverses: `80`, `150`, `250`, `300`, `300`, `400` bps. Si
+  l'historique shock est absent, il est seed depuis `opportunities.csv` afin
+  que les fenetres longues puissent etre utiles apres redeploiement.
+- Le `probability_stop` actif est desactive en mainnet paper et remplace par
+  une observation shadow durcie: `early_exit_stop_probability = 0.25`,
+  `early_exit_stop_max_loss_roi = 0.15`. Les sorties actives restent les prises
+  de profit et `bid_over_conservative_hold_ev`; le stop probabiliste ne doit
+  redevenir actif qu'apres un echantillon shadow propre.
 
 Mode `SHORT_EXPIRY`:
 

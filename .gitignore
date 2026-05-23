@@ -9,3 +9,4 @@ logs/
 runtime/
 server-data/
 VERSION
+tmp/

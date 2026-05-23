@@ -48,6 +48,9 @@ class OutcomeRiskManager:
             return self._reject("price_bucket_paper_only")
         if market.class_name == "namedOutcomeBasket" and self.config.mode == "testnet":
             return self._reject("named_outcome_basket_paper_only")
+        shock_guard = self._shock_guard(opportunity=opportunity, market=market)
+        if shock_guard is not None:
+            return self._reject("shock_guard_adverse_momentum", constraints=shock_guard)
         blocked_slice = self._opportunity_slice_key(opportunity=opportunity, market=market)
         if blocked_slice in self._blocked_opportunity_slices:
             return self._reject(
@@ -302,6 +305,75 @@ class OutcomeRiskManager:
             "reference_divergence_min_rejected_sources": min_rejected,
         }
 
+    def _shock_guard(
+        self,
+        *,
+        opportunity: OutcomeOpportunity,
+        market: OutcomeMarket,
+    ) -> dict[str, object] | None:
+        if not self.config.enable_shock_guard:
+            return None
+        if market.class_name != "priceBinary":
+            return None
+        if opportunity.side not in {"BUY_YES", "BUY_NO"}:
+            return None
+        edge_type = str(opportunity.edge_type).strip().upper()
+        allowed_edge_types = {
+            item.strip().upper()
+            for item in self.config.shock_guard_edge_types
+            if item.strip()
+        }
+        if allowed_edge_types and edge_type not in allowed_edge_types:
+            return None
+        metadata = opportunity.metadata if isinstance(opportunity.metadata, dict) else {}
+        payload = metadata.get("shock_guard")
+        if not isinstance(payload, dict):
+            return None
+        windows = payload.get("windows")
+        if not isinstance(windows, list):
+            return None
+
+        worst: dict[str, object] | None = None
+        worst_severity = 0.0
+        for raw in windows:
+            if not isinstance(raw, dict):
+                continue
+            move_bps = _optional_float(raw.get("move_bps"))
+            threshold_bps = _optional_float(raw.get("threshold_bps"))
+            window_seconds = _optional_int(raw.get("window_seconds"))
+            if move_bps is None or threshold_bps is None or window_seconds is None:
+                continue
+            threshold_bps = abs(threshold_bps)
+            if threshold_bps <= 0 or window_seconds <= 0:
+                continue
+            if opportunity.side == "BUY_YES" and move_bps <= -threshold_bps:
+                severity = abs(move_bps) / threshold_bps
+                if severity > worst_severity:
+                    worst_severity = severity
+                    worst = {
+                        "underlying": market.underlying.upper(),
+                        "side": opportunity.side,
+                        "edge_type": edge_type,
+                        "adverse_direction": "down",
+                        "window_seconds": window_seconds,
+                        "move_bps": round(move_bps, 4),
+                        "threshold_bps": round(threshold_bps, 4),
+                    }
+            elif opportunity.side == "BUY_NO" and move_bps >= threshold_bps:
+                severity = abs(move_bps) / threshold_bps
+                if severity > worst_severity:
+                    worst_severity = severity
+                    worst = {
+                        "underlying": market.underlying.upper(),
+                        "side": opportunity.side,
+                        "edge_type": edge_type,
+                        "adverse_direction": "up",
+                        "window_seconds": window_seconds,
+                        "move_bps": round(move_bps, 4),
+                        "threshold_bps": round(threshold_bps, 4),
+                    }
+        return worst
+
     @staticmethod
     def _min_value_price(limit_price: float) -> float:
         price = max(min(float(limit_price), 0.99999), 0.00001)
@@ -351,6 +423,13 @@ def _optional_float(value: object) -> float | None:
     if not math.isfinite(parsed):
         return None
     return parsed
+
+
+def _optional_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _basket_legs(opportunity: OutcomeOpportunity) -> list[dict[str, object]]:

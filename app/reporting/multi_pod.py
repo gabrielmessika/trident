@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -381,7 +383,10 @@ def _runtime_service_reports(supervisor: TridentSupervisor) -> list[RuntimeServi
             "logs/funding_collector_status.json",
             service="funding_collector",
             label="Funding Collector",
-            enabled=True,
+            enabled=_global_funding_collector_enabled(),
+            disabled_comment=(
+                "Collector desactive par le profil de deploiement (--without-funding)."
+            ),
         ),
         _runtime_service_report(
             "logs/tradfi_funding_collector_status.json",
@@ -398,6 +403,7 @@ def _runtime_service_report(
     service: str,
     label: str,
     enabled: bool,
+    disabled_comment: str = "Collector désactivé.",
 ) -> RuntimeServiceReport:
     if not enabled:
         return RuntimeServiceReport(
@@ -407,7 +413,7 @@ def _runtime_service_report(
             healthy=False,
             process_state="disabled",
             output_path=None,
-            comment="Collector désactivé.",
+            comment=disabled_comment,
         )
     payload = load_runtime_status(status_path)
     if not isinstance(payload, dict):
@@ -450,6 +456,45 @@ def _runtime_service_report(
             else "Runtime status absent."
         ),
     )
+
+
+def _global_funding_collector_enabled() -> bool:
+    env_value = os.environ.get("TRIDENT_ENABLE_FUNDING")
+    profile = _deployment_profile()
+
+    candidates: list[bool] = []
+    if env_value is not None:
+        candidates.append(_truthy_deployment_flag(env_value, default=True))
+    if isinstance(profile.get("funding_collector_enabled"), bool):
+        candidates.append(bool(profile["funding_collector_enabled"]))
+    elif profile.get("funding_collector_enabled") is not None:
+        candidates.append(
+            _truthy_deployment_flag(profile["funding_collector_enabled"], default=True)
+        )
+
+    if not candidates:
+        return True
+    return all(candidates)
+
+
+def _deployment_profile() -> dict[str, object]:
+    path = Path("logs/trident_deployment_profile.json")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _truthy_deployment_flag(value: object, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled", ""}:
+        return False
+    return default
 
 
 def build_cohabitation_summary(result: object) -> dict[str, object]:

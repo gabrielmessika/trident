@@ -239,8 +239,10 @@ compose() {
     local hip4_mode="${HIP4_OUTCOME_MODE:-paper}"
     local hip4_config="${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}"
     local hip4_allow_testnet_orders="${HIP4_OUTCOME_ALLOW_TESTNET_ORDERS:-false}"
+    local funding_enabled="false"
     local pod_a_state_path
     local pod_c_state_path
+    [ -n "$ENABLE_FUNDING" ] && funding_enabled="true"
     pod_a_state_path="$(pod_a_live_state_path)"
     pod_c_state_path="$(pod_c_live_state_path)"
     if [ "$MODE" = "live" ]; then
@@ -253,6 +255,7 @@ compose() {
     TRIDENT_ENABLE_POD_C="${ENABLE_POD_C:+true}" \
     TRIDENT_ENABLE_HIP4_OUTCOME="${ENABLE_HIP4_OUTCOME:+true}" \
     TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER="${ENABLE_HIP4_MAINNET_OBSERVER:+true}" \
+    TRIDENT_ENABLE_FUNDING="${funding_enabled}" \
     TRIDENT_MODE="${MODE}" \
     TRIDENT_EXCHANGE_NETWORK="${EXCHANGE_NETWORK}" \
     TRIDENT_CONFIG_PATH="${CONFIG_PATH}" \
@@ -414,6 +417,60 @@ require_runtime_files() {
     mkdir -p logs data runtime
 }
 
+write_deployment_profile() {
+    require_runtime_files
+    python3 - \
+        "$MODE" \
+        "$EXCHANGE_NETWORK" \
+        "$CONFIG_PATH" \
+        "$ENABLE_POD_B" \
+        "$ENABLE_POD_C" \
+        "$ENABLE_FUNDING" \
+        "$ENABLE_HIP4_OUTCOME" \
+        "$ENABLE_HIP4_MAINNET_OBSERVER" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def flag(raw: str) -> bool:
+    return bool(raw.strip())
+
+
+mode, network, config_path = sys.argv[1:4]
+enable_pod_b, enable_pod_c, enable_funding, enable_hip4, enable_hip4_observer = sys.argv[4:9]
+services = ["trident-api", "pod-a-live"]
+if flag(enable_pod_b) and flag(enable_hip4):
+    services.append("hip4-outcome-dry-run")
+if flag(enable_pod_b) and flag(enable_hip4_observer):
+    services.append("hip4-outcome-mainnet-observer")
+if flag(enable_pod_c):
+    services.extend(["pod-c-live", "tradfi-funding-collector"])
+if flag(enable_funding):
+    services.append("funding-collector")
+
+payload = {
+    "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    "mode": mode,
+    "exchange_network": network,
+    "config_path": config_path,
+    "pod_b_enabled": flag(enable_pod_b),
+    "pod_c_enabled": flag(enable_pod_c),
+    "hip4_outcome_enabled": flag(enable_hip4),
+    "hip4_mainnet_observer_enabled": flag(enable_hip4_observer),
+    "funding_collector_enabled": flag(enable_funding),
+    "selected_services": services,
+}
+Path("logs/trident_deployment_profile.json").write_text(
+    json.dumps(payload, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
 guard_live_start() {
     if [ "$MODE" != "live" ]; then
         return 0
@@ -473,6 +530,7 @@ case "$ACTION" in
         else
             stop_unmanaged_services "${SERVICES[@]}"
         fi
+        write_deployment_profile
         info "Démarrage: ${SERVICES[*]}"
         info "Mode: ${MODE}"
         info "Réseau A/C: ${EXCHANGE_NETWORK}"
@@ -494,6 +552,7 @@ case "$ACTION" in
         guard_network_config
         guard_live_start
         mapfile -t SERVICES < <(default_services)
+        write_deployment_profile
         info "Redémarrage: ${SERVICES[*]}"
         info "Mode: ${MODE}"
         info "Réseau A/C: ${EXCHANGE_NETWORK}"
@@ -510,6 +569,7 @@ case "$ACTION" in
         info "Réseau A/C: ${EXCHANGE_NETWORK}"
         info "Config: ${CONFIG_PATH}"
         compose build
+        write_deployment_profile
         compose up -d "${SERVICES[@]}"
         ok "Update terminé"
         ;;

@@ -15,8 +15,10 @@ def update_price_history_payload(
     now_ts: int,
     max_age_seconds: int,
     sample_limit: int,
+    payload_key: str = "short_expiry_price_history",
+    min_sample_interval_seconds: int = 0,
 ) -> dict[str, list[dict[str, float]]]:
-    raw_history = payload.get("short_expiry_price_history", {})
+    raw_history = payload.get(payload_key, {})
     if not isinstance(raw_history, dict):
         raw_history = {}
     parsed: dict[str, list[dict[str, float]]] = {}
@@ -33,13 +35,16 @@ def update_price_history_payload(
             continue
         key = underlying.upper()
         samples = parsed.get(key, [])
-        if not samples or int(samples[-1]["ts"]) != int(now_ts):
+        min_interval = max(int(min_sample_interval_seconds), 0)
+        if not samples:
             samples.append({"ts": float(now_ts), "price": float(price)})
-        else:
+        elif int(samples[-1]["ts"]) == int(now_ts):
             samples[-1] = {"ts": float(now_ts), "price": float(price)}
+        elif int(now_ts - samples[-1]["ts"]) >= min_interval:
+            samples.append({"ts": float(now_ts), "price": float(price)})
         parsed[key] = [sample for sample in samples if int(sample["ts"]) >= cutoff][-limit:]
 
-    payload["short_expiry_price_history"] = parsed
+    payload[payload_key] = parsed
     return parsed
 
 

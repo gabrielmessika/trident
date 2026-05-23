@@ -46,6 +46,18 @@ max_observation_markets_per_loop = 80
 max_observation_books_per_loop = 30
 enable_embedded_observers = false
 embedded_observer_config_paths = []
+
+# Global adverse-momentum guard: do not approve BUY_YES into a sharp/downward
+# shock, or BUY_NO into a sharp/upward shock. It applies to every priceBinary
+# underlying Pod B sees, not to a hard-coded coin/side.
+blocked_opportunity_slices = []
+enable_shock_guard = true
+shock_guard_windows_seconds = [900, 3600, 14400, 86400, 259200, 604800]
+shock_guard_adverse_move_bps = [80, 150, 250, 300, 300, 400]
+shock_guard_history_seconds = 604800
+shock_guard_sample_interval_seconds = 900
+shock_guard_price_history_limit = 1200
+shock_guard_edge_types = ["MODEL", "LATE_EXPIRY", "SHORT_EXPIRY"]
 late_expiry_window_minutes = 20
 strike_buffer_bps = 8
 max_late_yes_price = 0.97
@@ -93,8 +105,12 @@ early_exit_min_ev_exit_roi = 0.05
 early_exit_take_profit_roi = 0.35
 early_exit_take_profit_fraction = 0.5
 early_exit_full_take_profit_roi = 0.80
-early_exit_stop_probability = 0.35
-early_exit_stop_max_loss_roi = 0.35
+# Keep the probability stop as a stricter shadow policy first. The active paper
+# exits still allow profit-taking and bid-over-EV exits, but no longer crystallize
+# probability-stop losses until the shadow sample is cleaner.
+enable_early_exit_probability_stop = false
+early_exit_stop_probability = 0.25
+early_exit_stop_max_loss_roi = 0.15
 early_exit_free_short_window_seconds = 420
 early_exit_free_short_window_min_roi = 0.0
 early_exit_reentry_cooldown_seconds = 600

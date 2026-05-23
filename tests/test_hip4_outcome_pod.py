@@ -49,6 +49,7 @@ from app.trident.hip4_outcome.reporting import build_daily_summary_rows, replay_
 from app.trident.hip4_outcome.risk import OutcomeRiskManager
 from app.trident.hip4_outcome.runner import (
     _build_short_expiry_operator_brief,
+    _seed_price_history_from_opportunities,
     _short_expiry_watchlist_row,
 )
 from app.trident.hip4_outcome.state import OutcomeStateStore
@@ -663,6 +664,114 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertEqual(decision.constraints["reference_rejected_source_count"], 2)
         self.assertEqual(decision.constraints["reference_max_deviation_bps"], 3855.11)
 
+    def test_risk_rejects_buy_yes_during_adverse_downward_shock(self) -> None:
+        market = self._market()
+        book = self._book()
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_YES",
+            edge_type="MODEL",
+            gross_edge=0.3,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.28,
+            confidence=0.9,
+            requested_size_usdc=25.0,
+            max_loss_usdc=25.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={
+                "shock_guard": {
+                    "windows": [
+                        {
+                            "window_seconds": 86400,
+                            "move_bps": -355.0,
+                            "threshold_bps": 300.0,
+                        }
+                    ]
+                }
+            },
+        )
+        config = Hip4OutcomeConfig(
+            mode="paper",
+            enable_shock_guard=True,
+            shock_guard_edge_types=["MODEL"],
+            max_position_usdc=50.0,
+            max_total_outcome_exposure_usdc=100.0,
+            max_per_underlying_outcome_exposure_usdc=100.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+        )
+
+        decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 300,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "shock_guard_adverse_momentum")
+        self.assertEqual(decision.constraints["adverse_direction"], "down")
+        self.assertEqual(decision.constraints["side"], "BUY_YES")
+
+    def test_risk_rejects_buy_no_during_adverse_upward_shock(self) -> None:
+        market = self._market()
+        book = self._book()
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_NO",
+            edge_type="MODEL",
+            gross_edge=0.3,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.28,
+            confidence=0.9,
+            requested_size_usdc=25.0,
+            max_loss_usdc=25.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={
+                "shock_guard": {
+                    "windows": [
+                        {
+                            "window_seconds": 3600,
+                            "move_bps": 170.0,
+                            "threshold_bps": 150.0,
+                        }
+                    ]
+                }
+            },
+        )
+        config = Hip4OutcomeConfig(
+            mode="paper",
+            enable_shock_guard=True,
+            shock_guard_edge_types=["MODEL"],
+            max_position_usdc=50.0,
+            max_total_outcome_exposure_usdc=100.0,
+            max_per_underlying_outcome_exposure_usdc=100.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+        )
+
+        decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 300,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "shock_guard_adverse_momentum")
+        self.assertEqual(decision.constraints["adverse_direction"], "up")
+        self.assertEqual(decision.constraints["side"], "BUY_NO")
+
     def test_risk_rejects_testnet_order_below_effective_hl_minimum(self) -> None:
         market = self._market()
         book = build_order_book(
@@ -1090,6 +1199,10 @@ BTC = 0.5
                 """
 [hip4_outcome]
 blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "bad"]
+enable_early_exit_probability_stop = false
+enable_shock_guard = false
+shock_guard_windows_seconds = [900, 3600]
+shock_guard_adverse_move_bps = [80, 150]
 block_reference_divergence = true
 reference_divergence_max_bps = 250
 reference_divergence_min_rejected_sources = 2
@@ -1106,6 +1219,10 @@ reference_divergence_edge_types = ["model"]
                 config.blocked_opportunity_slices,
                 ["HYPE:LATE_EXPIRY:BUY_YES", "BTC:MODEL:BUY_NO"],
             )
+            self.assertFalse(config.enable_early_exit_probability_stop)
+            self.assertFalse(config.enable_shock_guard)
+            self.assertEqual(config.shock_guard_windows_seconds, [900, 3600])
+            self.assertEqual(config.shock_guard_adverse_move_bps, [80.0, 150.0])
             self.assertTrue(config.block_reference_divergence)
             self.assertEqual(config.reference_divergence_max_bps, 250.0)
             self.assertEqual(config.reference_divergence_min_rejected_sources, 2)
@@ -1123,6 +1240,10 @@ reference_divergence_edge_types = ["model"]
                     "HIP4_OUTCOME_REFERENCE_DIVERGENCE_UNDERLYINGS": "BTC,ETH",
                     "HIP4_OUTCOME_REFERENCE_DIVERGENCE_SIDES": "BUY_NO",
                     "HIP4_OUTCOME_REFERENCE_DIVERGENCE_EDGE_TYPES": "SHORT_EXPIRY",
+                    "HIP4_OUTCOME_ENABLE_EARLY_EXIT_PROBABILITY_STOP": "true",
+                    "HIP4_OUTCOME_ENABLE_SHOCK_GUARD": "true",
+                    "HIP4_OUTCOME_SHOCK_GUARD_WINDOWS_SECONDS": "600,1800",
+                    "HIP4_OUTCOME_SHOCK_GUARD_ADVERSE_MOVE_BPS": "70,120",
                 },
             ):
                 overridden = load_hip4_outcome_config(path)
@@ -1137,6 +1258,21 @@ reference_divergence_edge_types = ["model"]
             self.assertEqual(overridden.reference_divergence_underlyings, ["BTC", "ETH"])
             self.assertEqual(overridden.reference_divergence_sides, ["BUY_NO"])
             self.assertEqual(overridden.reference_divergence_edge_types, ["SHORT_EXPIRY"])
+            self.assertTrue(overridden.enable_early_exit_probability_stop)
+            self.assertTrue(overridden.enable_shock_guard)
+            self.assertEqual(overridden.shock_guard_windows_seconds, [600, 1800])
+            self.assertEqual(overridden.shock_guard_adverse_move_bps, [70.0, 120.0])
+
+    def test_mainnet_paper_config_uses_global_shock_guard_and_shadows_probability_stop(self) -> None:
+        config = load_hip4_outcome_config("config/hip4_outcome_mainnet_paper.toml")
+
+        self.assertEqual(config.blocked_opportunity_slices, [])
+        self.assertTrue(config.enable_shock_guard)
+        self.assertIn(604800, config.shock_guard_windows_seconds)
+        self.assertIn("MODEL", config.shock_guard_edge_types)
+        self.assertFalse(config.enable_early_exit_probability_stop)
+        self.assertEqual(config.early_exit_stop_probability, 0.25)
+        self.assertEqual(config.early_exit_stop_max_loss_roi, 0.15)
 
     def test_testnet_config_keeps_external_price_sources_visible(self) -> None:
         config = load_hip4_outcome_config("config/hip4_outcome_testnet.toml")
@@ -1628,6 +1764,68 @@ reference_divergence_edge_types = ["model"]
             self.assertAlmostEqual(position.estimated_pnl_usdc, 34.85)
             self.assertTrue((root / "logs" / "early_exits.csv").exists())
 
+    def test_disabled_probability_stop_is_observation_only_for_active_exit(self) -> None:
+        market = self._market()
+        book = self._book()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                enable_early_exit=True,
+                enable_early_exit_probability_stop=False,
+                early_exit_stop_probability=0.25,
+                early_exit_stop_max_loss_roi=1.0,
+                early_exit_min_ev_exit_roi=1.0,
+                early_exit_full_take_profit_roi=2.0,
+                min_order_value_usdc=0.0,
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            position = OutcomePosition(
+                position_id="paper-prob-stop-disabled",
+                market_id=market.market_id,
+                outcome=market.outcome,
+                underlying=market.underlying,
+                edge_type="MODEL",
+                side="BUY_YES",
+                opened_at="2026-05-01T00:00:00Z",
+                expiry_ts=market.expiry_ts,
+                cost_usdc=40.0,
+                max_loss_usdc=40.0,
+                net_edge=0.1,
+                confidence=0.9,
+                fills=[OutcomeFill(market.yes_coin, "YES", Decimal("100"), 0.4, 40.0, "paper_filled")],
+                metadata={
+                    "decision": {"execution_mode": "PAPER"},
+                    "signal": {"metadata": {"strike": market.strike}},
+                },
+            )
+            pod.positions = [position]
+
+            summary: dict[str, object] = {}
+            closed = pod._manage_early_exits_for_market(  # noqa: SLF001
+                market=market,
+                order_book=book,
+                probability=ProbabilityEstimate(
+                    market_id=market.market_id,
+                    probability_yes=0.10,
+                    model_name="test",
+                    confidence=0.9,
+                    inputs={},
+                ),
+                short_assessment=None,
+                reference_price=76000.0,
+                now_ts=market.expiry_ts - 3600,
+                summary=summary,
+            )
+
+            self.assertFalse(closed)
+            self.assertEqual(position.status, "open")
+            self.assertNotIn("early_exits", summary)
+
     def test_shadow_exit_policy_tracks_virtual_exit_and_settlement(self) -> None:
         market = self._market()
         book = build_order_book(
@@ -1723,6 +1921,71 @@ reference_divergence_edge_types = ["model"]
             self.assertAlmostEqual(settlement["net_pnl_usdc"], 37.844)
             self.assertGreaterEqual(settle_summary["shadow_exit_policy_settlements"], 1)
 
+    def test_shadow_probability_stop_still_logs_when_active_stop_is_disabled(self) -> None:
+        market = self._market()
+        book = self._book()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                enable_early_exit=True,
+                enable_early_exit_probability_stop=False,
+                enable_shadow_exit_policies=True,
+                shadow_exit_take_profit_rois=[],
+                shadow_exit_short_window_seconds=[],
+                early_exit_stop_probability=0.25,
+                early_exit_stop_max_loss_roi=1.0,
+                min_order_value_usdc=0.0,
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            position = OutcomePosition(
+                position_id="paper-shadow-prob-stop",
+                market_id=market.market_id,
+                outcome=market.outcome,
+                underlying=market.underlying,
+                edge_type="MODEL",
+                side="BUY_YES",
+                opened_at="2026-05-01T00:00:00Z",
+                expiry_ts=market.expiry_ts,
+                cost_usdc=40.0,
+                max_loss_usdc=40.0,
+                net_edge=0.1,
+                confidence=0.9,
+                fills=[OutcomeFill(market.yes_coin, "YES", Decimal("100"), 0.4, 40.0, "paper_filled")],
+                metadata={
+                    "decision": {"execution_mode": "PAPER"},
+                    "signal": {"metadata": {"strike": market.strike}},
+                },
+            )
+            pod.positions = [position]
+
+            summary: dict[str, object] = {}
+            pod._manage_shadow_exit_policies_for_market(  # noqa: SLF001
+                market=market,
+                order_book=book,
+                probability=ProbabilityEstimate(
+                    market_id=market.market_id,
+                    probability_yes=0.10,
+                    model_name="test",
+                    confidence=0.9,
+                    inputs={},
+                ),
+                short_assessment=None,
+                reference_price=76000.0,
+                now_ts=market.expiry_ts - 3600,
+                summary=summary,
+            )
+
+            self.assertEqual(position.status, "open")
+            self.assertEqual(summary["shadow_exit_policy_exits"], 1)
+            state = position.metadata["shadow_exit_policies"]["prob_stop_full"]
+            self.assertEqual(state["status"], "closed")
+            self.assertEqual(state["exits"][0]["reason"], "shadow_probability_stop")
+
     def test_shadow_sizing_and_maker_quote_logs_are_paper_only(self) -> None:
         market = self._market()
         book = self._book()
@@ -1788,6 +2051,34 @@ reference_divergence_edge_types = ["model"]
             self.assertEqual(summary["shadow_maker_quotes"], 1)
             self.assertTrue((root / "logs" / "shadow_sizing.csv").exists())
             self.assertTrue((root / "logs" / "shadow_maker_quotes.csv").exists())
+
+    def test_shock_guard_can_seed_history_from_existing_opportunity_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "opportunities.csv"
+            path.write_text(
+                "\n".join(
+                    [
+                        "ts,market_id,outcome,underlying,edge_type,side,gross_edge,net_edge,confidence,requested_size_usdc,yes_ask,no_ask,ref_price,strike,time_to_expiry,reason",
+                        "2026-05-01T00:00:00Z,m,1,BTC,MODEL,BUY_YES,0.1,0.08,0.9,25,0.4,0.6,80000,79000,3600,test",
+                        "2026-05-01T00:05:00Z,m,1,BTC,MODEL,BUY_YES,0.1,0.08,0.9,25,0.4,0.6,79900,79000,3300,test",
+                        "2026-05-01T00:20:00Z,m,1,BTC,MODEL,BUY_YES,0.1,0.08,0.9,25,0.4,0.6,79000,79000,2400,test",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            history = _seed_price_history_from_opportunities(
+                path,
+                now_ts=1_777_595_400,
+                max_age_seconds=86400,
+                sample_interval_seconds=900,
+                sample_limit=10,
+            )
+
+            self.assertEqual(len(history["BTC"]), 2)
+            self.assertEqual(history["BTC"][0]["price"], 80000.0)
+            self.assertEqual(history["BTC"][1]["price"], 79000.0)
 
     def test_run_once_executes_embedded_observer_in_same_process(self) -> None:
         class FakeInfoClient:

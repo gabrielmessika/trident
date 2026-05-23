@@ -1,3 +1,4 @@
+import os
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -484,7 +485,14 @@ class ReportingTests(unittest.TestCase):
                 return tradfi_runtime
             return None
 
-        with patch(
+        with patch.dict(
+            os.environ,
+            {"TRIDENT_ENABLE_FUNDING": "true"},
+            clear=False,
+        ), patch(
+            "app.reporting.multi_pod._deployment_profile",
+            return_value={},
+        ), patch(
             "app.reporting.multi_pod.load_runtime_status",
             side_effect=runtime_status_for,
         ), patch("app.live.runtime_status.datetime") as mock_datetime:
@@ -499,6 +507,32 @@ class ReportingTests(unittest.TestCase):
         )
         self.assertTrue(funding_service["healthy"])
         self.assertEqual(funding_service["comment"], "Collector healthy.")
+
+    def test_build_runtime_report_marks_global_funding_disabled_from_deploy_flag(self) -> None:
+        config = load_config("config/trident.toml")
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-reporting-without-funding",
+            mode="observation",
+        )
+
+        with patch.dict(
+            os.environ,
+            {"TRIDENT_ENABLE_FUNDING": "false"},
+            clear=False,
+        ), patch(
+            "app.reporting.multi_pod._deployment_profile",
+            return_value={},
+        ), patch("app.reporting.multi_pod.load_runtime_status", return_value=None):
+            report = build_runtime_report(supervisor).to_dict()
+
+        funding_service = next(
+            item for item in report["services"] if item["service"] == "funding_collector"
+        )
+        self.assertFalse(funding_service["enabled"])
+        self.assertFalse(funding_service["healthy"])
+        self.assertEqual(funding_service["process_state"], "disabled")
+        self.assertIn("--without-funding", funding_service["comment"])
 
     def test_build_runtime_report_marks_degraded_service_unhealthy(self) -> None:
         config = load_config("config/trident.toml")
@@ -527,7 +561,14 @@ class ReportingTests(unittest.TestCase):
                 return funding_runtime
             return None
 
-        with patch("app.reporting.multi_pod.load_runtime_status", side_effect=runtime_status_for):
+        with patch.dict(
+            os.environ,
+            {"TRIDENT_ENABLE_FUNDING": "true"},
+            clear=False,
+        ), patch(
+            "app.reporting.multi_pod._deployment_profile",
+            return_value={},
+        ), patch("app.reporting.multi_pod.load_runtime_status", side_effect=runtime_status_for):
             report = build_runtime_report(supervisor).to_dict()
 
         funding_service = next(

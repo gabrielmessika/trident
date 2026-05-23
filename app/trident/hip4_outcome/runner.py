@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import logging
 import threading
 import time
@@ -156,6 +157,7 @@ class HIP4OutcomeEdgePod:
             "operator_brief": {},
             "market_observation": {},
             "embedded_observers": self._embedded_observer_status(),
+            "shock_guard": {},
             "reconciliation": None,
             "capital": self.capital_guard.local_snapshot(
                 open_positions=self._active_positions_for_mode()
@@ -190,7 +192,17 @@ class HIP4OutcomeEdgePod:
                 reference_prices=reference_prices,
                 now_ts=now_ts,
             )
+            shock_price_history = self._update_shock_guard_history(
+                reference_prices=reference_prices,
+                now_ts=now_ts,
+            )
             timings["short_features_ms"] = _elapsed_ms(stage_started)
+            summary["shock_guard"] = {
+                "enabled": bool(self.config.enable_shock_guard),
+                "history_underlyings": len(shock_price_history),
+                "windows_seconds": list(self.config.shock_guard_windows_seconds),
+                "adverse_move_bps": list(self.config.shock_guard_adverse_move_bps),
+            }
 
             summary["markets_seen"] = self._last_markets_seen
             summary["markets_supported"] = len(markets)
@@ -224,6 +236,12 @@ class HIP4OutcomeEdgePod:
                     reference_price=reference_price,
                     now_ts=now_ts,
                     history=short_price_history,
+                )
+                shock_assessment = self._shock_guard_assessment(
+                    market=market,
+                    reference_price=reference_price,
+                    now_ts=now_ts,
+                    history=shock_price_history,
                 )
                 short_assessment = self.edge_detector.assess_short_expiry(
                     market=market,
@@ -296,6 +314,8 @@ class HIP4OutcomeEdgePod:
                 opportunity_mix.update(opportunity.edge_type for opportunity in opportunities)
                 for opportunity in sorted(opportunities, key=lambda item: item.net_edge, reverse=True):
                     opportunity.metadata.update(reference.to_metadata())
+                    if shock_assessment:
+                        opportunity.metadata["shock_guard"] = shock_assessment
                     self._record_edge_decay(
                         opportunity=opportunity,
                         reference_price=reference_price,
@@ -395,6 +415,14 @@ class HIP4OutcomeEdgePod:
                 reference_price = 0.0 if reference is None else reference.price
                 if reference is not None:
                     opportunity.metadata.update(reference.to_metadata())
+                shock_assessment = self._shock_guard_assessment(
+                    market=basket_market,
+                    reference_price=reference_price,
+                    now_ts=now_ts,
+                    history=shock_price_history,
+                )
+                if shock_assessment:
+                    opportunity.metadata["shock_guard"] = shock_assessment
                 self._record_edge_decay(
                     opportunity=opportunity,
                     reference_price=reference_price,
@@ -849,6 +877,86 @@ class HIP4OutcomeEdgePod:
         )
         self.state_store.save(payload)
         return history
+
+    def _update_shock_guard_history(
+        self,
+        *,
+        reference_prices: dict[str, Any],
+        now_ts: int,
+    ) -> dict[str, list[dict[str, float]]]:
+        if not self.config.enable_shock_guard:
+            return {}
+        payload = self.state_store.load()
+        payload["positions"] = [position.to_dict() for position in self.positions]
+        raw_history = payload.get("shock_guard_price_history")
+        if not isinstance(raw_history, dict) or not raw_history:
+            seeded = _seed_price_history_from_opportunities(
+                Path(self.config.logs_dir) / "opportunities.csv",
+                now_ts=now_ts,
+                max_age_seconds=self.config.shock_guard_history_seconds,
+                sample_interval_seconds=self.config.shock_guard_sample_interval_seconds,
+                sample_limit=self.config.shock_guard_price_history_limit,
+            )
+            if seeded:
+                payload["shock_guard_price_history"] = seeded
+        prices = {
+            underlying.upper(): reference.price
+            for underlying, reference in reference_prices.items()
+            if getattr(reference, "price", 0.0) > 0
+        }
+        history = update_price_history_payload(
+            payload,
+            prices,
+            now_ts=now_ts,
+            max_age_seconds=self.config.shock_guard_history_seconds,
+            sample_limit=self.config.shock_guard_price_history_limit,
+            payload_key="shock_guard_price_history",
+            min_sample_interval_seconds=self.config.shock_guard_sample_interval_seconds,
+        )
+        self.state_store.save(payload)
+        return history
+
+    def _shock_guard_assessment(
+        self,
+        *,
+        market: OutcomeMarket,
+        reference_price: float,
+        now_ts: int,
+        history: dict[str, list[dict[str, float]]],
+    ) -> dict[str, Any]:
+        if not self.config.enable_shock_guard or reference_price <= 0:
+            return {}
+        samples = _parse_price_samples(history.get(market.underlying.upper(), []))
+        if not samples:
+            return {}
+        windows: list[dict[str, Any]] = []
+        thresholds = _shock_thresholds_by_window(self.config)
+        for window_seconds, threshold_bps in thresholds:
+            cutoff = now_ts - int(window_seconds)
+            candidates = [sample for sample in samples if int(sample["ts"]) <= cutoff]
+            if not candidates:
+                continue
+            base = candidates[-1]
+            base_price = float(base["price"])
+            if base_price <= 0:
+                continue
+            move_bps = round((reference_price / base_price - 1.0) * 10_000.0, 6)
+            windows.append(
+                {
+                    "window_seconds": int(window_seconds),
+                    "threshold_bps": float(threshold_bps),
+                    "move_bps": move_bps,
+                    "base_price": round(base_price, 8),
+                    "current_price": round(reference_price, 8),
+                    "base_age_seconds": int(max(now_ts - int(base["ts"]), 0)),
+                }
+            )
+        if not windows:
+            return {}
+        return {
+            "underlying": market.underlying.upper(),
+            "windows": windows,
+        }
 
     def _short_features_for_market(
         self,
@@ -1471,6 +1579,8 @@ class HIP4OutcomeEdgePod:
                 reason = "bid_over_conservative_hold_ev"
                 exit_fraction = 1.0
             elif (
+                self.config.enable_early_exit_probability_stop
+                and
                 conservative_probability <= float(self.config.early_exit_stop_probability)
                 and full_exit_roi >= -float(self.config.early_exit_stop_max_loss_roi)
             ):
@@ -2811,6 +2921,82 @@ def _shadow_exit_policy_specs(config: Hip4OutcomeConfig) -> list[dict[str, Any]]
             policies.append(item)
             seen.add(str(item["policy"]))
     return policies
+
+
+def _shock_thresholds_by_window(config: Hip4OutcomeConfig) -> list[tuple[int, float]]:
+    windows = [int(value) for value in config.shock_guard_windows_seconds if int(value) > 0]
+    thresholds = [float(value) for value in config.shock_guard_adverse_move_bps if float(value) > 0]
+    if not windows or not thresholds:
+        return []
+    pairs: list[tuple[int, float]] = []
+    last_threshold = thresholds[-1]
+    for index, window in enumerate(windows):
+        threshold = thresholds[index] if index < len(thresholds) else last_threshold
+        pairs.append((window, threshold))
+    return pairs
+
+
+def _parse_price_samples(raw_samples: object) -> list[dict[str, float]]:
+    if not isinstance(raw_samples, list):
+        return []
+    samples: list[dict[str, float]] = []
+    for raw in raw_samples:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            ts = float(raw.get("ts"))
+            price = float(raw.get("price"))
+        except (TypeError, ValueError):
+            continue
+        if ts <= 0 or price <= 0:
+            continue
+        samples.append({"ts": ts, "price": price})
+    samples.sort(key=lambda item: item["ts"])
+    return samples
+
+
+def _seed_price_history_from_opportunities(
+    path: Path,
+    *,
+    now_ts: int,
+    max_age_seconds: int,
+    sample_interval_seconds: int,
+    sample_limit: int,
+) -> dict[str, list[dict[str, float]]]:
+    if not path.exists():
+        return {}
+    cutoff = now_ts - max(int(max_age_seconds), 1)
+    min_interval = max(int(sample_interval_seconds), 0)
+    limit = max(int(sample_limit), 2)
+    history: dict[str, list[dict[str, float]]] = {}
+    try:
+        with path.open(newline="", encoding="utf-8", errors="replace") as handle:
+            for row in csv.DictReader(handle):
+                underlying = str(row.get("underlying") or "").strip().upper()
+                if not underlying:
+                    continue
+                try:
+                    row_ts = _parse_iso_to_epoch(str(row.get("ts") or ""))
+                    price = float(row.get("ref_price") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if row_ts < cutoff or row_ts > now_ts or price <= 0:
+                    continue
+                samples = history.get(underlying, [])
+                if samples and int(row_ts - samples[-1]["ts"]) < min_interval:
+                    continue
+                samples.append({"ts": float(row_ts), "price": float(price)})
+                history[underlying] = samples[-limit:]
+    except OSError:
+        return {}
+    return history
+
+
+def _parse_iso_to_epoch(value: str) -> int:
+    text = value.strip()
+    if not text:
+        raise ValueError("empty timestamp")
+    return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
 
 
 def _shadow_exit_policies_payload(position: OutcomePosition) -> dict[str, Any]:
