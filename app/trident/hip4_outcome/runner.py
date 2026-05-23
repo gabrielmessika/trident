@@ -202,7 +202,9 @@ class HIP4OutcomeEdgePod:
                 "history_underlyings": len(shock_price_history),
                 "windows_seconds": list(self.config.shock_guard_windows_seconds),
                 "adverse_move_bps": list(self.config.shock_guard_adverse_move_bps),
+                "min_adverse_windows": int(self.config.shock_guard_min_adverse_windows),
             }
+            summary["pnl_levers"] = _pnl_levers_payload(self.config)
 
             summary["markets_seen"] = self._last_markets_seen
             summary["markets_supported"] = len(markets)
@@ -2934,6 +2936,59 @@ def _shock_thresholds_by_window(config: Hip4OutcomeConfig) -> list[tuple[int, fl
         threshold = thresholds[index] if index < len(thresholds) else last_threshold
         pairs.append((window, threshold))
     return pairs
+
+
+def _pnl_levers_payload(config: Hip4OutcomeConfig) -> dict[str, Any]:
+    return {
+        "active_dry_run": [
+            {
+                "name": "bid_over_conservative_hold_ev",
+                "enabled": bool(config.enable_early_exit),
+                "min_ev_premium": float(config.early_exit_min_ev_premium),
+                "min_exit_roi": float(config.early_exit_min_ev_exit_roi),
+                "log": "early_exits.csv",
+            },
+            {
+                "name": "probability_stop_intermediate",
+                "enabled": bool(config.enable_early_exit and config.enable_early_exit_probability_stop),
+                "conservative_probability_lte": float(config.early_exit_stop_probability),
+                "exit_roi_gte": -float(config.early_exit_stop_max_loss_roi),
+                "log": "early_exits.csv",
+            },
+        ],
+        "observe": [
+            {
+                "name": "shadow_policy_ev_plus_2pct_full",
+                "enabled": bool(config.enable_shadow_exit_policies),
+                "min_ev_premium": float(config.early_exit_min_ev_premium),
+                "min_exit_roi": float(config.early_exit_min_ev_exit_roi),
+                "log": "shadow_exit_policies.csv",
+            },
+            {
+                "name": "shadow_sizing_half_kelly",
+                "enabled": bool(config.enable_shadow_sizing),
+                "bankroll_usdc": float(config.shadow_sizing_bankroll_usdc),
+                "kelly_fraction_cap": float(config.shadow_sizing_kelly_fraction_cap),
+                "probability_haircut": float(config.shadow_sizing_probability_haircut),
+                "log": "shadow_sizing.csv",
+            },
+            {
+                "name": "shock_guard_two_window_confirmation",
+                "enabled": bool(
+                    config.enable_shock_guard
+                    and int(config.shock_guard_min_adverse_windows) >= 2
+                ),
+                "min_adverse_windows": int(config.shock_guard_min_adverse_windows),
+                "windows_seconds": list(config.shock_guard_windows_seconds),
+                "log": "decisions.jsonl",
+            },
+            {
+                "name": "short_expiry_observe_only",
+                "enabled": bool(config.enable_short_expiry and config.short_expiry_observe_only),
+                "log": "short_expiry_features.csv",
+            },
+        ],
+    }
 
 
 def _parse_price_samples(raw_samples: object) -> list[dict[str, float]]:

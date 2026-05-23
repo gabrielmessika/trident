@@ -179,6 +179,7 @@ class Hip4OutcomeConfig:
     enable_parity: bool = True
     enable_model: bool = True
     enable_short_expiry: bool = True
+    short_expiry_observe_only: bool = False
     enable_price_bucket: bool = True
     enable_named_outcome_basket: bool = False
     named_outcome_basket_min_count: int = 2
@@ -200,6 +201,7 @@ class Hip4OutcomeConfig:
     shock_guard_history_seconds: int = 604800
     shock_guard_sample_interval_seconds: int = 900
     shock_guard_price_history_limit: int = 1200
+    shock_guard_min_adverse_windows: int = 1
     shock_guard_edge_types: list[str] = field(
         default_factory=lambda: ["MODEL", "LATE_EXPIRY", "SHORT_EXPIRY"]
     )
@@ -450,6 +452,10 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
             "HIP4_OUTCOME_ENABLE_SHORT_EXPIRY",
             bool(section.get("enable_short_expiry", True)),
         ),
+        short_expiry_observe_only=env_bool(
+            "HIP4_OUTCOME_SHORT_EXPIRY_OBSERVE_ONLY",
+            bool(section.get("short_expiry_observe_only", False)),
+        ),
         enable_price_bucket=env_bool(
             "HIP4_OUTCOME_ENABLE_PRICE_BUCKET",
             bool(section.get("enable_price_bucket", True)),
@@ -518,6 +524,10 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
         shock_guard_price_history_limit=env_int(
             "HIP4_OUTCOME_SHOCK_GUARD_PRICE_HISTORY_LIMIT",
             int(section.get("shock_guard_price_history_limit", 1200)),
+        ),
+        shock_guard_min_adverse_windows=env_int(
+            "HIP4_OUTCOME_SHOCK_GUARD_MIN_ADVERSE_WINDOWS",
+            int(section.get("shock_guard_min_adverse_windows", 1)),
         ),
         shock_guard_edge_types=_str_list(
             env_value(

@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--network mainnet|testnet] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--network mainnet|testnet] [--config config/trident.toml] [--only-pod-b] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start] [service]
 
 Actions:
   start     démarre l'API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding par défaut en dry-run
@@ -37,6 +37,7 @@ Sécurité live :
   puis lance un preflight credentials + reconciliation + orderUpdates pour Pod A/Pod C.
   --network testnet sélectionne config/trident_testnet.toml par défaut et
   isole les state files live Pod A/Pod C du mainnet.
+  --only-pod-b recrée uniquement hip4-outcome-dry-run, sans toucher Pod A/C.
 EOF
 }
 
@@ -62,6 +63,7 @@ ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
 ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
 ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-}"
+ONLY_POD_B=""
 FRESH_START=""
 MODE="${TRIDENT_MODE:-dry-run}"
 EXCHANGE_NETWORK="${TRIDENT_EXCHANGE_NETWORK:-mainnet}"
@@ -152,6 +154,13 @@ while [ $# -gt 0 ]; do
             CONFIG_PATH_EXPLICIT="true"
             shift 2
             ;;
+        --only-pod-b|--pod-b-only)
+            ONLY_POD_B="true"
+            ENABLE_POD_B="true"
+            ENABLE_HIP4_OUTCOME="true"
+            ENABLE_HIP4_MAINNET_OBSERVER=""
+            shift
+            ;;
         --mode)
             MODE="$2"
             shift 2
@@ -202,6 +211,14 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+if [ -n "$ONLY_POD_B" ]; then
+    ENABLE_POD_B="true"
+    ENABLE_HIP4_OUTCOME="true"
+    ENABLE_HIP4_MAINNET_OBSERVER=""
+    ENABLE_POD_C=""
+    ENABLE_FUNDING=""
+fi
 
 case "$MODE" in
     dry-run|live)
@@ -316,6 +333,10 @@ default_services() {
         services+=(funding-collector)
     fi
     printf '%s\n' "${services[@]}"
+}
+
+target_pod_b_service() {
+    printf '%s\n' hip4-outcome-dry-run
 }
 
 all_managed_services() {
@@ -521,6 +542,14 @@ guard_live_start() {
 
 case "$ACTION" in
     start)
+        if [ -n "$ONLY_POD_B" ]; then
+            require_runtime_files
+            mapfile -t SERVICES < <(target_pod_b_service)
+            info "Redéploiement ciblé Pod B HIP-4: ${SERVICES[*]}"
+            compose up -d --no-deps --force-recreate "${SERVICES[@]}"
+            ok "Pod B HIP-4 redéployé sans toucher Pod A/C"
+            exit 0
+        fi
         guard_network_config
         guard_live_start
         require_runtime_files
@@ -543,12 +572,23 @@ case "$ACTION" in
         ok "Services démarrés"
         ;;
     stop)
-        mapfile -t SERVICES < <(default_services)
+        if [ -n "$ONLY_POD_B" ]; then
+            mapfile -t SERVICES < <(target_pod_b_service)
+        else
+            mapfile -t SERVICES < <(default_services)
+        fi
         info "Arrêt: ${SERVICES[*]}"
         compose stop "${SERVICES[@]}"
         ok "Services arrêtés"
         ;;
     restart)
+        if [ -n "$ONLY_POD_B" ]; then
+            mapfile -t SERVICES < <(target_pod_b_service)
+            info "Redémarrage ciblé Pod B HIP-4: ${SERVICES[*]}"
+            compose restart "${SERVICES[@]}"
+            ok "Pod B HIP-4 redémarré sans toucher Pod A/C"
+            exit 0
+        fi
         guard_network_config
         guard_live_start
         mapfile -t SERVICES < <(default_services)
@@ -560,6 +600,15 @@ case "$ACTION" in
         ok "Services redémarrés"
         ;;
     update)
+        if [ -n "$ONLY_POD_B" ]; then
+            require_runtime_files
+            mapfile -t SERVICES < <(target_pod_b_service)
+            info "Rebuild + redéploiement ciblé Pod B HIP-4: ${SERVICES[*]}"
+            compose build "${SERVICES[@]}"
+            compose up -d --no-deps --force-recreate "${SERVICES[@]}"
+            ok "Pod B HIP-4 update sans toucher Pod A/C"
+            exit 0
+        fi
         guard_network_config
         guard_live_start
         require_runtime_files

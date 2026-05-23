@@ -1,6 +1,6 @@
 # TRIDENT Active Plan
 
-Date: `2026-05-21`
+Date: `2026-05-23`
 
 ## Status
 
@@ -259,6 +259,10 @@ Integration bot complet:
 
 - `app/live/trident_dry_run_launcher.py` lance HIP-4 comme resultat `pod_b`; l'ancien runner directionnel n'est plus lance.
 - `scripts/trident_server.sh` mappe le profil `pod_b` vers le service `hip4-outcome-dry-run`.
+- Redéploiement ciblé Pod B sans casser le burn-in Pod A/C:
+  `./deploy.sh --start --only-pod-b`. Ce chemin build/recrée uniquement
+  `hip4-outcome-dry-run`, sans `stop_unmanaged_services`, sans preflight A/C et
+  sans recréer `pod-a-live` ou `pod-c-live`.
 - `docker-compose.trident.yml` lance `hip4-outcome-dry-run` avec
   `config/hip4_outcome_mainnet_paper.toml` par defaut; l'ancien
   `hip4-outcome-mainnet-observer` reste defini seulement comme service
@@ -393,22 +397,41 @@ Review mainnet paper / calibration:
 - Aucun blocage HYPE HIP-4 n'est actif en mainnet paper. Les anciens blocages
   HYPE testnet ont ete retires parce que le testnet n'est plus une source de
   performance representative.
-- Decision dry-run `2026-05-23`: pas de blocage statique par coin/cote
-  (`blocked_opportunity_slices = []`). Un `shock_guard` global est active pour
-  tous les `priceBinary` Pod B: il rejette `BUY_YES` si l'underlying subit un
-  choc baissier sur les fenetres configurees, et `BUY_NO` si le choc est
-  haussier. Fenetres courantes: `15m`, `1h`, `4h`, `1d`, `3d`, `7d`;
-  seuils adverses: `80`, `150`, `250`, `300`, `300`, `400` bps. Si
-  l'historique shock est absent, il est seed depuis `opportunities.csv` afin
-  que les fenetres longues puissent etre utiles apres redeploiement.
-- Le `probability_stop` actif est desactive en mainnet paper et remplace par
-  une observation shadow durcie: `early_exit_stop_probability = 0.25`,
-  `early_exit_stop_max_loss_roi = 0.15`. Les sorties actives restent les prises
-  de profit et `bid_over_conservative_hold_ev`; le stop probabiliste ne doit
-  redevenir actif qu'apres un echantillon shadow propre.
+- Decision dry-run `2026-05-23` apres backtest PnL levers:
+  `server-data/replay_reports/hip4_outcome_pnl_lever_backtests_20260523T164104Z.md`.
+  Pas de blocage statique par coin/cote (`blocked_opportunity_slices = []`).
+  Le `shock_guard` reste global sur tous les `priceBinary`, mais il est moins
+  agressif: il faut maintenant `2` fenetres adverses avant rejet
+  (`shock_guard_min_adverse_windows = 2`). Les seuils restent `15m`, `1h`,
+  `4h`, `1d`, `3d`, `7d` a `80`, `150`, `250`, `300`, `300`, `400` bps.
+  Si l'historique shock est absent, il est seed depuis `opportunities.csv`.
+- Sorties anticipees `2026-05-23`: `bid_over_conservative_hold_ev` reste actif
+  et GO dry-run. Le `probability_stop` revient en dry-run paper avec seuil
+  PnL-first de compromis: `early_exit_stop_probability = 0.35`,
+  `early_exit_stop_max_loss_roi = 0.20`. Le `0.32/0.15` etait trop timide
+  sur les candidats observes; le `0.35/0.20` garde le declenchement defensif
+  tout en refusant les sorties deja trop abimees.
+- GO observe ajoutes/maintenus:
+  - `shadow_policy_ev_plus_2pct_full` dans `shadow_exit_policies.csv`;
+  - `shadow_sizing_half_kelly` dans `shadow_sizing.csv`;
+  - `shock_guard_two_window_confirmation` expose dans le status via
+    `summary.pnl_levers`.
+- `SHORT_EXPIRY` reste observation-only pendant la fenetre 48h
+  (`short_expiry_observe_only = true`): les features/watchlist continuent
+  d'etre logguees, mais aucune opportunite `SHORT_EXPIRY` ne doit etre ouverte.
+- NOGO a ne pas promouvoir sur cette fenetre: variantes `SHORT_EXPIRY` teste
+  hold-to-settlement proxy, durcissement BUY_YES downtrend par edge/rebound,
+  `shock_guard` one-hit courant, `shock_guard_scale_2x`, maker quotes sans
+  modele de fills.
+- Revue prevue apres `48h` de dry-run avec ces reglages: comparer PnL realise,
+  PnL si hold-to-settlement par raison de sortie, nombre de stops proba,
+  `market_already_open`, et PnL par side/underlying.
 
 Mode `SHORT_EXPIRY`:
 
+- Statut courant `2026-05-23`: observation-only pendant 48h. Les features,
+  watchlist et raisons de readiness sont logguees, mais l'edge type
+  `SHORT_EXPIRY` ne genere pas d'entree paper.
 - Priorise les marches dans `short_expiry_window_minutes`.
 - Maintient un historique prix settlement-aligne dans le `state_path` configure.
 - Calcule momentum 30s/60s/180s, distance au strike, vitesse, vol realisee courte.
@@ -473,10 +496,10 @@ Etat d'observation et execution:
 
 - Le mainnet paper a pris le relais du testnet comme source d'observation et
   de dry-run exploitable.
-- La derniere fenetre mainnet paper montre un PnL positif mais un echantillon
-  encore faible: review recalculee le `2026-05-21`, `8` trades /
-  `8` settlements, win rate `4/8 = 50%`, PnL `+72.6877`, PF `1.3653`,
-  Brier `0.2585`, statut `collect_more_data`.
+- La derniere review mainnet paper recalculee le `2026-05-23` reste
+  `collect_more_data`: `53` trades, `52` settlements, win rate `24/52`,
+  PnL `-34.1787`, PF `0.9106`, Brier `0.2405`. Le volume est maintenant
+  suffisant pour tester des leviers paper, mais pas pour promotion mainnet.
 - Le testnet a valide les briques techniques: signatures, ordres IOC,
   reconciliation exchange, parsing de `Settlement.closedPnl`/`fee`, alias Pod B
   et UI.
@@ -621,6 +644,163 @@ Ce qui manque encore pour se rapprocher d'un bot type OpenClaw performant:
   - rester observation/paper tant que la resolution n'est pas replayable;
   - prioriser un dataset complet books/references/settlements avant toute
     execution reelle sur ces classes.
+
+### Backlog Data Quality HIP-4 / Dirty Realtime Data
+
+Verdict post "dirty websockets":
+
+- Le diagnostic general est utile: un edge outcome peut etre detruit ou simule
+  par des books stale, des references decalees, des snapshots caches ou une
+  boucle trop lente.
+- La recette Polymarket n'est pas transposable telle quelle a Hyperliquid:
+  ne pas lancer `100-300` websockets par feed, ne pas utiliser de seuils fixes
+  en cents, et ne pas considerer la latence comme preuve d'edge suffisante.
+- Pour TRIDENT, le sujet concerne surtout `Pod B HIP-4 Outcome`. Pod A/Pod C
+  utilisent deja un collecteur Hyperliquid shardé et rate-limit; il ne faut pas
+  augmenter agressivement les connexions A/C sans preuve et sans respect des
+  limites exchange.
+
+Objectif avant toute promotion HIP-4 mainnet:
+
+- Ajouter une couche `data_quality` appelee avant signal/risk/execution.
+- Produire un verdict explicite par marche/fenetre:
+  `tradable_window=true/false`, `quality_score`, `quality_reasons`.
+- D'abord en observation/mainnet paper seulement; aucune execution mainnet
+  reelle ne depend de cette couche tant qu'elle n'a pas ete replayee.
+- Logger ces champs dans les artifacts HIP-4 et les exposer dans le status/UI.
+
+Metriques minimales a logger:
+
+- `book_age_ms` YES/NO et `max_book_age_ms`.
+- `book_pair_skew_ms` entre les books YES et NO d'un meme marche.
+- `reference_age_ms` par source quand disponible, et age de la reference
+  agregee.
+- `loop_total_ms`, `books_ms`, `reference_prices_ms`, `market_observation_ms`.
+- `book_update_count_5s/15s` par coin outcome des que le streaming existe.
+- `unique_book_count_5s/15s` apres deduplication.
+- `price_jump_bps` sur l'underlying et variation absolue de probabilite book
+  outcome (`book_probability_delta_abs`).
+- `reference_divergence_bps`, sources rejetees, source count, anchor
+  Hyperliquid.
+- Spread, depth, empty/crossed book, missing bid/ask, et raison de rejet
+  `data_quality_*`.
+
+Regles candidates a tester en shadow puis replay:
+
+- Warmup `SHORT_EXPIRY`: commencer la surveillance au moins `15s` avant la
+  fenetre tradable, mesurer les `5s` finales, et skip la fenetre si les deux
+  legs outcome n'ont pas assez d'updates propres.
+- Rejeter une fenetre si un seul jump book/proba/reference depasse un seuil
+  calibre en bps ou en probabilite outcome, jamais en cents hard-codes.
+- En mode HTTP courant, utiliser l'age `time_ms` des `l2Book` YES/NO, le skew
+  YES/NO et la latence de boucle comme proxy de fraicheur.
+- En futur mode WebSocket, ignorer le premier tick/snapshot de chaque nouvelle
+  connexion tant que la source n'a pas prouve sa fraicheur.
+- Marquer une connexion comme stable seulement apres une periode de stabilisation
+  d'environ `8s`.
+- Stagger les subscriptions/reconnects sur environ `1s` pour eviter de voir le
+  meme snapshot cache partout au meme instant.
+
+Redondance prudente:
+
+- Cible initiale: `1` stream primaire + `1` shadow stream pour les outcomes
+  critiques ou les fenetres `SHORT_EXPIRY`; monter a `2-3` streams seulement si
+  les logs prouvent un gain de fraicheur net.
+- Deduplication par `coin`, `time_ms`, best bid/ask et top levels.
+- Score `jitter_ema` par connexion: delai inter-message, variance, age max,
+  erreurs, reconnects, snapshots identiques repetes.
+- Cull les connexions les plus erratiques seulement apres stabilisation, avec
+  caps explicites de respawn par minute et par cycle; respecter les limites
+  `ws_connects_per_minute`/rate limiter.
+
+Review et criteres de decision:
+
+- Ajouter des buckets de review: PnL, PF, Brier, log-loss, edge decay et fill
+  theorique par `quality_score`, `book_age_ms`, `book_pair_skew_ms`,
+  `loop_total_ms` et `reference_divergence_bps`.
+- Comparer opportunites acceptees vs opportunites qui auraient ete rejetees
+  par `data_quality` sur le meme dataset mainnet paper.
+- Verifier que la couche ne retire pas seulement quelques winners par hasard:
+  exiger un effet stable par jour/expiry/underlying/side avant promotion.
+- Mettre a jour `app/backtest/hip4_outcome_run_review.py`,
+  `app/trident/hip4_outcome/analysis.py`, `scripts/trident_dry_run_review.sh`
+  et `scripts/fetch_trident_data.sh` si de nouveaux fichiers de logs
+  `data_quality` sont ajoutes.
+- Nouveau pre-requis de promotion mainnet HIP-4: dataset mainnet paper avec
+  `data_quality` complet, distributions de latence/fraicheur connues, impact
+  replay positif ou neutre sur PF/Brier, et taux de fenetres skip acceptable.
+
+### Backlog LLM Research Sidecar / TradingAgents
+
+Verdict post TradingAgents / multi-agents LLM:
+
+- Le papier et le framework sont interessants comme architecture de recherche:
+  plusieurs agents jouent des roles d'analystes, debat bull/bear, trader,
+  risk manager et portfolio manager.
+- Ce n'est pas une preuve d'edge directement exploitable pour TRIDENT: le cadre
+  vise surtout des actions et horizons plus lents, alors que `Pod B HIP-4`
+  depend de books outcome, references, expiry proche, latence et calibration.
+- Ne pas mettre un LLM dans la boucle d'execution: aucun agent ne doit ouvrir ou
+  fermer une position, modifier les caps, changer le mode mainnet, editer une
+  config active, ou promouvoir une regle sans replay et confirmation humaine.
+- Usage cible: sidecar de review post-fetch et de recherche offline, apres
+  collecte mainnet paper, pour accelerer l'analyse sans devenir autorite de
+  trading.
+
+Architecture cible:
+
+- `DataQualityAnalyst`: lit `latency_stats.csv`, books, references, age/skew,
+  divergences et futurs champs `data_quality`; propose des anomalies testables.
+- `LossReviewAnalyst`: classe les pertes par stale book, spread, reference
+  divergence, late expiry reversal, insufficient depth, model overconfidence,
+  market already open ou sortie anticipee mal calibree.
+- `BullResearcher` et `BearResearcher`: debattent une hypothese de guardrail ou
+  de sizing, puis formulent un predicat entry-time concret et replayable.
+- `RiskReviewer`: verifie caps, drawdown, exposition par underlying, slippage,
+  sample size, biais de selection et impact sur Pod A/Pod C.
+- `ReplayPlanner`: produit les commandes de replay/review a lancer et les
+  slices minimales a comparer; ne change pas le code automatiquement.
+- `OperatorReporter`: synthetise le rapport en francais avec verdict
+  `go/watch/park/kill`, questions ouvertes et prochaines validations.
+
+Inputs autorises:
+
+- `server-data/logs/hip4_outcome_mainnet_paper/`:
+  `opportunities`, `decisions`, `trades`, `settlements`, `latency_stats`,
+  `edge_decay`, `short_expiry_features`, `market_observations`,
+  `daily_summary`.
+- Rapports `server-data/replay_reports/hip4_outcome_run_review_latest.*`.
+- Configs HIP-4 et TRIDENT, uniquement en lecture, pour expliquer les seuils.
+- Baselines full-bot Pod A/Pod C quand une hypothese pourrait toucher le
+  portefeuille global.
+- Futurs logs `data_quality` des qu'ils existent.
+
+Outputs attendus:
+
+- Un rapport experimental date dans `server-data/replay_reports/` ou `tmp/`,
+  jamais en remplacement d'une baseline officielle sans demande explicite.
+- Une liste courte de candidats testables, avec predicat entry-time,
+  motivation, risques et commande de replay proposee.
+- Des recommandations de collecte ou instrumentation, separees des
+  recommandations de strategie.
+- Aucun changement live, aucun ordre, aucune promotion et aucun changement de
+  caps sans validation humaine.
+
+Regles de promotion:
+
+- Le sidecar LLM peut proposer, jamais decider.
+- Tout candidat issu d'un debat LLM doit battre la baseline pertinente via
+  replay comparable, avec PnL/PF/Brier/log-loss, sample suffisant et analyse
+  par jour/expiry/underlying/side.
+- Les conclusions doivent etre deterministes et replayables: si l'agent utilise
+  du texte libre, il doit produire aussi des champs structures exploitables par
+  les scripts de review.
+- Priorite inferieure a `data_quality`: ne pas construire d'agents sophistiques
+  tant que les books/references/fills/settlements ne sont pas propres et
+  replayables.
+- Si ce sidecar devient un service serveur ou ecrit de nouveaux logs a
+  rapatrier, mettre a jour les scripts de deploiement, `scripts/fetch_trident_data.sh`
+  et `scripts/trident_dry_run_review.sh`.
 
 ## Idees A Garder: Bot Prediction Market / Post Crypto_Jargon
 
@@ -873,8 +1053,9 @@ Action:
 
 - Brier score, log-loss, buckets de calibration, loss review et guardrail
   simulation sont en place.
-- Continuer la collecte: la derniere review mainnet paper reste bloquee par
-  `8/20` settlements calibres et Brier `0.2585`.
+- Continuer la collecte: la derniere review mainnet paper depasse le minimum
+  brut de settlements mais reste bloquee par PF `0.9106/1.15`, Brier
+  `0.2405 > 0.23`, et absence de profil mainnet observer comparable.
 - Faire du walk-forward par jour/expiry plutot que valider sur une seule fenetre.
 - N'autoriser fractional Kelly ou XGBoost qu'apres historique suffisant et stable.
 - Garder `max_position_usdc`, `max_total_outcome_exposure_usdc` et `max_per_underlying_outcome_exposure_usdc` comme hard caps meme si Kelly propose plus.

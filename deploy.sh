@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--network mainnet|testnet] [--config config/trident.toml] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start]
+Usage: ./deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--start] [--mode dry-run|live] [--network mainnet|testnet] [--config config/trident.toml] [--only-pod-b] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start]
 
 Déploie TRIDENT sur le serveur :
 - rsync du code vers /opt/trident
@@ -34,6 +34,8 @@ Par défaut :
 - `--without-pod-c` retire Pod C
 - `--without-funding` retire le collecteur funding/OI global
 - `--without-hip4-outcome` est conservé comme alias de `--without-pod-b`
+- `--only-pod-b` redéploie uniquement `hip4-outcome-dry-run` avec `--start`;
+  Pod A/C ne sont ni recréés ni arrêtés.
 
 Sécurité live :
 - `--mode live` lance Pod A + Pod C en vrais ordres et garde Pod B HIP-4
@@ -65,10 +67,15 @@ ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
 ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
 ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-}"
+ONLY_POD_B=""
 FRESH_START=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 selected_pods_label() {
+    if [ -n "$ONLY_POD_B" ]; then
+        printf '%s' "Pod B HIP-4 seulement"
+        return
+    fi
     local pods=("API" "Pod A")
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && pods+=("Pod B HIP-4")
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && pods+=("HIP-4 Mainnet Observer séparé")
@@ -124,6 +131,7 @@ selected_server_flags() {
     [ -z "$ENABLE_HIP4_OUTCOME" ] && [ "$MODE" != "live" ] && flags="${flags} --without-hip4-outcome"
     [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && [ "$MODE" != "live" ] && flags="${flags} --with-hip4-mainnet-observer"
     [ -n "$FRESH_START" ] && flags="${flags} --fresh-start"
+    [ -n "$ONLY_POD_B" ] && flags="${flags} --only-pod-b"
     printf '%s' "$flags"
 }
 
@@ -161,6 +169,13 @@ while [ $# -gt 0 ]; do
             CONFIG_PATH="$2"
             CONFIG_PATH_EXPLICIT="true"
             shift 2
+            ;;
+        --only-pod-b|--pod-b-only)
+            ONLY_POD_B="true"
+            ENABLE_POD_B="true"
+            ENABLE_HIP4_OUTCOME="true"
+            ENABLE_HIP4_MAINNET_OBSERVER=""
+            shift
             ;;
         --with-pod-b)
             ENABLE_POD_B="true"
@@ -236,6 +251,11 @@ esac
 if [ "$MODE" = "live" ]; then
     ENABLE_HIP4_MAINNET_OBSERVER=""
 fi
+if [ -n "$ONLY_POD_B" ]; then
+    ENABLE_POD_B="true"
+    ENABLE_HIP4_OUTCOME="true"
+    ENABLE_HIP4_MAINNET_OBSERVER=""
+fi
 
 resolve_network_config
 
@@ -308,6 +328,11 @@ deploy_code() {
 
 build_remote() {
     info "Build Docker sur le serveur..."
+    if [ -n "$ONLY_POD_B" ]; then
+        ssh_remote "cd ${DEPLOY_DIR} && docker compose -f docker-compose.trident.yml --profile pod_b build hip4-outcome-dry-run"
+        ok "Image Docker Pod B HIP-4 buildée"
+        return
+    fi
     local profile_args=""
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && profile_args="${profile_args} --profile pod_b"
     [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && profile_args="${profile_args} --profile hip4_mainnet_observer"
@@ -326,7 +351,11 @@ post_checks() {
 }
 
 start_remote() {
-    info "Démarrage des services sur le serveur..."
+    if [ -n "$ONLY_POD_B" ]; then
+        info "Redéploiement ciblé Pod B HIP-4 sur le serveur..."
+    else
+        info "Démarrage des services sur le serveur..."
+    fi
     local extra_args
     extra_args="$(selected_server_flags)"
     info "Services demandés: $(selected_pods_label)"
@@ -334,7 +363,11 @@ start_remote() {
     info "Réseau A/C demandé: ${EXCHANGE_NETWORK}"
     info "Config demandée: ${CONFIG_PATH}"
     ssh_remote "cd ${DEPLOY_DIR} && ./scripts/trident_server.sh start${extra_args}"
-    ok "Services démarrés"
+    if [ -n "$ONLY_POD_B" ]; then
+        ok "Pod B HIP-4 redéployé sans toucher Pod A/C"
+    else
+        ok "Services démarrés"
+    fi
 }
 
 echo ""
@@ -359,6 +392,9 @@ echo "========================================="
 echo ""
 if [ -n "$START" ]; then
     echo "Services actifs sur ${HOST}: $(selected_pods_label)"
+    if [ -n "$ONLY_POD_B" ]; then
+        echo "  Redéploiement ciblé : Pod A/C non recréés, non arrêtés"
+    fi
     echo "  Mode actif : ${MODE}"
     echo "  Réseau A/C actif : ${EXCHANGE_NETWORK}"
     echo "  Config active : ${CONFIG_PATH}"
@@ -379,5 +415,6 @@ else
     echo "  ./deploy.sh --start --mode live --without-pod-c --without-funding"
     echo "  ./deploy.sh --start --without-pod-c"
     echo "  ./deploy.sh --start --without-funding"
+    echo "  ./deploy.sh --start --only-pod-b"
 fi
 echo ""

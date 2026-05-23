@@ -333,6 +333,7 @@ class OutcomeRiskManager:
         if not isinstance(windows, list):
             return None
 
+        adverse_hits: list[dict[str, object]] = []
         worst: dict[str, object] | None = None
         worst_severity = 0.0
         for raw in windows:
@@ -348,6 +349,13 @@ class OutcomeRiskManager:
                 continue
             if opportunity.side == "BUY_YES" and move_bps <= -threshold_bps:
                 severity = abs(move_bps) / threshold_bps
+                hit = {
+                    "window_seconds": window_seconds,
+                    "move_bps": round(move_bps, 4),
+                    "threshold_bps": round(threshold_bps, 4),
+                    "adverse_direction": "down",
+                }
+                adverse_hits.append(hit)
                 if severity > worst_severity:
                     worst_severity = severity
                     worst = {
@@ -361,6 +369,13 @@ class OutcomeRiskManager:
                     }
             elif opportunity.side == "BUY_NO" and move_bps >= threshold_bps:
                 severity = abs(move_bps) / threshold_bps
+                hit = {
+                    "window_seconds": window_seconds,
+                    "move_bps": round(move_bps, 4),
+                    "threshold_bps": round(threshold_bps, 4),
+                    "adverse_direction": "up",
+                }
+                adverse_hits.append(hit)
                 if severity > worst_severity:
                     worst_severity = severity
                     worst = {
@@ -372,6 +387,12 @@ class OutcomeRiskManager:
                         "move_bps": round(move_bps, 4),
                         "threshold_bps": round(threshold_bps, 4),
                     }
+        min_windows = max(int(self.config.shock_guard_min_adverse_windows), 1)
+        if worst is None or len(adverse_hits) < min_windows:
+            return None
+        worst["adverse_window_count"] = len(adverse_hits)
+        worst["min_adverse_windows"] = min_windows
+        worst["adverse_windows"] = adverse_hits
         return worst
 
     @staticmethod

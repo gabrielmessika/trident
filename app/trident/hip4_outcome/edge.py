@@ -552,6 +552,8 @@ class OutcomeEdgeDetector:
         )
         if short_assessment is None:
             return []
+        if self.config.short_expiry_observe_only:
+            return []
         if short_assessment.reason != "Short-expiry model probability above visible ask":
             return []
         if short_assessment.best_side not in {"BUY_YES", "BUY_NO"}:

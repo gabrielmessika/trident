@@ -37,6 +37,10 @@ enable_late_expiry = true
 enable_parity = true
 enable_model = true
 enable_short_expiry = true
+# Keep short-expiry as observation only for the next 48h. The latest proxy
+# backtests were NOGO, so this path logs features/watchlist but does not open
+# SHORT_EXPIRY opportunities.
+short_expiry_observe_only = true
 enable_price_bucket = true
 enable_named_outcome_basket = true
 named_outcome_basket_min_count = 2
@@ -49,7 +53,9 @@ embedded_observer_config_paths = []
 
 # Global adverse-momentum guard: do not approve BUY_YES into a sharp/downward
 # shock, or BUY_NO into a sharp/upward shock. It applies to every priceBinary
-# underlying Pod B sees, not to a hard-coded coin/side.
+# underlying Pod B sees, not to a hard-coded coin/side. The dry-run backtest
+# kept the guard but made it less nervous: require two adverse windows before
+# rejecting, instead of one isolated short-window print.
 blocked_opportunity_slices = []
 enable_shock_guard = true
 shock_guard_windows_seconds = [900, 3600, 14400, 86400, 259200, 604800]
@@ -57,6 +63,7 @@ shock_guard_adverse_move_bps = [80, 150, 250, 300, 300, 400]
 shock_guard_history_seconds = 604800
 shock_guard_sample_interval_seconds = 900
 shock_guard_price_history_limit = 1200
+shock_guard_min_adverse_windows = 2
 shock_guard_edge_types = ["MODEL", "LATE_EXPIRY", "SHORT_EXPIRY"]
 late_expiry_window_minutes = 20
 strike_buffer_bps = 8
@@ -105,12 +112,11 @@ early_exit_min_ev_exit_roi = 0.05
 early_exit_take_profit_roi = 0.35
 early_exit_take_profit_fraction = 0.5
 early_exit_full_take_profit_roi = 0.80
-# Keep the probability stop as a stricter shadow policy first. The active paper
-# exits still allow profit-taking and bid-over-EV exits, but no longer crystallize
-# probability-stop losses until the shadow sample is cleaner.
-enable_early_exit_probability_stop = false
-early_exit_stop_probability = 0.25
-early_exit_stop_max_loss_roi = 0.15
+# Defensive stop promoted to dry-run paper after replay. The PnL-first 48h
+# setting keeps the old probability trigger and caps accepted realized loss.
+enable_early_exit_probability_stop = true
+early_exit_stop_probability = 0.35
+early_exit_stop_max_loss_roi = 0.20
 early_exit_free_short_window_seconds = 420
 early_exit_free_short_window_min_roi = 0.0
 early_exit_reentry_cooldown_seconds = 600

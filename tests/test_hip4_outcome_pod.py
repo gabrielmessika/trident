@@ -502,6 +502,68 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertTrue(any(item.edge_type == "SHORT_EXPIRY" for item in opportunities))
         self.assertTrue(any(item.side == "BUY_YES" for item in opportunities))
 
+    def test_short_expiry_observe_only_suppresses_opportunities(self) -> None:
+        market = self._market()
+        book = self._book()
+        now_ts = market.expiry_ts - 300
+        config = Hip4OutcomeConfig(
+            mode="paper",
+            enable_late_expiry=False,
+            enable_parity=False,
+            enable_model=False,
+            enable_short_expiry=True,
+            short_expiry_observe_only=True,
+            short_expiry_window_minutes=6,
+            short_expiry_periods=["1d"],
+            short_expiry_min_history_seconds=30,
+            short_expiry_momentum_windows_seconds=[60],
+            short_expiry_min_confidence=0.5,
+            min_gross_edge=0.01,
+            min_net_edge=0.001,
+            max_position_usdc=5.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+        )
+        history = {
+            "BTC": [
+                {"ts": float(now_ts - 70), "price": 76800.0},
+                {"ts": float(now_ts), "price": 77000.0},
+            ]
+        }
+        probability = ProbabilityModel(config).estimate(
+            market,
+            reference_price=77000.0,
+            now_ts=now_ts,
+        )
+        features = ShortHorizonFeatureBuilder(config).build(
+            market=market,
+            reference_price=77000.0,
+            now_ts=now_ts,
+            history=history,
+        )
+        detector = OutcomeEdgeDetector(config)
+        assessment = detector.assess_short_expiry(
+            market=market,
+            order_book=book,
+            probability=probability,
+            reference_price=77000.0,
+            now_ts=now_ts,
+            features=features,
+        )
+
+        opportunities = detector.detect(
+            market=market,
+            order_book=book,
+            reference_price=77000.0,
+            probability=probability,
+            now_ts=now_ts,
+            short_features=features,
+            short_assessment=assessment,
+        )
+
+        self.assertIsNotNone(assessment)
+        self.assertEqual(opportunities, [])
+
     def test_risk_rejects_observer_mode_after_signal_logging(self) -> None:
         market = self._market()
         book = self._book()
@@ -771,6 +833,78 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertEqual(decision.reason, "shock_guard_adverse_momentum")
         self.assertEqual(decision.constraints["adverse_direction"], "up")
         self.assertEqual(decision.constraints["side"], "BUY_NO")
+
+    def test_shock_guard_can_require_multiple_adverse_windows(self) -> None:
+        market = self._market()
+        book = self._book()
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_YES",
+            edge_type="MODEL",
+            gross_edge=0.3,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.28,
+            confidence=0.9,
+            requested_size_usdc=25.0,
+            max_loss_usdc=25.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={
+                "shock_guard": {
+                    "windows": [
+                        {
+                            "window_seconds": 900,
+                            "move_bps": -90.0,
+                            "threshold_bps": 80.0,
+                        },
+                    ]
+                }
+            },
+        )
+        config = Hip4OutcomeConfig(
+            mode="paper",
+            enable_shock_guard=True,
+            shock_guard_min_adverse_windows=2,
+            shock_guard_edge_types=["MODEL"],
+            max_position_usdc=50.0,
+            max_total_outcome_exposure_usdc=100.0,
+            max_per_underlying_outcome_exposure_usdc=100.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+        )
+
+        first_decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 300,
+        )
+
+        self.assertTrue(first_decision.approved)
+
+        opportunity.metadata["shock_guard"]["windows"].append(
+            {
+                "window_seconds": 3600,
+                "move_bps": -180.0,
+                "threshold_bps": 150.0,
+            }
+        )
+        second_decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 300,
+        )
+
+        self.assertFalse(second_decision.approved)
+        self.assertEqual(second_decision.reason, "shock_guard_adverse_momentum")
+        self.assertEqual(second_decision.constraints["adverse_window_count"], 2)
+        self.assertEqual(second_decision.constraints["min_adverse_windows"], 2)
 
     def test_risk_rejects_testnet_order_below_effective_hl_minimum(self) -> None:
         market = self._market()
@@ -1200,9 +1334,11 @@ BTC = 0.5
 [hip4_outcome]
 blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "bad"]
 enable_early_exit_probability_stop = false
+short_expiry_observe_only = true
 enable_shock_guard = false
 shock_guard_windows_seconds = [900, 3600]
 shock_guard_adverse_move_bps = [80, 150]
+shock_guard_min_adverse_windows = 2
 block_reference_divergence = true
 reference_divergence_max_bps = 250
 reference_divergence_min_rejected_sources = 2
@@ -1220,9 +1356,11 @@ reference_divergence_edge_types = ["model"]
                 ["HYPE:LATE_EXPIRY:BUY_YES", "BTC:MODEL:BUY_NO"],
             )
             self.assertFalse(config.enable_early_exit_probability_stop)
+            self.assertTrue(config.short_expiry_observe_only)
             self.assertFalse(config.enable_shock_guard)
             self.assertEqual(config.shock_guard_windows_seconds, [900, 3600])
             self.assertEqual(config.shock_guard_adverse_move_bps, [80.0, 150.0])
+            self.assertEqual(config.shock_guard_min_adverse_windows, 2)
             self.assertTrue(config.block_reference_divergence)
             self.assertEqual(config.reference_divergence_max_bps, 250.0)
             self.assertEqual(config.reference_divergence_min_rejected_sources, 2)
@@ -1241,9 +1379,11 @@ reference_divergence_edge_types = ["model"]
                     "HIP4_OUTCOME_REFERENCE_DIVERGENCE_SIDES": "BUY_NO",
                     "HIP4_OUTCOME_REFERENCE_DIVERGENCE_EDGE_TYPES": "SHORT_EXPIRY",
                     "HIP4_OUTCOME_ENABLE_EARLY_EXIT_PROBABILITY_STOP": "true",
+                    "HIP4_OUTCOME_SHORT_EXPIRY_OBSERVE_ONLY": "false",
                     "HIP4_OUTCOME_ENABLE_SHOCK_GUARD": "true",
                     "HIP4_OUTCOME_SHOCK_GUARD_WINDOWS_SECONDS": "600,1800",
                     "HIP4_OUTCOME_SHOCK_GUARD_ADVERSE_MOVE_BPS": "70,120",
+                    "HIP4_OUTCOME_SHOCK_GUARD_MIN_ADVERSE_WINDOWS": "3",
                 },
             ):
                 overridden = load_hip4_outcome_config(path)
@@ -1259,20 +1399,25 @@ reference_divergence_edge_types = ["model"]
             self.assertEqual(overridden.reference_divergence_sides, ["BUY_NO"])
             self.assertEqual(overridden.reference_divergence_edge_types, ["SHORT_EXPIRY"])
             self.assertTrue(overridden.enable_early_exit_probability_stop)
+            self.assertFalse(overridden.short_expiry_observe_only)
             self.assertTrue(overridden.enable_shock_guard)
             self.assertEqual(overridden.shock_guard_windows_seconds, [600, 1800])
             self.assertEqual(overridden.shock_guard_adverse_move_bps, [70.0, 120.0])
+            self.assertEqual(overridden.shock_guard_min_adverse_windows, 3)
 
-    def test_mainnet_paper_config_uses_global_shock_guard_and_shadows_probability_stop(self) -> None:
+    def test_mainnet_paper_config_uses_global_shock_guard_and_intermediate_probability_stop(self) -> None:
         config = load_hip4_outcome_config("config/hip4_outcome_mainnet_paper.toml")
 
         self.assertEqual(config.blocked_opportunity_slices, [])
         self.assertTrue(config.enable_shock_guard)
         self.assertIn(604800, config.shock_guard_windows_seconds)
         self.assertIn("MODEL", config.shock_guard_edge_types)
-        self.assertFalse(config.enable_early_exit_probability_stop)
-        self.assertEqual(config.early_exit_stop_probability, 0.25)
-        self.assertEqual(config.early_exit_stop_max_loss_roi, 0.15)
+        self.assertEqual(config.shock_guard_min_adverse_windows, 2)
+        self.assertTrue(config.enable_early_exit_probability_stop)
+        self.assertEqual(config.early_exit_stop_probability, 0.35)
+        self.assertEqual(config.early_exit_stop_max_loss_roi, 0.20)
+        self.assertTrue(config.enable_short_expiry)
+        self.assertTrue(config.short_expiry_observe_only)
 
     def test_testnet_config_keeps_external_price_sources_visible(self) -> None:
         config = load_hip4_outcome_config("config/hip4_outcome_testnet.toml")
