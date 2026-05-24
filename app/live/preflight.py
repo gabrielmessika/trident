@@ -60,6 +60,7 @@ async def run_preflight(args: argparse.Namespace) -> tuple[bool, dict[str, objec
     private_client = HyperliquidPrivateInfoClient(config.hyperliquid, credentials)
     account_state = private_client.fetch_account_state(
         fills_lookback_hours=args.fills_lookback_hours,
+        include_account_mode=True,
     )
     report = reconcile_exchange_state(
         account_state=account_state,
@@ -73,9 +74,17 @@ async def run_preflight(args: argparse.Namespace) -> tuple[bool, dict[str, objec
     payload["external_state_paths"] = [str(store.path) for store in external_stores]
     payload["account"] = {
         "address": account_state.account_address,
+        "account_mode": account_state.account_mode,
         "account_value_usd": account_state.account_value_usd,
         "withdrawable_usd": account_state.withdrawable_usd,
         "total_margin_used_usd": account_state.total_margin_used_usd,
+        "spot_usdc_total": account_state.spot_usdc_total,
+        "spot_usdc_hold": account_state.spot_usdc_hold,
+        "spot_usdc_available": account_state.spot_usdc_available,
+        "hl_available_usd": account_state.hl_available_usd,
+        "hl_capital_source": account_state.hl_capital_source,
+        "perp_account_value_usd": account_state.account_value_usd,
+        "perp_withdrawable_usd": account_state.withdrawable_usd,
         "position_symbols": sorted(account_state.positions),
         "open_order_count": len(account_state.open_orders),
         "frontend_open_order_count": len(account_state.frontend_open_orders),

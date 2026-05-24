@@ -22,9 +22,15 @@ class ReconciliationReport:
     side_mismatches: list[str] = field(default_factory=list)
     open_orders: list[str] = field(default_factory=list)
     trigger_orders: list[str] = field(default_factory=list)
+    account_mode: str | None = None
     equity_usd: float = 0.0
     withdrawable_usd: float = 0.0
     total_margin_used_usd: float = 0.0
+    spot_usdc_total: float | None = None
+    spot_usdc_hold: float | None = None
+    spot_usdc_available: float | None = None
+    hl_available_usd: float = 0.0
+    hl_capital_source: str = "perp_withdrawable"
     reasons: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
@@ -37,9 +43,17 @@ class ReconciliationReport:
             "side_mismatches": self.side_mismatches,
             "open_orders": self.open_orders,
             "trigger_orders": self.trigger_orders,
+            "account_mode": self.account_mode,
             "equity_usd": self.equity_usd,
             "withdrawable_usd": self.withdrawable_usd,
             "total_margin_used_usd": self.total_margin_used_usd,
+            "spot_usdc_total": self.spot_usdc_total,
+            "spot_usdc_hold": self.spot_usdc_hold,
+            "spot_usdc_available": self.spot_usdc_available,
+            "hl_available_usd": self.hl_available_usd,
+            "hl_capital_source": self.hl_capital_source,
+            "perp_account_value_usd": self.equity_usd,
+            "perp_withdrawable_usd": self.withdrawable_usd,
             "reasons": self.reasons,
         }
 
@@ -56,9 +70,15 @@ def reconcile_exchange_state(
 ) -> ReconciliationReport:
     report = ReconciliationReport(
         ready=True,
+        account_mode=account_state.account_mode,
         equity_usd=account_state.account_value_usd,
         withdrawable_usd=account_state.withdrawable_usd,
         total_margin_used_usd=account_state.total_margin_used_usd,
+        spot_usdc_total=account_state.spot_usdc_total,
+        spot_usdc_hold=account_state.spot_usdc_hold,
+        spot_usdc_available=account_state.spot_usdc_available,
+        hl_available_usd=account_state.hl_available_usd,
+        hl_capital_source=account_state.hl_capital_source,
     )
 
     external_state_stores = list(external_state_stores or [])

@@ -1696,10 +1696,29 @@ def state_payload(
         metrics,
         runtime_snapshot=snapshot,
     ).to_dict()
+    snapshot["exchange"]["account"] = _exchange_account_payload(runtime_report)
     snapshot["runtime_report"] = runtime_report
     if include_stats:
         snapshot["stats"] = _temporal_stats_payload(snapshot, runtime_report)
     return snapshot
+
+
+def _exchange_account_payload(runtime_report: dict[str, object]) -> dict[str, object]:
+    keys = (
+        "account_mode",
+        "hl_available_usd",
+        "hl_capital_source",
+        "spot_usdc_total",
+        "spot_usdc_hold",
+        "spot_usdc_available",
+        "perp_account_value_usd",
+        "perp_withdrawable_usd",
+        "total_margin_used_usd",
+    )
+    payload = {key: runtime_report.get(key) for key in keys if runtime_report.get(key) is not None}
+    if not payload:
+        return {}
+    return payload
 
 
 def metrics_payload(
@@ -2164,6 +2183,17 @@ def _control_center_html(
         if parsed is None:
             return "-"
         return f"{parsed * 100:.{digits}f}%"
+
+    def hl_capital_note() -> str:
+        mode = str(runtime_report.get("account_mode") or "mode inconnu")
+        source = str(runtime_report.get("hl_capital_source") or "source inconnue")
+        spot_total = fmt_number(runtime_report.get("spot_usdc_total"), 2)
+        spot_hold = fmt_number(runtime_report.get("spot_usdc_hold"), 2)
+        if source == "unified_spot_usdc":
+            return f"{mode} · spot {spot_total} · hold {spot_hold}"
+        if source == "perp_withdrawable":
+            return f"{mode} · marge perp disponible"
+        return f"{mode} · {source}"
 
     def render_stat_cards(cards: list[dict[str, str]]) -> str:
         return "".join(
@@ -4942,6 +4972,43 @@ def _control_center_html(
         for item in runtime_report.get("pods", [])
         if isinstance(item, dict) and item.get("pod") is not None
     }
+    pod_c_allowed_clusters = sorted(
+        normalize_cluster_names(supervisor.config.pod_c.allowed_market_clusters)
+    )
+    pod_c_scope_symbols = symbols_in_allowed_clusters(
+        supervisor.config,
+        observation_universe_symbols(supervisor.config),
+        supervisor.config.pod_c.allowed_market_clusters,
+    )
+    cluster_regimes = {
+        str(cluster).strip().lower(): str(regime)
+        for cluster, regime in snapshot.get("cluster_regimes", {}).items()
+        if str(cluster).strip()
+    }
+    cluster_target_allocations = {
+        str(cluster).strip().lower(): float(target_pct)
+        for cluster, target_pct in snapshot.get("cluster_target_allocations", {}).items()
+        if str(cluster).strip()
+    }
+    observed_status_rows = [
+        item
+        for item in snapshot.get("observed_symbol_status", [])
+        if isinstance(item, dict) and item.get("symbol") is not None
+    ]
+    observed_count_by_cluster: dict[str, int] = {}
+    tradable_count_by_cluster: dict[str, int] = {}
+    for item in observed_status_rows:
+        symbol = str(item.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        cluster = cluster_for_symbol(supervisor.config, symbol)
+        observed_count_by_cluster[cluster] = observed_count_by_cluster.get(cluster, 0) + 1
+        if bool(item.get("tradable")):
+            tradable_count_by_cluster[cluster] = tradable_count_by_cluster.get(cluster, 0) + 1
+    scope_count_by_cluster: dict[str, int] = {}
+    for symbol in pod_c_scope_symbols:
+        cluster = cluster_for_symbol(supervisor.config, symbol)
+        scope_count_by_cluster[cluster] = scope_count_by_cluster.get(cluster, 0) + 1
 
     def fmt_number(value: object, digits: int = 2, *, fallback: str = "-") -> str:
         parsed = _float_or_none(value)
@@ -4960,6 +5027,17 @@ def _control_center_html(
         if parsed is None:
             return "-"
         return f"{parsed * 100:.{digits}f}%"
+
+    def hl_capital_note() -> str:
+        mode = str(runtime_report.get("account_mode") or "mode inconnu")
+        source = str(runtime_report.get("hl_capital_source") or "source inconnue")
+        spot_total = fmt_number(runtime_report.get("spot_usdc_total"), 2)
+        spot_hold = fmt_number(runtime_report.get("spot_usdc_hold"), 2)
+        if source == "unified_spot_usdc":
+            return f"{mode} · spot {spot_total} · hold {spot_hold}"
+        if source == "perp_withdrawable":
+            return f"{mode} · marge perp disponible"
+        return f"{mode} · {source}"
 
     def runtime_mode(pod_name: str) -> str:
         runtime_payload = snapshot.get(f"{pod_name}_runtime")
@@ -5114,6 +5192,19 @@ def _control_center_html(
         pod_a_summary["total_unrealized_pnl_usd"]
         + pod_c_summary["total_unrealized_pnl_usd"]
     )
+    ac_visible_pnl = ac_realized + ac_unrealized
+    ac_win_count = int(pod_a_summary["win_count"]) + int(pod_c_summary["win_count"])
+    ac_loss_count = int(pod_a_summary["loss_count"]) + int(pod_c_summary["loss_count"])
+    ac_closed_count = ac_win_count + ac_loss_count
+    ac_win_rate = ac_win_count / ac_closed_count if ac_closed_count > 0 else None
+    capital_used_usd = sum(
+        _float_or_none(item.get("margin_usd")) or 0.0
+        for item in open_rows
+    )
+    if capital_used_usd <= 0.0:
+        capital_used_usd = _float_or_none(runtime_report.get("total_margin_used_usd")) or 0.0
+    open_position_count = len(open_rows)
+    closed_event_count = sum(1 for item in event_rows if str(item.get("status")) == "closed")
     enabled_count = sum(1 for item in summaries.values() if bool(item.get("enabled", False)))
     healthy_count = sum(
         1
@@ -5138,30 +5229,90 @@ def _control_center_html(
 
     summary_cards = render_metric_cards(
         [
-            {"label": "Régime", "value": str(snapshot.get("regime", "-")), "note": "État de marché courant"},
-            {"label": "Pods", "value": f"{healthy_count}/{enabled_count}", "note": "Pods sains sur pods actifs"},
             {
-                "label": "A/C risque",
-                "value": f"{int(pod_a_summary['position_count']) + int(pod_c_summary['position_count'])} pos",
-                "note": "Sleeve Pod A + Pod C uniquement",
+                "label": "Capital HL dispo",
+                "value": f"{fmt_number(runtime_report.get('hl_available_usd'), 2)} USDC",
+                "note": hl_capital_note(),
             },
             {
-                "label": "A/C PnL réalisé",
-                "value": f"{ac_realized:.4f} USD",
-                "note": "Pod A + Pod C seulement",
+                "label": "Capital utilisé",
+                "value": f"{capital_used_usd:.2f} USD",
+                "note": f"{open_position_count} position(s) ouverte(s)",
             },
             {
-                "label": "A/C PnL latent",
-                "value": f"{ac_unrealized:.4f} USD",
-                "note": "Positions ouvertes A/C",
+                "label": "PnL visible A/C",
+                "value": f"{ac_visible_pnl:+.4f} USD",
+                "note": f"réalisé {ac_realized:+.4f} · latent {ac_unrealized:+.4f}",
             },
             {
-                "label": "Cash",
-                "value": f"{float(snapshot.get('capital_plan', {}).get('cash_usd', 0.0)):.2f} USD",
-                "note": "Capital non déployé",
+                "label": "Win rate A/C",
+                "value": fmt_pct(ac_win_rate),
+                "note": f"{ac_win_count} win · {ac_loss_count} loss",
+            },
+            {
+                "label": "Runtime",
+                "value": f"{healthy_count}/{enabled_count}",
+                "note": "pods A/C sains sur actifs",
+            },
+            {
+                "label": "Mode A/C",
+                "value": str(snapshot.get("mode", "-")),
+                "note": f"réseau {exchange_network}",
+            },
+            {
+                "label": "Régime crypto",
+                "value": str(snapshot.get("regime", "-")),
+                "note": "marchés crypto / Pod A",
+            },
+            {
+                "label": "Trades fermés",
+                "value": str(closed_event_count),
+                "note": "events récents visibles A/C",
             },
         ]
     )
+
+    cluster_order: list[str] = ["crypto"]
+    for cluster in sorted(
+        set(pod_c_allowed_clusters)
+        | set(cluster_regimes)
+        | set(cluster_target_allocations)
+        | set(scope_count_by_cluster)
+    ):
+        if cluster != "crypto":
+            cluster_order.append(cluster)
+    cluster_cards: list[dict[str, object]] = []
+    crypto_budget_pct = float(snapshot.get("allocations", {}).get("pod_a", 0.0) or 0.0)
+    for cluster in cluster_order:
+        observed_count = int(observed_count_by_cluster.get(cluster, 0))
+        tradable_count = int(tradable_count_by_cluster.get(cluster, 0))
+        scope_count = int(scope_count_by_cluster.get(cluster, 0))
+        regime_value = (
+            str(snapshot.get("regime", "-"))
+            if cluster == "crypto"
+            else cluster_regimes.get(cluster, "No data")
+        )
+        if cluster == "crypto":
+            label = "Crypto (Pod A)"
+            note = (
+                f"{tradable_count}/{max(observed_count, 1)} tradable"
+                f" · budget Pod A {crypto_budget_pct:.0%}"
+            )
+        else:
+            label = f"{_cluster_display_name(cluster)} (Pod C)"
+            population = observed_count if observed_count > 0 else scope_count
+            if population > 0:
+                note = (
+                    f"{tradable_count}/{population} tradable"
+                    f" · budget {cluster_target_allocations.get(cluster, 0.0):.0%}"
+                )
+            else:
+                note = (
+                    f"Pas de snapshot visible"
+                    f" · budget {cluster_target_allocations.get(cluster, 0.0):.0%}"
+                )
+        cluster_cards.append({"label": label, "value": regime_value, "note": note})
+    market_state_cards = render_metric_cards(cluster_cards)
 
     focus_items: list[dict[str, str]] = []
     if latest_snapshot["status"] == "bad":
@@ -5457,6 +5608,45 @@ def _control_center_html(
             "</article>"
         )
 
+    def render_dashboard_open_rows() -> str:
+        if not open_rows:
+            return "<tr><td colspan='8'>Aucune position ouverte A/C.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(_pod_label(str(item.get('pod', '-'))))}</td>"
+                f"<td>{escape(str(item.get('symbol', '-')))}</td>"
+                f"<td>{escape(str(item.get('side', '-')))}</td>"
+                f"<td>{escape(_humanize_setup_reason(item.get('open_reason')))}</td>"
+                f"<td>{fmt_number(item.get('margin_usd'), 2)}</td>"
+                f"<td>{fmt_number(item.get('current_notional_usd'), 2)}</td>"
+                f"<td>{fmt_signed_usd(item.get('unrealized_pnl_usd'))}</td>"
+                f"<td>{escape(str(item.get('opened_at') or '-'))}</td>"
+                "</tr>"
+            )
+            for item in open_rows[:10]
+        )
+
+    def render_dashboard_closed_rows() -> str:
+        rows = [item for item in event_rows if str(item.get("status")) == "closed"]
+        if not rows:
+            return "<tr><td colspan='8'>Aucun trade fermé A/C récent.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(_pod_label(str(item.get('pod', '-'))))}</td>"
+                f"<td>{escape(str(item.get('symbol', '-')))}</td>"
+                f"<td>{escape(str(item.get('side', '-')))}</td>"
+                f"<td>{escape(_humanize_setup_reason(item.get('open_reason')))}</td>"
+                f"<td>{escape(_humanize_close_reason(item.get('close_reason')))}</td>"
+                f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
+                f"<td>{fmt_signed_usd(item.get('pnl_usd'))}</td>"
+                f"<td>{escape(str(item.get('closed_at') or item.get('timestamp') or '-'))}</td>"
+                "</tr>"
+            )
+            for item in rows[:10]
+        )
+
     pod_cards = "".join(render_pod_card(summaries[pod]) for pod in display_pods)
     status_panel_html = f"""
       <section class="tab-panel{' is-active' if active_tab == 'status' else ''}" data-tab-panel="status">
@@ -5467,6 +5657,20 @@ def _control_center_html(
         <section class="panel panel-{escape(focus_tone)}">
           <div class="section-head"><h2>À faire maintenant</h2><p>Liste courte. Si tu ne lis qu'un bloc, c'est celui-ci.</p></div>
           <div class="focus-grid">{focus_rows}</div>
+        </section>
+        <section class="two-col">
+          <section class="panel">
+            <div class="section-head"><h2>Positions ouvertes A/C</h2><p>Capital actuellement engagé par Pod A et Pod C.</p></div>
+            <div class="table-wrap"><table><thead><tr>{_table_header("Pod", "Pod qui porte la position.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison", "Setup qui a ouvert la position.")}{_table_header("Marge", "Capital immobilisé.")}{_table_header("Valeur USD", "Valeur notionnelle actuelle.")}{_table_header("PnL latent", "PnL non réalisé.")}{_table_header("Ouvert", "Horodatage d'ouverture.")}</tr></thead><tbody>{render_dashboard_open_rows()}</tbody></table></div>
+          </section>
+          <section class="panel">
+            <div class="section-head"><h2>Trades fermés A/C</h2><p>Dernières sorties visibles, sans détails de pod trop bruyants.</p></div>
+            <div class="table-wrap"><table><thead><tr>{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens porté.")}{_table_header("Entrée", "Setup d'entrée.")}{_table_header("Sortie", "Raison de fermeture.")}{_table_header("Notional", "Notionnelle cible.")}{_table_header("PnL", "Résultat du trade.")}{_table_header("Fermé", "Horodatage de sortie.")}</tr></thead><tbody>{render_dashboard_closed_rows()}</tbody></table></div>
+          </section>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h2>États des marchés</h2><p>Crypto explicite pour Pod A, puis clusters hors crypto qui pilotent Pod C.</p></div>
+          <div class="metric-grid">{market_state_cards}</div>
         </section>
         <section class="panel">
           <div class="section-head"><h2>Status</h2><p>Collecte, santé des pods, ownership et activité récente.</p></div>
@@ -5764,6 +5968,43 @@ def _control_center_html(
         return `trident:tab:${{window.location.pathname}}`;
       }}
 
+      function focusStorageKey() {{
+        return `trident:focus:${{window.location.pathname}}`;
+      }}
+
+      function cssEscape(value) {{
+        if (window.CSS && typeof window.CSS.escape === "function") {{
+          return window.CSS.escape(String(value));
+        }}
+        return String(value).replace(/[^a-zA-Z0-9_-]/g, "");
+      }}
+
+      function focusSelector(element) {{
+        if (!element || element === document.body) return "";
+        if (element.dataset.tabButton) {{
+          return `[data-tab-button="${{cssEscape(element.dataset.tabButton)}}"]`;
+        }}
+        if (element.dataset.filterGroup && element.dataset.filterValue) {{
+          return `[data-filter-group="${{cssEscape(element.dataset.filterGroup)}}"][data-filter-value="${{cssEscape(element.dataset.filterValue)}}"]`;
+        }}
+        if (element.dataset.jumpTab) {{
+          return `[data-jump-tab="${{cssEscape(element.dataset.jumpTab)}}"]`;
+        }}
+        if (element.id) {{
+          return `#${{cssEscape(element.id)}}`;
+        }}
+        if (element.name) {{
+          return `${{element.tagName.toLowerCase()}}[name="${{cssEscape(element.name)}}"]`;
+        }}
+        return "";
+      }}
+
+      function isEditable(element) {{
+        return element instanceof HTMLInputElement
+          || element instanceof HTMLTextAreaElement
+          || element instanceof HTMLSelectElement;
+      }}
+
       function saveScrollPosition(tabName = activeTabName()) {{
         try {{
           window.sessionStorage.setItem(scrollStorageKey(tabName), String(window.scrollY || 0));
@@ -5788,6 +6029,50 @@ def _control_center_html(
         }}
       }}
 
+      function saveFocusedElement() {{
+        const element = document.activeElement;
+        const selector = focusSelector(element);
+        if (!selector) return;
+        const payload = {{ selector }};
+        if (isEditable(element) && element.type !== "password") {{
+          payload.value = element.value;
+          if (typeof element.selectionStart === "number") {{
+            payload.selectionStart = element.selectionStart;
+            payload.selectionEnd = element.selectionEnd;
+          }}
+        }}
+        try {{
+          window.sessionStorage.setItem(focusStorageKey(), JSON.stringify(payload));
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+
+      function restoreFocusedElement() {{
+        try {{
+          const raw = window.sessionStorage.getItem(focusStorageKey());
+          if (!raw) return;
+          const payload = JSON.parse(raw);
+          const element = document.querySelector(payload.selector || "");
+          if (!element) return;
+          if (isEditable(element) && element.type !== "password" && payload.value !== undefined) {{
+            element.value = payload.value;
+          }}
+          window.requestAnimationFrame(() => {{
+            element.focus({{ preventScroll: true }});
+            if (
+              isEditable(element)
+              && typeof payload.selectionStart === "number"
+              && typeof element.setSelectionRange === "function"
+            ) {{
+              element.setSelectionRange(payload.selectionStart, payload.selectionEnd ?? payload.selectionStart);
+            }}
+          }});
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+
       function restoreScrollPosition(tabName = activeTabName()) {{
         try {{
           const raw = window.sessionStorage.getItem(scrollStorageKey(tabName));
@@ -5802,9 +6087,16 @@ def _control_center_html(
         }}
       }}
 
+      function savePageState(tabName = activeTabName()) {{
+        saveScrollPosition(tabName);
+        saveActiveTab(tabName);
+        saveFocusedElement();
+      }}
+
       function setTab(tabName, updateHash = true, remember = true) {{
         if (remember) {{
           saveScrollPosition();
+          saveFocusedElement();
         }}
         const next = normalizedTab(tabName);
         buttons.forEach((button) => {{
@@ -5853,17 +6145,19 @@ def _control_center_html(
       setTab(initialTab, false, false);
       refreshFilterRows();
       restoreScrollPosition(initialTab);
-      window.addEventListener("beforeunload", () => saveScrollPosition());
+      restoreFocusedElement();
+      window.addEventListener("beforeunload", () => savePageState());
       window.addEventListener("hashchange", () => {{
         const next = (window.location.hash || "").replace("#", "");
         if (validTabs.has(next)) {{
           setTab(next, false);
           restoreScrollPosition(next);
+          restoreFocusedElement();
         }}
       }});
       if (Number.isFinite(refreshSeconds) && refreshSeconds > 0) {{
         window.setTimeout(() => {{
-          saveScrollPosition();
+          savePageState();
           const target = `${{window.location.pathname}}${{window.location.search}}${{window.location.hash}}`;
           window.location.replace(target);
         }}, refreshSeconds * 1000);
@@ -5946,6 +6240,7 @@ def hip4_outcome_html(
         status = {}
     coin_summary_rows = _hip4_pod_trade_summary(status)
     refreshed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    refresh_seconds = 10
     status_age = payload.get("status_age_seconds")
     age_label = "-" if status_age is None else _format_duration_compact(float(status_age))
     tone = "good" if payload.get("fresh") else "bad"
@@ -5986,6 +6281,46 @@ def hip4_outcome_html(
     short_watchlist = payload.get("short_expiry_watchlist", [])
     if not isinstance(short_watchlist, list):
         short_watchlist = []
+    open_positions = status.get("open_positions", [])
+    if not isinstance(open_positions, list):
+        open_positions = []
+    settled_positions = status.get("settled_positions", [])
+    if not isinstance(settled_positions, list):
+        settled_positions = []
+
+    mode_label = str(payload.get("mode") or status.get("mode") or "-")
+    logs_dir_label = str(payload.get("logs_dir") or status.get("logs_dir") or "")
+    network_label = str(
+        status.get("network")
+        or status.get("exchange_network")
+        or payload.get("network")
+        or payload.get("exchange_network")
+        or ("testnet" if mode_label.lower() == "testnet" else "mainnet")
+    )
+    if "testnet" in logs_dir_label.lower():
+        network_label = "testnet"
+    elif "mainnet" in logs_dir_label.lower():
+        network_label = "mainnet"
+
+    open_pnl = round(
+        sum(
+            float(item.get("estimated_pnl_usdc", 0.0) or 0.0)
+            for item in open_positions
+            if isinstance(item, dict)
+        ),
+        6,
+    )
+    visible_pnl = round(float(realized_pnl or 0.0) + open_pnl, 6)
+    available_capital = capital.get("remaining_budget_usdc")
+    if available_capital is None:
+        available_capital = capital.get("testnet_available_usdc")
+    used_capital = capital.get("open_exposure_usdc")
+    if used_capital is None:
+        used_capital = sum(
+            float(item.get("max_loss_usdc", item.get("cost_usdc", 0.0)) or 0.0)
+            for item in open_positions
+            if isinstance(item, dict)
+        )
 
     def fmt_number(value: object, digits: int = 4, *, fallback: str = "-") -> str:
         parsed = _float_or_none(value)
@@ -6004,6 +6339,12 @@ def hip4_outcome_html(
         if parsed is None:
             return "-"
         return f"{parsed * 100:.{digits}f}%"
+
+    def first_present(*values: object) -> object:
+        for value in values:
+            if value is not None:
+                return value
+        return None
 
     def render_stat_cards(cards: list[dict[str, str]]) -> str:
         return "".join(
@@ -6419,70 +6760,105 @@ def hip4_outcome_html(
             if isinstance(row, dict)
         )
 
-    def render_dashboard_opportunity_rows() -> str:
-        rows = payload.get("opportunities", [])
-        if not isinstance(rows, list) or not rows:
-            return "<tr><td colspan='7'>Aucune opportunité récente.</td></tr>"
-        compact_rows = [row for row in rows if isinstance(row, dict)][-6:]
+    def render_dashboard_open_position_rows() -> str:
+        rows = [row for row in open_positions if isinstance(row, dict)]
+        if not rows:
+            return "<tr><td colspan='9'>Aucune position ouverte.</td></tr>"
         return "".join(
             (
                 "<tr>"
-                f"<td>{escape(str(row.get('ts', '-')))}</td>"
                 f"<td>{escape(str(row.get('underlying', '-')))}</td>"
-                f"<td>{escape(str(row.get('edge_type', '-')))}</td>"
+                f"<td>{escape(str(row.get('market_id', '-')))}</td>"
                 f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{escape(str(row.get('status', '-')))}</td>"
+                f"<td>{fmt_number(row.get('cost_usdc'), 2)}</td>"
+                f"<td>{fmt_number(row.get('max_loss_usdc'), 2)}</td>"
+                f"<td>{fmt_signed_number(row.get('estimated_pnl_usdc'), 2)}</td>"
                 f"<td>{fmt_number(row.get('net_edge'), 5)}</td>"
-                f"<td>{fmt_number(row.get('confidence'), 3)}</td>"
-                f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                f"<td>{escape(str(row.get('opened_at') or '-'))}</td>"
                 "</tr>"
             )
-            for row in reversed(compact_rows)
+            for row in rows[:12]
         )
 
-    def render_dashboard_watchlist_rows() -> str:
-        if not short_watchlist:
-            return "<tr><td colspan='7'>Aucune fenêtre short-expiry prioritaire.</td></tr>"
-        compact_rows = [row for row in short_watchlist if isinstance(row, dict)][:6]
+    def render_dashboard_closed_position_rows() -> str:
+        rows = [row for row in settled_positions if isinstance(row, dict)]
+        if rows:
+            return "".join(
+                (
+                    "<tr>"
+                    f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                    f"<td>{escape(str(row.get('market_id', '-')))}</td>"
+                    f"<td>{escape(str(row.get('side', '-')))}</td>"
+                    f"<td>{escape(str(row.get('status') or row.get('result') or '-'))}</td>"
+                    f"<td>{fmt_number(row.get('cost_usdc'), 2)}</td>"
+                    f"<td>{fmt_number(first_present(row.get('estimated_payout_usdc'), row.get('payout_usdc')), 2)}</td>"
+                    f"<td>{fmt_signed_number(first_present(row.get('estimated_pnl_usdc'), row.get('net_pnl_usdc')), 2)}</td>"
+                    f"<td>{escape(str(row.get('settled_at') or row.get('closed_at') or '-'))}</td>"
+                    "</tr>"
+                )
+                for row in reversed(rows[-12:])
+            )
+        settlement_rows = [
+            row for row in payload.get("settlements", []) if isinstance(row, dict)
+        ]
+        if not settlement_rows:
+            return "<tr><td colspan='8'>Aucune position fermée.</td></tr>"
         return "".join(
             (
                 "<tr>"
-                f"<td>{escape(str(row.get('readiness', '-')))}</td>"
                 f"<td>{escape(str(row.get('underlying', '-')))}</td>"
-                f"<td>{escape(str(row.get('period', '-')))}</td>"
-                f"<td>{fmt_number(row.get('seconds_left'), 0)}</td>"
-                f"<td>{escape(str(row.get('best_side') or '-'))}</td>"
-                f"<td>{fmt_number(row.get('best_net_edge'), 5)}</td>"
-                f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                f"<td>{escape(str(row.get('market_id', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{escape(str(row.get('result', '-')))}</td>"
+                f"<td>{fmt_number(row.get('cost_usdc'), 2)}</td>"
+                f"<td>{fmt_number(row.get('payout_usdc'), 2)}</td>"
+                f"<td>{fmt_signed_number(_settlement_net_pnl(row), 2)}</td>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
                 "</tr>"
             )
-            for row in compact_rows
+            for row in reversed(settlement_rows[-12:])
+        )
+
+    def render_dashboard_runtime_rows() -> str:
+        rows = [
+            ("Process", payload.get("process_state", "-")),
+            ("Freshness", "fresh" if payload.get("fresh") else "stale"),
+            ("Age status", age_label),
+            ("Mode", mode_label),
+            ("Network", network_label),
+            ("Capital status", capital.get("reason", "-")),
+            ("Logs", logs_dir_label or "-"),
+            (
+                "Dernière boucle",
+                (
+                    f"signals {payload.get('opportunities_this_loop', 0)} · "
+                    f"approved {payload.get('approved_this_loop', 0)} · "
+                    f"executed {payload.get('executed_this_loop', 0)}"
+                ),
+            ),
+        ]
+        return "".join(
+            f"<tr><th>{escape(label)}</th><td>{escape(str(value))}</td></tr>"
+            for label, value in rows
         )
 
     dashboard_cards = render_stat_cards(
         [
             {
-                "label": "Runtime",
-                "value": str(payload.get("process_state", "-")),
-                "note": f"âge status {age_label}",
+                "label": "Capital dispo",
+                "value": f"{fmt_number(available_capital, 2)} USD",
+                "note": f"budget total {fmt_number(capital.get('budget_usdc'), 2)}",
             },
             {
-                "label": "Mode",
-                "value": str(payload.get("mode", "observer")),
-                "note": (
-                    "ordres testnet actifs"
-                    if str(payload.get("mode", "")).lower() == "testnet"
-                    else "mainnet paper"
-                ),
+                "label": "Capital utilisé",
+                "value": f"{fmt_number(used_capital, 2)} USD",
+                "note": f"{len(open_positions)} position(s) ouverte(s)",
             },
             {
-                "label": "Markets",
-                "value": f"{payload.get('markets_supported', 0)}/{payload.get('markets_seen', 0)}",
-                "note": "supportés / vus",
-            },
-            {
-                "label": "PnL net",
-                "value": f"{fmt_number(realized_pnl, 2)} USD",
-                "note": f"{settled_position_count} settlement(s)",
+                "label": "PnL visible",
+                "value": f"{fmt_signed_number(visible_pnl, 2)} USD",
+                "note": f"réalisé {fmt_signed_number(realized_pnl, 2)} · latent {fmt_signed_number(open_pnl, 2)}",
             },
             {
                 "label": "Win rate",
@@ -6490,44 +6866,32 @@ def hip4_outcome_html(
                 "note": f"{win_count} win · {loss_count} loss",
             },
             {
-                "label": "Budget restant",
-                "value": f"{fmt_number(capital.get('remaining_budget_usdc'), 2)} USD",
-                "note": f"sur {fmt_number(capital.get('budget_usdc'), 2)} USD",
+                "label": "Runtime",
+                "value": str(payload.get("process_state", "-")),
+                "note": f"{'fresh' if payload.get('fresh') else 'stale'} · age {age_label}",
             },
             {
-                "label": "Short focus",
-                "value": str(short_brief.get("label", "-")),
-                "note": (
-                    f"ready {short_brief.get('ready_count', 0)} · "
-                    f"watch {short_brief.get('candidate_count', 0)}"
-                ),
+                "label": "Mode",
+                "value": mode_label,
+                "note": str(capital.get("mode") or "execution HIP4"),
             },
             {
-                "label": "Best short",
-                "value": fmt_number(best_short_edge, 4),
-                "note": f"latest {fmt_number(latest_short_edge, 4)}",
-            },
-        ]
-    )
-    dashboard_mainnet_cards = render_stat_cards(
-        [
-            {
-                "label": "Mainnet observer",
-                "value": str(mainnet_payload.get("process_state", "-")),
-                "note": f"âge status {mainnet_age_label}",
+                "label": "Network",
+                "value": network_label,
+                "note": "books et markets observés",
             },
             {
-                "label": "Mainnet markets",
-                "value": f"{mainnet_payload.get('markets_supported', 0)}/{mainnet_payload.get('markets_seen', 0)}",
+                "label": "Markets",
+                "value": f"{payload.get('markets_supported', 0)}/{payload.get('markets_seen', 0)}",
                 "note": "supportés / vus",
             },
             {
-                "label": "Mainnet edge",
-                "value": fmt_number(mainnet_payload.get("latest_net_edge"), 4),
-                "note": f"best {fmt_number(mainnet_payload.get('best_net_edge'), 4)}",
+                "label": "Fermées",
+                "value": str(settled_position_count),
+                "note": f"{fill_count} fill(s)",
             },
             {
-                "label": "Loop signals",
+                "label": "Dernière boucle",
                 "value": str(payload.get("opportunities_this_loop", 0)),
                 "note": f"approved {payload.get('approved_this_loop', 0)} · executed {payload.get('executed_this_loop', 0)}",
             },
@@ -6678,7 +7042,6 @@ def hip4_outcome_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="10">
   <title>TRIDENT HIP-4 Outcome</title>
   <style>
     :root {{
@@ -6821,18 +7184,19 @@ def hip4_outcome_html(
     @media (max-width: 980px) {{ .dashboard-focus {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
-<body>
+<body data-default-tab="dashboard" data-refresh-seconds="{refresh_seconds}">
   <main>
     <header class="hero">
       <div class="chip-row">
         <span class="chip">Version {escape(VERSION)}</span>
         <span class="chip">Profile {escape(str(supervisor.profile))}</span>
-        <span class="chip">Mode {escape(str(supervisor.mode))}</span>
-        <span class="chip">Auto-refresh 10s</span>
+        <span class="chip">HIP4 {escape(mode_label)}</span>
+        <span class="chip">Network {escape(network_label)}</span>
+        <span class="chip">Auto-refresh {refresh_seconds}s</span>
         <span class="badge badge-{tone}">{'fresh' if payload.get('fresh') else 'stale'}</span>
       </div>
       <h1>HIP-4 Outcome Experimental</h1>
-      <p>Pod expérimental isolé: dry-run mainnet paper, observation des books mainnet, sans ordre mainnet.</p>
+      <p>Mode {escape(mode_label)} · réseau {escape(network_label)} · runtime HIP4 isolé.</p>
       <div class="hero-links">
         <span>Last updated: {escape(refreshed_at)}</span>
         <a href="/">HIP4 UI</a>
@@ -6852,31 +7216,43 @@ def hip4_outcome_html(
 
       <section class="tab-panel is-active" data-hip4-panel="dashboard">
         <section class="metric-grid">{dashboard_cards}</section>
-        <section class="dashboard-focus">
-          <div class="dashboard-stack">
-            <section class="panel">
-              <div class="panel-header"><h2>Signal court terme</h2><p>Fenêtres expiry suivies par la dernière boucle.</p></div>
-              <div class="table-wrap">
-                <table>
-                  <thead><tr><th>Status</th><th>Underlying</th><th>Period</th><th>T-exp s</th><th>Best side</th><th>Net</th><th>Reason</th></tr></thead>
-                  <tbody>{render_dashboard_watchlist_rows()}</tbody>
-                </table>
-              </div>
-            </section>
-            <section class="panel">
-              <div class="panel-header"><h2>Opportunités récentes</h2><p>Derniers signaux utiles, sans les colonnes de diagnostic.</p></div>
-              <div class="table-wrap">
-                <table>
-                  <thead><tr><th>Ts</th><th>Underlying</th><th>Edge</th><th>Side</th><th>Net</th><th>Conf</th><th>Reason</th></tr></thead>
-                  <tbody>{render_dashboard_opportunity_rows()}</tbody>
-                </table>
-              </div>
-            </section>
-          </div>
-          <div class="dashboard-stack">
-            <section class="metric-grid">{dashboard_mainnet_cards}</section>
+
+        <section class="two-col">
+          <section class="panel">
+            <div class="panel-header"><h2>Positions ouvertes</h2><p>Capital actuellement engagé par HIP4.</p></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Underlying</th><th>Market</th><th>Side</th><th>Status</th><th>Cost</th><th>Max loss</th><th>PnL est.</th><th>Net edge</th><th>Opened</th></tr></thead>
+                <tbody>{render_dashboard_open_position_rows()}</tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header"><h2>Positions fermées</h2><p>Derniers settlements visibles.</p></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Underlying</th><th>Market</th><th>Side</th><th>Result</th><th>Cost</th><th>Payout</th><th>PnL</th><th>Closed</th></tr></thead>
+                <tbody>{render_dashboard_closed_position_rows()}</tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="two-col">
+          <section class="panel">
+            <div class="panel-header"><h2>Runtime HIP4</h2><p>Etat opérateur minimal du runner.</p></div>
+            <div class="table-wrap">
+              <table>
+                <tbody>{render_dashboard_runtime_rows()}</tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header"><h2>Observation runtime</h2><p>Santé des flux et de l'observateur mainnet.</p></div>
             <section class="observation-grid">{render_observation_cards()}</section>
-          </div>
+          </section>
         </section>
       </section>
 
@@ -7071,11 +7447,136 @@ def hip4_outcome_html(
   </main>
   <script>
     (() => {{
+      const body = document.body;
+      const refreshSeconds = Number(body.dataset.refreshSeconds || "0");
       const tabs = Array.from(document.querySelectorAll("[data-hip4-tab]"));
       const panels = Array.from(document.querySelectorAll("[data-hip4-panel]"));
       const valid = new Set(tabs.map((button) => button.dataset.hip4Tab));
-      function setTab(name, updateHash = true) {{
-        const next = valid.has(name) ? name : "dashboard";
+      function normalizedTab(name) {{
+        return valid.has(name) ? name : body.dataset.defaultTab || "dashboard";
+      }}
+      function activeTabName() {{
+        const active = tabs.find((button) => button.classList.contains("is-active"));
+        return normalizedTab(active ? active.dataset.hip4Tab : (window.location.hash || "").replace("#", ""));
+      }}
+      function scrollStorageKey(tabName) {{
+        return `trident-hip4:scroll:${{window.location.pathname}}:${{normalizedTab(tabName)}}`;
+      }}
+      function lastTabStorageKey() {{
+        return `trident-hip4:tab:${{window.location.pathname}}`;
+      }}
+      function focusStorageKey() {{
+        return `trident-hip4:focus:${{window.location.pathname}}`;
+      }}
+      function cssEscape(value) {{
+        if (window.CSS && typeof window.CSS.escape === "function") {{
+          return window.CSS.escape(String(value));
+        }}
+        return String(value).replace(/[^a-zA-Z0-9_-]/g, "");
+      }}
+      function focusSelector(element) {{
+        if (!element || element === document.body) return "";
+        if (element.dataset.hip4Tab) {{
+          return `[data-hip4-tab="${{cssEscape(element.dataset.hip4Tab)}}"]`;
+        }}
+        if (element.id) {{
+          return `#${{cssEscape(element.id)}}`;
+        }}
+        if (element.name) {{
+          return `${{element.tagName.toLowerCase()}}[name="${{cssEscape(element.name)}}"]`;
+        }}
+        return "";
+      }}
+      function isEditable(element) {{
+        return element instanceof HTMLInputElement
+          || element instanceof HTMLTextAreaElement
+          || element instanceof HTMLSelectElement;
+      }}
+      function saveScrollPosition(tabName = activeTabName()) {{
+        try {{
+          window.sessionStorage.setItem(scrollStorageKey(tabName), String(window.scrollY || 0));
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+      function restoreScrollPosition(tabName = activeTabName()) {{
+        try {{
+          const raw = window.sessionStorage.getItem(scrollStorageKey(tabName));
+          if (raw === null) return;
+          const next = Number(raw);
+          if (!Number.isFinite(next) || next < 0) return;
+          window.requestAnimationFrame(() => window.scrollTo(0, next));
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+      function saveActiveTab(tabName) {{
+        try {{
+          window.sessionStorage.setItem(lastTabStorageKey(), normalizedTab(tabName));
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+      function savedTabName() {{
+        try {{
+          return normalizedTab(window.sessionStorage.getItem(lastTabStorageKey()) || "");
+        }} catch (_error) {{
+          return body.dataset.defaultTab || "dashboard";
+        }}
+      }}
+      function saveFocusedElement() {{
+        const element = document.activeElement;
+        const selector = focusSelector(element);
+        if (!selector) return;
+        const payload = {{ selector }};
+        if (isEditable(element) && element.type !== "password") {{
+          payload.value = element.value;
+          if (typeof element.selectionStart === "number") {{
+            payload.selectionStart = element.selectionStart;
+            payload.selectionEnd = element.selectionEnd;
+          }}
+        }}
+        try {{
+          window.sessionStorage.setItem(focusStorageKey(), JSON.stringify(payload));
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+      function restoreFocusedElement() {{
+        try {{
+          const raw = window.sessionStorage.getItem(focusStorageKey());
+          if (!raw) return;
+          const payload = JSON.parse(raw);
+          const element = document.querySelector(payload.selector || "");
+          if (!element) return;
+          if (isEditable(element) && element.type !== "password" && payload.value !== undefined) {{
+            element.value = payload.value;
+          }}
+          window.requestAnimationFrame(() => {{
+            element.focus({{ preventScroll: true }});
+            if (
+              isEditable(element)
+              && typeof payload.selectionStart === "number"
+              && typeof element.setSelectionRange === "function"
+            ) {{
+              element.setSelectionRange(payload.selectionStart, payload.selectionEnd ?? payload.selectionStart);
+            }}
+          }});
+        }} catch (_error) {{
+          // Keep refresh behavior intact if sessionStorage is unavailable.
+        }}
+      }}
+      function savePageState(tabName = activeTabName()) {{
+        saveScrollPosition(tabName);
+        saveActiveTab(tabName);
+        saveFocusedElement();
+      }}
+      function setTab(name, updateHash = true, remember = true) {{
+        if (remember) {{
+          saveScrollPosition();
+          saveFocusedElement();
+        }}
+        const next = normalizedTab(name);
         tabs.forEach((button) => {{
           const active = button.dataset.hip4Tab === next;
           button.classList.toggle("is-active", active);
@@ -7089,12 +7590,34 @@ def hip4_outcome_html(
         if (updateHash) {{
           history.replaceState(null, "", `#${{next}}`);
         }}
+        if (remember) {{
+          saveActiveTab(next);
+        }}
       }}
       tabs.forEach((button) => {{
         button.addEventListener("click", () => setTab(button.dataset.hip4Tab || "dashboard"));
       }});
-      setTab((window.location.hash || "").replace("#", "") || "dashboard", false);
-      window.addEventListener("hashchange", () => setTab((window.location.hash || "").replace("#", ""), false));
+      const hashTab = (window.location.hash || "").replace("#", "");
+      const initialTab = hashTab || savedTabName() || body.dataset.defaultTab || "dashboard";
+      setTab(initialTab, false, false);
+      restoreScrollPosition(initialTab);
+      restoreFocusedElement();
+      window.addEventListener("beforeunload", () => savePageState());
+      window.addEventListener("hashchange", () => {{
+        const next = (window.location.hash || "").replace("#", "");
+        if (valid.has(next)) {{
+          setTab(next, false);
+          restoreScrollPosition(next);
+          restoreFocusedElement();
+        }}
+      }});
+      if (Number.isFinite(refreshSeconds) && refreshSeconds > 0) {{
+        window.setTimeout(() => {{
+          savePageState();
+          const target = `${{window.location.pathname}}${{window.location.search}}${{window.location.hash}}`;
+          window.location.replace(target);
+        }}, refreshSeconds * 1000);
+      }}
     }})();
   </script>
 </body>

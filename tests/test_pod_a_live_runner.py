@@ -67,7 +67,7 @@ class _FakePrivateClient:
     def __init__(self, account_state: object) -> None:
         self.account_state = account_state
 
-    def fetch_account_state(self, *, fills_lookback_hours: float) -> object:
+    def fetch_account_state(self, *, fills_lookback_hours: float, **_: object) -> object:
         return self.account_state
 
 

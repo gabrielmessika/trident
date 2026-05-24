@@ -67,6 +67,15 @@ class MultiPodRuntimeReport:
     total_fill_count: int
     realized_pnl_usd: float
     total_unrealized_pnl_usd: float
+    account_mode: str | None = None
+    hl_available_usd: float | None = None
+    hl_capital_source: str | None = None
+    spot_usdc_total: float | None = None
+    spot_usdc_hold: float | None = None
+    spot_usdc_available: float | None = None
+    perp_account_value_usd: float | None = None
+    perp_withdrawable_usd: float | None = None
+    total_margin_used_usd: float | None = None
     enabled_service_count: int = 0
     healthy_service_count: int = 0
     pods: list[PodRuntimeReport] = field(default_factory=list)
@@ -172,6 +181,7 @@ def build_runtime_report(
     total_fill_count = 0
     realized_pnl_usd = 0.0
     total_unrealized_pnl_usd = 0.0
+    exchange_account = _exchange_account_report(pod_a_runtime, pod_c_runtime)
 
     def _directional_open_position_metrics(
         runtime_payload: dict[str, object] | None,
@@ -346,6 +356,15 @@ def build_runtime_report(
         ),
         cash_usd=float(runtime_capital_plan.get("cash_usd", supervisor.capital_plan.cash_usd)),
         total_target_usd=round(sum(report.target_usd for report in pod_reports), 4),
+        account_mode=_str_or_none(exchange_account.get("account_mode")),
+        hl_available_usd=_float_or_none(exchange_account.get("hl_available_usd")),
+        hl_capital_source=_str_or_none(exchange_account.get("hl_capital_source")),
+        spot_usdc_total=_float_or_none(exchange_account.get("spot_usdc_total")),
+        spot_usdc_hold=_float_or_none(exchange_account.get("spot_usdc_hold")),
+        spot_usdc_available=_float_or_none(exchange_account.get("spot_usdc_available")),
+        perp_account_value_usd=_float_or_none(exchange_account.get("perp_account_value_usd")),
+        perp_withdrawable_usd=_float_or_none(exchange_account.get("perp_withdrawable_usd")),
+        total_margin_used_usd=_float_or_none(exchange_account.get("total_margin_used_usd")),
         enabled_pod_count=(
             sum(1 for pod in pod_reports if pod.enabled)
         ),
@@ -368,6 +387,52 @@ def build_runtime_report(
         pods=pod_reports,
         services=service_reports,
     )
+
+
+def _exchange_account_report(
+    *runtime_payloads: dict[str, object] | None,
+) -> dict[str, object]:
+    candidates = [
+        payload
+        for payload in runtime_payloads
+        if isinstance(payload, dict)
+        and runtime_status_is_fresh(payload)
+        and isinstance(payload.get("live_reconciliation"), dict)
+    ]
+    candidates.extend(
+        payload
+        for payload in runtime_payloads
+        if isinstance(payload, dict)
+        and isinstance(payload.get("live_reconciliation"), dict)
+        and payload not in candidates
+    )
+    for payload in candidates:
+        reconciliation = payload.get("live_reconciliation")
+        if not isinstance(reconciliation, dict):
+            continue
+        if (
+            reconciliation.get("hl_available_usd") is None
+            and reconciliation.get("spot_usdc_total") is None
+            and reconciliation.get("equity_usd") is None
+        ):
+            continue
+        return dict(reconciliation)
+    return {}
+
+
+def _float_or_none(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _str_or_none(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
 
 
 def _pod_b_runtime_status(supervisor: TridentSupervisor) -> dict[str, object]:

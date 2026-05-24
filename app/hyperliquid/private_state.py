@@ -169,6 +169,7 @@ class ExchangeFill:
 class ExchangeAccountState:
     account_address: str
     fetched_at: str
+    account_mode: str | None
     account_value_usd: float
     withdrawable_usd: float
     total_margin_used_usd: float
@@ -187,6 +188,34 @@ class ExchangeAccountState:
         for order in [*self.open_orders, *self.frontend_open_orders]:
             by_key[(order.symbol, order.oid, order.cloid)] = order
         return list(by_key.values())
+
+    @property
+    def spot_usdc_available(self) -> float | None:
+        if self.spot_usdc_total is None:
+            return None
+        hold = self.spot_usdc_hold or 0.0
+        return max(round(float(self.spot_usdc_total) - float(hold), 8), 0.0)
+
+    @property
+    def hl_available_usd(self) -> float:
+        if self._uses_unified_spot_collateral and self.spot_usdc_available is not None:
+            return self.spot_usdc_available
+        if self.withdrawable_usd > 0 or self.spot_usdc_available is None:
+            return self.withdrawable_usd
+        return self.spot_usdc_available
+
+    @property
+    def hl_capital_source(self) -> str:
+        if self._uses_unified_spot_collateral and self.spot_usdc_available is not None:
+            return "unified_spot_usdc"
+        if self.withdrawable_usd > 0 or self.spot_usdc_available is None:
+            return "perp_withdrawable"
+        return "spot_usdc"
+
+    @property
+    def _uses_unified_spot_collateral(self) -> bool:
+        normalized = str(self.account_mode or "").strip()
+        return normalized in {"unifiedAccount", "portfolioMargin"}
 
 
 @dataclass(slots=True)
@@ -222,6 +251,8 @@ class HyperliquidPrivateInfoClient:
         self._now_ms_fn = now_ms_fn or (lambda: int(time.time() * 1000))
         self.sleep_fn = sleep_fn or time.sleep
         self.stats = HyperliquidPrivateInfoStats()
+        self._account_mode_cache: str | None = None
+        self._account_mode_cache_at = 0.0
         self.rate_limiter = rate_limiter or SharedRateLimiter(
             config.rate_limit_state_path,
             jitter_fn=lambda seconds: jitter_seconds(
@@ -251,6 +282,7 @@ class HyperliquidPrivateInfoClient:
         *,
         fills_lookback_hours: float = 24.0,
         aggregate_fills_by_time: bool = False,
+        include_account_mode: bool = False,
     ) -> ExchangeAccountState:
         errors = self.credentials.validate_for_readonly()
         if errors:
@@ -258,6 +290,9 @@ class HyperliquidPrivateInfoClient:
 
         address = self.credentials.account_address
         try:
+            account_mode = None
+            if include_account_mode:
+                account_mode = self._fetch_account_mode(address)
             user_state = self._call_private_info(self.info_client.user_state, address)
             spot_state = self._call_private_info(self.info_client.spot_user_state, address)
             open_orders = self._call_private_info(self.info_client.open_orders, address)
@@ -279,12 +314,34 @@ class HyperliquidPrivateInfoClient:
 
         return parse_account_state(
             account_address=address,
+            account_mode=account_mode,
             user_state=user_state,
             spot_state=spot_state,
             open_orders=open_orders,
             frontend_open_orders=frontend_orders,
             recent_fills=fills,
         )
+
+    def _fetch_account_mode(self, address: str) -> str | None:
+        now = time.monotonic()
+        if self._account_mode_cache_at and now - self._account_mode_cache_at < 300.0:
+            return self._account_mode_cache
+        fn = getattr(self.info_client, "query_user_abstraction_state", None)
+        if not callable(fn):
+            self._account_mode_cache_at = now
+            return None
+        try:
+            result = self._call_private_info(fn, address)
+        except Exception:
+            self._account_mode_cache_at = now
+            return None
+        if result in (None, ""):
+            self._account_mode_cache = None
+            self._account_mode_cache_at = now
+            return None
+        self._account_mode_cache = str(result)
+        self._account_mode_cache_at = now
+        return self._account_mode_cache
 
     def _call_private_info(
         self,
@@ -333,6 +390,7 @@ class HyperliquidPrivateInfoClient:
 def parse_account_state(
     *,
     account_address: str,
+    account_mode: object | None = None,
     user_state: object,
     spot_state: object,
     open_orders: object,
@@ -356,6 +414,7 @@ def parse_account_state(
     return ExchangeAccountState(
         account_address=account_address,
         fetched_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        account_mode=str(account_mode) if account_mode not in (None, "") else None,
         account_value_usd=_float(margin_summary.get("accountValue")),
         withdrawable_usd=_float(user_state_dict.get("withdrawable")),
         total_margin_used_usd=_float(margin_summary.get("totalMarginUsed")),

@@ -220,7 +220,8 @@ class PodALiveRunner:
         if self.live_state_store is None or self._live_private_client is None:
             raise RuntimeError("Live execution requested without live state components")
         account_state = self._live_private_client.fetch_account_state(
-            fills_lookback_hours=float(os.getenv("TRIDENT_LIVE_FILLS_LOOKBACK_HOURS", "24"))
+            fills_lookback_hours=float(os.getenv("TRIDENT_LIVE_FILLS_LOOKBACK_HOURS", "24")),
+            include_account_mode=True,
         )
         self._latest_exchange_positions_by_symbol = dict(account_state.positions)
         self.live_reconciliation_report = reconcile_exchange_state(
@@ -271,7 +272,8 @@ class PodALiveRunner:
             return False
         try:
             account_state = self._live_private_client.fetch_account_state(
-                fills_lookback_hours=float(os.getenv("TRIDENT_LIVE_FILLS_LOOKBACK_HOURS", "24"))
+                fills_lookback_hours=float(os.getenv("TRIDENT_LIVE_FILLS_LOOKBACK_HOURS", "24")),
+                include_account_mode=True,
             )
         except Exception as exc:
             logger.warning("Live exchange reconciliation failed; entries paused: %s", exc)

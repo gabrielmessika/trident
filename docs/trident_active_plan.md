@@ -28,7 +28,9 @@ Source de verite operationnelle depuis le `2026-05-24`:
   - fetch: `scripts/fetch_trident_data.sh`;
   - services attendus: `trident-api`, `pod-a-live`, `pod-c-live`,
     `tradfi-funding-collector`, `funding-collector` si active;
-  - UI dashboard: `/` et `/dashboard` exposent uniquement Pod A/Pod C;
+  - UI dashboard: `/` et `/dashboard` exposent uniquement Pod A/Pod C, avec
+    synthese operateur A/C, positions ouvertes/fermees et etats de marche
+    explicites crypto + clusters hors crypto;
   - aucun service Pod B, HIP-4 outcome, `hip4-outcome-dry-run` ou observer
     mainnet ne doit etre demarre ni affiche depuis cette app.
 - App `TRIDENT-HIP4`:
@@ -39,12 +41,14 @@ Source de verite operationnelle depuis le `2026-05-24`:
   - fetch: `./trident-hip4/fetch_data.sh`;
   - port dashboard/API par defaut: `3001`, UI HIP-4 native sur `/`,
     `/dashboard` et `/hip4-outcome`;
-  - onglet `Dashboard` HIP-4 ouvert par defaut: runtime, PnL, budget,
-    short-expiry focus, sante observation et opportunites recentes compactes;
   - services attendus: `hip4-api`, `hip4-outcome-paper`, et optionnellement
     `hip4-mainnet-observer`;
   - mode par defaut: `HIP4_OUTCOME_MODE=paper`, config
-    `config/hip4_outcome_mainnet_paper.toml`.
+    `config/hip4_outcome_mainnet_paper.toml`;
+  - onglet `Dashboard` HIP-4 ouvert par defaut: capital disponible/utilise,
+    PnL, win rate, runtime, mode, network et positions ouvertes/fermees; les
+    diagnostics detailles, short-expiry et opportunites restent dans `Details`
+    / `Observation`.
 - Si une section plus ancienne parle de "live hybride A/C + Pod B" dans le meme
   deploiement, cette section est historique. Le split ops ci-dessus gagne.
 

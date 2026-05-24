@@ -66,6 +66,9 @@ class _FakeRateLimiter:
 
 
 class _FakePrivateInfoSdk:
+    def query_user_abstraction_state(self, address: str) -> str:
+        return "unifiedAccount"
+
     def user_state(self, address: str) -> dict[str, object]:
         return {"marginSummary": {"accountValue": "1000", "totalMarginUsed": "0"}}
 
@@ -285,10 +288,38 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertEqual(state.account_value_usd, 1000.5)
         self.assertEqual(state.spot_usdc_total, 50.0)
         self.assertEqual(state.spot_usdc_hold, 5.0)
+        self.assertEqual(state.spot_usdc_available, 45.0)
         self.assertEqual(state.positions["ETH"].side, "long")
         self.assertEqual(len(state.all_orders), 2)
         self.assertTrue(any(order.is_trigger for order in state.all_orders))
         self.assertEqual(state.recent_fills[0].price, 3000.0)
+
+    def test_unified_account_uses_spot_usdc_as_available_hl_capital(self) -> None:
+        state = parse_account_state(
+            account_address="0x0000000000000000000000000000000000000000",
+            account_mode="unifiedAccount",
+            user_state={
+                "marginSummary": {"accountValue": "0", "totalMarginUsed": "0"},
+                "withdrawable": "0",
+                "assetPositions": [],
+            },
+            spot_state={"balances": [{"coin": "USDC", "total": "994.363948", "hold": "1.5"}]},
+            open_orders=[],
+            frontend_open_orders=[],
+            recent_fills=[],
+        )
+        report = reconcile_exchange_state(
+            account_state=state,
+            portfolio=DirectionalPortfolioState(),
+            state_store=LiveStateStore(Path(tempfile.gettempdir()) / "unused_live_state.json"),
+        )
+
+        self.assertEqual(state.spot_usdc_available, 992.863948)
+        self.assertEqual(state.hl_available_usd, 992.863948)
+        self.assertEqual(state.hl_capital_source, "unified_spot_usdc")
+        self.assertEqual(report.account_mode, "unifiedAccount")
+        self.assertEqual(report.hl_available_usd, 992.863948)
+        self.assertEqual(report.to_dict()["spot_usdc_available"], 992.863948)
 
     def test_reconciliation_recovers_known_exchange_position_from_state_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -575,6 +606,25 @@ class LiveReadinessTests(unittest.TestCase):
             all(call["key"] == "http_private_info" for call in limiter.acquires)
         )
         self.assertTrue(all(call["capacity"] == 5 for call in limiter.acquires))
+
+    def test_private_info_client_can_fetch_account_mode_for_ui_capital(self) -> None:
+        config = load_config("config/trident.toml").hyperliquid
+        limiter = _FakeRateLimiter()
+        client = HyperliquidPrivateInfoClient(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+            ),
+            info_client=_FakePrivateInfoSdk(),
+            now_ms_fn=lambda: 1_000_000,
+            sleep_fn=lambda _: None,
+            rate_limiter=limiter,
+        )
+
+        state = client.fetch_account_state(include_account_mode=True)
+
+        self.assertEqual(state.account_mode, "unifiedAccount")
+        self.assertEqual(len(limiter.acquires), 6)
 
     def test_live_exchange_actions_use_order_rate_limiter(self) -> None:
         config = load_config("config/trident.toml")
