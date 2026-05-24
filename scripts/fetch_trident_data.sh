@@ -14,807 +14,407 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/fetch_trident_data.sh [options]
+Usage: ./scripts/fetch_trident_data.sh [--days N] [--date YYYY-MM-DD] [--all] [--logs-only] [--snapshots-only] [--review-only] [--dry-run] [--remote-dir /opt/trident] [--local-dir server-data]
 
-Rapatrie les donnees utiles du serveur TRIDENT pour analyse locale, puis
-peut lancer automatiquement la revue locale avec suggestions de prompts LLM.
+Rapatrie les données TRIDENT A/C depuis le serveur, sans Pod B/HIP-4:
+- /health, /api/state, /api/report, /api/metrics
+- snapshots live A/C
+- logs et runtime Pod A / Pod C
+- configs TRIDENT
+- logs Docker TRIDENT A/C
 
-Modes principaux:
-  (aucun flag)          Snapshots des dernieres 24h + logs/runtime courants + revue
-  --all                 Tous les snapshots live + logs/runtime courants + revue
-  --date YYYY-MM-DD     Snapshots d'une date precise + logs/runtime courants + revue
-  --days N              Snapshots des N derniers jours + logs/runtime courants + revue
-  --logs-only           Uniquement logs/runtime/API courants
-  --snapshots-only      Uniquement snapshots live (et revue optionnelle)
-  --review-only         Ne rapatrie rien, relance seulement la revue distante
-
-Options:
-  --host <host>                 Host SSH. Defaut: trident-hetzner
-  --user <user>                 User SSH. Defaut: trident-deploy
-  --identity <path>             Cle SSH. Defaut: ~/.ssh/trident_hetzner_ed25519
-  --remote-dir <path>           Repertoire TRIDENT sur le serveur. Defaut: /opt/trident
-  --local-dir <path>            Dossier local de sortie. Defaut: ./server-data
-  --output-dir <path>           Dossier de revue local. Defaut: <local-dir>/reviews/<timestamp>
-  --log-lines N                 Nombre de lignes de logs Docker a rapatrier. Defaut: 300
-  --snapshot-max-age-minutes N  Seuil de fraicheur pour la revue. Defaut: 15
-  --skip-replay-input           Ne concatene pas les snapshots en input full_bot_replay
-  --skip-hip4-review            Ne lance pas la revue HIP-4 lourde pendant la revue locale
-  --skip-review                 Ne lance pas la revue locale apres fetch
-  --dry-run                     Affiche ce qui serait fait sans telecharger
-  -h, --help                    Affiche cette aide
+HIP-4 est rapatrié séparément par ./trident-hip4/fetch_data.sh.
 EOF
 }
-
-MODE="recent"
-DATE_FILTER=""
-DAYS=1
-LOGS_ONLY=""
-SNAPSHOTS_ONLY=""
-REVIEW_ONLY=""
-SKIP_REVIEW=""
-SKIP_REPLAY_INPUT="${TRIDENT_SKIP_REPLAY_INPUT:-}"
-SKIP_HIP4_REVIEW="${TRIDENT_SKIP_HIP4_REVIEW:-}"
-DRY_RUN=""
-LOG_LINES=300
-SNAPSHOT_MAX_AGE_MINUTES=15
 
 HOST="${TRIDENT_DEPLOY_HOST:-trident-hetzner}"
 SSH_USER="${TRIDENT_DEPLOY_USER:-trident-deploy}"
 IDENTITY_FILE="${TRIDENT_DEPLOY_IDENTITY:-${HOME}/.ssh/trident_hetzner_ed25519}"
 REMOTE_DIR="${TRIDENT_DEPLOY_DIR:-/opt/trident}"
+LOCAL_DIR="server-data"
+DAYS=3
+DATE_FILTER=""
+FETCH_ALL=""
+LOGS_ONLY=""
+SNAPSHOTS_ONLY=""
+REVIEW_ONLY=""
+DRY_RUN=""
+LOG_LINES="${TRIDENT_FETCH_LOG_LINES:-300}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
-LOCAL_DIR="${ROOT_DIR}/server-data"
-OUTPUT_DIR=""
-
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     case "$1" in
-        --all) MODE="all"; shift ;;
-        --date) MODE="date"; DATE_FILTER="$2"; shift 2 ;;
-        --days) MODE="days"; DAYS="$2"; shift 2 ;;
-        --logs-only) LOGS_ONLY="true"; shift ;;
-        --snapshots-only) SNAPSHOTS_ONLY="true"; shift ;;
-        --review-only) REVIEW_ONLY="true"; shift ;;
-        --skip-review) SKIP_REVIEW="true"; shift ;;
-        --dry-run) DRY_RUN="true"; shift ;;
-        --host) HOST="$2"; shift 2 ;;
-        --user) SSH_USER="$2"; shift 2 ;;
-        --identity) IDENTITY_FILE="$2"; shift 2 ;;
-        --remote-dir) REMOTE_DIR="$2"; shift 2 ;;
-        --local-dir) LOCAL_DIR="$2"; shift 2 ;;
-        --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
-        --log-lines) LOG_LINES="$2"; shift 2 ;;
-        --snapshot-max-age-minutes) SNAPSHOT_MAX_AGE_MINUTES="$2"; shift 2 ;;
-        --skip-replay-input) SKIP_REPLAY_INPUT="true"; shift ;;
-        --skip-hip4-review) SKIP_HIP4_REVIEW="true"; shift ;;
-        -h|--help) usage; exit 0 ;;
-        *) error "Option inconnue: $1"; usage; exit 1 ;;
+        --host)
+            HOST="$2"
+            shift 2
+            ;;
+        --user)
+            SSH_USER="$2"
+            shift 2
+            ;;
+        --identity)
+            IDENTITY_FILE="$2"
+            shift 2
+            ;;
+        --remote-dir)
+            REMOTE_DIR="$2"
+            shift 2
+            ;;
+        --local-dir)
+            LOCAL_DIR="$2"
+            shift 2
+            ;;
+        --days)
+            DAYS="$2"
+            shift 2
+            ;;
+        --date)
+            DATE_FILTER="$2"
+            shift 2
+            ;;
+        --all)
+            FETCH_ALL="true"
+            shift
+            ;;
+        --logs-only)
+            LOGS_ONLY="true"
+            shift
+            ;;
+        --snapshots-only)
+            SNAPSHOTS_ONLY="true"
+            shift
+            ;;
+        --review-only)
+            REVIEW_ONLY="true"
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN="true"
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            error "Option inconnue: $1"
+            usage
+            exit 1
+            ;;
     esac
 done
 
-OUTPUT_DIR="${OUTPUT_DIR:-${LOCAL_DIR}/reviews/${TIMESTAMP_UTC}}"
-RAW_DIR="${LOCAL_DIR}/raw/${TIMESTAMP_UTC}"
-SNAPSHOT_DIR="${LOCAL_DIR}/live_snapshots"
-ACTIVE_SNAPSHOT_REMOTE_PATH="data/live_snapshots"
-ACTIVE_SNAPSHOT_DIR="${SNAPSHOT_DIR}"
-FUNDING_DIR="${LOCAL_DIR}/funding_history"
-LOG_DIR="${LOCAL_DIR}/logs"
-API_DIR="${LOCAL_DIR}/api"
-RUNTIME_DIR="${LOCAL_DIR}/runtime"
-DOCKER_DIR="${LOCAL_DIR}/docker"
-HYDRA_DOCS_DIR="${LOCAL_DIR}/hydra_docs"
-CONFIG_DIR="${LOCAL_DIR}/config"
-HIP4_LOG_DIR="${LOG_DIR}/hip4_outcome_paper"
-HIP4_TESTNET_LOG_DIR="${LOG_DIR}/hip4_outcome_testnet"
-HIP4_MAINNET_PAPER_LOG_DIR="${LOG_DIR}/hip4_outcome_mainnet_paper"
-HIP4_MAINNET_LOG_DIR="${LOG_DIR}/hip4_outcome_mainnet"
-REPLAY_INPUT_DIR="${LOCAL_DIR}/replay_inputs"
-FULL_BOT_REPLAY_INPUT="${REPLAY_INPUT_DIR}/full_bot_latest_fetch.jsonl"
-
-mkdir -p "${RAW_DIR}" "${SNAPSHOT_DIR}" "${FUNDING_DIR}" "${LOG_DIR}" "${API_DIR}" "${RUNTIME_DIR}" "${DOCKER_DIR}" "${HYDRA_DOCS_DIR}" "${CONFIG_DIR}" "${HIP4_LOG_DIR}" "${HIP4_TESTNET_LOG_DIR}" "${HIP4_MAINNET_PAPER_LOG_DIR}" "${HIP4_MAINNET_LOG_DIR}" "${REPLAY_INPUT_DIR}" "${OUTPUT_DIR}"
-
-SSH_CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/trident-fetch-XXXXXX")"
-SSH_CONTROL_PATH="${SSH_CONTROL_DIR}/cm-%C"
-
-SSH_ARGS=()
-if [[ -f "${IDENTITY_FILE}" ]]; then
-    SSH_ARGS+=(-i "${IDENTITY_FILE}")
-else
-    warn "Cle SSH absente: ${IDENTITY_FILE}. Utilisation de la config SSH systeme uniquement."
-fi
-SSH_ARGS+=(
-    -o BatchMode=yes
-    -o ConnectTimeout=10
-    -o ConnectionAttempts=3
-    -o ServerAliveInterval=15
-    -o ServerAliveCountMax=3
-    -o TCPKeepAlive=yes
-    -o ControlMaster=auto
-    -o ControlPersist=120
-    -o ControlPath="${SSH_CONTROL_PATH}"
-)
-SSH_TARGET="${SSH_USER}@${HOST}"
-RSYNC_BIN=()
-
-detect_sudo_prefix() {
-    if [[ "$(id -u)" -eq 0 ]]; then
-        return 0
-    fi
-
-    if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-        printf 'sudo -n'
-        return 0
-    fi
-
-    return 1
-}
-
-run_install_command() {
-    local requires_privilege="$1"
-    shift
-
-    if [[ "${requires_privilege}" == "true" ]]; then
-        local sudo_prefix=""
-        if ! sudo_prefix="$(detect_sudo_prefix)"; then
-            error "rsync est requis mais introuvable, et aucune elevation non interactive n'est disponible."
-            error "Installe rsync manuellement puis relance le script."
-            return 1
-        fi
-
-        if ! ${sudo_prefix} "$@"; then
-            return 1
-        fi
-        return 0
-    fi
-
-    "$@"
-}
-
-human_bytes() {
-    awk -v bytes="$1" 'BEGIN {
-        split("B KiB MiB GiB TiB", units, " ");
-        size = bytes + 0;
-        unit = 1;
-        while (size >= 1024 && unit < 5) {
-            size /= 1024;
-            unit++;
-        }
-        printf "%.1f %s", size, units[unit];
-    }'
-}
-
-install_rsync_if_missing() {
-    if command -v rsync >/dev/null 2>&1; then
-        RSYNC_BIN=(rsync)
-        return 0
-    fi
-
-    warn "rsync absent localement. Tentative d'installation automatique..."
-
-    if command -v dnf >/dev/null 2>&1; then
-        info "Installation de rsync via dnf..."
-        if ! run_install_command true dnf install -y rsync; then
-            warn "La commande dnf a retourne un code non nul; verification de rsync apres tentative..."
-        fi
-    elif command -v yum >/dev/null 2>&1; then
-        info "Installation de rsync via yum..."
-        if ! run_install_command true yum install -y rsync; then
-            warn "La commande yum a retourne un code non nul; verification de rsync apres tentative..."
-        fi
-    elif command -v apt-get >/dev/null 2>&1; then
-        info "Installation de rsync via apt-get..."
-        if ! run_install_command true apt-get update -qq; then
-            warn "La mise a jour APT a retourne un code non nul; verification de rsync apres tentative..."
-        fi
-        if ! command -v rsync >/dev/null 2>&1; then
-            if ! run_install_command true apt-get install -y -qq rsync; then
-                warn "La commande apt-get install a retourne un code non nul; verification de rsync apres tentative..."
-            fi
-        fi
-    elif command -v apk >/dev/null 2>&1; then
-        info "Installation de rsync via apk..."
-        if ! run_install_command true apk add --no-cache rsync; then
-            warn "La commande apk a retourne un code non nul; verification de rsync apres tentative..."
-        fi
-    elif command -v pacman >/dev/null 2>&1; then
-        info "Installation de rsync via pacman..."
-        if ! run_install_command true pacman -Sy --noconfirm rsync; then
-            warn "La commande pacman a retourne un code non nul; verification de rsync apres tentative..."
-        fi
-    elif command -v zypper >/dev/null 2>&1; then
-        info "Installation de rsync via zypper..."
-        if ! run_install_command true zypper --non-interactive install rsync; then
-            warn "La commande zypper a retourne un code non nul; verification de rsync apres tentative..."
-        fi
-    elif command -v brew >/dev/null 2>&1; then
-        info "Installation de rsync via Homebrew..."
-        if ! run_install_command false brew install rsync; then
-            warn "La commande brew a retourne un code non nul; verification de rsync apres tentative..."
-        fi
-    else
-        error "rsync est requis mais aucun gestionnaire de paquets supporte n'a ete detecte."
-        return 1
-    fi
-
-    if ! command -v rsync >/dev/null 2>&1; then
-        error "rsync reste introuvable apres installation."
-        return 1
-    fi
-
-    RSYNC_BIN=(rsync)
-    ok "rsync installe automatiquement"
-}
-
-build_ssh_transport() {
-    local parts=()
-    local arg quoted
-    for arg in ssh "${SSH_ARGS[@]}"; do
-        printf -v quoted '%q' "${arg}"
-        parts+=("${quoted}")
-    done
-    printf '%s ' "${parts[@]}"
-}
-
-RSYNC_SSH_CMD="$(build_ssh_transport)"
-RSYNC_SSH_CMD="${RSYNC_SSH_CMD% }"
-
-ssh_remote() {
-    ssh "${SSH_ARGS[@]}" "${SSH_TARGET}" "$@"
-}
-
-rsync_remote() {
-    "${RSYNC_BIN[@]}" "$@" -e "${RSYNC_SSH_CMD}"
-}
-
-retry_command() {
-    local attempts="$1"
-    local sleep_seconds="$2"
-    shift 2
-    local attempt rc=0
-
-    for ((attempt = 1; attempt <= attempts; attempt++)); do
-        if "$@"; then
-            return 0
-        else
-            rc=$?
-        fi
-        if (( attempt < attempts )); then
-            warn "Tentative ${attempt}/${attempts} echouee (code ${rc}), nouvelle tentative dans ${sleep_seconds}s..."
-            sleep "${sleep_seconds}"
-        fi
-    done
-
-    return "${rc}"
-}
-
-copy_remote_file_via_ssh() {
-    local remote_path="$1"
-    local local_path="$2"
-
-    local tmp_file
-    tmp_file="$(mktemp)"
-    if ssh_remote "cat '${REMOTE_DIR}/${remote_path}'" > "${tmp_file}" 2>/dev/null; then
-        mv "${tmp_file}" "${local_path}"
-        return 0
-    fi
-
-    rm -f "${tmp_file}"
-    return 1
-}
-
-close_ssh_master() {
-    ssh "${SSH_ARGS[@]}" -O exit "${SSH_TARGET}" >/dev/null 2>&1 || true
-    rm -rf "${SSH_CONTROL_DIR}"
-}
-
-start_ssh_master() {
-    ssh "${SSH_ARGS[@]}" -o ControlMaster=yes -Nf "${SSH_TARGET}" >/dev/null 2>&1
-}
-
-trap close_ssh_master EXIT
-
-if ! install_rsync_if_missing; then
+if [ -n "$LOGS_ONLY" ] && [ -n "$SNAPSHOTS_ONLY" ]; then
+    error "--logs-only et --snapshots-only sont incompatibles"
     exit 1
 fi
 
-if [[ "${REVIEW_ONLY}" != "true" && "${DRY_RUN}" != "true" ]]; then
-    if ! retry_command 2 1 start_ssh_master; then
-        error "Impossible d'ouvrir une connexion SSH persistante vers ${SSH_TARGET}."
-        exit 1
-    fi
-    if ! ssh_remote true 2>/dev/null; then
-        error "Impossible de se connecter a ${SSH_TARGET}."
-        exit 1
-    fi
+SSH_TARGET="${SSH_USER}@${HOST}"
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+if [ -f "$IDENTITY_FILE" ]; then
+    SSH_OPTS=(-i "$IDENTITY_FILE" "${SSH_OPTS[@]}")
 fi
 
-build_snapshot_filter() {
-    local filter_file
-    filter_file="$(mktemp)"
-    case "${MODE}" in
-        all)
-            echo "+ *" > "${filter_file}"
-            ;;
-        date)
-            echo "+ */" > "${filter_file}"
-            echo "+ *${DATE_FILTER}*" >> "${filter_file}"
-            echo "- *" >> "${filter_file}"
-            ;;
-        days)
-            echo "+ */" > "${filter_file}"
-            for i in $(seq 0 $((DAYS - 1))); do
-                d="$(date -u -d "-${i} days" +%Y-%m-%d 2>/dev/null || date -u -v-"${i}"d +%Y-%m-%d 2>/dev/null)"
-                echo "+ *${d}*" >> "${filter_file}"
-            done
-            echo "- *" >> "${filter_file}"
-            ;;
-        recent)
-            local today yesterday
-            today="$(date -u +%Y-%m-%d)"
-            yesterday="$(date -u -d "-1 day" +%Y-%m-%d 2>/dev/null || date -u -v-1d +%Y-%m-%d 2>/dev/null)"
-            echo "+ */" > "${filter_file}"
-            echo "+ *${today}*" >> "${filter_file}"
-            echo "+ *${yesterday}*" >> "${filter_file}"
-            echo "- *" >> "${filter_file}"
-            ;;
-        *)
-            echo "+ *" > "${filter_file}"
-            ;;
-    esac
-    echo "${filter_file}"
+RAW_DIR="${LOCAL_DIR}/raw"
+API_DIR="${LOCAL_DIR}/api"
+SNAPSHOT_DIR="${LOCAL_DIR}/live_snapshots"
+LOG_DIR="${LOCAL_DIR}/logs"
+RUNTIME_DIR="${LOCAL_DIR}/runtime"
+DOCKER_DIR="${LOCAL_DIR}/docker"
+CONFIG_DIR="${LOCAL_DIR}/config"
+REVIEW_DIR="${LOCAL_DIR}/reviews"
+
+mkdir -p "$RAW_DIR" "$API_DIR" "$SNAPSHOT_DIR" "$LOG_DIR" "$RUNTIME_DIR" "$DOCKER_DIR" "$CONFIG_DIR" "$REVIEW_DIR"
+
+timestamp() {
+    date -u +"%Y%m%dT%H%M%SZ"
 }
 
-normalize_snapshot_remote_path() {
-    local raw_path="$1"
-    python3 - "${REMOTE_DIR}" "${raw_path}" <<'PY'
-from pathlib import PurePosixPath
-import sys
-
-remote_dir = sys.argv[1].rstrip("/")
-raw = (sys.argv[2] or "data/live_snapshots").strip()
-if raw.startswith("./"):
-    raw = raw[2:]
-if remote_dir and raw.startswith(remote_dir + "/"):
-    raw = raw[len(remote_dir) + 1:]
-if raw.startswith("/") or any(token in raw for token in ("\0", "'", '"', "`", "$", "\\", "\n", "\r")):
-    raw = "data/live_snapshots"
-parts = PurePosixPath(raw).parts
-if ".." in parts or not raw.startswith("data/"):
-    raw = "data/live_snapshots"
-print(raw.rstrip("/") or "data/live_snapshots")
-PY
+ssh_remote() {
+    ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "$@"
 }
 
-active_snapshot_remote_path() {
-    local latest_state raw_path
-    latest_state="$(find "${API_DIR}" -maxdepth 1 -type f -name 'state-*.json' 2>/dev/null | sort | tail -n 1)"
-    raw_path=""
-    if [[ -n "${latest_state}" ]]; then
-        raw_path="$(
-            python3 - "${latest_state}" <<'PY'
-import json
-import sys
-from pathlib import Path
+rsync_remote() {
+    rsync -azP -e "ssh ${SSH_OPTS[*]}" "$@"
+}
 
-try:
-    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    exchange = payload.get("exchange", {}) if isinstance(payload, dict) else {}
-    print(exchange.get("snapshot_output_dir", "") if isinstance(exchange, dict) else "")
-except Exception:
-    print("")
-PY
-        )"
+remote_quote() {
+    printf "%q" "$1"
+}
+
+capture_remote() {
+    local local_path="$1"
+    local command="$2"
+    if [ -n "$DRY_RUN" ]; then
+        printf '  [dry-run] %s <- %s\n' "$local_path" "$command"
+        return 0
     fi
-    normalize_snapshot_remote_path "${raw_path:-data/live_snapshots}"
-}
-
-local_snapshot_dir_for_remote_path() {
-    local remote_path="$1"
-    local sub_path="${remote_path#data/}"
-    if [[ "${sub_path}" == "${remote_path}" || -z "${sub_path}" ]]; then
-        printf '%s\n' "${SNAPSHOT_DIR}"
-        return
+    if ssh_remote "bash -lc $(remote_quote "cd '${REMOTE_DIR}' && ${command}")" > "$local_path" 2>/dev/null; then
+        return 0
     fi
-    printf '%s\n' "${LOCAL_DIR}/${sub_path}"
-}
-
-active_snapshot_local_dir() {
-    local remote_path="${ACTIVE_SNAPSHOT_REMOTE_PATH:-}"
-    if [[ -z "${remote_path}" ]]; then
-        remote_path="$(active_snapshot_remote_path)"
-    fi
-    local_snapshot_dir_for_remote_path "${remote_path}"
-}
-
-fetch_api_snapshot() {
-    info "Rapatriement des snapshots API courants..."
-    local ts
-    ts="$(date -u +%Y-%m-%d_%H%M%S)"
-    local commands=(
-        "curl -fsS http://127.0.0.1:3000/health"
-        "curl -fsS http://127.0.0.1:3000/api/state"
-        "curl -fsS http://127.0.0.1:3000/api/metrics"
-        "curl -fsS http://127.0.0.1:3000/api/report"
-        "curl -fsS http://127.0.0.1:3000/api/hip4-outcome"
-        "curl -fsS http://127.0.0.1:3000/api/hip4-outcome-mainnet"
-    )
-    local names=(
-        "health-${ts}.json"
-        "state-${ts}.json"
-        "metrics-${ts}.json"
-        "report-${ts}.json"
-        "hip4-outcome-${ts}.json"
-        "hip4-outcome-mainnet-${ts}.json"
-    )
-
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] %s -> %s\n' "API snapshots" "${API_DIR}/"
-        return
-    fi
-
-    local i
-    for i in "${!commands[@]}"; do
-        if ssh_remote "bash -lc $(printf '%q' "cd '${REMOTE_DIR}' && ${commands[$i]}")" > "${API_DIR}/${names[$i]}" 2>/dev/null; then
-            :
-        else
-            warn "Impossible de recuperer ${names[$i]} (API inaccessible ?)"
-            rm -f "${API_DIR}/${names[$i]}"
-        fi
-    done
-    ok "Snapshots API sauvegardes dans ${API_DIR}/"
+    warn "Capture distante échouée: ${local_path}"
+    : > "$local_path"
 }
 
 fetch_remote_file() {
     local remote_path="$1"
     local local_path="$2"
     local label="$3"
-
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] %s -> %s\n' "${remote_path}" "${local_path}"
-        return
+    if [ -n "$DRY_RUN" ]; then
+        printf '  [dry-run] %s:%s -> %s\n' "$SSH_TARGET" "$remote_path" "$local_path"
+        return 0
     fi
-
-    mkdir -p "$(dirname "${local_path}")"
-    if ssh_remote "test -f '${REMOTE_DIR}/${remote_path}'" 2>/dev/null; then
-        if retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}" "${local_path}"; then
-            ok "${label} rapatrie"
-        elif retry_command 2 1 copy_remote_file_via_ssh "${remote_path}" "${local_path}"; then
-            warn "${label} rapatrie via fallback SSH simple"
-        else
-            warn "Impossible de rapatrier ${label} (${remote_path})"
-        fi
-    else
-        warn "${label} absent sur le serveur (${remote_path})"
-        rm -f "${local_path}"
+    if rsync_remote "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}" "$local_path" >/dev/null 2>&1; then
+        return 0
     fi
+    warn "Impossible de récupérer ${label} (${remote_path})"
+    : > "$local_path"
 }
 
 fetch_optional_remote_file() {
     local remote_path="$1"
     local local_path="$2"
     local label="$3"
-
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] %s -> %s\n' "${remote_path}" "${local_path}"
-        return
+    if [ -n "$DRY_RUN" ]; then
+        printf '  [dry-run] optional %s:%s -> %s\n' "$SSH_TARGET" "$remote_path" "$local_path"
+        return 0
     fi
-
-    mkdir -p "$(dirname "${local_path}")"
-    if ssh_remote "test -f '${REMOTE_DIR}/${remote_path}'" 2>/dev/null; then
-        if retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}" "${local_path}"; then
-            ok "${label} rapatrie"
-        elif retry_command 2 1 copy_remote_file_via_ssh "${remote_path}" "${local_path}"; then
-            warn "${label} rapatrie via fallback SSH simple"
-        else
-            warn "Impossible de rapatrier ${label} (${remote_path})"
-        fi
-    else
-        info "${label} absent sur le serveur (${remote_path}, optionnel)"
-        rm -f "${local_path}"
-    fi
+    rsync_remote "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}" "$local_path" >/dev/null 2>&1 || {
+        warn "Fichier optionnel absent: ${label} (${remote_path})"
+        : > "$local_path"
+    }
 }
 
-fetch_optional_remote_dir() {
-    local remote_path="$1"
-    local local_path="$2"
-    local label="$3"
-
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] %s/ -> %s/\n' "${remote_path}" "${local_path}"
+active_snapshot_dir() {
+    local fallback="data/live_snapshots"
+    if [ -n "$DRY_RUN" ]; then
+        printf '%s\n' "$fallback"
         return
     fi
+    ssh_remote "bash -lc $(remote_quote "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); raw=str((d.get(\"exchange\",{}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots")"
+}
 
-    mkdir -p "${local_path}"
-    if ssh_remote "test -d '${REMOTE_DIR}/${remote_path}'" 2>/dev/null; then
-        if retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${REMOTE_DIR}/${remote_path}/" "${local_path}/"; then
-            ok "${label} rapatrie"
-        else
-            warn "Impossible de rapatrier ${label} (${remote_path})"
-        fi
-    else
-        info "${label} absent sur le serveur (${remote_path}, optionnel)"
-    fi
+fetch_api() {
+    local ts
+    ts="$(date -u +"%Y-%m-%d_%H%M%S")"
+    info "Rapatriement API TRIDENT A/C..."
+    capture_remote "${API_DIR}/health-${ts}.json" "curl -fsS http://127.0.0.1:3000/health"
+    capture_remote "${API_DIR}/state-${ts}.json" "curl -fsS http://127.0.0.1:3000/api/state"
+    capture_remote "${API_DIR}/metrics-${ts}.json" "curl -fsS http://127.0.0.1:3000/api/metrics"
+    capture_remote "${API_DIR}/report-${ts}.json" "curl -fsS http://127.0.0.1:3000/api/report"
+    ok "API TRIDENT sauvegardée dans ${API_DIR}/"
 }
 
 fetch_snapshots() {
-    info "Rapatriement des snapshots live..."
-    ACTIVE_SNAPSHOT_REMOTE_PATH="$(active_snapshot_remote_path)"
-    ACTIVE_SNAPSHOT_DIR="$(local_snapshot_dir_for_remote_path "${ACTIVE_SNAPSHOT_REMOTE_PATH}")"
-    local remote_snapshot_dir="${REMOTE_DIR}/${ACTIVE_SNAPSHOT_REMOTE_PATH}/"
-    mkdir -p "${ACTIVE_SNAPSHOT_DIR}"
-
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] %s -> %s/ (mode=%s)\n' "${remote_snapshot_dir}" "${ACTIVE_SNAPSHOT_DIR}" "${MODE}"
+    local remote_snapshot_dir
+    remote_snapshot_dir="$(active_snapshot_dir | tail -n 1)"
+    info "Rapatriement snapshots TRIDENT depuis ${remote_snapshot_dir}..."
+    if [ -n "$DRY_RUN" ]; then
+        printf '  [dry-run] snapshots %s:%s -> %s/\n' "$SSH_TARGET" "$remote_snapshot_dir" "$SNAPSHOT_DIR"
         return
     fi
 
-    if ! ssh_remote "test -d '${REMOTE_DIR}/${ACTIVE_SNAPSHOT_REMOTE_PATH}'" 2>/dev/null; then
-        warn "Dossier ${ACTIVE_SNAPSHOT_REMOTE_PATH} absent sur le serveur"
-        return
-    fi
-
-    info "Dossier snapshots actif: ${ACTIVE_SNAPSHOT_REMOTE_PATH} -> ${ACTIVE_SNAPSHOT_DIR}"
-
-    if [[ "${MODE}" == "all" ]]; then
-        retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${remote_snapshot_dir}" "${ACTIVE_SNAPSHOT_DIR}/"
+    local find_expr
+    if [ -n "$DATE_FILTER" ]; then
+        find_expr="-name '${DATE_FILTER}.jsonl'"
+    elif [ -n "$FETCH_ALL" ]; then
+        find_expr="-name '*.jsonl'"
     else
-        local filter_file
-        filter_file="$(build_snapshot_filter)"
-        retry_command 3 2 rsync_remote -azP --filter="merge ${filter_file}" "${SSH_TARGET}:${remote_snapshot_dir}" "${ACTIVE_SNAPSHOT_DIR}/"
-        rm -f "${filter_file}"
+        find_expr="-name '*.jsonl' -mtime -${DAYS}"
     fi
-    local snapshot_count
-    snapshot_count="$(find "${ACTIVE_SNAPSHOT_DIR}" -maxdepth 1 -type f -name '*.jsonl' | wc -l | tr -d ' ')"
-    ok "Snapshots live rapatries (${snapshot_count} fichier(s) locaux)"
+
+    local remote_list
+    remote_list="$(ssh_remote "bash -lc $(remote_quote "cd '${REMOTE_DIR}' && find '${remote_snapshot_dir}' -maxdepth 1 -type f ${find_expr} -printf '%p\n' 2>/dev/null")")" || remote_list=""
+    if [ -z "$remote_list" ]; then
+        warn "Aucun snapshot trouvé"
+        return
+    fi
+    while IFS= read -r remote_file; do
+        [ -z "$remote_file" ] && continue
+        rsync_remote "${SSH_TARGET}:${REMOTE_DIR}/${remote_file}" "${SNAPSHOT_DIR}/" >/dev/null 2>&1 || warn "Snapshot non récupéré: ${remote_file}"
+    done <<< "$remote_list"
+    ok "Snapshots TRIDENT rapatriés"
 }
 
-fetch_funding_history() {
-    info "Rapatriement de l'historique funding/OI..."
-    local remote_funding_dir="${REMOTE_DIR}/data/funding_history/"
-
-    if ! ssh_remote "test -d '${REMOTE_DIR}/data/funding_history'" 2>/dev/null; then
-        warn "Dossier data/funding_history absent sur le serveur"
-        return
-    fi
-
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] %s -> %s\n' "${remote_funding_dir}" "${FUNDING_DIR}/"
-        return
-    fi
-
-    retry_command 3 2 rsync_remote -azP "${SSH_TARGET}:${remote_funding_dir}" "${FUNDING_DIR}/"
-    local funding_count
-    funding_count="$(find "${FUNDING_DIR}" -maxdepth 1 -type f -name '*.jsonl' | wc -l | tr -d ' ')"
-    ok "Funding/OI rapatrie (${funding_count} fichier(s) locaux)"
-}
-
-prepare_backtest_inputs() {
-    info "Preparation d'un input local pret pour full_bot_replay..."
-
-    if [[ "${SKIP_REPLAY_INPUT}" == "true" ]]; then
-        warn "Preparation de l'input full-bot skippee (--skip-replay-input)"
-        return
-    fi
-
-    local snapshot_dir snapshot_files
-    snapshot_dir="$(active_snapshot_local_dir)"
-    snapshot_files="$(find "${snapshot_dir}" -maxdepth 1 -type f -name '*.jsonl' | sort)"
-    if [[ -z "${snapshot_files}" ]]; then
-        warn "Aucun snapshot local disponible pour preparer un input de backtest"
-        rm -f "${FULL_BOT_REPLAY_INPUT}"
-        return
-    fi
-
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] concat snapshots -> %s\n' "${FULL_BOT_REPLAY_INPUT}"
-        return
-    fi
-
-    local snapshot_count total_bytes total_human tmp_input processed
-    snapshot_count="$(printf '%s\n' "${snapshot_files}" | wc -l | tr -d ' ')"
-    total_bytes="$(
-        find "${snapshot_dir}" -maxdepth 1 -type f -name '*.jsonl' -printf '%s\n' \
-            | awk '{sum += $1} END {printf "%.0f", sum}'
-    )"
-    total_human="$(human_bytes "${total_bytes}")"
-    tmp_input="${FULL_BOT_REPLAY_INPUT}.tmp"
-    processed=0
-
-    info "Concatenation de ${snapshot_count} snapshot(s) (~${total_human}); cela peut prendre un peu sur les gros fetchs."
-    rm -f "${tmp_input}"
-    : > "${tmp_input}"
-
-    while IFS= read -r file_path; do
-        processed=$((processed + 1))
-        info "  merge ${processed}/${snapshot_count}: $(basename "${file_path}")"
-        cat "${file_path}" >> "${tmp_input}"
-    done <<< "${snapshot_files}"
-
-    mv "${tmp_input}" "${FULL_BOT_REPLAY_INPUT}"
-
-    local merged_lines
-    merged_lines="$(wc -l < "${FULL_BOT_REPLAY_INPUT}" | tr -d ' ')"
-    ok "Input full-bot prepare (${merged_lines} lignes): ${FULL_BOT_REPLAY_INPUT}"
-}
-
-fetch_logs_and_runtime() {
-    info "Rapatriement des logs runtime et statuses..."
-    rm -f \
-        "${LOG_DIR}/pod_b_live.jsonl" \
-        "${LOG_DIR}/pod_b_live_report.json"
+fetch_logs_runtime() {
+    info "Rapatriement logs/runtime TRIDENT A/C..."
     fetch_remote_file "logs/pod_a_live.jsonl" "${LOG_DIR}/pod_a_live.jsonl" "Journal Pod A"
     fetch_remote_file "logs/pod_c_live.jsonl" "${LOG_DIR}/pod_c_live.jsonl" "Journal Pod C"
+    fetch_optional_remote_file "logs/pod_a_live_report.json" "${LOG_DIR}/pod_a_live_report.json" "Rapport Pod A"
+    fetch_optional_remote_file "logs/pod_c_live_report.json" "${LOG_DIR}/pod_c_live_report.json" "Rapport Pod C"
     fetch_remote_file "logs/pod_a_live_status.json" "${RUNTIME_DIR}/pod_a_live_status.json" "Runtime status Pod A"
-    fetch_remote_file "logs/pod_b_live_status.json" "${RUNTIME_DIR}/pod_b_live_status.json" "Runtime status Pod B"
     fetch_remote_file "logs/pod_c_live_status.json" "${RUNTIME_DIR}/pod_c_live_status.json" "Runtime status Pod C"
-    fetch_optional_remote_file "logs/trident_deployment_profile.json" "${RUNTIME_DIR}/trident_deployment_profile.json" "Profil de deploiement TRIDENT"
-    fetch_optional_remote_file "logs/hip4_outcome_status.json" "${RUNTIME_DIR}/hip4_outcome_status.json" "Runtime status HIP-4 Outcome"
-    fetch_optional_remote_file "logs/hip4_outcome_mainnet_status.json" "${RUNTIME_DIR}/hip4_outcome_mainnet_status.json" "Runtime status HIP-4 Outcome mainnet observer"
-    fetch_optional_remote_file "runtime/hip4_outcome_paper_state.json" "${RUNTIME_DIR}/hip4_outcome_paper_state.json" "State HIP-4 Outcome paper"
-    fetch_optional_remote_file "runtime/hip4_outcome_testnet_state.json" "${RUNTIME_DIR}/hip4_outcome_testnet_state.json" "State HIP-4 Outcome testnet"
-    fetch_optional_remote_file "runtime/hip4_outcome_mainnet_paper_state.json" "${RUNTIME_DIR}/hip4_outcome_mainnet_paper_state.json" "State HIP-4 Outcome mainnet paper"
-    fetch_optional_remote_file "runtime/hip4_outcome_mainnet_state.json" "${RUNTIME_DIR}/hip4_outcome_mainnet_state.json" "State HIP-4 Outcome mainnet observer"
-    fetch_optional_remote_dir "logs/hip4_outcome_paper" "${HIP4_LOG_DIR}" "Logs HIP-4 Outcome paper"
-    fetch_optional_remote_dir "logs/hip4_outcome_testnet" "${HIP4_TESTNET_LOG_DIR}" "Logs HIP-4 Outcome testnet"
-    fetch_optional_remote_dir "logs/hip4_outcome_mainnet_paper" "${HIP4_MAINNET_PAPER_LOG_DIR}" "Logs HIP-4 Outcome mainnet paper"
-    fetch_optional_remote_dir "logs/hip4_outcome_mainnet" "${HIP4_MAINNET_LOG_DIR}" "Logs HIP-4 Outcome mainnet observer"
-    fetch_optional_remote_file "config/hip4_outcome_testnet.toml" "${CONFIG_DIR}/hip4_outcome_testnet.toml" "Config HIP-4 Outcome testnet"
-    fetch_optional_remote_file "config/hip4_outcome_mainnet_paper.toml" "${CONFIG_DIR}/hip4_outcome_mainnet_paper.toml" "Config HIP-4 Outcome mainnet paper"
-    fetch_optional_remote_file "config/hip4_outcome_mainnet_observer.toml" "${CONFIG_DIR}/hip4_outcome_mainnet_observer.toml" "Config HIP-4 Outcome mainnet observer"
-    fetch_optional_remote_file "config/trident.toml" "${CONFIG_DIR}/trident.toml" "Config TRIDENT"
+    fetch_optional_remote_file "logs/trident_deployment_profile.json" "${RUNTIME_DIR}/trident_deployment_profile.json" "Profil de déploiement TRIDENT"
     fetch_optional_remote_file "logs/funding_collector_status.json" "${RUNTIME_DIR}/funding_collector_status.json" "Runtime status Funding Collector"
-    fetch_remote_file "logs/tradfi_funding_collector_status.json" "${RUNTIME_DIR}/tradfi_funding_collector_status.json" "Runtime status Tradfi Funding Collector"
-    fetch_optional_remote_file "docs/pod_funding_research_latest.json" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.json" "Research funding JSON"
-    fetch_optional_remote_file "docs/pod_funding_research_latest.md" "${HYDRA_DOCS_DIR}/pod_funding_research_latest.md" "Research funding Markdown"
-    fetch_optional_remote_file "docs/pod_liq_research_latest.json" "${HYDRA_DOCS_DIR}/pod_liq_research_latest.json" "Research liq JSON"
-    fetch_optional_remote_file "docs/pod_liq_research_latest.md" "${HYDRA_DOCS_DIR}/pod_liq_research_latest.md" "Research liq Markdown"
+    fetch_optional_remote_file "logs/tradfi_funding_collector_status.json" "${RUNTIME_DIR}/tradfi_funding_collector_status.json" "Runtime status Tradfi Funding Collector"
+    fetch_optional_remote_file "config/trident.toml" "${CONFIG_DIR}/trident.toml" "Config TRIDENT"
+    fetch_optional_remote_file "config/trident_testnet.toml" "${CONFIG_DIR}/trident_testnet.toml" "Config TRIDENT testnet"
+
+    capture_remote "${DOCKER_DIR}/trident-api.log" "docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} trident-api 2>&1"
+    capture_remote "${DOCKER_DIR}/pod-a-live.log" "docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-a-live 2>&1"
+    capture_remote "${DOCKER_DIR}/pod-c-live.log" "docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} pod-c-live 2>&1"
+    capture_remote "${DOCKER_DIR}/tradfi-funding-collector.log" "docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} tradfi-funding-collector 2>&1"
+    capture_remote "${DOCKER_DIR}/funding-collector.log" "docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} funding-collector 2>&1"
+    ok "Logs/runtime TRIDENT A/C rapatriés"
 }
 
-fetch_docker_logs() {
-    info "Rapatriement des tails de logs Docker..."
-    local services=("trident-api" "pod-a-live" "hip4-outcome-dry-run" "hip4-outcome-mainnet-observer" "pod-c-live" "tradfi-funding-collector" "funding-collector")
-    local files=("trident-api.log" "pod-a-live.log" "hip4-outcome-dry-run.log" "hip4-outcome-mainnet-observer.log" "pod-c-live.log" "tradfi-funding-collector.log" "funding-collector.log")
-    local i
-
-    for i in "${!services[@]}"; do
-        if [[ "${DRY_RUN}" == "true" ]]; then
-            printf '  [dry-run] docker compose logs --tail %s %s -> %s/%s\n' "${LOG_LINES}" "${services[$i]}" "${DOCKER_DIR}" "${files[$i]}"
-            continue
-        fi
-
-        if ssh_remote "bash -lc $(printf '%q' "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml logs --tail ${LOG_LINES} ${services[$i]} 2>&1")" > "${DOCKER_DIR}/${files[$i]}" 2>/dev/null; then
-            ok "Logs Docker ${services[$i]} rapatries"
-        else
-            warn "Impossible de recuperer les logs Docker ${services[$i]}"
-            rm -f "${DOCKER_DIR}/${files[$i]}"
-        fi
-    done
+latest_file() {
+    find "$1" -maxdepth 1 -type f -name "$2" 2>/dev/null | sort | tail -n 1
 }
 
-run_review() {
-    if [[ "${SKIP_REVIEW}" == "true" ]]; then
-        warn "Revue locale skippee (--skip-review)"
-        return
-    fi
+write_review() {
+    local ts output raw_dir
+    ts="$(timestamp)"
+    output="${REVIEW_DIR}/${ts}"
+    raw_dir="${output}/raw"
+    mkdir -p "$raw_dir"
 
-    info "Lancement de la revue locale dry-run..."
-    local review_cmd=(
-        "${ROOT_DIR}/scripts/trident_dry_run_review.sh"
-        --host "${HOST}"
-        --user "${SSH_USER}"
-        --identity "${IDENTITY_FILE}"
-        --remote-dir "${REMOTE_DIR}"
-        --local-dir "${LOCAL_DIR}"
-        --output-dir "${OUTPUT_DIR}"
-        --snapshot-max-age-minutes "${SNAPSHOT_MAX_AGE_MINUTES}"
-        --log-lines "${LOG_LINES}"
-    )
-    if [[ "${SKIP_HIP4_REVIEW}" == "true" ]]; then
-        review_cmd+=(--skip-hip4-review)
-    fi
+    local latest_health latest_state latest_report latest_metrics
+    latest_health="$(latest_file "$API_DIR" 'health-*.json')"
+    latest_state="$(latest_file "$API_DIR" 'state-*.json')"
+    latest_report="$(latest_file "$API_DIR" 'report-*.json')"
+    latest_metrics="$(latest_file "$API_DIR" 'metrics-*.json')"
+    [ -n "$latest_health" ] && cp "$latest_health" "${raw_dir}/health.json" || : > "${raw_dir}/health.json"
+    [ -n "$latest_state" ] && cp "$latest_state" "${raw_dir}/state.json" || : > "${raw_dir}/state.json"
+    [ -n "$latest_report" ] && cp "$latest_report" "${raw_dir}/report.json" || : > "${raw_dir}/report.json"
+    [ -n "$latest_metrics" ] && cp "$latest_metrics" "${raw_dir}/metrics.json" || : > "${raw_dir}/metrics.json"
 
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        printf '  [dry-run] %q ' "${review_cmd[@]}"
-        printf '\n'
-        return
-    fi
+    python3 - "$output" "$LOG_DIR" "$RUNTIME_DIR" "$DOCKER_DIR" <<'PY'
+from __future__ import annotations
 
-    "${review_cmd[@]}"
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+output = Path(sys.argv[1])
+log_dir = Path(sys.argv[2])
+runtime_dir = Path(sys.argv[3])
+docker_dir = Path(sys.argv[4])
+raw = output / "raw"
+
+def load_json(path: Path) -> dict:
+    try:
+        text = path.read_text().strip()
+        return json.loads(text) if text else {}
+    except Exception:
+        return {}
+
+health = load_json(raw / "health.json")
+state = load_json(raw / "state.json")
+report = load_json(raw / "report.json")
+
+def pod_report(name: str) -> dict:
+    for item in report.get("pods", []) or []:
+        if isinstance(item, dict) and item.get("pod") == name:
+            return item
+    return {}
+
+def runtime_status(name: str) -> dict:
+    return load_json(runtime_dir / f"{name}_live_status.json")
+
+def log_has_bad_patterns(path: Path) -> tuple[int, int]:
+    try:
+        text = path.read_text(errors="ignore").lower()
+    except Exception:
+        return 0, 0
+    return text.count("traceback"), text.count("decimal is not json serializable")
+
+checks: list[str] = []
+warnings: list[str] = []
+failures: list[str] = []
+
+if health.get("status") == "ok":
+    checks.append("API /health répond ok")
+else:
+    failures.append(f"API /health inattendu: {health.get('status')!r}")
+
+for pod in ("pod_a", "pod_c"):
+    status = runtime_status(pod)
+    rep = pod_report(pod)
+    label = "Pod A" if pod == "pod_a" else "Pod C"
+    if rep.get("healthy") is True:
+        checks.append(f"{label} healthy dans /api/report")
+    else:
+        failures.append(f"{label} non healthy dans /api/report")
+    if status.get("live_trading_paused") is False:
+        checks.append(f"{label} live_trading_paused=false")
+    else:
+        warnings.append(f"{label} live_trading_paused={status.get('live_trading_paused')!r}")
+    reconciliation = status.get("live_reconciliation") if isinstance(status, dict) else {}
+    if isinstance(reconciliation, dict) and reconciliation.get("ready") is True and not reconciliation.get("reasons"):
+        checks.append(f"{label} reconciliation ready")
+    else:
+        warnings.append(f"{label} reconciliation à revoir: {reconciliation}")
+    for key in ("unknown_exchange_positions", "missing_exchange_positions", "side_mismatches", "open_orders", "trigger_orders"):
+        value = reconciliation.get(key) if isinstance(reconciliation, dict) else None
+        if value:
+            failures.append(f"{label} {key} non vide: {value}")
+
+for name in ("pod_a_live", "pod_c_live", "trident-api"):
+    tracebacks, decimal_errors = log_has_bad_patterns(docker_dir / f"{name}.log")
+    if tracebacks:
+        failures.append(f"Traceback récent dans {name}.log")
+    if decimal_errors:
+        failures.append(f"Erreur Decimal JSON récente dans {name}.log")
+
+status = "PASS" if not failures else "FAIL"
+if warnings and status == "PASS":
+    status = "WARN"
+
+lines = [
+    "# TRIDENT A/C server review",
+    "",
+    f"- generated_at: `{datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}`",
+    f"- status: `{status}`",
+    f"- mode: `{health.get('mode', report.get('mode', 'unknown'))}`",
+    f"- exchange_network: `{health.get('exchange_network', (state.get('exchange') or {}).get('network', 'unknown'))}`",
+    f"- ownership_conflict_count: `{report.get('ownership_conflict_count', len(state.get('ownership_conflicts', []) or []))}`",
+    "",
+    "## Checks",
+]
+lines.extend(f"- {item}" for item in checks)
+if warnings:
+    lines.append("")
+    lines.append("## Warnings")
+    lines.extend(f"- {item}" for item in warnings)
+if failures:
+    lines.append("")
+    lines.append("## Failures")
+    lines.extend(f"- {item}" for item in failures)
+
+for pod in ("pod_a", "pod_c"):
+    rep = pod_report(pod)
+    lines.append("")
+    lines.append(f"## {pod}")
+    for key in ("process_state", "position_count", "open_order_count", "total_fill_count", "realized_pnl_usd", "total_unrealized_pnl_usd", "win_rate"):
+        lines.append(f"- {key}: `{rep.get(key)}`")
+
+(output / "review_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+(output / "review_summary.json").write_text(
+    json.dumps({"status": status, "checks": checks, "warnings": warnings, "failures": failures}, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+    ok "Review TRIDENT A/C écrite: ${output}/review_summary.md"
 }
 
-echo
+echo ""
 echo "========================================="
-echo "  TRIDENT — Fetch local + review"
+echo "  Fetch TRIDENT A/C"
 echo "========================================="
-echo
-echo "  Host SSH : ${SSH_TARGET}"
-echo "  Remote   : ${REMOTE_DIR}"
-echo "  Local    : ${LOCAL_DIR}"
-echo "  Review   : ${OUTPUT_DIR}"
-echo
+echo ""
 
-if [[ "${REVIEW_ONLY}" == "true" ]]; then
-    run_review
-    exit 0
-fi
-
-if [[ "${LOGS_ONLY}" == "true" && "${SNAPSHOTS_ONLY}" == "true" ]]; then
-    error "Impossible de combiner --logs-only et --snapshots-only"
-    exit 1
-fi
-
-fetch_api_snapshot
-
-if [[ "${LOGS_ONLY}" != "true" ]]; then
-    fetch_snapshots
-    fetch_funding_history
-fi
-
-if [[ "${SNAPSHOTS_ONLY}" != "true" ]]; then
-    fetch_logs_and_runtime
-    fetch_docker_logs
-fi
-
-if [[ "${LOGS_ONLY}" != "true" ]]; then
-    prepare_backtest_inputs
-fi
-
-run_review
-
-echo
-echo "========================================="
-ok "FETCH TERMINE"
-echo "========================================="
-echo
-
-if [[ "${DRY_RUN}" != "true" ]]; then
-    total_size="$(du -sh "${LOCAL_DIR}" 2>/dev/null | awk '{print $1}')"
-    total_files="$(find "${LOCAL_DIR}" -type f 2>/dev/null | wc -l | tr -d ' ')"
-    ACTIVE_SNAPSHOT_REMOTE_PATH="$(active_snapshot_remote_path)"
-    ACTIVE_SNAPSHOT_DIR="$(active_snapshot_local_dir)"
-    echo "  Dossier : ${LOCAL_DIR}"
-    echo "  Fichiers : ${total_files}"
-    echo "  Taille : ${total_size}"
-    echo
-    echo "  Artefacts principaux :"
-    echo "    - snapshots live : ${ACTIVE_SNAPSHOT_DIR} (${ACTIVE_SNAPSHOT_REMOTE_PATH})"
-    echo "    - funding history : ${FUNDING_DIR}"
-    echo "    - logs applicatifs : ${LOG_DIR}"
-    echo "    - logs HIP-4 paper : ${HIP4_LOG_DIR}"
-    echo "    - logs HIP-4 testnet : ${HIP4_TESTNET_LOG_DIR}"
-    echo "    - logs HIP-4 mainnet paper : ${HIP4_MAINNET_PAPER_LOG_DIR}"
-    for hip4_shadow_file in early_exits.csv shadow_exit_policies.csv shadow_sizing.csv shadow_maker_quotes.csv; do
-        if [[ -f "${HIP4_MAINNET_PAPER_LOG_DIR}/${hip4_shadow_file}" ]]; then
-            echo "      - ${hip4_shadow_file} : ${HIP4_MAINNET_PAPER_LOG_DIR}/${hip4_shadow_file}"
-        fi
-    done
-    echo "    - runtime statuses : ${RUNTIME_DIR}"
-    echo "    - configs serveur : ${CONFIG_DIR}"
-    echo "    - hydra docs : ${HYDRA_DOCS_DIR}"
-    echo "    - API snapshots : ${API_DIR}"
-    echo "    - docker logs : ${DOCKER_DIR}"
-    if [[ -f "${FULL_BOT_REPLAY_INPUT}" ]]; then
-        echo "    - input full-bot pret : ${FULL_BOT_REPLAY_INPUT}"
+if [ -z "$REVIEW_ONLY" ]; then
+    if [ -z "$SNAPSHOTS_ONLY" ]; then
+        fetch_api
+        fetch_logs_runtime
     fi
-    if [[ "${SKIP_REVIEW}" != "true" ]]; then
-        echo "    - review summary : ${OUTPUT_DIR}/review_summary.md"
-        echo "    - review json : ${OUTPUT_DIR}/review_summary.json"
-        if [[ -f "${OUTPUT_DIR}/hip4_outcome_run_review.md" ]]; then
-            echo "    - review HIP-4 : ${OUTPUT_DIR}/hip4_outcome_run_review.md"
-            echo "    - review HIP-4 json : ${OUTPUT_DIR}/hip4_outcome_run_review.json"
-        fi
-        if [[ -f "${LOCAL_DIR}/replay_reports/hip4_outcome_run_review_latest.md" ]]; then
-            echo "    - review HIP-4 latest : ${LOCAL_DIR}/replay_reports/hip4_outcome_run_review_latest.md"
-            echo "    - review HIP-4 latest json : ${LOCAL_DIR}/replay_reports/hip4_outcome_run_review_latest.json"
-        fi
-    fi
-    echo
-    if [[ -f "${FULL_BOT_REPLAY_INPUT}" ]]; then
-        echo "  Commandes utiles :"
-        echo "    uv run python -m app.backtest.full_bot_replay --config config/trident.toml --input ${ACTIVE_SNAPSHOT_DIR}"
-        echo "    uv run python -m app.backtest.full_bot_replay --config config/trident.toml --input ${FULL_BOT_REPLAY_INPUT}"
-        echo
+    if [ -z "$LOGS_ONLY" ]; then
+        fetch_snapshots
     fi
 fi
+
+write_review
+
+echo ""
+ok "Fetch TRIDENT A/C terminé dans ${LOCAL_DIR}/"

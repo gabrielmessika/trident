@@ -1,0 +1,118 @@
+services:
+  hip4-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.trident
+    container_name: trident-hip4-api
+    environment:
+      TRIDENT_APP_KIND: trident-hip4
+      TRIDENT_ENABLE_POD_A: "false"
+      TRIDENT_ENABLE_POD_B: "false"
+      TRIDENT_ENABLE_POD_C: "false"
+      TRIDENT_ENABLE_HIP4_OUTCOME: "true"
+      TRIDENT_ENABLE_FUNDING: "false"
+      TRIDENT_MODE: dry-run
+      TRIDENT_EXCHANGE_NETWORK: mainnet
+      TRIDENT_CONFIG_PATH: ${TRIDENT_CONFIG_PATH:-config/trident.toml}
+    command:
+      - python
+      - -m
+      - app.main
+      - --mode
+      - dry-run
+      - --profile
+      - trident-hip4
+      - --config
+      - ${TRIDENT_CONFIG_PATH:-config/trident.toml}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "3000"
+    ports:
+      - "${HIP4_OUTCOME_API_PORT:-3001}:3000"
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./runtime:/app/runtime
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  hip4-outcome-paper:
+    build:
+      context: .
+      dockerfile: Dockerfile.trident
+    container_name: trident-hip4-outcome-paper
+    environment:
+      HIP4_OUTCOME_MODE: ${HIP4_OUTCOME_MODE:-paper}
+      HIP4_OUTCOME_CONFIG: ${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}
+      HIP4_OUTCOME_ALLOW_TESTNET_ORDERS: ${HIP4_OUTCOME_ALLOW_TESTNET_ORDERS:-false}
+      HIP4_OUTCOME_ACCOUNT_ADDRESS: ${HIP4_OUTCOME_ACCOUNT_ADDRESS:-}
+      HIP4_OUTCOME_SECRET_KEY: ${HIP4_OUTCOME_SECRET_KEY:-}
+      HIP4_OUTCOME_VAULT_ADDRESS: ${HIP4_OUTCOME_VAULT_ADDRESS:-}
+      HIP4_OUTCOME_ENABLE_EMBEDDED_OBSERVERS: ${HIP4_OUTCOME_ENABLE_EMBEDDED_OBSERVERS:-false}
+      TRIDENT_ENABLE_HIP4_OUTCOME: "true"
+    command:
+      - python
+      - -m
+      - app.live.hip4_outcome_runner
+      - --config
+      - ${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}
+      - --mode
+      - ${HIP4_OUTCOME_MODE:-paper}
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    depends_on:
+      hip4-api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  hip4-mainnet-observer:
+    build:
+      context: .
+      dockerfile: Dockerfile.trident
+    container_name: trident-hip4-mainnet-observer
+    environment:
+      HIP4_OUTCOME_MODE: observer
+      HIP4_OUTCOME_ALLOW_TESTNET_ORDERS: "false"
+      HIP4_OUTCOME_WRITE_POD_B_ALIAS_STATUS: "false"
+      TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER: "true"
+    command:
+      - python
+      - -m
+      - app.live.hip4_outcome_runner
+      - --config
+      - ${HIP4_OUTCOME_MAINNET_CONFIG:-config/hip4_outcome_mainnet_observer.toml}
+      - --mode
+      - observer
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    depends_on:
+      hip4-api:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["mainnet_observer"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

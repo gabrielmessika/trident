@@ -6,8 +6,9 @@ services:
     container_name: trident-api
     environment:
       TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
-      TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
+      TRIDENT_ENABLE_POD_B: "false"
       TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
+      TRIDENT_APP_KIND: trident
       TRIDENT_MODE: ${TRIDENT_MODE:-dry-run}
       TRIDENT_EXCHANGE_NETWORK: ${TRIDENT_EXCHANGE_NETWORK:-mainnet}
       TRIDENT_CONFIG_PATH: ${TRIDENT_CONFIG_PATH:-config/trident.toml}
@@ -21,7 +22,7 @@ services:
       TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS: ${TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS:-}
       TRIDENT_LIVE_ALLOW_OPEN_ORDERS: ${TRIDENT_LIVE_ALLOW_OPEN_ORDERS:-}
       TRIDENT_LIVE_SKIP_USER_WS_CHECK: ${TRIDENT_LIVE_SKIP_USER_WS_CHECK:-}
-      TRIDENT_ENABLE_HIP4_OUTCOME: ${TRIDENT_ENABLE_HIP4_OUTCOME:-true}
+      TRIDENT_ENABLE_HIP4_OUTCOME: "false"
       TRIDENT_ENABLE_FUNDING: ${TRIDENT_ENABLE_FUNDING:-true}
     command:
       - python
@@ -64,7 +65,7 @@ services:
     container_name: trident-pod-a-live
     environment:
       TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
-      TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
+      TRIDENT_ENABLE_POD_B: "false"
       TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
       TRIDENT_MODE: ${TRIDENT_MODE:-dry-run}
       TRIDENT_EXCHANGE_NETWORK: ${TRIDENT_EXCHANGE_NETWORK:-mainnet}
@@ -79,7 +80,7 @@ services:
       TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS: ${TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS:-}
       TRIDENT_LIVE_ALLOW_OPEN_ORDERS: ${TRIDENT_LIVE_ALLOW_OPEN_ORDERS:-}
       TRIDENT_LIVE_SKIP_USER_WS_CHECK: ${TRIDENT_LIVE_SKIP_USER_WS_CHECK:-}
-      TRIDENT_ENABLE_HIP4_OUTCOME: ${TRIDENT_ENABLE_HIP4_OUTCOME:-true}
+      TRIDENT_ENABLE_HIP4_OUTCOME: "false"
     command:
       - python
       - -m
@@ -105,55 +106,6 @@ services:
         max-size: "10m"
         max-file: "5"
 
-  pod-b-live:
-    build:
-      context: .
-      dockerfile: Dockerfile.trident
-    container_name: trident-pod-b-live
-    environment:
-      TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
-      TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
-      TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
-      TRIDENT_MODE: ${TRIDENT_MODE:-dry-run}
-      TRIDENT_EXCHANGE_NETWORK: ${TRIDENT_EXCHANGE_NETWORK:-mainnet}
-      TRIDENT_CONFIG_PATH: ${TRIDENT_CONFIG_PATH:-config/trident.toml}
-      TRIDENT_ACCOUNT_ADDRESS: ${TRIDENT_ACCOUNT_ADDRESS:-}
-      TRIDENT_SECRET_KEY: ${TRIDENT_SECRET_KEY:-}
-      TRIDENT_VAULT_ADDRESS: ${TRIDENT_VAULT_ADDRESS:-}
-      TRIDENT_LIVE_CONFIRM: ${TRIDENT_LIVE_CONFIRM:-}
-      TRIDENT_LIVE_STATE_PATH: ${TRIDENT_LIVE_STATE_PATH:-}
-      TRIDENT_LIVE_STATE_PATH_POD_A: ${TRIDENT_LIVE_STATE_PATH_POD_A:-}
-      TRIDENT_LIVE_STATE_PATH_POD_C: ${TRIDENT_LIVE_STATE_PATH_POD_C:-}
-      TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS: ${TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS:-}
-      TRIDENT_LIVE_ALLOW_OPEN_ORDERS: ${TRIDENT_LIVE_ALLOW_OPEN_ORDERS:-}
-      TRIDENT_LIVE_SKIP_USER_WS_CHECK: ${TRIDENT_LIVE_SKIP_USER_WS_CHECK:-}
-      TRIDENT_ENABLE_HIP4_OUTCOME: ${TRIDENT_ENABLE_HIP4_OUTCOME:-true}
-    command:
-      - python
-      - -m
-      - app.live.pod_b_live_runner
-      - --mode
-      - ${TRIDENT_MODE:-dry-run}
-      - --config
-      - ${TRIDENT_CONFIG_PATH:-config/trident.toml}
-      - --journal-output
-      - logs/pod_b_live.jsonl
-    volumes:
-      - ./config:/app/config:ro
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - ./runtime:/app/runtime
-    depends_on:
-      trident-api:
-        condition: service_healthy
-    restart: unless-stopped
-    profiles: ["legacy_pod_b"]
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-
   pod-c-live:
     build:
       context: .
@@ -161,7 +113,7 @@ services:
     container_name: trident-pod-c-live
     environment:
       TRIDENT_ENABLE_POD_A: ${TRIDENT_ENABLE_POD_A:-true}
-      TRIDENT_ENABLE_POD_B: ${TRIDENT_ENABLE_POD_B:-}
+      TRIDENT_ENABLE_POD_B: "false"
       TRIDENT_ENABLE_POD_C: ${TRIDENT_ENABLE_POD_C:-}
       TRIDENT_MODE: ${TRIDENT_MODE:-dry-run}
       TRIDENT_EXCHANGE_NETWORK: ${TRIDENT_EXCHANGE_NETWORK:-mainnet}
@@ -176,7 +128,7 @@ services:
       TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS: ${TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS:-}
       TRIDENT_LIVE_ALLOW_OPEN_ORDERS: ${TRIDENT_LIVE_ALLOW_OPEN_ORDERS:-}
       TRIDENT_LIVE_SKIP_USER_WS_CHECK: ${TRIDENT_LIVE_SKIP_USER_WS_CHECK:-}
-      TRIDENT_ENABLE_HIP4_OUTCOME: ${TRIDENT_ENABLE_HIP4_OUTCOME:-true}
+      TRIDENT_ENABLE_HIP4_OUTCOME: "false"
     command:
       - python
       - -m
@@ -196,75 +148,6 @@ services:
       trident-api:
         condition: service_healthy
     restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-
-  hip4-outcome-dry-run:
-    build:
-      context: .
-      dockerfile: Dockerfile.trident
-    container_name: trident-hip4-outcome-dry-run
-    environment:
-      HIP4_OUTCOME_MODE: ${HIP4_OUTCOME_MODE:-paper}
-      HIP4_OUTCOME_ALLOW_TESTNET_ORDERS: ${HIP4_OUTCOME_ALLOW_TESTNET_ORDERS:-false}
-      HIP4_OUTCOME_ACCOUNT_ADDRESS: ${HIP4_OUTCOME_ACCOUNT_ADDRESS:-}
-      HIP4_OUTCOME_SECRET_KEY: ${HIP4_OUTCOME_SECRET_KEY:-}
-      HIP4_OUTCOME_VAULT_ADDRESS: ${HIP4_OUTCOME_VAULT_ADDRESS:-}
-      TRIDENT_ENABLE_HIP4_OUTCOME: ${TRIDENT_ENABLE_HIP4_OUTCOME:-true}
-      HIP4_OUTCOME_ENABLE_EMBEDDED_OBSERVERS: ${HIP4_OUTCOME_ENABLE_EMBEDDED_OBSERVERS:-false}
-    command:
-      - python
-      - -m
-      - app.live.hip4_outcome_runner
-      - --config
-      - ${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}
-      - --mode
-      - ${HIP4_OUTCOME_MODE:-paper}
-    volumes:
-      - ./config:/app/config:ro
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    depends_on:
-      trident-api:
-        condition: service_healthy
-    restart: unless-stopped
-    profiles: ["pod_b", "hip4"]
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-
-  hip4-outcome-mainnet-observer:
-    build:
-      context: .
-      dockerfile: Dockerfile.trident
-    container_name: trident-hip4-outcome-mainnet-observer
-    environment:
-      HIP4_OUTCOME_MODE: observer
-      HIP4_OUTCOME_ALLOW_TESTNET_ORDERS: "false"
-      HIP4_OUTCOME_WRITE_POD_B_ALIAS_STATUS: "false"
-      TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER: ${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-true}
-    command:
-      - python
-      - -m
-      - app.live.hip4_outcome_runner
-      - --config
-      - ${HIP4_OUTCOME_MAINNET_CONFIG:-config/hip4_outcome_mainnet_observer.toml}
-      - --mode
-      - observer
-    volumes:
-      - ./config:/app/config:ro
-      - ./logs:/app/logs
-      - ./runtime:/app/runtime
-    depends_on:
-      trident-api:
-        condition: service_healthy
-    restart: unless-stopped
-    profiles: ["hip4_mainnet_observer"]
     logging:
       driver: json-file
       options:

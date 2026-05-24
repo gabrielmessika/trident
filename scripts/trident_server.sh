@@ -14,10 +14,10 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--network mainnet|testnet] [--config config/trident.toml] [--only-pod-b] [--without-pod-b] [--without-pod-c] [--without-funding] [--without-hip4-outcome] [--with-hip4-mainnet-observer] [--without-hip4-mainnet-observer] [--fresh-start] [service]
+Usage: ./scripts/trident_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode dry-run|live] [--network mainnet|testnet] [--config config/trident.toml] [--without-pod-c] [--without-funding] [--fresh-start] [service]
 
 Actions:
-  start     démarre l'API + Pod A + Pod B HIP-4 mainnet paper + Pod C + funding par défaut en dry-run
+  start     démarre l'API + Pod A + Pod C + funding par défaut en dry-run
   stop      arrête les services sélectionnés
   restart   redémarre les services sélectionnés
   update    rebuild + redémarre les services sélectionnés
@@ -27,17 +27,15 @@ Actions:
   ps        alias de status
 
 Compatibilité :
-  --with-pod-b / --with-pod-c / --with-funding restent acceptés mais sont redondants.
-  --with-hip4-outcome / --without-hip4-outcome sont des alias du Pod B HIP-4.
-  --with-hip4-mainnet-observer / --without-hip4-mainnet-observer contrôle l'observateur mainnet séparé.
+  --with-pod-c / --with-funding restent acceptés mais sont redondants.
+  Pod B HIP-4 est maintenant géré par l'app séparée `trident-hip4`.
 
 Sécurité live :
   --mode dry-run est le défaut. --mode live lance Pod A + Pod C en vrais
-  ordres sur le réseau A/C choisi, garde Pod B HIP-4 en mainnet paper,
-  puis lance un preflight credentials + reconciliation + orderUpdates pour Pod A/Pod C.
+  ordres sur le réseau A/C choisi, puis lance un preflight credentials +
+  reconciliation + orderUpdates pour Pod A/Pod C.
   --network testnet sélectionne config/trident_testnet.toml par défaut et
   isole les state files live Pod A/Pod C du mainnet.
-  --only-pod-b recrée uniquement hip4-outcome-dry-run, sans toucher Pod A/C.
 EOF
 }
 
@@ -58,12 +56,8 @@ REMOTE_HOST="${TRIDENT_DEPLOY_HOST:-trident-hetzner}"
 REMOTE_USER="${TRIDENT_DEPLOY_USER:-trident-deploy}"
 REMOTE_IDENTITY_FILE="${TRIDENT_DEPLOY_IDENTITY:-${HOME}/.ssh/trident_hetzner_ed25519}"
 REMOTE_DIR="${TRIDENT_DEPLOY_DIR:-/opt/trident}"
-ENABLE_POD_B="true"
 ENABLE_POD_C="true"
 ENABLE_FUNDING="true"
-ENABLE_HIP4_OUTCOME="${TRIDENT_ENABLE_HIP4_OUTCOME:-true}"
-ENABLE_HIP4_MAINNET_OBSERVER="${TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER:-}"
-ONLY_POD_B=""
 FRESH_START=""
 MODE="${TRIDENT_MODE:-dry-run}"
 EXCHANGE_NETWORK="${TRIDENT_EXCHANGE_NETWORK:-mainnet}"
@@ -127,10 +121,6 @@ guard_network_config() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --with-pod-b)
-            ENABLE_POD_B="true"
-            shift
-            ;;
         --with-pod-c)
             ENABLE_POD_C="true"
             shift
@@ -139,27 +129,10 @@ while [ $# -gt 0 ]; do
             ENABLE_FUNDING="true"
             shift
             ;;
-        --with-hip4-outcome)
-            ENABLE_HIP4_OUTCOME="true"
-            ENABLE_POD_B="true"
-            shift
-            ;;
-        --with-hip4-mainnet-observer)
-            ENABLE_HIP4_MAINNET_OBSERVER="true"
-            ENABLE_POD_B="true"
-            shift
-            ;;
         --config)
             CONFIG_PATH="$2"
             CONFIG_PATH_EXPLICIT="true"
             shift 2
-            ;;
-        --only-pod-b|--pod-b-only)
-            ONLY_POD_B="true"
-            ENABLE_POD_B="true"
-            ENABLE_HIP4_OUTCOME="true"
-            ENABLE_HIP4_MAINNET_OBSERVER=""
-            shift
             ;;
         --mode)
             MODE="$2"
@@ -173,12 +146,6 @@ while [ $# -gt 0 ]; do
             EXCHANGE_NETWORK="testnet"
             shift
             ;;
-        --without-pod-b)
-            ENABLE_POD_B=""
-            ENABLE_HIP4_OUTCOME=""
-            ENABLE_HIP4_MAINNET_OBSERVER=""
-            shift
-            ;;
         --without-pod-c)
             ENABLE_POD_C=""
             shift
@@ -187,14 +154,9 @@ while [ $# -gt 0 ]; do
             ENABLE_FUNDING=""
             shift
             ;;
-        --without-hip4-outcome)
-            ENABLE_HIP4_OUTCOME=""
-            ENABLE_POD_B=""
-            ENABLE_HIP4_MAINNET_OBSERVER=""
-            shift
-            ;;
-        --without-hip4-mainnet-observer)
-            ENABLE_HIP4_MAINNET_OBSERVER=""
+        --with-pod-b|--without-pod-b|--only-pod-b|--pod-b-only|--with-hip4-outcome|--without-hip4-outcome|--with-hip4-mainnet-observer|--without-hip4-mainnet-observer)
+            error "Pod B/HIP-4 a été séparé. Utilise ./trident-hip4/deploy.sh ou ./scripts/trident_hip4_server.sh."
+            exit 1
             shift
             ;;
         --fresh-start)
@@ -212,14 +174,6 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -n "$ONLY_POD_B" ]; then
-    ENABLE_POD_B="true"
-    ENABLE_HIP4_OUTCOME="true"
-    ENABLE_HIP4_MAINNET_OBSERVER=""
-    ENABLE_POD_C=""
-    ENABLE_FUNDING=""
-fi
-
 case "$MODE" in
     dry-run|live)
         ;;
@@ -232,18 +186,12 @@ case "$MODE" in
         ;;
 esac
 
-if [ "$MODE" = "live" ]; then
-    ENABLE_HIP4_MAINNET_OBSERVER=""
-fi
-
 resolve_network_config
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PROFILE_ARGS=()
-[ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ] && PROFILE_ARGS+=(--profile pod_b)
-[ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ] && PROFILE_ARGS+=(--profile hip4_mainnet_observer)
 [ -n "$ENABLE_POD_C" ] && PROFILE_ARGS+=(--profile pod_c)
 [ -n "$ENABLE_FUNDING" ] && PROFILE_ARGS+=(--profile funding)
 
@@ -253,34 +201,23 @@ if [ -f ".env.trident" ]; then
 fi
 
 compose() {
-    local hip4_mode="${HIP4_OUTCOME_MODE:-paper}"
-    local hip4_config="${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}"
-    local hip4_allow_testnet_orders="${HIP4_OUTCOME_ALLOW_TESTNET_ORDERS:-false}"
     local funding_enabled="false"
     local pod_a_state_path
     local pod_c_state_path
     [ -n "$ENABLE_FUNDING" ] && funding_enabled="true"
     pod_a_state_path="$(pod_a_live_state_path)"
     pod_c_state_path="$(pod_c_live_state_path)"
-    if [ "$MODE" = "live" ]; then
-        hip4_mode="paper"
-        hip4_config="config/hip4_outcome_mainnet_paper.toml"
-        hip4_allow_testnet_orders="false"
-    fi
     TRIDENT_ENABLE_POD_A="true" \
-    TRIDENT_ENABLE_POD_B="" \
+    TRIDENT_ENABLE_POD_B="false" \
     TRIDENT_ENABLE_POD_C="${ENABLE_POD_C:+true}" \
-    TRIDENT_ENABLE_HIP4_OUTCOME="${ENABLE_HIP4_OUTCOME:+true}" \
-    TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER="${ENABLE_HIP4_MAINNET_OBSERVER:+true}" \
+    TRIDENT_ENABLE_HIP4_OUTCOME="false" \
+    TRIDENT_ENABLE_HIP4_MAINNET_OBSERVER="" \
     TRIDENT_ENABLE_FUNDING="${funding_enabled}" \
     TRIDENT_MODE="${MODE}" \
     TRIDENT_EXCHANGE_NETWORK="${EXCHANGE_NETWORK}" \
     TRIDENT_CONFIG_PATH="${CONFIG_PATH}" \
     TRIDENT_LIVE_STATE_PATH_POD_A="${pod_a_state_path}" \
     TRIDENT_LIVE_STATE_PATH_POD_C="${pod_c_state_path}" \
-    HIP4_OUTCOME_MODE="${hip4_mode}" \
-    HIP4_OUTCOME_CONFIG="${hip4_config}" \
-    HIP4_OUTCOME_ALLOW_TESTNET_ORDERS="${hip4_allow_testnet_orders}" \
     docker compose "${COMPOSE_ENV_ARGS[@]}" -f docker-compose.trident.yml "${PROFILE_ARGS[@]}" "$@"
 }
 
@@ -320,12 +257,6 @@ read_only_compose() {
 
 default_services() {
     local services=(trident-api pod-a-live)
-    if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ]; then
-        services+=(hip4-outcome-dry-run)
-    fi
-    if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_MAINNET_OBSERVER" ]; then
-        services+=(hip4-outcome-mainnet-observer)
-    fi
     if [ -n "$ENABLE_POD_C" ]; then
         services+=(pod-c-live tradfi-funding-collector)
     fi
@@ -333,10 +264,6 @@ default_services() {
         services+=(funding-collector)
     fi
     printf '%s\n' "${services[@]}"
-}
-
-target_pod_b_service() {
-    printf '%s\n' hip4-outcome-dry-run
 }
 
 all_managed_services() {
@@ -371,6 +298,22 @@ stop_unmanaged_services() {
         info "Arrêt des services hors profil: ${stop_services[*]}"
         compose_all stop "${stop_services[@]}" >/dev/null 2>&1 || true
     fi
+}
+
+stop_legacy_split_services() {
+    if ! command -v docker >/dev/null 2>&1; then
+        return 0
+    fi
+    docker stop \
+        trident-pod-b-live \
+        trident-hip4-outcome-dry-run \
+        trident-hip4-outcome-mainnet-observer \
+        >/dev/null 2>&1 || true
+    docker rm \
+        trident-pod-b-live \
+        trident-hip4-outcome-dry-run \
+        trident-hip4-outcome-mainnet-observer \
+        >/dev/null 2>&1 || true
 }
 
 fresh_start_cleanup() {
@@ -444,11 +387,8 @@ write_deployment_profile() {
         "$MODE" \
         "$EXCHANGE_NETWORK" \
         "$CONFIG_PATH" \
-        "$ENABLE_POD_B" \
         "$ENABLE_POD_C" \
-        "$ENABLE_FUNDING" \
-        "$ENABLE_HIP4_OUTCOME" \
-        "$ENABLE_HIP4_MAINNET_OBSERVER" <<'PY'
+        "$ENABLE_FUNDING" <<'PY'
 from __future__ import annotations
 
 import json
@@ -462,12 +402,8 @@ def flag(raw: str) -> bool:
 
 
 mode, network, config_path = sys.argv[1:4]
-enable_pod_b, enable_pod_c, enable_funding, enable_hip4, enable_hip4_observer = sys.argv[4:9]
+enable_pod_c, enable_funding = sys.argv[4:6]
 services = ["trident-api", "pod-a-live"]
-if flag(enable_pod_b) and flag(enable_hip4):
-    services.append("hip4-outcome-dry-run")
-if flag(enable_pod_b) and flag(enable_hip4_observer):
-    services.append("hip4-outcome-mainnet-observer")
 if flag(enable_pod_c):
     services.extend(["pod-c-live", "tradfi-funding-collector"])
 if flag(enable_funding):
@@ -478,10 +414,11 @@ payload = {
     "mode": mode,
     "exchange_network": network,
     "config_path": config_path,
-    "pod_b_enabled": flag(enable_pod_b),
+    "app": "trident",
+    "pod_b_enabled": False,
     "pod_c_enabled": flag(enable_pod_c),
-    "hip4_outcome_enabled": flag(enable_hip4),
-    "hip4_mainnet_observer_enabled": flag(enable_hip4_observer),
+    "hip4_outcome_enabled": False,
+    "hip4_mainnet_observer_enabled": False,
     "funding_collector_enabled": flag(enable_funding),
     "selected_services": services,
 }
@@ -495,9 +432,6 @@ PY
 guard_live_start() {
     if [ "$MODE" != "live" ]; then
         return 0
-    fi
-    if [ -n "$ENABLE_POD_B" ] && [ -n "$ENABLE_HIP4_OUTCOME" ]; then
-        info "Mode live hybride: Pod B HIP-4 sera force en mainnet paper (aucun ordre HIP-4)."
     fi
     if [ "$EXCHANGE_NETWORK" = "testnet" ]; then
         info "Mode live testnet: Pod A/Pod C placeront de vrais ordres sur Hyperliquid testnet, sans ordre mainnet A/C."
@@ -542,14 +476,6 @@ guard_live_start() {
 
 case "$ACTION" in
     start)
-        if [ -n "$ONLY_POD_B" ]; then
-            require_runtime_files
-            mapfile -t SERVICES < <(target_pod_b_service)
-            info "Redéploiement ciblé Pod B HIP-4: ${SERVICES[*]}"
-            compose up -d --no-deps --force-recreate "${SERVICES[@]}"
-            ok "Pod B HIP-4 redéployé sans toucher Pod A/C"
-            exit 0
-        fi
         guard_network_config
         guard_live_start
         require_runtime_files
@@ -559,6 +485,7 @@ case "$ACTION" in
         else
             stop_unmanaged_services "${SERVICES[@]}"
         fi
+        stop_legacy_split_services
         write_deployment_profile
         info "Démarrage: ${SERVICES[*]}"
         info "Mode: ${MODE}"
@@ -568,27 +495,16 @@ case "$ACTION" in
             info "State Pod A: $(pod_a_live_state_path)"
             [ -n "$ENABLE_POD_C" ] && info "State Pod C: $(pod_c_live_state_path)"
         fi
-        compose up -d --force-recreate "${SERVICES[@]}"
+        compose up -d --force-recreate --remove-orphans "${SERVICES[@]}"
         ok "Services démarrés"
         ;;
     stop)
-        if [ -n "$ONLY_POD_B" ]; then
-            mapfile -t SERVICES < <(target_pod_b_service)
-        else
-            mapfile -t SERVICES < <(default_services)
-        fi
+        mapfile -t SERVICES < <(default_services)
         info "Arrêt: ${SERVICES[*]}"
         compose stop "${SERVICES[@]}"
         ok "Services arrêtés"
         ;;
     restart)
-        if [ -n "$ONLY_POD_B" ]; then
-            mapfile -t SERVICES < <(target_pod_b_service)
-            info "Redémarrage ciblé Pod B HIP-4: ${SERVICES[*]}"
-            compose restart "${SERVICES[@]}"
-            ok "Pod B HIP-4 redémarré sans toucher Pod A/C"
-            exit 0
-        fi
         guard_network_config
         guard_live_start
         mapfile -t SERVICES < <(default_services)
@@ -600,15 +516,6 @@ case "$ACTION" in
         ok "Services redémarrés"
         ;;
     update)
-        if [ -n "$ONLY_POD_B" ]; then
-            require_runtime_files
-            mapfile -t SERVICES < <(target_pod_b_service)
-            info "Rebuild + redéploiement ciblé Pod B HIP-4: ${SERVICES[*]}"
-            compose build "${SERVICES[@]}"
-            compose up -d --no-deps --force-recreate "${SERVICES[@]}"
-            ok "Pod B HIP-4 update sans toucher Pod A/C"
-            exit 0
-        fi
         guard_network_config
         guard_live_start
         require_runtime_files
@@ -619,7 +526,8 @@ case "$ACTION" in
         info "Config: ${CONFIG_PATH}"
         compose build
         write_deployment_profile
-        compose up -d "${SERVICES[@]}"
+        stop_legacy_split_services
+        compose up -d --remove-orphans "${SERVICES[@]}"
         ok "Update terminé"
         ;;
     status|ps)

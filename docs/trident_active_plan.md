@@ -1,22 +1,58 @@
 # TRIDENT Active Plan
 
-Date: `2026-05-23`
+Date: `2026-05-24`
 
 ## Status
 
 - `ACTIVE_SINGLE_SOURCE_OF_TRUTH`
 - Ce fichier est la feuille de route courante. Les autres documents sont des archives, des notes de recherche, ou des details d'implementation.
 - En cas de contradiction avec un ancien doc, ce fichier gagne.
-- Objectif actuel: transformer le canary live testnet `Pod A` + `Pod C` valide
-  techniquement en burn-in propre, puis preparer le canary mainnet tiny-size.
-  `Pod B HIP-4 Outcome` reste en mainnet paper, comme pod independant, sans
-  cannibaliser Pod A.
+- Decision ops `2026-05-24`: split en deux apps deployables separement.
+  `TRIDENT` = `Pod A` + `Pod C` uniquement. `TRIDENT-HIP4` =
+  `HIP4OutcomeEdgePod` uniquement, en mainnet paper par defaut.
+- Objectif actuel TRIDENT: transformer le canary live testnet `Pod A` + `Pod C`
+  valide techniquement en burn-in propre, puis preparer le canary mainnet
+  tiny-size.
+- `Pod B HIP-4 Outcome` ne fait plus partie du deploiement TRIDENT A/C. Il reste
+  analyse/recherche mainnet paper dans l'app separee `TRIDENT-HIP4`.
+
+## Split Ops `TRIDENT` / `TRIDENT-HIP4`
+
+Source de verite operationnelle depuis le `2026-05-24`:
+
+- App `TRIDENT`:
+  - repertoire serveur par defaut: `/opt/trident`;
+  - compose: `docker-compose.trident.yml`;
+  - deploy: `./deploy.sh`;
+  - serveur: `scripts/trident_server.sh`;
+  - fetch: `scripts/fetch_trident_data.sh`;
+  - services attendus: `trident-api`, `pod-a-live`, `pod-c-live`,
+    `tradfi-funding-collector`, `funding-collector` si active;
+  - UI dashboard: `/` et `/dashboard` exposent uniquement Pod A/Pod C;
+  - aucun service Pod B, HIP-4 outcome, `hip4-outcome-dry-run` ou observer
+    mainnet ne doit etre demarre ni affiche depuis cette app.
+- App `TRIDENT-HIP4`:
+  - repertoire serveur par defaut: `/opt/trident-hip4`;
+  - compose: `docker-compose.hip4.yml`;
+  - deploy: `./trident-hip4/deploy.sh`;
+  - serveur: `scripts/trident_hip4_server.sh`;
+  - fetch: `./trident-hip4/fetch_data.sh`;
+  - port dashboard/API par defaut: `3001`, UI HIP-4 native sur `/`,
+    `/dashboard` et `/hip4-outcome`;
+  - onglet `Dashboard` HIP-4 ouvert par defaut: runtime, PnL, budget,
+    short-expiry focus, sante observation et opportunites recentes compactes;
+  - services attendus: `hip4-api`, `hip4-outcome-paper`, et optionnellement
+    `hip4-mainnet-observer`;
+  - mode par defaut: `HIP4_OUTCOME_MODE=paper`, config
+    `config/hip4_outcome_mainnet_paper.toml`.
+- Si une section plus ancienne parle de "live hybride A/C + Pod B" dans le meme
+  deploiement, cette section est historique. Le split ops ci-dessus gagne.
 
 ## Lecture Rapide
 
 - Config prod/dry-run principale: `config/trident.toml`.
-- Mode cible live hybride: `Pod A` crypto core et `Pod C` tradfi en vrais
-  ordres apres preflight; `Pod B HIP-4 Outcome` reste `paper` mainnet.
+- Mode cible live TRIDENT: `Pod A` crypto core et `Pod C` tradfi en vrais
+  ordres apres preflight. `Pod B HIP-4 Outcome` est gere par `TRIDENT-HIP4`.
 - Etat serveur `2026-05-21`: redeploiement propre en `live/testnet` avec
   `Pod A` + `Pod C` en vrais ordres testnet et `Pod B HIP-4 Outcome` force en
   `mainnet paper`. Le baseline de burn-in repart du demarrage conteneur
@@ -38,16 +74,17 @@ Date: `2026-05-23`
   stale.
 - La page `Status > Pods` affiche maintenant `PnL realise` et `PnL latent` dans
   la carte de chaque pod.
-- Pods actifs dry-run: `Pod A` crypto core avec `a_grade_enabled`, `Pod B HIP-4 Outcome`, `Pod C` tradfi.
+- Pods actifs dry-run TRIDENT: `Pod A` crypto core avec `a_grade_enabled`,
+  `Pod C` tradfi.
 - Pod B historique directionnel: legacy / non demarre par defaut.
 - Nouveau Pod B: `HIP4OutcomeEdgePod`, branche HIP-4 outcome en mainnet paper.
   Le testnet HIP-4 a ete arrete: ses donnees n'etaient pas representatives,
   mais il a valide l'architecture, les signatures, les ordres, la reconciliation
   et le format de settlement.
 - UI:
-  - dashboard principal: `/dashboard`
-  - monitoring HIP-4: `/hip4-outcome`
-  - API HIP-4: `/api/hip4-outcome`
+  - dashboard principal TRIDENT A/C: `http://<server>:3000/` ou `/dashboard`
+  - monitoring HIP-4 separe: `http://<server>:3001/` ou `/hip4-outcome`
+  - API HIP-4 separee: `http://<server>:3001/api/hip4-outcome`
 - Pod B HIP-4 expose maintenant un `operator_brief` et une `short_expiry_watchlist`
   dans son status/API, afin de piloter explicitement les fenêtres proches expiry
   sans transformer le mainnet paper en claim de performance.

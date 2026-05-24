@@ -5,6 +5,7 @@ import copy
 import csv
 import json
 import math
+import os
 from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -37,6 +38,28 @@ from app.trident.market_clusters import (
 )
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
+
+
+TRIDENT_UI_PODS = ("pod_a", "pod_c")
+HIP4_APP_KINDS = {"trident-hip4", "hip4", "hip4-outcome"}
+
+
+def _app_kind() -> str:
+    return os.getenv("TRIDENT_APP_KIND", "trident").strip().lower()
+
+
+def _is_hip4_app() -> bool:
+    return _app_kind() in HIP4_APP_KINDS
+
+
+def _hip4_routes_enabled() -> bool:
+    if _is_hip4_app():
+        return True
+    raw_value = os.getenv("TRIDENT_ENABLE_HIP4_OUTCOME")
+    if raw_value is None or raw_value == "":
+        return False
+    raw = raw_value.strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _exchange_network_from_url(info_url: object) -> str:
@@ -1474,13 +1497,30 @@ def _trade_event_rows(snapshot: dict[str, object]) -> list[dict[str, object]]:
 def _dashboard_status_items(
     snapshot: dict[str, object],
     runtime_report: dict[str, object],
+    *,
+    pod_names: tuple[str, ...] = ("pod_a", "pod_b", "pod_c"),
 ) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
     snapshot_status = _latest_snapshot_status_for_payload(snapshot)
     items.append(snapshot_status)
 
-    healthy_count = int(runtime_report.get("healthy_pod_count", 0))
-    enabled_count = int(runtime_report.get("enabled_pod_count", 0))
+    pod_set = set(pod_names)
+    pod_reports = [
+        item
+        for item in runtime_report.get("pods", [])
+        if isinstance(item, dict)
+        and str(item.get("pod")) in pod_set
+    ]
+    if pod_reports:
+        enabled_count = sum(1 for item in pod_reports if bool(item.get("enabled", False)))
+        healthy_count = sum(
+            1
+            for item in pod_reports
+            if bool(item.get("enabled", False)) and bool(item.get("healthy", False))
+        )
+    else:
+        healthy_count = int(runtime_report.get("healthy_pod_count", 0))
+        enabled_count = int(runtime_report.get("enabled_pod_count", 0))
     if healthy_count == enabled_count:
         items.append(
             {
@@ -1543,30 +1583,16 @@ def _dashboard_status_items(
         }
     )
 
-    pod_reports = [
-        item
-        for item in runtime_report.get("pods", [])
-        if isinstance(item, dict)
-    ]
-    ac_fill_count = sum(
+    fill_count = sum(
         int(item.get("total_fill_count", 0) or 0)
         for item in pod_reports
-        if item.get("pod") in {"pod_a", "pod_c"}
     )
-    pod_b_fill_count = sum(
-        int(item.get("total_fill_count", 0) or 0)
-        for item in pod_reports
-        if item.get("pod") == "pod_b"
-    )
-    if ac_fill_count > 0 or pod_b_fill_count > 0:
+    if fill_count > 0:
         items.append(
             {
                 "status": "good",
                 "label": "Activité visible",
-                "comment": (
-                    f"A/C {ac_fill_count} exécution(s); "
-                    f"Pod B {pod_b_fill_count} exécution(s) dans son ledger séparé."
-                ),
+                "comment": f"A/C {fill_count} exécution(s) visible(s).",
             }
         )
     else:
@@ -1584,13 +1610,31 @@ def _dashboard_status_items(
 def _dashboard_commentary(
     snapshot: dict[str, object],
     runtime_report: dict[str, object],
+    *,
+    pod_names: tuple[str, ...] = ("pod_a", "pod_b", "pod_c"),
 ) -> str:
     conflicts = int(snapshot["metrics"]["ownership_conflict_count"])
-    enabled = int(snapshot["metrics"]["enabled_pod_count"])
-    healthy = int(runtime_report.get("healthy_pod_count", 0))
+    pod_set = set(pod_names)
+    pod_reports = [
+        item
+        for item in runtime_report.get("pods", [])
+        if isinstance(item, dict)
+        and str(item.get("pod")) in pod_set
+    ]
+    if pod_reports:
+        enabled = sum(1 for item in pod_reports if bool(item.get("enabled", False)))
+        healthy = sum(
+            1
+            for item in pod_reports
+            if bool(item.get("enabled", False)) and bool(item.get("healthy", False))
+        )
+        fill_count = sum(int(item.get("total_fill_count", 0) or 0) for item in pod_reports)
+    else:
+        enabled = int(snapshot["metrics"]["enabled_pod_count"])
+        healthy = int(runtime_report.get("healthy_pod_count", 0))
+        fill_count = int(runtime_report.get("total_fill_count", 0))
     collector_enabled = int(runtime_report.get("enabled_service_count", 0))
     collector_healthy = int(runtime_report.get("healthy_service_count", 0))
-    fill_count = int(runtime_report.get("total_fill_count", 0))
     latest_snapshot = _latest_snapshot_status_for_payload(snapshot)
     if latest_snapshot["status"] == "bad":
         return "Collector en retard. Vérifie la collecte live et les logs API."
@@ -1699,13 +1743,18 @@ def _merge_runtime_snapshot(
     *,
     allow_runtime_authority_override: bool = True,
 ) -> dict[str, object]:
+    hip4_enabled = _hip4_routes_enabled()
     pod_a_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_a_live_status.json"))
-    pod_b_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_b_live_status.json"))
+    pod_b_runtime = (
+        _normalized_runtime_payload(load_runtime_status("logs/pod_b_live_status.json"))
+        if hip4_enabled
+        else None
+    )
     pod_c_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_c_live_status.json"))
     snapshot["pod_a_runtime"] = pod_a_runtime
     snapshot["pod_b_runtime"] = pod_b_runtime
     snapshot["pod_c_runtime"] = pod_c_runtime
-    if isinstance(pod_b_runtime, dict):
+    if hip4_enabled and isinstance(pod_b_runtime, dict):
         snapshot["pod_b_status"] = sanitize_runtime_status_payload(
             pod_b_runtime,
             include_supervisor=False,
@@ -4396,7 +4445,6 @@ def _control_center_html(
             <button class="filter-chip is-active" type="button" data-filter-group="status" data-filter-value="open">Open</button>
             <button class="filter-chip is-active" type="button" data-filter-group="status" data-filter-value="closed">Closed</button>
             <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_a">Pod A</button>
-            <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_b">Pod B</button>
             <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_c">Pod C</button>
           </div>
           <p class="soft-note" style="margin-bottom:16px;">Les trois pods sont maintenant lus de manière homogène: positions ouvertes, previews et trades fermés.</p>
@@ -4862,17 +4910,27 @@ def _control_center_html(
         runtime_report = {}
     refreshed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     refresh_seconds = 10
-    status_items = _dashboard_status_items(snapshot, runtime_report)
-    commentary = _dashboard_commentary(snapshot, runtime_report)
+    display_pods = TRIDENT_UI_PODS
+    status_items = _dashboard_status_items(snapshot, runtime_report, pod_names=display_pods)
+    commentary = _dashboard_commentary(snapshot, runtime_report, pod_names=display_pods)
     exchange_payload = snapshot.get("exchange", {})
     if not isinstance(exchange_payload, dict):
         exchange_payload = {}
     exchange_network = str(exchange_payload.get("network") or "-")
-    open_rows = _open_position_rows(snapshot)
-    event_rows = _trade_event_rows(snapshot)
+    visible_pod_set = set(display_pods)
+    open_rows = [
+        row
+        for row in _open_position_rows(snapshot)
+        if str(row.get("pod")) in visible_pod_set
+    ]
+    event_rows = [
+        row
+        for row in _trade_event_rows(snapshot)
+        if str(row.get("pod")) in visible_pod_set
+    ]
     pod_trade_summary_rows = {
         pod_name: _pod_trade_summary(snapshot.get(f"{pod_name}_runtime"), pod=pod_name)
-        for pod_name in ("pod_a", "pod_b", "pod_c")
+        for pod_name in display_pods
     }
     health_map = {
         str(item.get("pod")): item
@@ -5013,6 +5071,7 @@ def _control_center_html(
         return {
             "pod": pod_name,
             "label": "Pod B HIP-4" if pod_name == "pod_b" else _pod_label(pod_name),
+            "enabled": enabled,
             "tone": tone,
             "badge": badge,
             "comment": comment,
@@ -5047,18 +5106,20 @@ def _control_center_html(
             "win_rate": pod_report.get("win_rate"),
         }
 
-    summaries = {pod: pod_summary(pod) for pod in ("pod_a", "pod_b", "pod_c")}
+    summaries = {pod: pod_summary(pod) for pod in display_pods}
     pod_a_summary = summaries["pod_a"]
-    pod_b_summary = summaries["pod_b"]
     pod_c_summary = summaries["pod_c"]
     ac_realized = pod_a_summary["realized_pnl_usd"] + pod_c_summary["realized_pnl_usd"]
     ac_unrealized = (
         pod_a_summary["total_unrealized_pnl_usd"]
         + pod_c_summary["total_unrealized_pnl_usd"]
     )
-    pod_b_visible = pod_b_summary["realized_pnl_usd"] + pod_b_summary["total_unrealized_pnl_usd"]
-    enabled_count = int(runtime_report.get("enabled_pod_count", 0) or 0)
-    healthy_count = int(runtime_report.get("healthy_pod_count", 0) or 0)
+    enabled_count = sum(1 for item in summaries.values() if bool(item.get("enabled", False)))
+    healthy_count = sum(
+        1
+        for item in summaries.values()
+        if bool(item.get("enabled", False)) and str(item.get("tone")) == "good"
+    )
     conflict_count = (
         int(snapshot.get("metrics", {}).get("ownership_conflict_count", 0))
         if isinstance(snapshot.get("metrics"), dict)
@@ -5095,33 +5156,9 @@ def _control_center_html(
                 "note": "Positions ouvertes A/C",
             },
             {
-                "label": "Pod B PnL visible",
-                "value": f"{pod_b_visible:.4f} USD",
-                "note": f"Ledger séparé · mode {pod_b_summary['mode']}",
-            },
-            {
                 "label": "Cash",
                 "value": f"{float(snapshot.get('capital_plan', {}).get('cash_usd', 0.0)):.2f} USD",
                 "note": "Capital non déployé",
-            },
-        ]
-    )
-    ledger_cards = render_metric_cards(
-        [
-            {
-                "label": "Sleeve A/C",
-                "value": f"{ac_realized + ac_unrealized:.4f} USD",
-                "note": "Réalisé + latent A/C, sans Pod B",
-            },
-            {
-                "label": "Pod B indépendant",
-                "value": f"{pod_b_visible:.4f} USD",
-                "note": "Paper/dry-run/testnet selon son runtime",
-            },
-            {
-                "label": "PNL total",
-                "value": "désactivé",
-                "note": "Un live et un dry-run ne décrivent pas le même capital",
             },
         ]
     )
@@ -5161,7 +5198,7 @@ def _control_center_html(
                 "tone": "good",
                 "label": "RAS",
                 "title": "Runtime stable",
-                "comment": "Statuts frais. Les résultats A/C et Pod B restent séparés.",
+                "comment": "Statuts frais pour Pod A et Pod C.",
             }
         )
     focus_tone = (
@@ -5370,7 +5407,7 @@ def _control_center_html(
     def pod_header_metrics(summary: dict[str, object]) -> str:
         return render_metric_cards(
             [
-                {"label": "Mode", "value": str(summary["mode"]), "note": "Ledger affiché séparément"},
+                {"label": "Mode", "value": str(summary["mode"]), "note": "Runtime du pod"},
                 {"label": "Status", "value": str(summary["badge"]), "note": str(summary["comment"])},
                 {
                     "label": "Target",
@@ -5396,9 +5433,8 @@ def _control_center_html(
     def render_pod_card(summary: dict[str, object]) -> str:
         symbols = ", ".join(escape(str(symbol)) for symbol in summary["owned_symbols"]) or "-"
         deep_link = (
-            "<a class='text-link' href='/hip4-outcome'>Détail HIP-4</a>"
-            if summary["pod"] == "pod_b"
-            else f"<button class='text-link' type='button' data-jump-tab='{escape(str(summary['pod']))}'>Voir l'onglet</button>"
+            f"<button class='text-link' type='button' data-jump-tab='{escape(str(summary['pod']))}'>"
+            "Voir l'onglet</button>"
         )
         return (
             f"<article class='pod-card pod-card-{escape(str(summary['tone']))}'>"
@@ -5421,7 +5457,7 @@ def _control_center_html(
             "</article>"
         )
 
-    pod_cards = "".join(render_pod_card(summaries[pod]) for pod in ("pod_a", "pod_b", "pod_c"))
+    pod_cards = "".join(render_pod_card(summaries[pod]) for pod in display_pods)
     status_panel_html = f"""
       <section class="tab-panel{' is-active' if active_tab == 'status' else ''}" data-tab-panel="status">
         <div class="band band-{escape(global_tone)}">
@@ -5433,15 +5469,11 @@ def _control_center_html(
           <div class="focus-grid">{focus_rows}</div>
         </section>
         <section class="panel">
-          <div class="section-head"><h2>Ledgers séparés</h2><p>Pas de PnL total quand A/C et Pod B ne tournent pas dans le même mode.</p></div>
-          <div class="metric-grid">{ledger_cards}</div>
-        </section>
-        <section class="panel">
           <div class="section-head"><h2>Status</h2><p>Collecte, santé des pods, ownership et activité récente.</p></div>
           <div class="status-grid">{status_rows}</div>
         </section>
         <section class="panel">
-          <div class="section-head"><h2>Pods</h2><p>Chaque pod a son onglet détail. Pod B conserve son ledger indépendant.</p></div>
+          <div class="section-head"><h2>Pods</h2><p>Vue TRIDENT limitée à Pod A et Pod C.</p></div>
           <div class="pod-grid">{pod_cards}</div>
         </section>
       </section>"""
@@ -5476,30 +5508,6 @@ def _control_center_html(
         <section class="panel">
           <div class="section-head"><h3>Trades fermés récents</h3><p>Raisons d'ouverture et de fermeture en clair.</p></div>
           <div class="table-wrap"><table><thead><tr>{_table_header("Fermé le", "Horodatage de sortie.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens porté.")}{_table_header("Raison ouverture", "Setup d'entrée.")}{_table_header("Raison fermeture", "Cause de sortie.")}{_table_header("Prix entrée", "Prix d'entrée.")}{_table_header("Prix sortie", "Prix de sortie.")}{_table_header("Notional USD", "Notionnelle cible.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("PnL USD", "Résultat net du trade.")}</tr></thead><tbody>{render_directional_closed_rows(pod_name)}</tbody></table></div>
-        </section>
-      </section>"""
-
-    pod_b_panel_html = f"""
-      <section class="tab-panel{' is-active' if active_tab == 'pod_b' else ''}" data-tab-panel="pod_b">
-        <div class="band band-{escape(str(pod_b_summary['tone']))}">
-          <div class="section-head">
-            <div><h2>Pod B HIP-4</h2><p>Pod indépendant. Ses positions et settlements sont visibles ici, mais son PnL reste séparé du compte A/C.</p></div>
-            <span class="mode-chip mode-chip-{escape(mode_tone(pod_b_summary['mode']))}">Mode {escape(str(pod_b_summary['mode']))}</span>
-          </div>
-          <div class="metric-grid">{pod_header_metrics(pod_b_summary)}</div>
-          <div class="link-row"><a class="text-link" href="/hip4-outcome">Ouvrir la page HIP-4 complète</a><a class="text-link" href="/hip4-outcome#observation">Observation HIP-4</a></div>
-        </div>
-        <section class="panel">
-          <div class="section-head"><h3>Performance par coin</h3><p>Settlements, estimations paper et positions ouvertes du Pod B uniquement.</p></div>
-          <div class="table-wrap"><table><thead><tr>{_table_header("Coin", "Sous-jacent outcome.")}{_table_header("Sens", "BUY_YES normalisé long, BUY_NO normalisé short.")}{_table_header("Trades", "Settlements visibles.")}{_table_header("Ouvert", "Positions ouvertes.")}{_table_header("Win rate", "Win rate Pod B uniquement.")}{_table_header("PnL réalisé", "PnL Pod B réalisé/settled.")}{_table_header("PnL latent", "PnL estimé des positions ouvertes.")}{_table_header("PnL visible", "Réalisé + latent Pod B uniquement.")}</tr></thead><tbody>{render_coin_summary_rows(pod_trade_summary_rows["pod_b"])}</tbody></table></div>
-        </section>
-        <section class="panel">
-          <div class="section-head"><h3>Positions ouvertes</h3><p>Marchés outcome actuellement portés par Pod B.</p></div>
-          <div class="table-wrap"><table><thead><tr>{_table_header("Underlying", "Sous-jacent du marché outcome.")}{_table_header("Side", "Sens du signal.")}{_table_header("Raison", "Marché, edge ou raison d'ouverture.")}{_table_header("Entry", "Prix moyen si disponible.")}{_table_header("Cost", "Coût engagé.")}{_table_header("Max loss", "Budget de perte max si disponible.")}{_table_header("Est. PnL", "PnL estimé localement.")}{_table_header("Conf", "Confiance du signal.")}{_table_header("Opened", "Horodatage d'ouverture.")}</tr></thead><tbody>{render_hip4_open_rows()}</tbody></table></div>
-        </section>
-        <section class="panel">
-          <div class="section-head"><h3>Settlements / trades fermés</h3><p>Historique Pod B sans mélange avec A/C.</p></div>
-          <div class="table-wrap"><table><thead><tr>{_table_header("Settled", "Horodatage du settlement.")}{_table_header("Underlying", "Sous-jacent.")}{_table_header("Market", "Identifiant marché.")}{_table_header("Side", "Sens acheté.")}{_table_header("Result", "Résultat outcome.")}{_table_header("Cost", "Coût engagé.")}{_table_header("Payout", "Payout.")}{_table_header("PnL", "PnL Pod B uniquement.")}{_table_header("Notes", "Contexte ou méthode.")}</tr></thead><tbody>{render_hip4_closed_rows()}</tbody></table></div>
         </section>
       </section>"""
 
@@ -5559,7 +5567,6 @@ def _control_center_html(
             <button class="filter-chip is-active" type="button" data-filter-group="status" data-filter-value="open">Open</button>
             <button class="filter-chip is-active" type="button" data-filter-group="status" data-filter-value="closed">Closed</button>
             <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_a">Pod A</button>
-            <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_b">Pod B</button>
             <button class="filter-chip is-active" type="button" data-filter-group="pod" data-filter-value="pod_c">Pod C</button>
           </div>
         </section>
@@ -5576,7 +5583,6 @@ def _control_center_html(
     primary_tabs = [
         ("status", "Status"),
         ("pod_a", "Pod A"),
-        ("pod_b", "Pod B"),
         ("pod_c", "Pod C"),
         ("activity", "Activity"),
     ]
@@ -5591,7 +5597,6 @@ def _control_center_html(
     main_panels = (
         status_panel_html
         + render_directional_pod_panel("pod_a", pod_a_summary)
-        + pod_b_panel_html
         + render_directional_pod_panel("pod_c", pod_c_summary)
         + activity_panel_html
     )
@@ -5718,8 +5723,6 @@ def _control_center_html(
         <a href="/trades">Activity</a>
         <a href="/stats">Stats</a>
         <a href="/system">System</a>
-        <a href="/hip4-outcome">Pod B HIP-4</a>
-        <a href="/hip4-outcome#observation">Observation</a>
         <a href="/api/state">API state</a>
         <a href="/api/report">API report</a>
       </div>
@@ -5739,7 +5742,7 @@ def _control_center_html(
       const jumpButtons = Array.from(document.querySelectorAll("[data-jump-tab]"));
       const activeFilters = {{
         status: new Set(["open", "closed"]),
-        pod: new Set(["pod_a", "pod_b", "pod_c"]),
+        pod: new Set(["pod_a", "pod_c"]),
       }};
       const filterButtons = Array.from(document.querySelectorAll("[data-filter-group]"));
       const filterRows = Array.from(document.querySelectorAll("tr[data-filter-status][data-filter-pod]"));
@@ -5881,8 +5884,7 @@ def dashboard_html(
         active_tab="status",
         title="TRIDENT Control Center",
         subtitle=(
-            "Cockpit volontairement resserré : Status, un onglet détail par pod, Activity, et aucun PnL total "
-            "quand Pod B tourne dans un ledger indépendant."
+            "Cockpit TRIDENT resserré sur Pod A et Pod C : status, détails par pod et activité récente."
         ),
     )
 
@@ -5907,13 +5909,13 @@ def stats_html(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry,
 ) -> str:
-    return _legacy_control_center_html(
+    return _control_center_html(
         supervisor,
         metrics,
-        active_tab="stats",
+        active_tab="status",
         title="TRIDENT Stats",
         subtitle=(
-            "Page dédiée aux statistiques temporelles. Elle n'est plus rendue au chargement du cockpit principal."
+            "Vue synthétique A/C. Les statistiques HIP4 vivent dans l'app TRIDENT-HIP4."
         ),
     )
 
@@ -5922,13 +5924,13 @@ def system_html(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry,
 ) -> str:
-    return _legacy_control_center_html(
+    return _control_center_html(
         supervisor,
         metrics,
-        active_tab="system",
+        active_tab="status",
         title="TRIDENT System",
         subtitle=(
-            "Page dédiée aux détails opératoires : runtime, collectors, ownership, routing et métriques brutes."
+            "Vue système TRIDENT limitée aux services Pod A, Pod C et collectors A/C."
         ),
     )
 
@@ -6033,7 +6035,7 @@ def hip4_outcome_html(
         embedded_threads = int(embedded.get("running_threads", 0) or 0)
         embedded_tone = "good" if embedded_enabled and embedded_threads > 0 else "warn"
         specs = [
-            ("Pod B mainnet paper", testnet_observation_health),
+            ("HIP4 paper runner", testnet_observation_health),
             ("Mainnet observation", mainnet_observation_health),
         ]
         cards_html = []
@@ -6056,7 +6058,7 @@ def hip4_outcome_html(
             f"<div class='observation-card-head'><span>Sidecar mainnet</span>"
             f"{render_health_pill(embedded_tone, 'embedded' if embedded_enabled else 'off')}</div>"
             f"<strong>{embedded_threads}</strong>"
-            "<small>thread(s) dans le process Pod B</small>"
+            "<small>thread(s) dans le process HIP4</small>"
             f"<small>{escape(', '.join(str(item) for item in embedded.get('config_paths', []) if item) or '-')}</small>"
             "</article>"
         )
@@ -6065,7 +6067,7 @@ def hip4_outcome_html(
     def render_observation_summary_rows() -> str:
         rows_html: list[str] = []
         for profile_name, health in (
-            ("pod_b_mainnet_paper", testnet_observation_health),
+            ("hip4_paper", testnet_observation_health),
             ("mainnet", mainnet_observation_health),
         ):
             class_counts = health.get("by_class")
@@ -6091,7 +6093,7 @@ def hip4_outcome_html(
 
     def render_observation_rows() -> str:
         rows_html: list[str] = []
-        for profile_name, source in (("pod_b_mainnet_paper", payload), ("mainnet", mainnet_payload)):
+        for profile_name, source in (("hip4_paper", payload), ("mainnet", mainnet_payload)):
             rows = source.get("market_observations", [])
             if not isinstance(rows, list):
                 continue
@@ -6417,6 +6419,121 @@ def hip4_outcome_html(
             if isinstance(row, dict)
         )
 
+    def render_dashboard_opportunity_rows() -> str:
+        rows = payload.get("opportunities", [])
+        if not isinstance(rows, list) or not rows:
+            return "<tr><td colspan='7'>Aucune opportunité récente.</td></tr>"
+        compact_rows = [row for row in rows if isinstance(row, dict)][-6:]
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('ts', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('edge_type', '-')))}</td>"
+                f"<td>{escape(str(row.get('side', '-')))}</td>"
+                f"<td>{fmt_number(row.get('net_edge'), 5)}</td>"
+                f"<td>{fmt_number(row.get('confidence'), 3)}</td>"
+                f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                "</tr>"
+            )
+            for row in reversed(compact_rows)
+        )
+
+    def render_dashboard_watchlist_rows() -> str:
+        if not short_watchlist:
+            return "<tr><td colspan='7'>Aucune fenêtre short-expiry prioritaire.</td></tr>"
+        compact_rows = [row for row in short_watchlist if isinstance(row, dict)][:6]
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(row.get('readiness', '-')))}</td>"
+                f"<td>{escape(str(row.get('underlying', '-')))}</td>"
+                f"<td>{escape(str(row.get('period', '-')))}</td>"
+                f"<td>{fmt_number(row.get('seconds_left'), 0)}</td>"
+                f"<td>{escape(str(row.get('best_side') or '-'))}</td>"
+                f"<td>{fmt_number(row.get('best_net_edge'), 5)}</td>"
+                f"<td>{escape(str(row.get('reason', '-')))}</td>"
+                "</tr>"
+            )
+            for row in compact_rows
+        )
+
+    dashboard_cards = render_stat_cards(
+        [
+            {
+                "label": "Runtime",
+                "value": str(payload.get("process_state", "-")),
+                "note": f"âge status {age_label}",
+            },
+            {
+                "label": "Mode",
+                "value": str(payload.get("mode", "observer")),
+                "note": (
+                    "ordres testnet actifs"
+                    if str(payload.get("mode", "")).lower() == "testnet"
+                    else "mainnet paper"
+                ),
+            },
+            {
+                "label": "Markets",
+                "value": f"{payload.get('markets_supported', 0)}/{payload.get('markets_seen', 0)}",
+                "note": "supportés / vus",
+            },
+            {
+                "label": "PnL net",
+                "value": f"{fmt_number(realized_pnl, 2)} USD",
+                "note": f"{settled_position_count} settlement(s)",
+            },
+            {
+                "label": "Win rate",
+                "value": fmt_pct(win_rate),
+                "note": f"{win_count} win · {loss_count} loss",
+            },
+            {
+                "label": "Budget restant",
+                "value": f"{fmt_number(capital.get('remaining_budget_usdc'), 2)} USD",
+                "note": f"sur {fmt_number(capital.get('budget_usdc'), 2)} USD",
+            },
+            {
+                "label": "Short focus",
+                "value": str(short_brief.get("label", "-")),
+                "note": (
+                    f"ready {short_brief.get('ready_count', 0)} · "
+                    f"watch {short_brief.get('candidate_count', 0)}"
+                ),
+            },
+            {
+                "label": "Best short",
+                "value": fmt_number(best_short_edge, 4),
+                "note": f"latest {fmt_number(latest_short_edge, 4)}",
+            },
+        ]
+    )
+    dashboard_mainnet_cards = render_stat_cards(
+        [
+            {
+                "label": "Mainnet observer",
+                "value": str(mainnet_payload.get("process_state", "-")),
+                "note": f"âge status {mainnet_age_label}",
+            },
+            {
+                "label": "Mainnet markets",
+                "value": f"{mainnet_payload.get('markets_supported', 0)}/{mainnet_payload.get('markets_seen', 0)}",
+                "note": "supportés / vus",
+            },
+            {
+                "label": "Mainnet edge",
+                "value": fmt_number(mainnet_payload.get("latest_net_edge"), 4),
+                "note": f"best {fmt_number(mainnet_payload.get('best_net_edge'), 4)}",
+            },
+            {
+                "label": "Loop signals",
+                "value": str(payload.get("opportunities_this_loop", 0)),
+                "note": f"approved {payload.get('approved_this_loop', 0)} · executed {payload.get('executed_this_loop', 0)}",
+            },
+        ]
+    )
+
     cards = render_stat_cards(
         [
             {
@@ -6565,11 +6682,11 @@ def hip4_outcome_html(
   <title>TRIDENT HIP-4 Outcome</title>
   <style>
     :root {{
-      --bg: #f6f3ee;
-      --panel: #fffdf9;
+      --bg: #f4f7f8;
+      --panel: #ffffff;
       --text: #1f2a33;
       --muted: #66727c;
-      --line: #d8ccbb;
+      --line: #d5e0e5;
       --accent: #145b57;
       --accent-soft: #d8eeeb;
       --good: #176b3a;
@@ -6582,7 +6699,7 @@ def hip4_outcome_html(
       margin: 0;
       color: var(--text);
       font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-      background: linear-gradient(180deg, #fbf7ef 0%, var(--bg) 100%);
+      background: var(--bg);
     }}
     main {{ max-width: 1380px; margin: 0 auto; padding: 28px 18px 48px; }}
     h1, h2, h3 {{ margin: 0; }}
@@ -6638,7 +6755,7 @@ def hip4_outcome_html(
       border: 1px solid var(--line);
       border-bottom: 0;
       border-radius: 8px 8px 0 0;
-      background: #eee6da;
+      background: #e9f0f3;
       color: var(--muted);
       cursor: pointer;
       font: inherit;
@@ -6698,7 +6815,10 @@ def hip4_outcome_html(
     th {{ color: var(--muted); font-size: 0.78rem; text-transform: uppercase; }}
     td:last-child {{ white-space: normal; min-width: 220px; }}
     .two-col {{ display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr); gap: 16px; }}
+    .dashboard-stack {{ display: grid; gap: 16px; }}
+    .dashboard-focus {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 0.8fr); gap: 16px; align-items: start; }}
     @media (max-width: 980px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 980px) {{ .dashboard-focus {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
@@ -6715,14 +6835,52 @@ def hip4_outcome_html(
       <p>Pod expérimental isolé: dry-run mainnet paper, observation des books mainnet, sans ordre mainnet.</p>
       <div class="hero-links">
         <span>Last updated: {escape(refreshed_at)}</span>
-        <a href="/dashboard">/dashboard</a>
-        <a href="/trades">/trades</a>
+        <a href="/">HIP4 UI</a>
+        <a href="/hip4-outcome#observation">Observation</a>
         <a href="/api/hip4-outcome">/api/hip4-outcome</a>
         <a href="/api/hip4-outcome-mainnet">/api/hip4-outcome-mainnet</a>
+        <a href="/health">/health</a>
       </div>
     </header>
 
     <div class="grid">
+      <nav class="tab-bar" aria-label="HIP-4 sections">
+        <button class="tab-button is-active" type="button" data-hip4-tab="dashboard" aria-selected="true">Dashboard</button>
+        <button class="tab-button" type="button" data-hip4-tab="details" aria-selected="false">Détails</button>
+        <button class="tab-button" type="button" data-hip4-tab="observation" aria-selected="false">Observation</button>
+      </nav>
+
+      <section class="tab-panel is-active" data-hip4-panel="dashboard">
+        <section class="metric-grid">{dashboard_cards}</section>
+        <section class="dashboard-focus">
+          <div class="dashboard-stack">
+            <section class="panel">
+              <div class="panel-header"><h2>Signal court terme</h2><p>Fenêtres expiry suivies par la dernière boucle.</p></div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Status</th><th>Underlying</th><th>Period</th><th>T-exp s</th><th>Best side</th><th>Net</th><th>Reason</th></tr></thead>
+                  <tbody>{render_dashboard_watchlist_rows()}</tbody>
+                </table>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-header"><h2>Opportunités récentes</h2><p>Derniers signaux utiles, sans les colonnes de diagnostic.</p></div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Ts</th><th>Underlying</th><th>Edge</th><th>Side</th><th>Net</th><th>Conf</th><th>Reason</th></tr></thead>
+                  <tbody>{render_dashboard_opportunity_rows()}</tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+          <div class="dashboard-stack">
+            <section class="metric-grid">{dashboard_mainnet_cards}</section>
+            <section class="observation-grid">{render_observation_cards()}</section>
+          </div>
+        </section>
+      </section>
+
+      <section class="tab-panel" data-hip4-panel="details" hidden>
       <section class="metric-grid">{cards}</section>
 
       <section class="panel">
@@ -6733,12 +6891,6 @@ def hip4_outcome_html(
       </section>
       <section class="metric-grid">{mainnet_cards}</section>
 
-      <nav class="tab-bar" aria-label="HIP-4 sections">
-        <button class="tab-button is-active" type="button" data-hip4-tab="overview" aria-selected="true">Vue générale</button>
-        <button class="tab-button" type="button" data-hip4-tab="observation" aria-selected="false">Observation</button>
-      </nav>
-
-      <section class="tab-panel is-active" data-hip4-panel="overview">
       <section class="two-col">
         <div class="panel">
           <div class="panel-header"><h2>Opportunités mainnet</h2><p>Observation pure: décisions rejetées en mode observer, aucune exécution.</p></div>
@@ -6923,7 +7075,7 @@ def hip4_outcome_html(
       const panels = Array.from(document.querySelectorAll("[data-hip4-panel]"));
       const valid = new Set(tabs.map((button) => button.dataset.hip4Tab));
       function setTab(name, updateHash = true) {{
-        const next = valid.has(name) ? name : "overview";
+        const next = valid.has(name) ? name : "dashboard";
         tabs.forEach((button) => {{
           const active = button.dataset.hip4Tab === next;
           button.classList.toggle("is-active", active);
@@ -6939,9 +7091,9 @@ def hip4_outcome_html(
         }}
       }}
       tabs.forEach((button) => {{
-        button.addEventListener("click", () => setTab(button.dataset.hip4Tab || "overview"));
+        button.addEventListener("click", () => setTab(button.dataset.hip4Tab || "dashboard"));
       }});
-      setTab((window.location.hash || "").replace("#", "") || "overview", false);
+      setTab((window.location.hash || "").replace("#", "") || "dashboard", false);
       window.addEventListener("hashchange", () => setTab((window.location.hash || "").replace("#", ""), false));
     }})();
   </script>
@@ -6960,17 +7112,36 @@ def build_handler(
                 "/api/state": lambda: state_payload(supervisor, metrics),
                 "/api/metrics": lambda: metrics_payload(supervisor, metrics),
                 "/api/report": lambda: report_payload(supervisor, metrics),
-                "/api/hip4-outcome": lambda: hip4_outcome_payload(),
-                "/api/hip4-outcome-mainnet": lambda: hip4_outcome_mainnet_payload(),
             }
-            html_routes: dict[str, Callable[[], str]] = {
-                "/": lambda: dashboard_html(supervisor, metrics),
-                "/dashboard": lambda: dashboard_html(supervisor, metrics),
-                "/trades": lambda: trades_html(supervisor, metrics),
-                "/stats": lambda: stats_html(supervisor, metrics),
-                "/system": lambda: system_html(supervisor, metrics),
-                "/hip4-outcome": lambda: hip4_outcome_html(supervisor, metrics),
-            }
+            if _is_hip4_app():
+                html_routes: dict[str, Callable[[], str]] = {
+                    "/": lambda: hip4_outcome_html(supervisor, metrics),
+                    "/dashboard": lambda: hip4_outcome_html(supervisor, metrics),
+                    "/hip4-outcome": lambda: hip4_outcome_html(supervisor, metrics),
+                    "/trades": lambda: hip4_outcome_html(supervisor, metrics),
+                    "/stats": lambda: hip4_outcome_html(supervisor, metrics),
+                    "/system": lambda: hip4_outcome_html(supervisor, metrics),
+                }
+            else:
+                html_routes = {
+                    "/": lambda: dashboard_html(supervisor, metrics),
+                    "/dashboard": lambda: dashboard_html(supervisor, metrics),
+                    "/trades": lambda: trades_html(supervisor, metrics),
+                    "/stats": lambda: stats_html(supervisor, metrics),
+                    "/system": lambda: system_html(supervisor, metrics),
+                }
+            if _hip4_routes_enabled():
+                routes.update(
+                    {
+                        "/api/hip4-outcome": lambda: hip4_outcome_payload(),
+                        "/api/hip4-outcome-mainnet": lambda: hip4_outcome_mainnet_payload(),
+                    }
+                )
+                if not _is_hip4_app():
+                    html_routes["/hip4-outcome"] = lambda: hip4_outcome_html(
+                        supervisor,
+                        metrics,
+                    )
             if self.path in html_routes:
                 self._send_html(HTTPStatus.OK, html_routes[self.path]())
                 return

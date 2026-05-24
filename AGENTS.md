@@ -19,19 +19,22 @@ agents de code.
   (`/workspaces/trident/server-data` dans ce workspace).
 - Si un prompt mentionne `/server-data`, verifier d'abord si ce chemin absolu
   existe. Sinon, interpreter la demande comme `server-data/` repo-local.
-- `scripts/fetch_trident_data.sh` rapatrie par defaut les donnees dans
-  `server-data/` et les reviews dans `server-data/reviews/<timestamp>`.
+- `scripts/fetch_trident_data.sh` rapatrie par defaut les donnees TRIDENT A/C
+  dans `server-data/` et les reviews dans `server-data/reviews/<timestamp>`.
+- `trident-hip4/fetch_data.sh` rapatrie par defaut les donnees HIP-4 dans
+  `server-data/hip4/` et les reviews dans `server-data/hip4/reviews/<timestamp>`.
 - Les miroirs historiques `data/server_archive/` et `data/gbot_archive/` sont
   utiles pour les anciens replays, mais ne remplacent pas les donnees courantes
   de `server-data/`.
 
 ## Etat fonctionnel a garder en tete
 
-- TRIDENT orchestre des pods Hyperliquid. Ne supposer aucune evolution
+- TRIDENT orchestre les pods Hyperliquid A/C. Ne supposer aucune evolution
   fonctionnelle recente sans relire `docs/trident_active_plan.md`.
 - `Pod A` est le pod crypto core.
-- `Pod B` courant designe la branche `HIP4OutcomeEdgePod` en mainnet paper;
-  l'ancien Pod B directionnel est legacy et non demarre par defaut.
+- `Pod B` courant designe la branche `HIP4OutcomeEdgePod` en mainnet paper,
+  mais il vit dans l'app separee `TRIDENT-HIP4` et n'est plus deploye par
+  TRIDENT A/C.
 - `Pod C` est le pod Tradfi directionnel builder-dex.
 - Toute decision live/mainnet, tout changement de caps, de risk gate, de
   reconciliation ou de promotion doit suivre les guardrails du plan actif.
@@ -43,6 +46,7 @@ agents de code.
 - Lancer en dry-run: `make run-dry`
 - Healthcheck: `make healthcheck`
 - Fetch donnees serveur: `./scripts/fetch_trident_data.sh --days 3`
+- Fetch donnees HIP-4: `./trident-hip4/fetch_data.sh`
 - Review locale seulement: `./scripts/fetch_trident_data.sh --review-only`
 
 ## Travail sur backtests et rapports

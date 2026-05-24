@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from app.observability.api import (
     _global_trade_summary,
+    _hip4_routes_enabled,
     _humanize_close_reason,
     _open_position_rows,
     _pod_trade_summary,
@@ -42,6 +43,35 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["profile"], "trident")
         self.assertEqual(payload["exchange_network"], "mainnet")
+
+    def test_hip4_routes_are_disabled_by_default_for_trident_app(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "TRIDENT_APP_KIND": "trident",
+                "TRIDENT_ENABLE_HIP4_OUTCOME": "",
+            },
+            clear=False,
+        ):
+            self.assertFalse(_hip4_routes_enabled())
+        with patch.dict(
+            "os.environ",
+            {
+                "TRIDENT_APP_KIND": "trident",
+                "TRIDENT_ENABLE_HIP4_OUTCOME": "true",
+            },
+            clear=False,
+        ):
+            self.assertTrue(_hip4_routes_enabled())
+        with patch.dict(
+            "os.environ",
+            {
+                "TRIDENT_APP_KIND": "trident-hip4",
+                "TRIDENT_ENABLE_HIP4_OUTCOME": "false",
+            },
+            clear=False,
+        ):
+            self.assertTrue(_hip4_routes_enabled())
 
     def test_state_payload_is_json_serializable(self) -> None:
         payload = state_payload(self.supervisor, self.metrics)
@@ -277,6 +307,10 @@ class HealthApiTests(unittest.TestCase):
         with patch(
             "app.observability.metrics.load_runtime_status",
             side_effect=_metrics_runtime_loader,
+        ), patch.dict(
+            "os.environ",
+            {"TRIDENT_ENABLE_HIP4_OUTCOME": "true"},
+            clear=False,
         ):
             payload = metrics_payload(self.supervisor, self.metrics)
 
@@ -284,6 +318,49 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["pod_b_total_position_count"], 1)
         self.assertEqual(payload["pod_b_total_fill_count"], 14)
         self.assertEqual(payload["pod_b_realized_pnl_usd"], 12.12)
+
+    def test_metrics_payload_ignores_legacy_pod_b_runtime_for_trident_app(self) -> None:
+        pod_b_runtime = {
+            "pod": "pod_b",
+            "pod_kind": "hip4_outcome_edge_pod",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "process_state": "running",
+            "managed_symbols": ["BTC", "HYPE"],
+            "open_positions": [{"underlying": "BTC"}],
+            "total_fill_count": 57,
+            "total_position_count": 1,
+            "total_open_order_count": 2,
+            "total_unrealized_pnl_usd": -1.25,
+            "report": {"realized_pnl_usd": -72.7395633},
+        }
+
+        def _metrics_runtime_loader(path):
+            path_str = str(path)
+            if "pod_b_live_status.json" in path_str:
+                return pod_b_runtime
+            return None
+
+        with patch(
+            "app.observability.metrics.load_runtime_status",
+            side_effect=_metrics_runtime_loader,
+        ), patch.dict(
+            "os.environ",
+            {
+                "TRIDENT_APP_KIND": "trident",
+                "TRIDENT_ENABLE_HIP4_OUTCOME": "",
+            },
+            clear=False,
+        ):
+            payload = metrics_payload(self.supervisor, self.metrics)
+
+        self.assertEqual(payload["pod_b_managed_symbol_count"], 0)
+        self.assertEqual(payload["pod_b_preview_count"], 0)
+        self.assertEqual(payload["pod_b_process_running"], 0)
+        self.assertEqual(payload["pod_b_total_position_count"], 0)
+        self.assertEqual(payload["pod_b_total_open_order_count"], 0)
+        self.assertEqual(payload["pod_b_total_fill_count"], 0)
+        self.assertEqual(payload["pod_b_realized_pnl_usd"], 0.0)
+        self.assertEqual(payload["pod_b_total_unrealized_pnl_usd"], 0.0)
 
     def test_metrics_payload_counts_hip4_replacement_as_pod_b(self) -> None:
         pod_a_runtime = {
@@ -327,6 +404,10 @@ class HealthApiTests(unittest.TestCase):
         with patch(
             "app.observability.metrics.load_runtime_status",
             side_effect=_metrics_runtime_loader,
+        ), patch.dict(
+            "os.environ",
+            {"TRIDENT_ENABLE_HIP4_OUTCOME": "true"},
+            clear=False,
         ):
             payload = metrics_payload(self.supervisor, self.metrics)
 
@@ -421,6 +502,10 @@ class HealthApiTests(unittest.TestCase):
         ), patch(
             "app.reporting.multi_pod.load_runtime_status",
             side_effect=_runtime_loader,
+        ), patch.dict(
+            "os.environ",
+            {"TRIDENT_ENABLE_HIP4_OUTCOME": "true"},
+            clear=False,
         ):
             payload = state_payload(self.supervisor, self.metrics)
 
@@ -670,17 +755,11 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("TRIDENT Control Center", html)
         self.assertIn(">Status</button>", html)
         self.assertIn(">Pod A</button>", html)
-        self.assertIn(">Pod B</button>", html)
         self.assertIn(">Pod C</button>", html)
         self.assertIn(">Activity</button>", html)
         self.assertIn("À faire maintenant", html)
-        self.assertIn("Ledgers séparés", html)
-        self.assertIn("PNL total", html)
-        self.assertIn("désactivé", html)
-        self.assertIn("Pod B indépendant", html)
         self.assertIn("Performance par coin", html)
         self.assertIn("Positions ouvertes", html)
-        self.assertIn("Settlements / trades fermés", html)
         self.assertIn("Signaux et filtres", html)
         self.assertIn("Leverage", html)
         self.assertIn("Prix courant", html)
@@ -709,17 +788,20 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("/api/report", html)
         self.assertIn("/stats", html)
         self.assertIn("/system", html)
-        self.assertIn("/hip4-outcome", html)
         self.assertIn("/trades", html)
         self.assertIn('data-tab-panel="status"', html)
         self.assertIn('data-tab-panel="pod_a"', html)
-        self.assertIn('data-tab-panel="pod_b"', html)
         self.assertIn('data-tab-panel="pod_c"', html)
         self.assertIn('data-tab-panel="activity"', html)
         self.assertNotIn('data-tab-panel="stats"', html)
         self.assertNotIn('data-tab-panel="system"', html)
         self.assertNotIn('data-tab-panel="observation"', html)
         self.assertNotIn(">Observation</button>", html)
+        self.assertNotIn(">Pod B</button>", html)
+        self.assertNotIn("Pod B", html)
+        self.assertNotIn("HIP-4", html)
+        self.assertNotIn("/hip4-outcome", html)
+        self.assertNotIn('data-tab-panel="pod_b"', html)
         self.assertNotIn("Performance globale par coin", html)
         self.assertNotIn("pod breakout directionnel", html)
 
@@ -727,11 +809,13 @@ class HealthApiTests(unittest.TestCase):
         stats = stats_html(self.supervisor, self.metrics)
         system = system_html(self.supervisor, self.metrics)
         self.assertIn("TRIDENT Stats", stats)
-        self.assertIn('data-tab-panel="stats"', stats)
-        self.assertIn("Stats par pod", stats)
+        self.assertIn('data-tab-panel="status"', stats)
+        self.assertNotIn("Pod B", stats)
+        self.assertNotIn("HIP-4", stats)
         self.assertIn("TRIDENT System", system)
-        self.assertIn('data-tab-panel="system"', system)
-        self.assertIn("Runtime pod report", system)
+        self.assertIn('data-tab-panel="status"', system)
+        self.assertNotIn("Pod B", system)
+        self.assertNotIn("HIP-4", system)
 
     def test_hip4_outcome_page_and_payload_are_renderable(self) -> None:
         payload = hip4_outcome_payload()
@@ -749,6 +833,16 @@ class HealthApiTests(unittest.TestCase):
         html = hip4_outcome_html(self.supervisor, self.metrics)
         self.assertIn("HIP-4 Outcome Experimental", html)
         self.assertIn("/api/hip4-outcome", html)
+        self.assertIn("HIP4 UI", html)
+        self.assertNotIn("/dashboard", html)
+        self.assertNotIn("/trades", html)
+        self.assertIn('data-hip4-tab="dashboard"', html)
+        self.assertIn('data-hip4-panel="dashboard"', html)
+        self.assertIn('data-hip4-tab="details"', html)
+        self.assertIn('data-hip4-panel="details"', html)
+        self.assertIn("Signal court terme", html)
+        self.assertNotIn('data-hip4-tab="overview"', html)
+        self.assertNotIn("Vue générale", html)
         self.assertIn('data-hip4-tab="observation"', html)
         self.assertIn('data-hip4-panel="observation"', html)
         self.assertIn("Observation HIP-4", html)
@@ -776,8 +870,9 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("Open</button>", html)
         self.assertIn("Closed</button>", html)
         self.assertIn("Pod A</button>", html)
-        self.assertIn("Pod B</button>", html)
         self.assertIn("Pod C</button>", html)
+        self.assertNotIn("Pod B", html)
+        self.assertNotIn("HIP-4", html)
         self.assertIn("tooltip-bubble", html)
 
     def test_reason_labels_are_humanized(self) -> None:

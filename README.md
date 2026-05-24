@@ -155,7 +155,7 @@ Etat actuel:
 
 - socle Python initialise,
 - API HTTP stdlib minimale,
-- dashboard HTML minimal sur `/` et `/dashboard` avec version git affichee,
+- dashboard HTML TRIDENT A/C sur `/` et `/dashboard` avec version git affichee,
 - route JSON `/health` expose la version, le regime et l'etat du kill switch,
 - route JSON `/api/metrics` pour les compteurs de supervision,
 - route JSON `/api/report` pour le reporting runtime multi-pods,
@@ -191,12 +191,15 @@ Etat actuel:
   - `docker-compose.trident.yml`
   - `prepare_server.sh`
   - `deploy.sh`
+  - `trident-hip4/deploy.sh`
   - `scripts/trident_start.sh`
   - `scripts/trident_stop.sh`
   - `scripts/trident_restart.sh`
   - `scripts/trident_healthcheck.sh`
   - `scripts/trident_server.sh`
+  - `scripts/trident_hip4_server.sh`
   - `scripts/fetch_trident_data.sh`
+  - `trident-hip4/fetch_data.sh`
   - `docs/deployment.md`
 
 Versioning:
@@ -208,8 +211,10 @@ Versioning:
 
 Decision d'architecture actuelle:
 
-- Pod B est desormais un pod directionnel breakout/vol-expansion, pas un moteur maker.
-- l'architecture live/backtest/runtime des 3 pods est unifiee autour du meme contrat directionnel: previews, trade plans, risk gate, execution, journal, runtime status.
+- TRIDENT A/C et HIP-4 sont separes operationnellement:
+  - TRIDENT (`./deploy.sh`) demarre API + `Pod A` + `Pod C`, UI A/C sur le port `3000`;
+  - TRIDENT-HIP4 (`./trident-hip4/deploy.sh`) demarre l'API HIP-4 + `HIP4OutcomeEdgePod`, UI HIP-4 sur le port `3001`.
+- L'ancien Pod B directionnel reste legacy; le Pod B courant est HIP-4 mainnet paper dans l'app separee.
 - univers observe et univers trade sont separes:
   - `hyperliquid.observation_universe` = coins observes par le collector (crypto + tradfi)
   - le `supervisor` construit le pool tradable dynamiquement a partir des snapshots frais de cet univers observe
@@ -306,22 +311,23 @@ Role de chaque pod:
 Pourquoi `deploy.sh` a maintenant des flags `--without-...`:
 
 - `deploy.sh` sert a la fois a copier le code et, avec `--start`, a demarrer les services
-- par defaut, le demarrage lance tout le stack: API + `Pod A` + `Pod B` + `Pod C` + funding
-- `--without-pod-b` retire `Pod B`
+- par defaut, le demarrage lance le stack TRIDENT A/C: API + `Pod A` + `Pod C` + funding
 - `--without-pod-c` retire `Pod C` et son collecteur Tradfi dedie
 - `--without-funding` retire le collecteur funding global
+- HIP-4 se deploie avec `./trident-hip4/deploy.sh`
 
 Donc:
 
 - `./deploy.sh` = deploie seulement
-- `./deploy.sh --start` = deploie puis demarre tout
+- `./deploy.sh --start` = deploie puis demarre TRIDENT A/C
 - `./deploy.sh --start --without-pod-c` = demarre tout sauf `Pod C`
 - `./deploy.sh --start --without-funding` = demarre tout sauf le funding global
+- `./trident-hip4/deploy.sh --start` = deploie puis demarre HIP-4 mainnet paper
 
 En pratique:
 
 - `Pod A` est le pod le plus mature
-- `Pod B` utilise le superviseur partage pour le routing et l'allocation (identique au backtest full-bot)
+- `Pod B`/HIP-4 vit dans `TRIDENT-HIP4`, separe de TRIDENT A/C et absent de l'UI TRIDENT
 - `Pod C` est maintenant un pod Tradfi builder-dex actif dans la config
 - il reste borne par ses budgets cluster (`index`, `gold`, `silver`, `oil`, `fx`, `equity`) et par ses caps de levier live par marche
 - si on veut un lancement minimal, on coupe explicitement les briques non voulues avec `--without-...`
@@ -331,8 +337,7 @@ Reporting actuel:
 - `state_payload` inclut maintenant `runtime_report`,
 - `/api/report` expose un resume multi-pods runtime,
 - `/health`, `/api/state`, `/api/metrics` et `/api/report` se recalent d'abord sur le dernier snapshot live frais pour eviter un regime stale,
-- `logs/pod_b_live_status.json` est maintenant la source de verite runtime de `pod_b_status`,
-- le dashboard affiche un tableau `Runtime pod report`,
+- le dashboard TRIDENT affiche seulement Pod A/Pod C; l'UI HIP-4 dediee est servie par `TRIDENT-HIP4` sur `:3001`,
 - le dashboard affiche aussi l'etat des `Data collectors`,
 - l'onglet `System` expose maintenant `Pod C scope visibility` pour distinguer:
   - les symbols Tradfi configures pour `Pod C`
@@ -393,25 +398,27 @@ python3.12 -m app.reporting.export_daily --pod-b-report /tmp/pod_b_report.json -
 ./scripts/fetch_trident_data.sh
 ./scripts/fetch_trident_data.sh --days 3
 ./scripts/fetch_trident_data.sh --date 2026-04-05
+./trident-hip4/fetch_data.sh
 ./prepare_server.sh trident-hetzner
 ./deploy.sh --start
+./trident-hip4/deploy.sh --start
 ```
 
 Rapatriement et analyse locale:
 
 - `./scripts/trident_dry_run_review.sh`
-  - revue distante legere
-  - recupere surtout l'etat courant, les tails de logs et genere les prompts LLM
+  - revue historique combinee, gardee pour compatibilite
+  - preferer les fetchs separes TRIDENT A/C et TRIDENT-HIP4 pour les nouveaux checks
 - `./scripts/fetch_trident_data.sh`
   - rapatrie les snapshots live, logs runtime, statuses, snapshots API et logs Docker
-  - rapatrie le vrai runtime Pod B depuis `logs/pod_b_live_status.json` (plus les anciens artefacts `passivbot`)
-  - genere aussi une review HIP-4 outcome depuis les logs `paper/testnet/mainnet`
-  - installe automatiquement `rsync` localement si le binaire est absent et qu'un gestionnaire de paquets supporte est disponible
-  - traite les artefacts Hydra research `docs/pod_*_research_latest.*` comme **optionnels**
-  - peut ensuite relancer automatiquement `trident_dry_run_review.sh`
+  - ne rapatrie plus Pod B/HIP-4
   - permet une vraie analyse locale plus complete sur plusieurs heures / jours
-- la review locale ne se limite plus a verifier "pas de crash"
-  - elle confronte aussi les collecteurs, les economics par pod, la fraicheur strategique et les incoherences d'observabilite
+- `./trident-hip4/fetch_data.sh`
+  - rapatrie les logs/runtime/configs HIP-4 depuis `/opt/trident-hip4`
+  - interroge l'API HIP-4 sur le port `3001` par defaut
+  - genere la review HIP-4 outcome depuis les logs `paper/testnet/mainnet`
+- les reviews separees gardent chacune leur périmètre: santé/réconciliation A/C
+  côté TRIDENT, readiness/calibration/logs côté HIP-4
 
 Exemples:
 
@@ -421,13 +428,15 @@ Exemples:
 ./scripts/fetch_trident_data.sh --snapshots-only --days 5
 ./scripts/fetch_trident_data.sh --logs-only
 ./scripts/fetch_trident_data.sh --review-only
+./trident-hip4/fetch_data.sh
+./trident-hip4/fetch_data.sh --review-only
 ```
 
-La review HIP-4 est ecrite dans le dossier de review timestampé et en alias latest:
+La review HIP-4 est ecrite dans le dossier HIP-4 separe et en alias latest:
 
 ```text
-server-data/replay_reports/hip4_outcome_run_review_latest.md
-server-data/replay_reports/hip4_outcome_run_review_latest.json
+server-data/hip4/replay_reports/hip4_outcome_run_review_latest.md
+server-data/hip4/replay_reports/hip4_outcome_run_review_latest.json
 ```
 
 Elle inclut aussi une simulation de candidats guardrails: slices a exclure,

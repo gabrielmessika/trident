@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
@@ -12,6 +13,19 @@ from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName
 
 
+HIP4_APP_KINDS = {"trident-hip4", "hip4", "hip4-outcome"}
+
+
+def _hip4_metrics_enabled() -> bool:
+    app_kind = os.getenv("TRIDENT_APP_KIND", "trident").strip().lower()
+    if app_kind in HIP4_APP_KINDS:
+        return True
+    raw_value = os.getenv("TRIDENT_ENABLE_HIP4_OUTCOME")
+    if raw_value is None or raw_value == "":
+        return False
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class MetricsRegistry:
     """Lightweight in-memory metrics derived from the supervisor snapshot."""
 
@@ -19,11 +33,16 @@ class MetricsRegistry:
         self._metrics: dict[str, int | float] = {"trident_bootstrap_ready": 1}
 
     def refresh_from_supervisor(self, supervisor: TridentSupervisor) -> None:
+        hip4_enabled = _hip4_metrics_enabled()
         pod_health = supervisor.pod_health()
-        pod_b_status = self._pod_b_runtime_status(supervisor)
+        pod_b_status = self._pod_b_runtime_status(supervisor) if hip4_enabled else {}
         symbol_ownership = supervisor.registry.snapshot()
         pod_a_runtime = load_runtime_status("logs/pod_a_live_status.json")
-        pod_b_runtime = load_runtime_status("logs/pod_b_live_status.json")
+        pod_b_runtime = (
+            load_runtime_status("logs/pod_b_live_status.json")
+            if hip4_enabled
+            else None
+        )
         pod_c_runtime = load_runtime_status("logs/pod_c_live_status.json")
         runtime_supervisor = merge_runtime_supervisor_snapshot(
             pod_a_runtime,
@@ -34,11 +53,15 @@ class MetricsRegistry:
         runtime_pod_a_healthy = runtime_status_is_fresh(pod_a_runtime)
         runtime_pod_c_healthy = runtime_status_is_fresh(pod_c_runtime)
         runtime_pod_b_healthy = (
-            runtime_status_is_fresh(pod_b_status)
+            hip4_enabled
+            and isinstance(pod_b_status, dict)
+            and runtime_status_is_fresh(pod_b_status)
             and not _is_supervisor_fallback_runtime(pod_b_status)
         )
         pod_b_replacement_enabled = (
-            is_hip4_pod_b_replacement_runtime(pod_b_status)
+            hip4_enabled
+            and isinstance(pod_b_status, dict)
+            and is_hip4_pod_b_replacement_runtime(pod_b_status)
             and runtime_status_is_fresh(pod_b_status)
         )
         healthy_pod_count = 0
@@ -83,7 +106,9 @@ class MetricsRegistry:
                     if isinstance(runtime_pods.get("pod_b", {}), dict)
                     else {}
                 )
-        if pod_b_replacement_enabled:
+        if not hip4_enabled:
+            pod_b_owned_symbols = []
+        elif pod_b_replacement_enabled:
             pod_b_owned_symbols = _hip4_managed_symbols(pod_b_status)
         else:
             pod_b_owned_symbols = pod_b_runtime_pod.get("owned_symbols")
@@ -112,10 +137,14 @@ class MetricsRegistry:
             "pod_a_closed_trade_count": int(pod_a_report.get("closed_trade_count", 0)),
             "pod_a_realized_pnl_usd": float(pod_a_report.get("realized_pnl_usd", 0.0)),
             "pod_b_managed_symbol_count": len(pod_b_owned_symbols),
-            "pod_b_preview_count": len(
-                runtime_supervisor.get("pod_b_signal_preview", [])
-                if isinstance(runtime_supervisor, dict)
-                else supervisor.state.pod_b_signal_preview
+            "pod_b_preview_count": (
+                len(
+                    runtime_supervisor.get("pod_b_signal_preview", [])
+                    if isinstance(runtime_supervisor, dict)
+                    else supervisor.state.pod_b_signal_preview
+                )
+                if hip4_enabled
+                else 0
             ),
             "pod_b_process_running": 1 if runtime_pod_b_healthy else 0,
             "pod_b_total_position_count": int(
