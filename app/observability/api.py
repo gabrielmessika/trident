@@ -216,12 +216,14 @@ def _hip4_outcome_monitor_payload(
     *,
     status_path: Path = Path("logs/hip4_outcome_status.json"),
     include_pod_b_alias_report: bool = True,
+    default_logs_dir: Path = Path("logs/hip4_outcome_mainnet_paper"),
+    inactive_when_status_missing: bool = False,
 ) -> dict[str, object]:
     status = load_runtime_status(status_path)
     summary = status.get("summary", {}) if isinstance(status, dict) else {}
     if not isinstance(summary, dict):
         summary = {}
-    logs_dir = Path("logs/hip4_outcome_mainnet_paper")
+    logs_dir = default_logs_dir
     if isinstance(status, dict):
         raw_logs_dir = status.get("logs_dir")
         if isinstance(raw_logs_dir, str) and raw_logs_dir:
@@ -379,10 +381,12 @@ def _hip4_outcome_monitor_payload(
 
     status_age = runtime_status_age_seconds(status)
     fresh = runtime_status_is_fresh(status)
+    status_missing = status is None
     market_observation_health = _hip4_observation_health(
         market_observations,
         loop_summary=summary.get("market_observation"),
         fresh=fresh,
+        inactive=inactive_when_status_missing and status_missing,
     )
     return {
         "pod": "hip4_outcome_edge_pod",
@@ -395,10 +399,12 @@ def _hip4_outcome_monitor_payload(
         "process_state": (
             str(status.get("process_state"))
             if isinstance(status, dict) and status.get("process_state") is not None
+            else "off"
+            if inactive_when_status_missing and status_missing
             else "running"
             if fresh
             else "missing"
-            if status is None
+            if status_missing
             else "stale"
         ),
         "mode": str(summary.get("mode") or (status.get("mode") if isinstance(status, dict) else "observer")),
@@ -466,6 +472,7 @@ def _hip4_observation_health(
     *,
     loop_summary: object = None,
     fresh: bool = True,
+    inactive: bool = False,
 ) -> dict[str, object]:
     tones = Counter(_hip4_observation_row_tone(row)["tone"] for row in rows)
     classes = Counter(str(row.get("class_name") or "unknown") for row in rows)
@@ -482,7 +489,11 @@ def _hip4_observation_health(
     loop_total = None
     if isinstance(loop_summary, dict):
         loop_total = loop_summary.get("total")
-    if not fresh:
+    if inactive:
+        tone = "neutral"
+        label = "off"
+        reason = "observer mainnet optionnel désactivé ou status absent"
+    elif not fresh:
         tone = "bad"
         label = "stale"
         reason = "status runtime trop ancien"
@@ -1754,6 +1765,8 @@ def hip4_outcome_mainnet_payload() -> dict[str, object]:
     return _hip4_outcome_monitor_payload(
         status_path=Path("logs/hip4_outcome_mainnet_status.json"),
         include_pod_b_alias_report=False,
+        default_logs_dir=Path("logs/hip4_outcome_mainnet"),
+        inactive_when_status_missing=True,
     )
 
 
@@ -6374,7 +6387,23 @@ def hip4_outcome_html(
             embedded = {}
         embedded_enabled = bool(embedded.get("enabled"))
         embedded_threads = int(embedded.get("running_threads", 0) or 0)
-        embedded_tone = "good" if embedded_enabled and embedded_threads > 0 else "warn"
+        standalone_observer_running = (
+            str(mainnet_payload.get("process_state") or "") == "running"
+            and bool(mainnet_payload.get("fresh"))
+        )
+        observer_count = embedded_threads + (1 if standalone_observer_running else 0)
+        observer_tone = "good" if observer_count > 0 else "neutral"
+        observer_label = (
+            "standalone"
+            if standalone_observer_running
+            else "embedded"
+            if embedded_enabled and embedded_threads > 0
+            else "off"
+        )
+        observer_sources = []
+        if standalone_observer_running:
+            observer_sources.append(str(mainnet_payload.get("logs_dir") or "logs/hip4_outcome_mainnet"))
+        observer_sources.extend(str(item) for item in embedded.get("config_paths", []) if item)
         specs = [
             ("HIP4 paper runner", testnet_observation_health),
             ("Mainnet observation", mainnet_observation_health),
@@ -6396,11 +6425,11 @@ def hip4_outcome_html(
             )
         cards_html.append(
             "<article class='observation-card'>"
-            f"<div class='observation-card-head'><span>Sidecar mainnet</span>"
-            f"{render_health_pill(embedded_tone, 'embedded' if embedded_enabled else 'off')}</div>"
-            f"<strong>{embedded_threads}</strong>"
-            "<small>thread(s) dans le process HIP4</small>"
-            f"<small>{escape(', '.join(str(item) for item in embedded.get('config_paths', []) if item) or '-')}</small>"
+            f"<div class='observation-card-head'><span>Observer mainnet</span>"
+            f"{render_health_pill(observer_tone, observer_label)}</div>"
+            f"<strong>{observer_count}</strong>"
+            "<small>service standalone + thread(s) embarqué(s)</small>"
+            f"<small>{escape(', '.join(observer_sources) or '-')}</small>"
             "</article>"
         )
         return "".join(cards_html)

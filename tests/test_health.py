@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,7 @@ from app.observability.api import (
     dashboard_html,
     health_payload,
     hip4_outcome_html,
+    hip4_outcome_mainnet_payload,
     hip4_outcome_payload,
     metrics_payload,
     report_payload,
@@ -856,6 +858,36 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("Performance par coin", html)
         self.assertIn("PnL visible", html)
         self.assertIn("Settlements paper", html)
+
+    def test_hip4_mainnet_payload_does_not_reuse_paper_logs_when_observer_is_off(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            previous_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                paper_logs = Path("logs/hip4_outcome_mainnet_paper")
+                paper_logs.mkdir(parents=True)
+                (paper_logs / "market_observations.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "ts": "2999-01-01T00:00:00Z",
+                            "class_name": "priceBinary",
+                            "support_status": "trading_supported",
+                            "support_reason": "price_binary_supported",
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+                payload = hip4_outcome_mainnet_payload()
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(payload["logs_dir"], "logs/hip4_outcome_mainnet")
+        self.assertEqual(payload["process_state"], "off")
+        health = payload["market_observation_health"]
+        self.assertEqual(health["label"], "off")
+        self.assertEqual(health["count"], 0)
 
     def test_trades_html_contains_trade_sections(self) -> None:
         html = trades_html(self.supervisor, self.metrics)
