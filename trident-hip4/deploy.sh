@@ -14,12 +14,14 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./trident-hip4/deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--remote-dir /opt/trident-hip4] [--start] [--mode paper|observer|testnet] [--config config/hip4_outcome_mainnet_paper.toml] [--api-port 3001] [--with-mainnet-observer] [--fresh-start]
+Usage: ./trident-hip4/deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--remote-dir /opt/trident-hip4] [--start] [--mode paper|observer|testnet] [--config config/hip4_outcome_mainnet_paper.toml] [--api-port 3001] [--with-mainnet-observer|--without-mainnet-observer] [--fresh-start]
 
 Déploie l'app séparée TRIDENT-HIP4:
 - rsync du code vers /opt/trident-hip4 par défaut
 - build Docker via docker-compose.hip4.yml
 - optionnellement démarre l'API HIP-4 + le runner outcome paper
+- l'observer mainnet standalone est actif par défaut; utilisez
+  --without-mainnet-observer pour le désactiver explicitement
 
 TRIDENT A/C n'est ni démarré ni arrêté par ce script.
 EOF
@@ -33,14 +35,25 @@ START=""
 HIP4_MODE="${HIP4_OUTCOME_MODE:-paper}"
 HIP4_CONFIG="${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}"
 HIP4_API_PORT="${HIP4_OUTCOME_API_PORT:-3001}"
-ENABLE_MAINNET_OBSERVER="${TRIDENT_HIP4_ENABLE_MAINNET_OBSERVER:-}"
+ENABLE_MAINNET_OBSERVER="${TRIDENT_HIP4_ENABLE_MAINNET_OBSERVER:-true}"
 FRESH_START=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+mainnet_observer_enabled() {
+    case "${ENABLE_MAINNET_OBSERVER,,}" in
+        1|true|yes|on)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 selected_services_label() {
     local services=("HIP-4 API" "HIP-4 Outcome Paper")
-    [ -n "$ENABLE_MAINNET_OBSERVER" ] && services+=("HIP-4 Mainnet Observer")
+    mainnet_observer_enabled && services+=("HIP-4 Mainnet Observer")
     local joined=""
     local service
     for service in "${services[@]}"; do
@@ -60,7 +73,7 @@ server_flags() {
     quoted_config="$(printf '%q' "$HIP4_CONFIG")"
     quoted_port="$(printf '%q' "$HIP4_API_PORT")"
     flags="${flags} --mode ${quoted_mode} --config ${quoted_config} --api-port ${quoted_port}"
-    [ -n "$ENABLE_MAINNET_OBSERVER" ] && flags="${flags} --with-mainnet-observer"
+    mainnet_observer_enabled && flags="${flags} --with-mainnet-observer"
     [ -n "$FRESH_START" ] && flags="${flags} --fresh-start"
     printf '%s' "$flags"
 }
@@ -104,7 +117,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --without-mainnet-observer)
-            ENABLE_MAINNET_OBSERVER=""
+            ENABLE_MAINNET_OBSERVER="false"
             shift
             ;;
         --fresh-start)
@@ -198,7 +211,7 @@ deploy_code() {
 build_remote() {
     info "Build Docker HIP-4 sur le serveur..."
     local profile_args=""
-    [ -n "$ENABLE_MAINNET_OBSERVER" ] && profile_args="${profile_args} --profile mainnet_observer"
+    mainnet_observer_enabled && profile_args="${profile_args} --profile mainnet_observer"
     ssh_remote "cd ${DEPLOY_DIR} && COMPOSE_PROJECT_NAME=trident-hip4 docker compose -f docker-compose.hip4.yml${profile_args} build"
     ok "Image Docker HIP-4 buildée"
 }
@@ -253,6 +266,6 @@ if [ -n "$START" ]; then
 else
     echo "Pour démarrer après déploiement :"
     echo "  ./trident-hip4/deploy.sh --start"
-    echo "  ./trident-hip4/deploy.sh --start --with-mainnet-observer"
+    echo "  ./trident-hip4/deploy.sh --start --without-mainnet-observer"
 fi
 echo ""

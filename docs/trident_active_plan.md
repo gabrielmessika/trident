@@ -41,8 +41,10 @@ Source de verite operationnelle depuis le `2026-05-24`:
   - fetch: `./trident-hip4/fetch_data.sh`;
   - port dashboard/API par defaut: `3001`, UI HIP-4 native sur `/`,
     `/dashboard` et `/hip4-outcome`;
-  - services attendus: `hip4-api`, `hip4-outcome-paper`, et optionnellement
-    `hip4-mainnet-observer`;
+  - services attendus en paper: `hip4-api`, `hip4-outcome-paper`,
+    `hip4-mainnet-observer`; l'observer mainnet standalone est actif par
+    defaut pour completer la collecte, et peut etre coupe explicitement avec
+    `--without-mainnet-observer`;
   - mode par defaut: `HIP4_OUTCOME_MODE=paper`, config
     `config/hip4_outcome_mainnet_paper.toml`;
   - onglet `Dashboard` HIP-4 ouvert par defaut: capital disponible/utilise,
@@ -353,8 +355,10 @@ Observation / paper mainnet:
 - Logs: `logs/hip4_outcome_mainnet_paper/`.
 - State: `runtime/hip4_outcome_mainnet_paper_state.json`.
 - API UI: `/api/hip4-outcome`, et resume integre dans `/dashboard`.
-- Profil observer public historique: `config/hip4_outcome_mainnet_observer.toml`,
-  `logs/hip4_outcome_mainnet/`, sans alias Pod B.
+- Profil observer mainnet standalone: `config/hip4_outcome_mainnet_observer.toml`,
+  `logs/hip4_outcome_mainnet/`, sans alias Pod B, actif par defaut dans l'app
+  separee `TRIDENT-HIP4` en mode paper. Ce n'est pas un executor et aucun ordre
+  mainnet reel n'est possible par ce service.
 - Verification initiale mainnet `2026-05-03`: `outcomeMeta` expose un BTC
   `priceBinary` daily (`outcome=1`, `#10/#11`) avec books et mids actifs.
 

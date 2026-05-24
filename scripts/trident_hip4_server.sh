@@ -29,6 +29,8 @@ Actions:
 Notes:
   Cette app est séparée de TRIDENT A/C. Elle ne démarre pas Pod A ni Pod C.
   Le mode par défaut est `paper`; aucun ordre mainnet réel HIP-4 n'est lancé par défaut.
+  L'observer mainnet standalone est lancé par défaut en paper; utilisez
+  --without-mainnet-observer pour le désactiver explicitement.
 EOF
 }
 
@@ -54,9 +56,20 @@ HIP4_CONFIG="${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}"
 HIP4_MAINNET_CONFIG="${HIP4_OUTCOME_MAINNET_CONFIG:-config/hip4_outcome_mainnet_observer.toml}"
 HIP4_ALLOW_TESTNET_ORDERS="${HIP4_OUTCOME_ALLOW_TESTNET_ORDERS:-false}"
 HIP4_API_PORT="${HIP4_OUTCOME_API_PORT:-3001}"
-ENABLE_MAINNET_OBSERVER="${TRIDENT_HIP4_ENABLE_MAINNET_OBSERVER:-}"
+ENABLE_MAINNET_OBSERVER="${TRIDENT_HIP4_ENABLE_MAINNET_OBSERVER:-true}"
 FRESH_START=""
 SERVICE_ARG=""
+
+mainnet_observer_enabled() {
+    case "${ENABLE_MAINNET_OBSERVER,,}" in
+        1|true|yes|on)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -81,7 +94,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --without-mainnet-observer)
-            ENABLE_MAINNET_OBSERVER=""
+            ENABLE_MAINNET_OBSERVER="false"
             shift
             ;;
         --allow-testnet-orders)
@@ -116,7 +129,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PROFILE_ARGS=()
-[ -n "$ENABLE_MAINNET_OBSERVER" ] && PROFILE_ARGS+=(--profile mainnet_observer)
+mainnet_observer_enabled && PROFILE_ARGS+=(--profile mainnet_observer)
 
 COMPOSE_ENV_ARGS=()
 if [ -f ".env.trident-hip4" ]; then
@@ -171,7 +184,7 @@ read_only_compose() {
 
 default_services() {
     local services=(hip4-api hip4-outcome-paper)
-    [ -n "$ENABLE_MAINNET_OBSERVER" ] && services+=(hip4-mainnet-observer)
+    mainnet_observer_enabled && services+=(hip4-mainnet-observer)
     printf '%s\n' "${services[@]}"
 }
 
@@ -226,7 +239,7 @@ from pathlib import Path
 
 
 def flag(raw: str) -> bool:
-    return bool(raw.strip())
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 mode, config_path, mainnet_config_path, api_port, enable_mainnet_observer = sys.argv[1:6]
