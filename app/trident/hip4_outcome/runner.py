@@ -295,11 +295,12 @@ class HIP4OutcomeEdgePod:
                     now_ts=now_ts,
                     summary=summary,
                 )
-                if early_exit_closed or self._recent_early_exit_for_market(
+                reentry_block_reason = self._early_exit_reentry_block_reason(
                     market.market_id,
                     now_ts=now_ts,
-                ):
-                    decision_reasons["early_exit_reentry_cooldown"] += 1
+                )
+                if early_exit_closed or reentry_block_reason:
+                    decision_reasons[reentry_block_reason or "early_exit_reentry_lock"] += 1
                     continue
                 opportunities = self.edge_detector.detect(
                     market=market,
@@ -1367,6 +1368,20 @@ class HIP4OutcomeEdgePod:
                     action = "full_exit"
                     reason = "shadow_bid_over_conservative_hold_ev"
                     exit_fraction = 1.0
+            elif kind == "ev_partial":
+                if _shadow_exit_entries(position, policy_name):
+                    reason = "shadow_policy_already_exited"
+                elif (
+                    hold_ev_usdc > 0
+                    and net_full >= hold_ev_usdc * (1.0 + float(self.config.early_exit_min_ev_premium))
+                    and full_exit_roi >= float(self.config.early_exit_min_ev_exit_roi)
+                ):
+                    action = "partial_exit"
+                    reason = "shadow_bid_over_conservative_hold_ev_partial"
+                    exit_fraction = max(
+                        min(float(self.config.shadow_exit_partial_fraction), 1.0),
+                        0.0,
+                    )
             elif kind == "last_window_full":
                 window = int(policy.get("window_seconds", 0))
                 if (
@@ -1577,9 +1592,19 @@ class HIP4OutcomeEdgePod:
                 and net_full >= hold_ev_usdc * (1.0 + float(self.config.early_exit_min_ev_premium))
                 and full_exit_roi >= float(self.config.early_exit_min_ev_exit_roi)
             ):
-                action = "full_exit"
-                reason = "bid_over_conservative_hold_ev"
-                exit_fraction = 1.0
+                ev_fraction = max(min(float(self.config.early_exit_ev_exit_fraction), 1.0), 0.0)
+                if ev_fraction >= 0.999999:
+                    action = "full_exit"
+                    reason = "bid_over_conservative_hold_ev"
+                    exit_fraction = 1.0
+                elif _has_early_exit_reason(position, "bid_over_conservative_hold_ev"):
+                    reason = "early_exit_ev_partial_already_exited"
+                elif ev_fraction > 0:
+                    action = "partial_exit"
+                    reason = "bid_over_conservative_hold_ev"
+                    exit_fraction = ev_fraction
+                else:
+                    reason = "early_exit_ev_fraction_zero"
             elif (
                 self.config.enable_early_exit_probability_stop
                 and
@@ -1694,19 +1719,25 @@ class HIP4OutcomeEdgePod:
         }
         _apply_settlement_accounting(position, self.config)
 
-    def _recent_early_exit_for_market(self, market_id: str, *, now_ts: int) -> bool:
+    def _early_exit_reentry_block_reason(self, market_id: str, *, now_ts: int) -> str | None:
         cooldown = max(int(self.config.early_exit_reentry_cooldown_seconds), 0)
-        if cooldown <= 0:
-            return False
         for position in self._positions_for_mode():
             if position.market_id != market_id or position.status != "early_exited":
                 continue
+            if (
+                self.config.early_exit_reentry_lock_until_settlement
+                and now_ts < position.expiry_ts + self.config.settlement_grace_seconds
+            ):
+                return "early_exit_reentry_lock"
             exited_ms = _iso_to_epoch_ms(str(position.settled_at or ""))
             if exited_ms is None:
                 continue
-            if now_ts - int(exited_ms / 1000) <= cooldown:
-                return True
-        return False
+            if cooldown > 0 and now_ts - int(exited_ms / 1000) <= cooldown:
+                return "early_exit_reentry_cooldown"
+        return None
+
+    def _recent_early_exit_for_market(self, market_id: str, *, now_ts: int) -> bool:
+        return self._early_exit_reentry_block_reason(market_id, now_ts=now_ts) is not None
 
     def _position_from_execution(
         self,
@@ -2900,6 +2931,10 @@ def _has_partial_take_profit_exit(position: OutcomePosition) -> bool:
     return False
 
 
+def _has_early_exit_reason(position: OutcomePosition, reason: str) -> bool:
+    return any(str(item.get("reason")) == reason for item in _early_exit_entries(position))
+
+
 def _shadow_exit_policy_specs(config: Hip4OutcomeConfig) -> list[dict[str, Any]]:
     policies: list[dict[str, Any]] = [{"policy": "hold_to_settlement", "kind": "hold"}]
     seen: set[str] = {"hold_to_settlement"}
@@ -2917,6 +2952,7 @@ def _shadow_exit_policy_specs(config: Hip4OutcomeConfig) -> list[dict[str, Any]]
         seen.add(name)
     for item in (
         {"policy": "ev_plus_2pct_full", "kind": "ev_full"},
+        {"policy": "ev_plus_2pct_partial_runner", "kind": "ev_partial"},
         {"policy": "prob_stop_full", "kind": "prob_stop_full"},
     ):
         if str(item["policy"]) not in seen:
@@ -2946,6 +2982,10 @@ def _pnl_levers_payload(config: Hip4OutcomeConfig) -> dict[str, Any]:
                 "enabled": bool(config.enable_early_exit),
                 "min_ev_premium": float(config.early_exit_min_ev_premium),
                 "min_exit_roi": float(config.early_exit_min_ev_exit_roi),
+                "exit_fraction": float(config.early_exit_ev_exit_fraction),
+                "reentry_lock_until_settlement": bool(
+                    config.early_exit_reentry_lock_until_settlement
+                ),
                 "log": "early_exits.csv",
             },
             {
@@ -2962,6 +3002,14 @@ def _pnl_levers_payload(config: Hip4OutcomeConfig) -> dict[str, Any]:
                 "enabled": bool(config.enable_shadow_exit_policies),
                 "min_ev_premium": float(config.early_exit_min_ev_premium),
                 "min_exit_roi": float(config.early_exit_min_ev_exit_roi),
+                "log": "shadow_exit_policies.csv",
+            },
+            {
+                "name": "shadow_policy_ev_plus_2pct_partial_runner",
+                "enabled": bool(config.enable_shadow_exit_policies),
+                "min_ev_premium": float(config.early_exit_min_ev_premium),
+                "min_exit_roi": float(config.early_exit_min_ev_exit_roi),
+                "exit_fraction": float(config.shadow_exit_partial_fraction),
                 "log": "shadow_exit_policies.csv",
             },
             {

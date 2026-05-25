@@ -109,6 +109,9 @@ enable_early_exit = true
 early_exit_probability_haircut = 0.03
 early_exit_min_ev_premium = 0.02
 early_exit_min_ev_exit_roi = 0.05
+# Keep the active EV exit as partial + runner. This preserves convexity and
+# leaves the market blocked by an open paper position instead of enabling churn.
+early_exit_ev_exit_fraction = 0.5
 early_exit_take_profit_roi = 0.35
 early_exit_take_profit_fraction = 0.5
 early_exit_full_take_profit_roi = 0.80
@@ -120,6 +123,9 @@ early_exit_stop_max_loss_roi = 0.20
 early_exit_free_short_window_seconds = 420
 early_exit_free_short_window_min_roi = 0.0
 early_exit_reentry_cooldown_seconds = 600
+# Full early exits still happen for defensive/large-profit cases; when they do,
+# do not reopen the same market before settlement.
+early_exit_reentry_lock_until_settlement = true
 
 # Paper-only parallel experiments. These write shadow CSV/state metadata but do
 # not change the active paper position sizing or execution policy.

@@ -456,8 +456,17 @@ Review mainnet paper / calibration:
   `early_exit_stop_max_loss_roi = 0.20`. Le `0.32/0.15` etait trop timide
   sur les candidats observes; le `0.35/0.20` garde le declenchement defensif
   tout en refusant les sorties deja trop abimees.
+- Ajustement `2026-05-25` apres review mainnet paper: les sorties
+  `bid_over_conservative_hold_ev` actives ne doivent plus fermer 100% par
+  defaut. Elles sortent maintenant `50%` et gardent un runner, afin de ne pas
+  liberer le meme marche pour des re-entries qui transforment des petits gains
+  en churn asymetrique. Les exits full restants (`full_take_profit`,
+  `probability_stop`, fenetre short-expiry libre) verrouillent le meme
+  market/expiry jusqu'au settlement.
 - GO observe ajoutes/maintenus:
   - `shadow_policy_ev_plus_2pct_full` dans `shadow_exit_policies.csv`;
+  - `shadow_policy_ev_plus_2pct_partial_runner` dans
+    `shadow_exit_policies.csv`;
   - `shadow_sizing_half_kelly` dans `shadow_sizing.csv`;
   - `shock_guard_two_window_confirmation` expose dans le status via
     `summary.pnl_levers`.
@@ -1165,11 +1174,12 @@ Action:
     cas ou le spread pourrait etre capture sans envoyer d'ordre reel.
 - Regles initiales:
   - sortie partielle au bid sur ROI positif materialise;
-  - sortie totale si le bid est superieur a l'EV conservative de hold;
+  - sortie partielle + runner si le bid est superieur a l'EV conservative de
+    hold;
   - sortie totale defensive si la probabilite de win conservative tombe sous
     seuil et que le bid recupere encore assez de valeur;
-  - cooldown de re-entry sur le meme marche apres sortie totale pour eviter le
-    churn.
+  - lock de re-entry sur le meme marche jusqu'au settlement apres sortie totale
+    pour eviter le churn.
 - Comparer apres plusieurs jours: hold-to-settlement historique vs early-exit
   paper, PnL, max drawdown, turnover, Brier/calibration et opportunites
   `SHORT_EXPIRY` debloquees.

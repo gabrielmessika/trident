@@ -220,6 +220,53 @@ latest_file() {
     find "$1" -maxdepth 1 -type f -name "$2" 2>/dev/null | sort | tail -n 1
 }
 
+write_next_review_focus() {
+    local output="$1"
+    local focus_path="${output}/hip4_next_review_focus.md"
+    cat > "$focus_path" <<'EOF'
+# HIP-4 next review focus
+
+Priorite apres le redeploiement du `2026-05-25`: verifier que le changement
+early-exit reduit le churn et ne contourne pas les minimums Hyperliquid.
+
+## Checks obligatoires
+
+- Config/status:
+  - `early_exit_ev_exit_fraction = 0.5` actif en mainnet paper.
+  - `early_exit_reentry_lock_until_settlement = true` actif.
+  - `summary.pnl_levers.active_dry_run` expose `exit_fraction=0.5` et
+    `reentry_lock_until_settlement=true`.
+- `early_exits.csv`:
+  - `bid_over_conservative_hold_ev` doit produire des `partial_exit`, pas des
+    `full_exit`, sauf config explicite.
+  - une meme position ne doit pas avoir plusieurs sorties EV partielles
+    `bid_over_conservative_hold_ev`.
+  - les full exits attendus restent defensifs ou exceptionnels:
+    `probability_stop`, `full_take_profit`, `free_short_expiry_window`.
+- `decisions.jsonl` / review:
+  - verifier la presence de `early_exit_reentry_lock` apres un full exit, ou
+    `market_already_open` quand le runner reste ouvert.
+  - verifier qu'il n'y a pas de re-entry opposite-side sur le meme market/expiry
+    avant settlement.
+- `shadow_exit_policies.csv`:
+  - comparer `hold_to_settlement`, `ev_plus_2pct_full` et
+    `ev_plus_2pct_partial_runner`.
+  - mesurer PnL, PF, max drawdown et worst loss par politique, pas seulement le
+    win rate.
+- `shadow_sizing.csv`:
+  - garder le sizing actif inchangé tant que le shadow Kelly est sous le
+    minimum executable.
+  - ne pas arrondir automatiquement un sizing theorique < `min_order_value_usdc`
+    vers le minimum Hyperliquid; le bon verdict experimental est `skip` ou
+    shadow.
+- Readiness:
+  - continuer a reporter settlements, expiries/marches, PF, Brier et samples
+    calibration; aucune promotion mainnet sans seuils atteints.
+EOF
+    cp "$focus_path" "${REPLAY_REPORT_DIR}/hip4_next_review_focus_latest.md"
+    ok "Checklist prochaine review HIP-4 écrite: ${focus_path}"
+}
+
 run_review() {
     local ts output latest_json latest_md review_stdout review_stderr
     if [ -n "$SKIP_REVIEW" ]; then
@@ -266,6 +313,7 @@ run_review() {
     fi
     cp "${output}/hip4_outcome_run_review.json" "$latest_json"
     cp "${output}/hip4_outcome_run_review.md" "$latest_md"
+    write_next_review_focus "$output"
     ok "Review HIP-4 écrite: ${output}/hip4_outcome_run_review.md"
     [ -s "$review_stderr" ] && warn "Stderr review capturé: ${review_stderr}"
     return 0

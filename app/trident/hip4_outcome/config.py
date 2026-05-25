@@ -151,6 +151,7 @@ class Hip4OutcomeConfig:
     early_exit_probability_haircut: float = 0.03
     early_exit_min_ev_premium: float = 0.02
     early_exit_min_ev_exit_roi: float = 0.05
+    early_exit_ev_exit_fraction: float = 1.0
     early_exit_take_profit_roi: float = 0.35
     early_exit_take_profit_fraction: float = 0.5
     early_exit_full_take_profit_roi: float = 0.80
@@ -160,6 +161,7 @@ class Hip4OutcomeConfig:
     early_exit_free_short_window_seconds: int = 420
     early_exit_free_short_window_min_roi: float = 0.0
     early_exit_reentry_cooldown_seconds: int = 600
+    early_exit_reentry_lock_until_settlement: bool = False
     enable_shadow_exit_policies: bool = False
     shadow_exit_take_profit_rois: list[float] = field(default_factory=lambda: [0.25, 0.35, 0.50])
     shadow_exit_short_window_seconds: list[int] = field(default_factory=lambda: [300, 600, 900])
@@ -394,6 +396,7 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
         early_exit_probability_haircut=float(section.get("early_exit_probability_haircut", 0.03)),
         early_exit_min_ev_premium=float(section.get("early_exit_min_ev_premium", 0.02)),
         early_exit_min_ev_exit_roi=float(section.get("early_exit_min_ev_exit_roi", 0.05)),
+        early_exit_ev_exit_fraction=float(section.get("early_exit_ev_exit_fraction", 1.0)),
         early_exit_take_profit_roi=float(section.get("early_exit_take_profit_roi", 0.35)),
         early_exit_take_profit_fraction=float(section.get("early_exit_take_profit_fraction", 0.5)),
         early_exit_full_take_profit_roi=float(section.get("early_exit_full_take_profit_roi", 0.80)),
@@ -406,6 +409,10 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
         early_exit_free_short_window_seconds=int(section.get("early_exit_free_short_window_seconds", 420)),
         early_exit_free_short_window_min_roi=float(section.get("early_exit_free_short_window_min_roi", 0.0)),
         early_exit_reentry_cooldown_seconds=int(section.get("early_exit_reentry_cooldown_seconds", 600)),
+        early_exit_reentry_lock_until_settlement=env_bool(
+            "HIP4_OUTCOME_EARLY_EXIT_REENTRY_LOCK_UNTIL_SETTLEMENT",
+            bool(section.get("early_exit_reentry_lock_until_settlement", False)),
+        ),
         enable_shadow_exit_policies=env_bool(
             "HIP4_OUTCOME_ENABLE_SHADOW_EXIT_POLICIES",
             bool(section.get("enable_shadow_exit_policies", False)),
