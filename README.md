@@ -395,6 +395,7 @@ python3.12 -m app.backtest.pod_c_runner --input /workspaces/trident/data/live_sn
 python3.12 -m app.research.pod_c_research_suite --input /workspaces/trident/data/live_snapshots/2026-04-05.jsonl --leader-symbols BTC,ETH --follower-symbols SOL,HYPE,SUI --output-json /tmp/pod_c_research.json --output-md /tmp/pod_c_research.md
 python3.12 -m app.reporting.export_daily --pod-b-report /tmp/pod_b_report.json --reference-equity-usd 1000 --cash-balance-usd 1001 --output-json /tmp/trident_daily_summary.json --output-md /tmp/trident_daily_summary.md
 ./scripts/trident_healthcheck.sh
+./scripts/fetch_all_data.sh
 ./scripts/fetch_trident_data.sh
 ./scripts/fetch_trident_data.sh --days 3
 ./scripts/fetch_trident_data.sh --date 2026-04-05
@@ -409,6 +410,9 @@ Rapatriement et analyse locale:
 - `./scripts/trident_dry_run_review.sh`
   - revue historique combinee, gardee pour compatibilite
   - preferer les fetchs separes TRIDENT A/C et TRIDENT-HIP4 pour les nouveaux checks
+- `./scripts/fetch_all_data.sh`
+  - lance les deux fetchs separes en une commande
+  - garde `server-data/` pour TRIDENT A/C et `server-data/hip4/` pour HIP-4
 - `./scripts/fetch_trident_data.sh`
   - rapatrie les snapshots live, logs runtime, statuses, snapshots API et logs Docker
   - ne rapatrie plus Pod B/HIP-4
@@ -423,6 +427,9 @@ Rapatriement et analyse locale:
 Exemples:
 
 ```bash
+./scripts/fetch_all_data.sh
+./scripts/fetch_all_data.sh --days 2
+./scripts/fetch_all_data.sh --review-only
 ./scripts/fetch_trident_data.sh
 ./scripts/fetch_trident_data.sh --days 2
 ./scripts/fetch_trident_data.sh --snapshots-only --days 5
