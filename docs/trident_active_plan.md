@@ -75,6 +75,21 @@ Source de verite operationnelle depuis le `2026-05-24`:
   - `margin_usd` = `marginUsed`;
   - `unrealized_pnl_usd` = `unrealizedPnl`;
   - levier/isolation viennent aussi de Hyperliquid quand disponibles.
+- Sur Hyperliquid `unifiedAccount` / portfolio margin, `perp_account_value_usd`
+  peut rester a `0` alors que le capital utilisable est dans le solde spot USDC.
+  TRIDENT expose alors `hl_available_usd` depuis `spot_usdc_available` avec
+  source `unified_spot_usdc`; ne pas classer cette situation comme absence de
+  collateral tant que `hl_available_usd` est positif et la reconciliation est
+  `ready=true`.
+- Ajustement operateur `2026-05-26`: `live_max_order_notional_usd` passe de
+  `100` a `250` pour debloquer le canary Pod A sans ouvrir tout le sizing
+  calcule; review requise apres les premiers cycles `open -> close`.
+- Le sizing live Pod A/C est cap-aware avant risk gate: quand un plan depasse
+  `live_max_order_notional_usd`, le runner live abaisse le notionnel et le
+  levier modelise en conservant la marge allouee si possible. Le cap respecte
+  aussi les limites de levier par symbole (`margin_usd * max_leverage`). Cela
+  concerne Pod A et Pod C; les replays dry-run/backtest gardent le sizing
+  strategique non cappe.
 - Le close live reduce-only utilise la taille exacte de la position exchange,
   au lieu de reconstruire une taille depuis un notionnel local potentiellement
   stale.
@@ -226,7 +241,7 @@ Principes:
 
 ### Pod C - Tradfi
 
-Statut: actif, quasi stabilise. Canary `live/testnet` serveur en cours.
+Statut: actif, quasi stabilise. Canary `live/mainnet` tiny-size serveur en cours.
 
 Point live `2026-05-19`:
 
@@ -270,6 +285,29 @@ Principes:
   veto) mais ne doit pas etre promu sans repetition; `gold_strong_neutral_veto`
   reste sans effet, `gold_medium_neutral_veto` reste rejete (`-32.78`, `3`
   vetoes).
+- Sweep live recent `2026-05-24 -> 2026-05-26` sur
+  `pod_c.size_multiplier`:
+  `server-data/replay_reports/pod_c_size_multiplier_070_20260526/pod_c_size_multiplier_sweep.json`.
+  `0.55` reste le meilleur compromis observe (`3` trades, `-0.86 USD`);
+  `0.65` et `0.70` debloquent plus de trades mais degradent fortement le PnL
+  (`-9.00` et `-10.81 USD`) dans ce runner isole. Cette alerte est supersedee
+  pour la decision prod par le replay full-bot Pod C-only ci-dessous, plus
+  comparable a la baseline officielle.
+- Replays full-bot Pod C-only du `2026-05-26` sur la baseline globale
+  officielle et la fenetre live recente:
+  `server-data/replay_reports/pod_c_cluster_multiplier_global_20260526/pod_c_cluster_multiplier_compare.json`
+  et
+  `server-data/replay_reports/pod_c_cluster_multiplier_recent_20260526/pod_c_cluster_multiplier_compare.json`.
+  Baseline globale `0.55`: `+79.11 USD`, `41` trades. `global_070` monte a
+  `+105.56 USD` mais change fortement le regime d'activite (`68` trades,
+  fees `36.56`, drawdown `25.02` vs `17.39`). `gold_070` est le levier le plus
+  propre observe: `+86.07 USD`, `41` trades, aucun changement sur la fenetre
+  recente. `silver_070` / `metals_070` sont rejetes malgre un mieux recent:
+  ils degradent le global (`+67.90` / `+74.86`) en augmentant beaucoup les
+  trades silver. Decision operateur `2026-05-26`: promouvoir `global_070` en
+  canary live explicite (`pod_c.size_multiplier = 0.70`) pour debloquer
+  l'activite Pod C; review courte requise apres les premiers signaux/trades,
+  avec attention particuliere aux fees, au drawdown et au volume de trades.
 
 ### Pod B Directionnel Historique
 
@@ -783,6 +821,369 @@ Review et criteres de decision:
 - Nouveau pre-requis de promotion mainnet HIP-4: dataset mainnet paper avec
   `data_quality` complet, distributions de latence/fraicheur connues, impact
   replay positif ou neutre sur PF/Brier, et taux de fenetres skip acceptable.
+
+### Backlog Nautilus Trader / Shadow Adapter HIP-4
+
+Verdict post clipping `docs/new_idea.md`:
+
+- Nautilus Trader est une piste d'infrastructure, pas une source d'edge.
+- Le clipping est promotionnel; ne pas le traiter comme preuve de performance,
+  de pricing ou de strategie exploitable.
+- L'interet pour TRIDENT vient surtout de l'adapter Hyperliquid Nautilus:
+  instruments normalises, WebSocket, order books, `allMids`, execution,
+  reconciliation, HIP-3 builder perps et HIP-4 outcomes.
+- L'usage cible est `TRIDENT-HIP4` seulement, en shadow/read-only d'abord.
+- `Pod A` et `Pod C` ne doivent pas etre migres vers Nautilus tant que le burn-in
+  A/C live/testnet et la preparation mainnet tiny-size ne sont pas termines.
+
+Sources techniques a verifier avant implementation:
+
+- Docs Nautilus overview:
+  `https://nautilustrader.io/docs/latest/concepts/overview/`
+- Getting started / contraintes Python:
+  `https://nautilustrader.io/docs/latest/getting_started/`
+- Integration Hyperliquid:
+  `https://nautilustrader.io/docs/latest/integrations/hyperliquid/`
+- Repo officiel:
+  `https://github.com/nautechsystems/nautilus_trader`
+
+Positionnement:
+
+- Nautilus ne remplace pas le moteur TRIDENT au depart.
+- Nautilus ne decide aucune entree/sortie et ne modifie aucun cap.
+- Nautilus n'ecrit pas dans le state actif HIP-4.
+- Nautilus ne doit pas envoyer d'ordre en `paper`, `testnet` ou `mainnet` pendant
+  les phases shadow.
+- Nautilus sert a comparer:
+  - fraicheur des books YES/NO;
+  - skew temporel entre legs d'un meme outcome;
+  - parite symboles/instruments Hyperliquid;
+  - profondeur/spread visibles;
+  - `allMids` / references Hyperliquid;
+  - fills et settlements observes, quand un replay ou un flux user read-only est
+    disponible sans execution.
+
+Contraintes d'environnement:
+
+- Nautilus cible Python `3.12-3.14` dans sa doc courante; TRIDENT declare encore
+  `requires-python = ">=3.11"` mais le Docker prod est `python:3.12-slim`.
+- Ne pas ajouter Nautilus comme dependance prod globale dans une premiere passe.
+- Preference initiale:
+  - soit un extra optionnel `research` / `hip4-nautilus`;
+  - soit un script isole lance uniquement dans l'app `TRIDENT-HIP4`;
+  - soit un conteneur sidecar experimental desactive par defaut.
+- Toute dependance native/Rust/PyO3 doit etre testee dans le Docker cible avant
+  de modifier les scripts de deploiement.
+- Si l'installation impose Python 3.12, les chemins fallback `python3.11` des
+  scripts de review ne doivent pas devenir dependants de Nautilus.
+
+Non-objectifs explicites:
+
+- Pas de migration du `FullBotBacktestRunner`.
+- Pas de remplacement de `LiveExecutionVenue` Pod A/C.
+- Pas d'execution HIP-4 mainnet.
+- Pas de mode testnet outcome automatique.
+- Pas de Kelly, ML, maker live ou adaptive sizing via Nautilus avant calibration
+  mainnet paper.
+- Pas de changement de `config/trident.toml` pour activer Nautilus dans TRIDENT
+  A/C.
+
+Architecture cible phase 0:
+
+- Nouveau module research/shadow, nom propose:
+  `app/trident/hip4_outcome/nautilus_shadow.py`.
+- Nouveau runner CLI, nom propose:
+  `app/live/hip4_nautilus_shadow_runner.py`.
+- Nouvelle config optionnelle, nom propose:
+  `config/hip4_nautilus_shadow.toml`.
+- Nouveaux tests unitaires, nom propose:
+  `tests/test_hip4_nautilus_shadow.py`.
+- Nouveau dossier de logs:
+  `logs/hip4_nautilus_shadow/`.
+- Nouveau state read-only/cache:
+  `runtime/hip4_nautilus_shadow_state.json`.
+- Le runner doit pouvoir tourner en `--once` et en boucle, comme
+  `hip4_outcome_runner`.
+- Tous les imports Nautilus doivent etre paresseux et produire un message clair
+  si la dependance optionnelle n'est pas installee.
+
+Config initiale proposee:
+
+```toml
+[hip4_nautilus_shadow]
+enabled = false
+mode = "shadow"
+environment = "mainnet"
+logs_dir = "./logs/hip4_nautilus_shadow"
+state_path = "./runtime/hip4_nautilus_shadow_state.json"
+loop_interval_seconds = 1
+max_markets = 4
+include_underlyings = ["BTC", "ETH", "SOL", "HYPE"]
+include_outcome_products = true
+include_hip3_products = false
+subscribe_all_mids = true
+subscribe_order_books = true
+book_depth_levels = 10
+warmup_seconds = 8
+stagger_subscriptions_ms = 1000
+max_ws_connects_per_minute = 6
+write_shadow_books = true
+write_shadow_quality = true
+write_shadow_instruments = true
+allow_orders = false
+allow_private_user_stream = false
+```
+
+Artefacts a produire:
+
+- `logs/hip4_nautilus_shadow/instruments.jsonl`
+  - `ts`
+  - `instrument_id`
+  - `raw_symbol`
+  - `product_type`
+  - `underlying`
+  - `expiry`
+  - `quote_currency`
+  - `tick_size`
+  - `lot_size`
+  - `source`
+- `logs/hip4_nautilus_shadow/book_snapshots.jsonl`
+  - `ts_event`
+  - `ts_init`
+  - `coin`
+  - `instrument_id`
+  - `market_id`
+  - `side_name`
+  - `best_bid`
+  - `best_ask`
+  - `bid_size`
+  - `ask_size`
+  - `bid_depth_10`
+  - `ask_depth_10`
+  - `spread`
+  - `source_latency_ms`
+- `logs/hip4_nautilus_shadow/data_quality.csv`
+  - `ts`
+  - `market_id`
+  - `underlying`
+  - `yes_coin`
+  - `no_coin`
+  - `yes_book_age_ms`
+  - `no_book_age_ms`
+  - `max_book_age_ms`
+  - `book_pair_skew_ms`
+  - `book_update_count_5s`
+  - `book_update_count_15s`
+  - `unique_book_count_5s`
+  - `unique_book_count_15s`
+  - `reference_age_ms`
+  - `reference_divergence_bps`
+  - `empty_book`
+  - `crossed_book`
+  - `quality_score`
+  - `tradable_window`
+  - `quality_reasons`
+- `logs/hip4_nautilus_shadow/parity_compare.csv`
+  - `ts`
+  - `market_id`
+  - `coin`
+  - `trident_bid`
+  - `trident_ask`
+  - `nautilus_bid`
+  - `nautilus_ask`
+  - `bid_diff`
+  - `ask_diff`
+  - `trident_age_ms`
+  - `nautilus_age_ms`
+  - `verdict`
+- `logs/hip4_nautilus_shadow/status.json`
+  - resume operateur read-only;
+  - compteur instruments;
+  - compteur books;
+  - dernier update par coin;
+  - erreurs/reconnects;
+  - decision `shadow_ready=true/false`.
+
+Phase 1 - Spike local sans service:
+
+- Installer Nautilus uniquement dans l'environnement local ou un venv research.
+- Verifier import minimal:
+  `python -c "import nautilus_trader; print(nautilus_trader.__version__)"`
+- Verifier que l'adapter Hyperliquid expose les types necessaires:
+  `HyperliquidDataClientConfig`, `HyperliquidProductType`,
+  `InstrumentProvider` ou equivalents courants.
+- Charger les instruments Hyperliquid en read-only:
+  - perps standard;
+  - HIP-3 builder perps en observation seulement;
+  - HIP-4 outcomes si exposes par la version installee.
+- Comparer la symbologie Nautilus avec la symbologie TRIDENT:
+  - TRIDENT wire coin outcome `#E`;
+  - Nautilus token form attendue `+E.HYPERLIQUID`;
+  - verifier conversion `outcome = floor(E / 10)`, `side = E % 10`.
+- Sortie attendue: `tmp/hip4_nautilus_instrument_probe_<date>.json`.
+- Aucune modification de config active.
+
+Phase 2 - Shadow data local:
+
+- Implementer `hip4_nautilus_shadow_runner --once`.
+- Lire les marches courants depuis `outcomeMeta` via TRIDENT existant ou via
+  Nautilus si l'instrument provider expose assez de metadata.
+- Souscrire seulement `max_markets` outcomes proches expiry.
+- Ecrire les fichiers `instruments.jsonl`, `book_snapshots.jsonl` et
+  `data_quality.csv`.
+- Ne pas brancher le shadow runner au detector d'edge.
+- Comparer les books Nautilus aux books TRIDENT HTTP sur le meme loop:
+  - best bid/ask;
+  - depth;
+  - age;
+  - skew YES/NO;
+  - frequence d'updates.
+- Sortie attendue:
+  `server-data/replay_reports/hip4_nautilus_shadow_probe_<date>.md` ou `tmp/`
+  si le run est purement local.
+
+Phase 3 - Integration review HIP-4:
+
+- Ajouter la lecture optionnelle de `logs/hip4_nautilus_shadow/data_quality.csv`
+  dans `app/trident/hip4_outcome/analysis.py`.
+- Ajouter des buckets au rapport:
+  - PnL/PF/Brier par `quality_score`;
+  - PnL/PF/Brier par `max_book_age_ms`;
+  - PnL/PF/Brier par `book_pair_skew_ms`;
+  - opportunites acceptees qui auraient ete rejetees par data quality;
+  - opportunites rejetees par data quality qui auraient gagne/perdu au
+    settlement.
+- Ajouter une section markdown:
+  `### Nautilus Shadow Data Quality`.
+- Si le fichier est absent, la review doit rester verte avec statut
+  `nautilus_shadow_missing`.
+- Ne pas changer les verdicts `go/watch/park/kill` automatiquement tant que le
+  shadow n'a pas plusieurs jours de donnees.
+
+Phase 4 - Sidecar TRIDENT-HIP4 optionnel:
+
+- Ajouter un service Docker desactive par defaut dans `docker-compose.hip4.yml`,
+  nom propose: `hip4-nautilus-shadow`.
+- Ajouter un flag deploy:
+  `./trident-hip4/deploy.sh --with-nautilus-shadow`.
+- Par defaut, `deploy.sh` ne doit pas lancer ce service.
+- Le service doit monter les memes volumes `logs/` et `runtime/` que HIP-4.
+- Le service doit utiliser `config/hip4_nautilus_shadow.toml`.
+- Ajouter une route/status UI seulement si le status file existe:
+  `/api/hip4-nautilus-shadow`.
+- L'UI doit afficher clairement `shadow/read-only`, pas un executor.
+
+Phase 5 - Decision d'adoption:
+
+- Garder Nautilus si, sur au moins plusieurs jours mainnet paper:
+  - il donne des books plus frais que le polling TRIDENT;
+  - il reduit `book_pair_skew_ms`;
+  - il explique des pertes ou faux signaux par data quality;
+  - il ne cree pas d'instabilite websocket/rate-limit;
+  - les artefacts sont replayables et utiles dans la review.
+- Park Nautilus si:
+  - installation fragile dans Docker;
+  - pas de gain de fraicheur visible;
+  - symbologie HIP-4 ou settlements incomplets dans la version disponible;
+  - complexite superieure au benefice.
+- Ne considerer une migration partielle que si le shadow prouve un gain net.
+
+Chemin de migration partielle possible, non autorise au depart:
+
+- Data path seulement:
+  - remplacer certains fetches `l2Book`/`allMids` par un cache alimente par
+    Nautilus;
+  - garder `OutcomeEdgeDetector`, `OutcomeRiskManager`, capital guard, state et
+    logs TRIDENT.
+- Execution testnet/outcome seulement apres nouvelle validation:
+  - ajouter un executor dedie `NautilusOutcomeExecutor`;
+  - mode `testnet` uniquement;
+  - caps minuscules;
+  - reconciliation spot USDH et side tokens;
+  - aucun mainnet sans mode `mainnet` explicite, preflight separe et
+    confirmation operateur.
+- Jamais de remplacement global Pod A/C sans nouveau plan.
+
+Tests requis avant merge du spike:
+
+```bash
+uv run python -m py_compile \
+  app/trident/hip4_outcome/nautilus_shadow.py \
+  app/live/hip4_nautilus_shadow_runner.py
+```
+
+```bash
+uv run python -m unittest tests.test_hip4_nautilus_shadow
+```
+
+```bash
+bash -n trident-hip4/deploy.sh trident-hip4/fetch_data.sh \
+  scripts/trident_dry_run_review.sh scripts/fetch_trident_data.sh
+```
+
+```bash
+uv run python -m app.live.hip4_nautilus_shadow_runner \
+  --config config/hip4_nautilus_shadow.toml \
+  --once
+```
+
+Impacts deploy/fetch/review a traiter si implementation:
+
+- `trident-hip4/deploy.sh`:
+  - ajouter le flag opt-in `--with-nautilus-shadow`;
+  - ne jamais l'activer par defaut;
+  - afficher explicitement que le service est read-only.
+- `docker-compose.hip4.yml`:
+  - ajouter un service profile/opt-in;
+  - verifier que les variables de secrets ne permettent pas l'execution.
+- `trident-hip4/fetch_data.sh`:
+  - rapatrier `logs/hip4_nautilus_shadow/`;
+  - rapatrier le status et le state si presents;
+  - ajouter un mode dry-run visible.
+- `scripts/fetch_trident_data.sh`:
+  - ne pas rapatrier Nautilus pour TRIDENT A/C par defaut;
+  - garder une compat seulement si un ancien deploiement hybride expose encore
+    ces logs.
+- `scripts/trident_dry_run_review.sh`:
+  - inclure les artefacts Nautilus seulement si le dossier existe;
+  - ne pas faire echouer la review A/C si Nautilus est absent.
+- `app/backtest/hip4_outcome_run_review.py` et
+  `app/trident/hip4_outcome/analysis.py`:
+  - ajouter ingestion et buckets optionnels;
+  - status explicite `missing/partial/ok`.
+- UI HIP-4:
+  - afficher un badge `Nautilus shadow`;
+  - montrer `shadow_ready`, age dernier book, reconnects, `quality_score`;
+  - ne pas afficher de PnL Nautilus comme PnL de trading.
+
+Risques a surveiller:
+
+- Derive de symbologie entre `#E`, `+E`, token id, asset id et `InstrumentId`.
+- Differents arrondis de prix/size entre TRIDENT et Nautilus.
+- Global singleton state Nautilus: eviter plusieurs `TradingNode` dans le meme
+  process; preferer un sidecar separe.
+- Explosion de logs book si tous les outcomes sont suivis.
+- Rate limits WebSocket ou reconnect storms.
+- Confusion operateur entre `paper`, `shadow`, `testnet` et `mainnet`.
+- Fausse impression de performance si le shadow voit un book plus frais mais
+  non executable.
+
+Critere de fin du spike:
+
+- Rapport experimental date avec:
+  - version Nautilus;
+  - version TRIDENT;
+  - fenetre observee;
+  - nombre de marches suivis;
+  - distribution `max_book_age_ms`;
+  - distribution `book_pair_skew_ms`;
+  - comparaison bid/ask TRIDENT vs Nautilus;
+  - erreurs/reconnects;
+  - verdict `go/watch/park/kill`.
+- Aucun changement de trading actif.
+- Aucun changement des caps.
+- Aucun changement de baseline officielle.
+- Si le spike est `go`, ouvrir un plan d'implementation separe pour phase 3/4.
 
 ### Backlog LLM Research Sidecar / TradingAgents
 

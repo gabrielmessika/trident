@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from app.observability.api import (
     _global_trade_summary,
+    _hip4_observation_health,
     _hip4_routes_enabled,
     _humanize_close_reason,
     _open_position_rows,
@@ -888,6 +889,79 @@ class HealthApiTests(unittest.TestCase):
         health = payload["market_observation_health"]
         self.assertEqual(health["label"], "off")
         self.assertEqual(health["count"], 0)
+
+    def test_hip4_observation_unknown_without_book_error_is_watch_only(self) -> None:
+        health = _hip4_observation_health(
+            [
+                {
+                    "ts": "2026-05-26T15:00:00Z",
+                    "class_name": "unknown",
+                    "support_status": "observe_only",
+                    "support_reason": "unsupported_outcome_class",
+                    "books": {
+                        "yes": {"coin": "#1040", "bid": 0.1, "ask": 0.2},
+                        "no": {"coin": "#1041", "bid": 0.8, "ask": 0.9},
+                    },
+                },
+                {
+                    "ts": "2026-05-26T15:00:00Z",
+                    "class_name": "priceBinary",
+                    "support_status": "trading_supported",
+                    "support_reason": "price_binary_supported",
+                    "underlying": "BTC",
+                }
+            ]
+        )
+
+        self.assertEqual(health["tone"], "warn")
+        self.assertEqual(health["label"], "watch-only")
+        self.assertEqual(health["reason"], "marchés non supportés observés")
+        self.assertEqual(health["book_error_count"], 0)
+        self.assertEqual(health["unknown_count"], 1)
+        self.assertEqual(health["price_binary_count"], 1)
+        self.assertEqual(health["by_support_status"], {"observe_only": 1, "trading_supported": 1})
+        self.assertEqual(health["by_tone"], {"good": 1, "warn": 1})
+
+    def test_hip4_observation_book_error_stays_bad(self) -> None:
+        health = _hip4_observation_health(
+            [
+                {
+                    "ts": "2026-05-26T15:00:00Z",
+                    "class_name": "unknown",
+                    "support_status": "observe_only",
+                    "support_reason": "unsupported_outcome_class",
+                    "books": {
+                        "yes": {"coin": "#1040", "error": "HTTP 500"},
+                        "no": {"coin": "#1041", "bid": 0.8, "ask": 0.9},
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(health["tone"], "bad")
+        self.assertEqual(health["label"], "à investiguer")
+        self.assertEqual(health["reason"], "erreurs book observées")
+        self.assertEqual(health["book_error_count"], 1)
+        self.assertEqual(health["unknown_count"], 1)
+
+    def test_hip4_observation_stale_or_empty_stays_bad(self) -> None:
+        stale = _hip4_observation_health(
+            [
+                {
+                    "ts": "2026-05-26T15:00:00Z",
+                    "class_name": "priceBinary",
+                    "support_status": "trading_supported",
+                    "support_reason": "price_binary_supported",
+                }
+            ],
+            fresh=False,
+        )
+        empty = _hip4_observation_health([])
+
+        self.assertEqual(stale["tone"], "bad")
+        self.assertEqual(stale["label"], "stale")
+        self.assertEqual(empty["tone"], "bad")
+        self.assertEqual(empty["label"], "aucune observation")
 
     def test_trades_html_contains_trade_sections(self) -> None:
         html = trades_html(self.supervisor, self.metrics)

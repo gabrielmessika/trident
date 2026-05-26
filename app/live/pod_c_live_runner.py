@@ -12,6 +12,7 @@ from pathlib import Path
 from app.backtest.pod_report import PodABacktestReport
 from app.execution.directional_executor import DirectionalExecutor
 from app.execution.live import LiveExecutionVenue
+from app.execution.live_cap import apply_live_notional_cap
 from app.hyperliquid.info_client import HyperliquidInfoClient, apply_live_asset_leverage_caps
 from app.hyperliquid.private_state import (
     ExchangePosition,
@@ -46,6 +47,7 @@ from app.trident.market_clusters import (
     observation_universe_symbols,
     symbols_in_allowed_clusters,
 )
+from app.trident.pod_a.leverage import LeveragePolicy
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
@@ -356,6 +358,16 @@ class PodCLiveRunner:
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
         previews = self.supervisor.preview_pod_c_signals(snapshots)
         trade_plans = self.supervisor.build_pod_c_trade_plans(snapshots)
+        if self.mode == "live":
+            leverage_policy = LeveragePolicy(self.config.pod_c)
+            trade_plans = [
+                apply_live_notional_cap(
+                    plan,
+                    self.config.trident.execution.live_max_order_notional_usd,
+                    max_leverage=leverage_policy.max_allowed(plan.symbol),
+                )
+                for plan in trade_plans
+            ]
         risk_decisions = self.risk_gate.evaluate_many(trade_plans)
         if self.mode == "live" and not self._live_ready_for_entries():
             risk_decisions = []

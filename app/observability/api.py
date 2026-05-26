@@ -501,10 +501,14 @@ def _hip4_observation_health(
         tone = "bad"
         label = "aucune observation"
         reason = "market_observations.jsonl vide ou absent"
-    elif book_errors > 0 or unknown_count > 0:
+    elif book_errors > 0:
         tone = "bad"
         label = "à investiguer"
-        reason = "classes inconnues ou erreurs book"
+        reason = "erreurs book observées"
+    elif unknown_count > 0:
+        tone = "warn"
+        label = "watch-only"
+        reason = "marchés non supportés observés"
     elif tones.get("warn", 0) > 0:
         tone = "warn"
         label = "watch-only"
@@ -539,7 +543,7 @@ def _hip4_observation_row_tone(row: dict[str, object]) -> dict[str, str]:
     if _hip4_observation_has_book_error(row):
         return {"tone": "bad", "label": "book error"}
     if class_name == "unknown" or reason == "unsupported_outcome_class":
-        return {"tone": "bad", "label": "unknown"}
+        return {"tone": "warn", "label": "unsupported"}
     if support == "trading_supported":
         return {"tone": "good", "label": "supported"}
     if class_name == "priceBucket":
@@ -3237,7 +3241,7 @@ def _control_center_html(
                     "</div>"
                     f"<strong>{int(health.get('count', 0) or 0)}</strong>"
                     f"<small>{escape(str(health.get('reason', '-')))}</small>"
-                    f"<small>unknown {int(health.get('unknown_count', 0) or 0)} · "
+                    f"<small>unsupported/unknown {int(health.get('unknown_count', 0) or 0)} · "
                     f"books {int(health.get('books_logged_count', 0) or 0)} · "
                     f"named {int(health.get('named_outcome_count', 0) or 0)} · "
                     f"bucket {int(health.get('price_bucket_count', 0) or 0)}</small>"
@@ -3320,7 +3324,7 @@ def _control_center_html(
         <div class="panel panel-neutral">
           <div class="panel-header">
             <h2>Observation</h2>
-            <p>Vue directe des marchés HIP-4 vus par Pod B et par le sidecar mainnet. Les pastilles indiquent si l'observation est exploitable, watch-only, ou à investiguer.</p>
+            <p>Vue directe des marchés HIP-4 vus par Pod B et par le sidecar mainnet. Les pastilles indiquent si l'observation est exploitable, watch-only, ou en erreur book.</p>
           </div>
           <div class="observation-grid">
             {observation_cards()}
@@ -3330,7 +3334,7 @@ def _control_center_html(
         <div class="panel panel-neutral">
           <div class="panel-header">
             <h3>Synthèse observation HIP-4</h3>
-            <p>Vert: classe reconnue et exploitable en observation. Jaune: watch-only connu. Rouge: classe inconnue ou erreur book.</p>
+            <p>Vert: classe reconnue et exploitable en observation. Jaune: watch-only ou marché non supporté. Rouge: erreur book.</p>
           </div>
           <div class="table-wrap">
             <table>
@@ -6417,7 +6421,7 @@ def hip4_outcome_html(
                 f"{render_health_pill(tone_name, health.get('label', tone_name))}</div>"
                 f"<strong>{int(health.get('count', 0) or 0)}</strong>"
                 f"<small>{escape(str(health.get('reason', '-')))}</small>"
-                f"<small>unknown {int(health.get('unknown_count', 0) or 0)} · "
+                f"<small>unsupported/unknown {int(health.get('unknown_count', 0) or 0)} · "
                 f"books {int(health.get('books_logged_count', 0) or 0)} · "
                 f"named {int(health.get('named_outcome_count', 0) or 0)} · "
                 f"bucket {int(health.get('price_bucket_count', 0) or 0)}</small>"
@@ -7449,7 +7453,7 @@ def hip4_outcome_html(
         <section class="panel">
           <div class="panel-header">
             <h2>Observation HIP-4</h2>
-            <p>Pastilles: vert = classe reconnue et exploitable en observation, jaune = watch-only connu, rouge = inconnu ou erreur book.</p>
+            <p>Pastilles: vert = classe reconnue et exploitable en observation, jaune = watch-only ou marché non supporté, rouge = erreur book.</p>
           </div>
           <div class="table-wrap">
             <table>

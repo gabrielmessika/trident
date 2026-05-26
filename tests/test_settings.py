@@ -10,7 +10,7 @@ class SettingsConfigTests(unittest.TestCase):
 
         self.assertEqual(config.hyperliquid.info_url, "https://api.hyperliquid.xyz/info")
         self.assertEqual(config.trident.risk.min_confidence, 0.50)
-        self.assertEqual(config.trident.execution.live_max_order_notional_usd, 50.0)
+        self.assertEqual(config.trident.execution.live_max_order_notional_usd, 250.0)
         self.assertTrue(config.trident.execution.live_require_protective_orders)
         self.assertFalse(config.trident.execution.live_post_only_retry_on_upgrade)
         self.assertEqual(config.trident.execution.live_post_only_buffer_bps, 1.0)
@@ -19,6 +19,7 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertEqual(config.pod_a.setup_ema_tolerance_bps, 0.0)
         self.assertTrue(config.pod_c.cluster_aware_v2_enabled)
         self.assertEqual(config.pod_c.min_confidence, 0.66)
+        self.assertEqual(config.pod_c.size_multiplier, 0.70)
 
     def test_testnet_config_extends_main_config_and_switches_hyperliquid_network(self) -> None:
         config = load_config("config/trident_testnet.toml")

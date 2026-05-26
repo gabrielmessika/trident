@@ -9,6 +9,7 @@ from app.execution.live import (
     LiveExecutionVenue,
     parse_order_result,
 )
+from app.execution.live_cap import apply_live_notional_cap
 from app.hyperliquid.private_state import (
     HyperliquidCredentials,
     HyperliquidPrivateInfoClient,
@@ -18,6 +19,8 @@ from app.live.preflight import build_parser, run_preflight
 from app.live.reconciliation import reconcile_exchange_state
 from app.live.state_store import LiveStateStore, open_position_from_metadata
 from app.portfolio.directional_state import DirectionalPortfolioState
+from app.risk.pod_a_gate import PodARiskGate
+from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import load_config
 from app.trident.types import TradePlan
 
@@ -698,6 +701,94 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(exchange.orders[0]["limit_px"], 2142.2)
         self.assertEqual(exchange.orders[0]["size"], 0.0466)
+
+    def test_live_cap_resizes_plan_before_pod_c_risk_gate(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 250.0
+        plan = TradePlan(
+            symbol="XYZ:GOLD",
+            side="long",
+            setup="tradfi_continuation_long",
+            confidence=0.8,
+            target_notional_usd=687.5,
+            stop_bps=65.0,
+            time_stop_hours=6,
+            margin_usd=27.5,
+            requested_leverage=2.0,
+            effective_leverage=25.0,
+            risk_budget_usd=12.5,
+            expected_loss_usd=4.46875,
+        )
+
+        capped = apply_live_notional_cap(
+            plan,
+            config.trident.execution.live_max_order_notional_usd,
+        )
+        decision = PodCRiskGate(config).evaluate_many([capped])[0]
+
+        self.assertEqual(capped.target_notional_usd, 250.0)
+        self.assertEqual(capped.margin_usd, 27.5)
+        self.assertAlmostEqual(capped.effective_leverage, 9.0909, places=4)
+        self.assertAlmostEqual(capped.expected_loss_usd, 1.625, places=6)
+        self.assertTrue(capped.setup_details["live_cap_active"])
+        self.assertTrue(decision.accepted)
+
+    def test_live_cap_does_not_hide_pod_c_margin_floor(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 250.0
+        plan = TradePlan(
+            symbol="XYZ:SILVER",
+            side="long",
+            setup="tradfi_continuation_long",
+            confidence=0.8,
+            target_notional_usd=412.5,
+            stop_bps=65.0,
+            time_stop_hours=6,
+            margin_usd=16.5,
+            requested_leverage=2.0,
+            effective_leverage=25.0,
+            risk_budget_usd=12.5,
+            expected_loss_usd=2.68125,
+        )
+
+        capped = apply_live_notional_cap(
+            plan,
+            config.trident.execution.live_max_order_notional_usd,
+        )
+        decision = PodCRiskGate(config).evaluate_many([capped])[0]
+
+        self.assertEqual(capped.target_notional_usd, 250.0)
+        self.assertEqual(capped.margin_usd, 16.5)
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.reason, "margin_below_min")
+
+    def test_live_cap_respects_asset_leverage_limit(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 250.0
+        plan = TradePlan(
+            symbol="JUP",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.8,
+            target_notional_usd=344.875,
+            stop_bps=80.0,
+            time_stop_hours=24,
+            margin_usd=34.4875,
+            requested_leverage=2.0,
+            effective_leverage=10.0,
+            risk_budget_usd=17.5,
+            expected_loss_usd=2.759,
+            setup_details={"regime": "TrendExpansion"},
+        )
+
+        capped = apply_live_notional_cap(plan, 250.0, max_leverage=5.0)
+        decision = PodARiskGate(config).evaluate_many([capped])[0]
+
+        self.assertEqual(capped.target_notional_usd, 172.4375)
+        self.assertEqual(capped.margin_usd, 34.4875)
+        self.assertEqual(capped.effective_leverage, 5.0)
+        self.assertTrue(capped.setup_details["live_cap_leverage_limited"])
+        self.assertTrue(decision.accepted)
 
     def test_live_close_uses_exact_exchange_position_size(self) -> None:
         config = load_config("config/trident.toml")
