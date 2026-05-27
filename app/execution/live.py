@@ -15,6 +15,11 @@ from app.hyperliquid.private_state import (
     sdk_base_url_from_info_url,
 )
 from app.hyperliquid.rate_limiter import SharedRateLimiter, jitter_seconds
+from app.hyperliquid.symbols import (
+    group_hl_symbols_by_dex,
+    normalize_hl_symbol,
+    ws_subscription_symbol,
+)
 from app.live.errors import (
     HyperliquidAPIError,
     HyperliquidRateLimitError,
@@ -75,6 +80,7 @@ class LiveExecutionVenue:
             raise HyperliquidAPIError("; ".join(errors))
         self.config = config
         self.credentials = credentials
+        self._builder_perp_dexs = self._configured_builder_perp_dexs()
         self.exchange_client = exchange_client or self._build_exchange_client()
         self.private_info_client = private_info_client or HyperliquidPrivateInfoClient(
             config.hyperliquid,
@@ -122,12 +128,17 @@ class LiveExecutionVenue:
                 "hyperliquid-python-sdk and eth-account are required for live trading"
             ) from exc
         wallet = Account.from_key(self.credentials.secret_key)
+        kwargs: dict[str, object] = {
+            "vault_address": self.credentials.vault_address,
+            "account_address": self.credentials.account_address,
+            "timeout": self.config.hyperliquid.connect_timeout_seconds,
+        }
+        if self._builder_perp_dexs:
+            kwargs["perp_dexs"] = ["", *self._builder_perp_dexs]
         return Exchange(
             wallet,
             sdk_base_url_from_info_url(self.config.hyperliquid.info_url),
-            vault_address=self.credentials.vault_address,
-            account_address=self.credentials.account_address,
-            timeout=self.config.hyperliquid.connect_timeout_seconds,
+            **kwargs,
         )
 
     def open_fill(
@@ -141,7 +152,7 @@ class LiveExecutionVenue:
         timestamp: str | None,
         plan: TradePlan | None = None,
     ) -> LiveExecutionFill | None:
-        symbol = symbol.upper()
+        symbol = normalize_hl_symbol(symbol)
         if notional_usd <= 0 or mid_price <= 0:
             self.last_block_reason_by_symbol[symbol] = "invalid_notional_or_price"
             logger.warning("Live open blocked for %s: invalid notional or price", symbol)
@@ -275,7 +286,7 @@ class LiveExecutionVenue:
         timestamp: str | None,
         plan: TradePlan | None = None,
     ) -> LiveExecutionFill | None:
-        symbol = symbol.upper()
+        symbol = normalize_hl_symbol(symbol)
         if notional_usd <= 0 or mid_price <= 0:
             self.last_block_reason_by_symbol[symbol] = "invalid_close_notional_or_price"
             return None
@@ -347,11 +358,16 @@ class LiveExecutionVenue:
         cloid: str,
         order_type: dict[str, object] | None = None,
     ) -> LiveOrderResult:
+        wire_symbol = self._exchange_wire_symbol(symbol)
+        if wire_symbol is None:
+            error = f"asset_not_resolved:{normalize_hl_symbol(symbol)}"
+            logger.error("Live order blocked for %s: %s", symbol, error)
+            return LiveOrderResult(status="asset_not_resolved", cloid=cloid, error=error)
         self._acquire_exchange_action(action="order")
         try:
             from hyperliquid.utils.types import Cloid
             raw = self.exchange_client.order(
-                symbol,
+                wire_symbol,
                 is_buy,
                 size,
                 limit_px,
@@ -518,9 +534,12 @@ class LiveExecutionVenue:
                 logger.warning("Failed to cancel protective oid=%s for %s: %s", oid, symbol, exc)
 
     def _cancel_order(self, symbol: str, oid: int) -> object:
+        wire_symbol = self._exchange_wire_symbol(symbol)
+        if wire_symbol is None:
+            raise HyperliquidAPIError(f"asset_not_resolved:{normalize_hl_symbol(symbol)}")
         self._acquire_exchange_action(action="cancel")
         try:
-            raw = self.exchange_client.cancel(symbol, oid)
+            raw = self.exchange_client.cancel(wire_symbol, oid)
         except Exception as exc:
             self._record_exchange_action_exception(exc)
             if is_rate_limit_message(str(exc)):
@@ -707,15 +726,41 @@ class LiveExecutionVenue:
     def _size_decimals(self, symbol: str) -> int:
         if self._size_decimals_by_symbol is None:
             self._size_decimals_by_symbol = self._load_size_decimals()
-        return self._size_decimals_by_symbol.get(symbol.upper(), 8)
+        return self._size_decimals_by_symbol.get(normalize_hl_symbol(symbol), 8)
 
     def _load_size_decimals(self) -> dict[str, int]:
+        decimals_by_symbol: dict[str, int] = {}
         try:
             info_client = self.private_info_client.info_client
-            meta = info_client.meta() if hasattr(info_client, "meta") else None
         except Exception as exc:
             logger.warning("Unable to load Hyperliquid meta for size rounding: %s", exc)
-            return {}
+            return decimals_by_symbol
+        if not hasattr(info_client, "meta"):
+            return decimals_by_symbol
+        for dex in [None, *self._builder_perp_dexs]:
+            try:
+                meta = self._fetch_perp_meta(info_client, dex=dex)
+            except Exception as exc:
+                logger.warning(
+                    "Unable to load Hyperliquid %smeta for size rounding: %s",
+                    f"{dex} " if dex else "",
+                    exc,
+                )
+                continue
+            decimals_by_symbol.update(self._parse_size_decimals_meta(meta, dex=dex))
+        return decimals_by_symbol
+
+    def _fetch_perp_meta(self, info_client: Any, *, dex: str | None) -> object:
+        if dex is None:
+            return info_client.meta()
+        return info_client.meta(dex=dex)
+
+    def _parse_size_decimals_meta(
+        self,
+        meta: object,
+        *,
+        dex: str | None,
+    ) -> dict[str, int]:
         if not isinstance(meta, dict):
             return {}
         universe = meta.get("universe", [])
@@ -725,7 +770,7 @@ class LiveExecutionVenue:
         for item in universe:
             if not isinstance(item, dict):
                 continue
-            name = str(item.get("name", "")).strip().upper()
+            name = self._canonical_meta_symbol(item.get("name"), dex=dex)
             if not name:
                 continue
             try:
@@ -733,6 +778,48 @@ class LiveExecutionVenue:
             except (TypeError, ValueError):
                 continue
         return decimals_by_symbol
+
+    def _canonical_meta_symbol(self, name: object, *, dex: str | None) -> str:
+        raw = str(name or "").strip()
+        if not raw:
+            return ""
+        if dex is not None and ":" not in raw:
+            return normalize_hl_symbol(f"{dex}:{raw}")
+        return normalize_hl_symbol(raw)
+
+    def _exchange_wire_symbol(self, symbol: str) -> str | None:
+        canonical = normalize_hl_symbol(symbol)
+        if not canonical:
+            return None
+        candidates = [ws_subscription_symbol(canonical)]
+        if canonical not in candidates:
+            candidates.append(canonical)
+        name_to_coin = getattr(getattr(self.exchange_client, "info", None), "name_to_coin", None)
+        if not isinstance(name_to_coin, dict):
+            return candidates[0]
+        for candidate in candidates:
+            if candidate in name_to_coin:
+                return candidate
+        return None
+
+    def _configured_builder_perp_dexs(self) -> list[str]:
+        symbols = self._configured_symbols()
+        grouped = group_hl_symbols_by_dex(symbols)
+        return sorted(dex for dex in grouped if dex is not None)
+
+    def _configured_symbols(self) -> list[str]:
+        symbols: list[str] = []
+        hyperliquid_config = self.config.hyperliquid
+        symbols.extend(hyperliquid_config.observation_universe or [])
+        symbols.extend(hyperliquid_config.default_coins or [])
+        symbols.extend(hyperliquid_config.market_cluster_overrides.keys())
+        for leaders in hyperliquid_config.cluster_leaders.values():
+            symbols.extend(leaders)
+        symbols.extend(self.config.pod_a.max_leverage_by_symbol.keys())
+        symbols.extend(self.config.pod_b.bis_max_leverage_by_symbol.keys())
+        symbols.extend(self.config.pod_c.max_leverage_by_symbol.keys())
+        symbols.extend(self.config.pod_c.blocked_symbols)
+        return symbols
 
 
 def parse_order_result(raw: object, *, cloid: str | None = None) -> LiveOrderResult:

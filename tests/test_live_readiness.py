@@ -123,8 +123,14 @@ class _FakePrivateAccountClient:
 class _FakeMetaInfoClient:
     def __init__(self, meta: dict[str, object]) -> None:
         self._meta = meta
+        self.meta_calls: list[str | None] = []
 
-    def meta(self) -> dict[str, object]:
+    def meta(self, dex: str | None = None) -> dict[str, object]:
+        self.meta_calls.append(dex)
+        by_dex = self._meta.get("by_dex")
+        if isinstance(by_dex, dict):
+            payload = by_dex.get(dex or "", {"universe": []})
+            return payload if isinstance(payload, dict) else {"universe": []}
         return self._meta
 
 
@@ -135,12 +141,19 @@ class _FakeExchange:
         rate_limited: bool = False,
         post_only_required: bool = False,
         trigger_error: bool = False,
+        resolved_symbols: list[str] | None = None,
     ) -> None:
         self.rate_limited = rate_limited
         self.post_only_required = post_only_required
         self.trigger_error = trigger_error
         self.orders: list[dict[str, object]] = []
         self.cancels: list[tuple[str, int]] = []
+        if resolved_symbols is not None:
+            self.info = type(
+                "FakeExchangeInfo",
+                (),
+                {"name_to_coin": {symbol: symbol for symbol in resolved_symbols}},
+            )()
 
     def order(
         self,
@@ -701,6 +714,81 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(exchange.orders[0]["limit_px"], 2142.2)
         self.assertEqual(exchange.orders[0]["size"], 0.0466)
+
+    def test_live_builder_dex_orders_use_sdk_wire_symbol_and_canonical_state(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        exchange = _FakeExchange(resolved_symbols=["xyz:GOLD"])
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={
+                    "by_dex": {
+                        "": {"universe": []},
+                        "xyz": {"universe": [{"name": "xyz:GOLD", "szDecimals": 3}]},
+                    }
+                }
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.open_fill(
+            symbol="XYZ:GOLD",
+            side="long",
+            mid_price=4700.0,
+            spread_bps=1.0,
+            notional_usd=100.0,
+            timestamp="2026-05-27T00:00:00Z",
+        )
+        venue.orders_by_symbol["XYZ:GOLD"] = {"protective_oids": {"sl": 123}}
+        venue._cancel_known_protective_orders("XYZ:GOLD")
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.symbol, "XYZ:GOLD")
+        self.assertEqual(exchange.orders[0]["symbol"], "xyz:GOLD")
+        self.assertEqual(exchange.orders[0]["size"], 0.021)
+        self.assertIn("XYZ:GOLD", venue.orders_by_symbol)
+        self.assertEqual(exchange.cancels, [("xyz:GOLD", 123)])
+
+    def test_live_unresolved_builder_dex_asset_blocks_without_sdk_keyerror(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        exchange = _FakeExchange(resolved_symbols=["ETH"])
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.open_fill(
+            symbol="XYZ:SILVER",
+            side="long",
+            mid_price=32.0,
+            spread_bps=1.0,
+            notional_usd=50.0,
+            timestamp="2026-05-27T00:01:00Z",
+        )
+
+        self.assertIsNone(fill)
+        self.assertEqual(exchange.orders, [])
+        self.assertEqual(
+            venue.last_block_reason_by_symbol["XYZ:SILVER"],
+            "asset_not_resolved:XYZ:SILVER",
+        )
 
     def test_live_cap_resizes_plan_before_pod_c_risk_gate(self) -> None:
         config = load_config("config/trident.toml")
