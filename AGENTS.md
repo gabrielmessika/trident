@@ -54,6 +54,10 @@ agents de code.
 
 - Installer/synchroniser: `uv sync`
 - Tests: `uv run pytest` ou `make test`
+- Si `uv run pytest` echoue avec `Failed to spawn: pytest`, installer pytest
+  dans l'environnement local (`uv pip install pytest`) puis relancer la
+  commande de test; ne pas traiter cette erreur comme un echec fonctionnel des
+  tests.
 - Lancer en dry-run: `make run-dry`
 - Healthcheck: `make healthcheck`
 - Fetch donnees serveur: `./scripts/fetch_trident_data.sh --days 3`
