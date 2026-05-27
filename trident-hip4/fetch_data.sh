@@ -19,6 +19,7 @@ Usage: ./trident-hip4/fetch_data.sh [--logs-only] [--review-only] [--skip-review
 Rapatrie les données TRIDENT-HIP4 depuis le serveur:
 - /health, /api/hip4-outcome, /api/hip4-outcome-mainnet
 - logs HIP-4 mainnet paper / observer / testnet historiques
+- logs Nautilus shadow si le sidecar opt-in existe
 - runtime states HIP-4
 - configs HIP-4
 - logs Docker HIP-4
@@ -93,7 +94,10 @@ while [ $# -gt 0 ]; do
 done
 
 SSH_TARGET="${SSH_USER}@${HOST}"
+SSH_CONTROL_PATH="${TRIDENT_SSH_CONTROL_PATH:-${TMPDIR:-/tmp}/trident-hip4-fetch-%C}"
+mkdir -p "$(dirname "$SSH_CONTROL_PATH")" 2>/dev/null || true
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+SSH_OPTS=("${SSH_OPTS[@]}" -o ControlMaster=auto -o ControlPersist=60 -o "ControlPath=${SSH_CONTROL_PATH}")
 if [ -f "$IDENTITY_FILE" ]; then
     SSH_OPTS=(-i "$IDENTITY_FILE" "${SSH_OPTS[@]}")
 fi
@@ -119,7 +123,8 @@ mkdir -p \
     "${LOG_DIR}/hip4_outcome_paper" \
     "${LOG_DIR}/hip4_outcome_testnet" \
     "${LOG_DIR}/hip4_outcome_mainnet_paper" \
-    "${LOG_DIR}/hip4_outcome_mainnet"
+    "${LOG_DIR}/hip4_outcome_mainnet" \
+    "${LOG_DIR}/hip4_nautilus_shadow"
 
 timestamp() {
     date -u +"%Y%m%dT%H%M%SZ"
@@ -186,6 +191,7 @@ fetch_api() {
     capture_remote "${API_DIR}/health-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/health"
     capture_remote "${API_DIR}/hip4-outcome-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/hip4-outcome"
     capture_remote "${API_DIR}/hip4-outcome-mainnet-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/hip4-outcome-mainnet"
+    capture_remote "${API_DIR}/hip4-nautilus-shadow-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/hip4-nautilus-shadow"
     capture_remote "${API_DIR}/state-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/state"
     capture_remote "${API_DIR}/report-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/report"
     ok "API TRIDENT-HIP4 sauvegardée dans ${API_DIR}/"
@@ -195,6 +201,7 @@ fetch_logs_runtime() {
     info "Rapatriement logs/runtime TRIDENT-HIP4..."
     fetch_optional_remote_file "logs/hip4_outcome_status.json" "${RUNTIME_DIR}/hip4_outcome_status.json" "Runtime status HIP-4"
     fetch_optional_remote_file "logs/hip4_outcome_mainnet_status.json" "${RUNTIME_DIR}/hip4_outcome_mainnet_status.json" "Runtime status HIP-4 mainnet observer"
+    fetch_optional_remote_file "logs/hip4_nautilus_shadow/status.json" "${RUNTIME_DIR}/hip4_nautilus_shadow_status.json" "Runtime status Nautilus shadow"
     fetch_optional_remote_file "logs/pod_b_live_status.json" "${RUNTIME_DIR}/pod_b_live_status.json" "Alias status HIP-4"
     fetch_optional_remote_file "logs/trident_hip4_deployment_profile.json" "${RUNTIME_DIR}/trident_hip4_deployment_profile.json" "Profil de déploiement TRIDENT-HIP4"
     fetch_optional_remote_file "runtime/hip4_outcome_state.json" "${RUNTIME_DIR}/hip4_outcome_state.json" "State HIP-4"
@@ -202,17 +209,21 @@ fetch_logs_runtime() {
     fetch_optional_remote_file "runtime/hip4_outcome_testnet_state.json" "${RUNTIME_DIR}/hip4_outcome_testnet_state.json" "State HIP-4 testnet"
     fetch_optional_remote_file "runtime/hip4_outcome_mainnet_paper_state.json" "${RUNTIME_DIR}/hip4_outcome_mainnet_paper_state.json" "State HIP-4 mainnet paper"
     fetch_optional_remote_file "runtime/hip4_outcome_mainnet_state.json" "${RUNTIME_DIR}/hip4_outcome_mainnet_state.json" "State HIP-4 mainnet observer"
+    fetch_optional_remote_file "runtime/hip4_nautilus_shadow_state.json" "${RUNTIME_DIR}/hip4_nautilus_shadow_state.json" "State Nautilus shadow"
     fetch_optional_remote_file "config/hip4_outcome_testnet.toml" "${CONFIG_DIR}/hip4_outcome_testnet.toml" "Config HIP-4 testnet"
     fetch_optional_remote_file "config/hip4_outcome_mainnet_paper.toml" "${CONFIG_DIR}/hip4_outcome_mainnet_paper.toml" "Config HIP-4 mainnet paper"
     fetch_optional_remote_file "config/hip4_outcome_mainnet_observer.toml" "${CONFIG_DIR}/hip4_outcome_mainnet_observer.toml" "Config HIP-4 mainnet observer"
+    fetch_optional_remote_file "config/hip4_nautilus_shadow.toml" "${CONFIG_DIR}/hip4_nautilus_shadow.toml" "Config Nautilus shadow"
     fetch_optional_remote_dir "logs/hip4_outcome_paper" "${LOG_DIR}/hip4_outcome_paper" "Logs HIP-4 paper"
     fetch_optional_remote_dir "logs/hip4_outcome_testnet" "${LOG_DIR}/hip4_outcome_testnet" "Logs HIP-4 testnet"
     fetch_optional_remote_dir "logs/hip4_outcome_mainnet_paper" "${LOG_DIR}/hip4_outcome_mainnet_paper" "Logs HIP-4 mainnet paper"
     fetch_optional_remote_dir "logs/hip4_outcome_mainnet" "${LOG_DIR}/hip4_outcome_mainnet" "Logs HIP-4 mainnet observer"
+    fetch_optional_remote_dir "logs/hip4_nautilus_shadow" "${LOG_DIR}/hip4_nautilus_shadow" "Logs Nautilus shadow"
 
     capture_remote "${DOCKER_DIR}/hip4-api.log" "COMPOSE_PROJECT_NAME=trident-hip4 docker compose -f docker-compose.hip4.yml logs --tail ${LOG_LINES} hip4-api 2>&1"
     capture_remote "${DOCKER_DIR}/hip4-outcome-paper.log" "COMPOSE_PROJECT_NAME=trident-hip4 docker compose -f docker-compose.hip4.yml logs --tail ${LOG_LINES} hip4-outcome-paper 2>&1"
     capture_remote "${DOCKER_DIR}/hip4-mainnet-observer.log" "COMPOSE_PROJECT_NAME=trident-hip4 docker compose -f docker-compose.hip4.yml --profile mainnet_observer logs --tail ${LOG_LINES} hip4-mainnet-observer 2>&1"
+    capture_remote "${DOCKER_DIR}/hip4-nautilus-shadow.log" "COMPOSE_PROJECT_NAME=trident-hip4 docker compose -f docker-compose.hip4.yml --profile nautilus_shadow logs --tail ${LOG_LINES} hip4-nautilus-shadow 2>&1"
     ok "Logs/runtime TRIDENT-HIP4 rapatriés"
 }
 
@@ -302,6 +313,7 @@ run_review() {
         --logs-dir "mainnet_paper=${LOG_DIR}/hip4_outcome_mainnet_paper" \
         --logs-dir "testnet=${LOG_DIR}/hip4_outcome_testnet" \
         --logs-dir "mainnet=${LOG_DIR}/hip4_outcome_mainnet" \
+        --nautilus-shadow-dir "${LOG_DIR}/hip4_nautilus_shadow" \
         --output-json "${output}/hip4_outcome_run_review.json" \
         --output-md "${output}/hip4_outcome_run_review.md" \
         >"$review_stdout" \

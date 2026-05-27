@@ -1774,6 +1774,38 @@ def hip4_outcome_mainnet_payload() -> dict[str, object]:
     )
 
 
+def hip4_nautilus_shadow_payload(
+    status_path: Path = Path("logs/hip4_nautilus_shadow/status.json"),
+    logs_dir: Path = Path("logs/hip4_nautilus_shadow"),
+) -> dict[str, object]:
+    status = load_runtime_status(str(status_path))
+    if not status:
+        return {
+            "pod": "hip4_nautilus_shadow",
+            "mode": "shadow",
+            "read_only": True,
+            "active": False,
+            "shadow_ready": False,
+            "status": "missing",
+            "status_path": str(status_path),
+            "logs_dir": str(logs_dir),
+            "data_quality_tail": [],
+        }
+    payload = sanitize_runtime_status_payload(status)
+    payload.update(
+        {
+            "pod": "hip4_nautilus_shadow",
+            "mode": str(payload.get("mode") or "shadow"),
+            "read_only": True,
+            "active": True,
+            "status_path": str(status_path),
+            "logs_dir": str(logs_dir),
+            "data_quality_tail": _tail_csv_records(logs_dir / "data_quality.csv", limit=12),
+        }
+    )
+    return payload
+
+
 def _merge_runtime_snapshot(
     snapshot: dict[str, object],
     *,
@@ -3157,7 +3189,7 @@ def _control_center_html(
             </div>
           </div>
           <div class="panel panel-neutral">
-            <div class="panel-header"><h3>Short-expiry</h3><p>Snapshots du modèle court terme YES/NO.</p></div>
+            <div class="panel-header"><h3>Signal court terme</h3><p>Snapshots du modèle court terme YES/NO.</p></div>
             <div class="table-wrap">
               <table>
                 <thead><tr><th>Ts</th><th>Underlying</th><th>Period</th><th>T-exp s</th><th>Dist bps</th><th>Mom 60s</th><th>Book pY</th><th>Short pY</th><th>Best side</th><th>Net</th><th>Conf</th><th>Reason</th></tr></thead>
@@ -6252,6 +6284,7 @@ def hip4_outcome_html(
 ) -> str:
     payload = _hip4_outcome_monitor_payload()
     mainnet_payload = hip4_outcome_mainnet_payload()
+    shadow_payload = hip4_nautilus_shadow_payload()
     status = payload.get("status", {})
     if not isinstance(status, dict):
         status = {}
@@ -6266,6 +6299,11 @@ def hip4_outcome_html(
         "-"
         if mainnet_status_age is None
         else _format_duration_compact(float(mainnet_status_age))
+    )
+    shadow_label = (
+        "ready"
+        if shadow_payload.get("shadow_ready")
+        else str(shadow_payload.get("status") or shadow_payload.get("reason") or "missing")
     )
     settled_position_count = int(payload.get("settled_position_count", 0) or 0)
     fill_count = int(payload.get("fill_count", 0) or 0)
@@ -7225,6 +7263,7 @@ def hip4_outcome_html(
         <span class="chip">Profile {escape(str(supervisor.profile))}</span>
         <span class="chip">HIP4 {escape(mode_label)}</span>
         <span class="chip">Network {escape(network_label)}</span>
+        <span class="chip">Nautilus shadow {escape(shadow_label)}</span>
         <span class="chip">Auto-refresh {refresh_seconds}s</span>
         <span class="badge badge-{tone}">{'fresh' if payload.get('fresh') else 'stale'}</span>
       </div>
@@ -7236,6 +7275,7 @@ def hip4_outcome_html(
         <a href="/hip4-outcome#observation">Observation</a>
         <a href="/api/hip4-outcome">/api/hip4-outcome</a>
         <a href="/api/hip4-outcome-mainnet">/api/hip4-outcome-mainnet</a>
+        <a href="/api/hip4-nautilus-shadow">/api/hip4-nautilus-shadow</a>
         <a href="/health">/health</a>
       </div>
     </header>
@@ -7373,7 +7413,7 @@ def hip4_outcome_html(
       </section>
 
       <section class="panel">
-        <div class="panel-header"><h2>Short-expiry</h2><p>Snapshots du modèle court terme YES/NO.</p></div>
+        <div class="panel-header"><h2>Signal court terme</h2><p>Snapshots du modèle court terme YES/NO.</p></div>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Ts</th><th>Underlying</th><th>Period</th><th>T-exp s</th><th>Dist bps</th><th>Mom 60s</th><th>Book pY</th><th>Short pY</th><th>Best side</th><th>Net</th><th>Conf</th><th>Reason</th></tr></thead>
@@ -7691,6 +7731,7 @@ def build_handler(
                     {
                         "/api/hip4-outcome": lambda: hip4_outcome_payload(),
                         "/api/hip4-outcome-mainnet": lambda: hip4_outcome_mainnet_payload(),
+                        "/api/hip4-nautilus-shadow": lambda: hip4_nautilus_shadow_payload(),
                     }
                 )
                 if not _is_hip4_app():

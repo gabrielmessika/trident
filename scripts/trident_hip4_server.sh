@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/trident_hip4_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode paper|observer|testnet] [--config config/hip4_outcome_mainnet_paper.toml] [--api-port 3001] [--with-mainnet-observer] [--without-mainnet-observer] [--fresh-start] [service]
+Usage: ./scripts/trident_hip4_server.sh <start|stop|restart|update|status|logs|health|ps> [--mode paper|observer|testnet] [--config config/hip4_outcome_mainnet_paper.toml] [--api-port 3001] [--with-mainnet-observer] [--without-mainnet-observer] [--with-nautilus-shadow] [--without-nautilus-shadow] [--fresh-start] [service]
 
 Actions:
   start     démarre l'API HIP-4 + le runner HIP-4 outcome paper
@@ -31,6 +31,7 @@ Notes:
   Le mode par défaut est `paper`; aucun ordre mainnet réel HIP-4 n'est lancé par défaut.
   L'observer mainnet standalone est lancé par défaut en paper; utilisez
   --without-mainnet-observer pour le désactiver explicitement.
+  Le sidecar Nautilus shadow est opt-in et reste read-only.
 EOF
 }
 
@@ -57,11 +58,23 @@ HIP4_MAINNET_CONFIG="${HIP4_OUTCOME_MAINNET_CONFIG:-config/hip4_outcome_mainnet_
 HIP4_ALLOW_TESTNET_ORDERS="${HIP4_OUTCOME_ALLOW_TESTNET_ORDERS:-false}"
 HIP4_API_PORT="${HIP4_OUTCOME_API_PORT:-3001}"
 ENABLE_MAINNET_OBSERVER="${TRIDENT_HIP4_ENABLE_MAINNET_OBSERVER:-true}"
+ENABLE_NAUTILUS_SHADOW="${TRIDENT_HIP4_ENABLE_NAUTILUS_SHADOW:-false}"
 FRESH_START=""
 SERVICE_ARG=""
 
 mainnet_observer_enabled() {
     case "${ENABLE_MAINNET_OBSERVER,,}" in
+        1|true|yes|on)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+nautilus_shadow_enabled() {
+    case "${ENABLE_NAUTILUS_SHADOW,,}" in
         1|true|yes|on)
             return 0
             ;;
@@ -97,6 +110,14 @@ while [ $# -gt 0 ]; do
             ENABLE_MAINNET_OBSERVER="false"
             shift
             ;;
+        --with-nautilus-shadow)
+            ENABLE_NAUTILUS_SHADOW="true"
+            shift
+            ;;
+        --without-nautilus-shadow)
+            ENABLE_NAUTILUS_SHADOW="false"
+            shift
+            ;;
         --allow-testnet-orders)
             HIP4_ALLOW_TESTNET_ORDERS="true"
             shift
@@ -130,6 +151,7 @@ cd "$ROOT_DIR"
 
 PROFILE_ARGS=()
 mainnet_observer_enabled && PROFILE_ARGS+=(--profile mainnet_observer)
+nautilus_shadow_enabled && PROFILE_ARGS+=(--profile nautilus_shadow)
 
 COMPOSE_ENV_ARGS=()
 if [ -f ".env.trident-hip4" ]; then
@@ -143,6 +165,8 @@ compose() {
     HIP4_OUTCOME_MAINNET_CONFIG="${HIP4_MAINNET_CONFIG}" \
     HIP4_OUTCOME_ALLOW_TESTNET_ORDERS="${HIP4_ALLOW_TESTNET_ORDERS}" \
     HIP4_OUTCOME_API_PORT="${HIP4_API_PORT}" \
+    HIP4_NAUTILUS_SHADOW_ENABLED="${ENABLE_NAUTILUS_SHADOW}" \
+    HIP4_NAUTILUS_SHADOW_CONFIG="${HIP4_NAUTILUS_SHADOW_CONFIG:-config/hip4_nautilus_shadow.toml}" \
     TRIDENT_CONFIG_PATH="${TRIDENT_CONFIG_PATH:-config/trident.toml}" \
     docker compose "${COMPOSE_ENV_ARGS[@]}" -f docker-compose.hip4.yml "${PROFILE_ARGS[@]}" "$@"
 }
@@ -185,11 +209,12 @@ read_only_compose() {
 default_services() {
     local services=(hip4-api hip4-outcome-paper)
     mainnet_observer_enabled && services+=(hip4-mainnet-observer)
+    nautilus_shadow_enabled && services+=(hip4-nautilus-shadow)
     printf '%s\n' "${services[@]}"
 }
 
 all_managed_services() {
-    printf '%s\n' hip4-api hip4-outcome-paper hip4-mainnet-observer
+    printf '%s\n' hip4-api hip4-outcome-paper hip4-mainnet-observer hip4-nautilus-shadow
 }
 
 require_runtime_files() {
@@ -211,6 +236,7 @@ fresh_start_cleanup() {
         runtime/hip4_outcome_mainnet_paper_rate_limits.json \
         runtime/hip4_outcome_mainnet_state.json \
         runtime/hip4_outcome_mainnet_rate_limits.json \
+        runtime/hip4_nautilus_shadow_state.json \
         2>/dev/null || true
     rm -rf \
         logs/hip4_outcome \
@@ -218,6 +244,7 @@ fresh_start_cleanup() {
         logs/hip4_outcome_testnet \
         logs/hip4_outcome_mainnet_paper \
         logs/hip4_outcome_mainnet \
+        logs/hip4_nautilus_shadow \
         2>/dev/null || true
     ok "Artefacts HIP-4 réinitialisés"
 }
@@ -229,7 +256,8 @@ write_deployment_profile() {
         "$HIP4_CONFIG" \
         "$HIP4_MAINNET_CONFIG" \
         "$HIP4_API_PORT" \
-        "$ENABLE_MAINNET_OBSERVER" <<'PY'
+        "$ENABLE_MAINNET_OBSERVER" \
+        "$ENABLE_NAUTILUS_SHADOW" <<'PY'
 from __future__ import annotations
 
 import json
@@ -242,10 +270,12 @@ def flag(raw: str) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-mode, config_path, mainnet_config_path, api_port, enable_mainnet_observer = sys.argv[1:6]
+mode, config_path, mainnet_config_path, api_port, enable_mainnet_observer, enable_nautilus_shadow = sys.argv[1:7]
 services = ["hip4-api", "hip4-outcome-paper"]
 if flag(enable_mainnet_observer):
     services.append("hip4-mainnet-observer")
+if flag(enable_nautilus_shadow):
+    services.append("hip4-nautilus-shadow")
 
 payload = {
     "app": "trident-hip4",
@@ -255,6 +285,7 @@ payload = {
     "mainnet_observer_config_path": mainnet_config_path,
     "api_port": int(api_port),
     "mainnet_observer_enabled": flag(enable_mainnet_observer),
+    "nautilus_shadow_enabled": flag(enable_nautilus_shadow),
     "selected_services": services,
 }
 Path("logs/trident_hip4_deployment_profile.json").write_text(

@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     cat <<'EOF'
-Usage: ./trident-hip4/deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--remote-dir /opt/trident-hip4] [--start] [--mode paper|observer|testnet] [--config config/hip4_outcome_mainnet_paper.toml] [--api-port 3001] [--with-mainnet-observer|--without-mainnet-observer] [--fresh-start]
+Usage: ./trident-hip4/deploy.sh [--host trident-hetzner] [--user trident-deploy] [--identity ~/.ssh/trident_hetzner_ed25519] [--remote-dir /opt/trident-hip4] [--start] [--mode paper|observer|testnet] [--config config/hip4_outcome_mainnet_paper.toml] [--api-port 3001] [--with-mainnet-observer|--without-mainnet-observer] [--with-nautilus-shadow|--without-nautilus-shadow] [--fresh-start]
 
 Déploie l'app séparée TRIDENT-HIP4:
 - rsync du code vers /opt/trident-hip4 par défaut
@@ -22,6 +22,8 @@ Déploie l'app séparée TRIDENT-HIP4:
 - optionnellement démarre l'API HIP-4 + le runner outcome paper
 - l'observer mainnet standalone est actif par défaut; utilisez
   --without-mainnet-observer pour le désactiver explicitement
+- le sidecar Nautilus shadow est désactivé par défaut; utilisez
+  --with-nautilus-shadow pour le lancer explicitement en read-only
 
 TRIDENT A/C n'est ni démarré ni arrêté par ce script.
 EOF
@@ -36,6 +38,7 @@ HIP4_MODE="${HIP4_OUTCOME_MODE:-paper}"
 HIP4_CONFIG="${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}"
 HIP4_API_PORT="${HIP4_OUTCOME_API_PORT:-3001}"
 ENABLE_MAINNET_OBSERVER="${TRIDENT_HIP4_ENABLE_MAINNET_OBSERVER:-true}"
+ENABLE_NAUTILUS_SHADOW="${TRIDENT_HIP4_ENABLE_NAUTILUS_SHADOW:-false}"
 FRESH_START=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -51,9 +54,21 @@ mainnet_observer_enabled() {
     esac
 }
 
+nautilus_shadow_enabled() {
+    case "${ENABLE_NAUTILUS_SHADOW,,}" in
+        1|true|yes|on)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 selected_services_label() {
     local services=("HIP-4 API" "HIP-4 Outcome Paper")
     mainnet_observer_enabled && services+=("HIP-4 Mainnet Observer")
+    nautilus_shadow_enabled && services+=("HIP-4 Nautilus Shadow")
     local joined=""
     local service
     for service in "${services[@]}"; do
@@ -74,6 +89,7 @@ server_flags() {
     quoted_port="$(printf '%q' "$HIP4_API_PORT")"
     flags="${flags} --mode ${quoted_mode} --config ${quoted_config} --api-port ${quoted_port}"
     mainnet_observer_enabled && flags="${flags} --with-mainnet-observer"
+    nautilus_shadow_enabled && flags="${flags} --with-nautilus-shadow"
     [ -n "$FRESH_START" ] && flags="${flags} --fresh-start"
     printf '%s' "$flags"
 }
@@ -120,6 +136,14 @@ while [ $# -gt 0 ]; do
             ENABLE_MAINNET_OBSERVER="false"
             shift
             ;;
+        --with-nautilus-shadow)
+            ENABLE_NAUTILUS_SHADOW="true"
+            shift
+            ;;
+        --without-nautilus-shadow)
+            ENABLE_NAUTILUS_SHADOW="false"
+            shift
+            ;;
         --fresh-start)
             FRESH_START="true"
             shift
@@ -156,7 +180,7 @@ ssh_remote() {
 
 validate_local() {
     info "Vérification des prérequis locaux HIP-4..."
-    for required in pyproject.toml Dockerfile.trident docker-compose.hip4.yml scripts/trident_hip4_server.sh; do
+    for required in pyproject.toml Dockerfile.trident Dockerfile.hip4-nautilus docker-compose.hip4.yml scripts/trident_hip4_server.sh; do
         if [ ! -f "${REPO_ROOT}/${required}" ]; then
             error "Fichier requis introuvable: ${required}"
             exit 1
@@ -212,6 +236,7 @@ build_remote() {
     info "Build Docker HIP-4 sur le serveur..."
     local profile_args=""
     mainnet_observer_enabled && profile_args="${profile_args} --profile mainnet_observer"
+    nautilus_shadow_enabled && profile_args="${profile_args} --profile nautilus_shadow"
     ssh_remote "cd ${DEPLOY_DIR} && COMPOSE_PROJECT_NAME=trident-hip4 docker compose -f docker-compose.hip4.yml${profile_args} build"
     ok "Image Docker HIP-4 buildée"
 }
@@ -267,5 +292,6 @@ else
     echo "Pour démarrer après déploiement :"
     echo "  ./trident-hip4/deploy.sh --start"
     echo "  ./trident-hip4/deploy.sh --start --without-mainnet-observer"
+    echo "  ./trident-hip4/deploy.sh --start --with-nautilus-shadow"
 fi
 echo ""

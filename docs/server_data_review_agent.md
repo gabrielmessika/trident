@@ -37,6 +37,8 @@ le plan actif gagne.
   le dire clairement.
 - Ne pas conclure sur la performance d'un changement si aucun trade ou early
   exit frais n'a eu lieu apres ce changement.
+- Ne pas conclure que Nautilus apporte un gain trading si le shadow ne couvre
+  encore aucune decision approuvee ou aucun settlement.
 
 ## Fetch initial obligatoire
 
@@ -228,6 +230,55 @@ Analyse obligatoire des observations:
   `last_error=null`; les classer KO seulement si l'API/status devient stale ou
   si l'erreur touche le runner paper/observer.
 
+Analyse obligatoire Nautilus Shadow HIP-4:
+
+- Verifier si le shadow Nautilus est present via le dernier
+  `server-data/hip4/api/hip4-nautilus-shadow-*.json` et
+  `server-data/hip4/logs/hip4_nautilus_shadow/status.json`.
+- Si present, extraire au minimum:
+  - `shadow_ready`;
+  - `reason`;
+  - `errors`;
+  - source des books Nautilus;
+  - `snapshot_count`;
+  - marche(s) selectionne(s).
+- Verifier que `server-data/hip4/logs/hip4_nautilus_shadow/data_quality.csv`
+  existe, est non vide, et que `parity_compare.csv` et `book_snapshots.jsonl`
+  progressent aussi. Si `data_quality.csv` est absent ou vide, conclure que
+  Nautilus est importable mais pas encore utile analytiquement.
+- Lire la section `### Nautilus Shadow Data Quality` de la review HIP-4 et/ou
+  le champ `nautilus_shadow` du JSON latest.
+- Pour la partie decision-time, verifier explicitement:
+  - `matched_decision_count`;
+  - `unmatched_decision_count`;
+  - `approved_count`;
+  - `rejected_count`;
+  - `would_block_count`;
+  - `would_block_approved_count`;
+  - `matched_settlement_count`.
+- Le prochain signal utile est `approved_count > 0` puis
+  `matched_settlement_count > 0`. Tant que ces deux compteurs restent a zero,
+  ne pas conclure sur le PnL ou la performance trading de Nautilus.
+- Si `would_block_count > 0`, separer les raisons de blocage:
+  `reference_divergence_gt_50bps`, book age, skew YES/NO, ou quality score bas.
+  Verifier surtout si ces blocages toucheraient des decisions approuvees
+  (`would_block_approved_count`) ou seulement des decisions deja rejetees.
+- Comparer les buckets suivants quand ils existent:
+  - PnL/PF/Brier ou settlement outcome par `quality_score`;
+  - PnL/PF/Brier ou settlement outcome par `max_book_age_ms`;
+  - PnL/PF/Brier ou settlement outcome par `book_pair_skew_ms`;
+  - PnL/PF/Brier ou settlement outcome par `reference_divergence_bps`.
+- Si apres une expiry complete Nautilus couvre toujours zero decision approuvee,
+  classer `WARN` data coverage et diagnostiquer:
+  - nombre de marches observes vs `max_markets`;
+  - underlyings couverts;
+  - marches selectionnes vs marches trades par HIP-4;
+  - age des rows qualite au moment des decisions;
+  - erreurs de subscription ou de symbologie.
+- Ne pas proposer de brancher Nautilus comme garde-fou actif tant qu'il n'a pas
+  montre, sur plusieurs jours mainnet paper, qu'il aurait evite des faux
+  signaux ou pertes sans bloquer de bons trades.
+
 ## Fichiers HIP-4 a examiner
 
 Repertoire principal paper:
@@ -249,6 +300,16 @@ Fichiers utiles, selon presence:
 Observer:
 
 `server-data/hip4/logs/hip4_outcome_mainnet/`
+
+Nautilus shadow, si present:
+
+`server-data/hip4/logs/hip4_nautilus_shadow/`
+
+- `status.json`
+- `data_quality.csv`
+- `parity_compare.csv`
+- `book_snapshots.jsonl`
+- `instruments.jsonl`
 
 ## Commandes d'aide
 

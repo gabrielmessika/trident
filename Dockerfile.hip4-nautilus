@@ -1,0 +1,38 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV CARGO_HOME=/opt/rust/cargo
+ENV RUSTUP_HOME=/opt/rust/rustup
+ENV PATH="/opt/rust/cargo/bin:/app/.venv/bin:${PATH}"
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        clang \
+        curl \
+        libssl-dev \
+        lld \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock README.md plan_trident.md VERSION* ./
+COPY app ./app
+COPY config ./config
+COPY scripts ./scripts
+COPY docs ./docs
+
+RUN uv sync --frozen --no-dev
+
+ARG NAUTILUS_TRADER_VERSION=1.227.0
+ENV PYO3_PYTHON=/app/.venv/bin/python
+RUN uv pip install --python /app/.venv/bin/python "nautilus_trader==${NAUTILUS_TRADER_VERSION}"
+
+CMD ["python", "-m", "app.live.hip4_nautilus_shadow_runner", "--config", "config/hip4_nautilus_shadow.toml", "--hip4-config", "config/hip4_outcome_mainnet_paper.toml"]

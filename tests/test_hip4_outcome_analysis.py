@@ -32,6 +32,7 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
             )
 
             self.assertEqual(payload["row_counts"]["opportunities"], 2)
+            self.assertEqual(payload["row_counts"]["nautilus_shadow_data_quality"], 1)
             self.assertEqual(payload["row_counts"]["market_observations"], 3)
             self.assertEqual(payload["market_observations"]["count"], 3)
             self.assertEqual(payload["market_observations"]["books_logged_count"], 2)
@@ -66,6 +67,17 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
             self.assertEqual(late_guardrail["excluded_count"], 1)
             self.assertAlmostEqual(late_guardrail["pnl_delta_usdc"], 4.0)
             self.assertEqual(payload["readiness"]["status"], "collect_more_data")
+            self.assertEqual(payload["nautilus_shadow"]["status"], "ok")
+            self.assertEqual(payload["nautilus_shadow"]["matched_settlement_count"], 1)
+            decision_time = payload["nautilus_shadow"]["decision_time"]
+            self.assertEqual(decision_time["matched_decision_count"], 1)
+            self.assertEqual(decision_time["unmatched_decision_count"], 1)
+            self.assertEqual(decision_time["approved_count"], 1)
+            self.assertEqual(decision_time["would_block_approved_count"], 0)
+            self.assertEqual(
+                decision_time["buckets"]["by_quality_score"][0]["bucket"],
+                "0.8-1.0",
+            )
             self.assertTrue(
                 any("Brier" in reason for reason in payload["readiness"]["reasons"])
             )
@@ -120,6 +132,8 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
             self.assertIn("HIP-4 Outcome Run Review", markdown)
             self.assertIn("Guardrail Candidates", markdown)
             self.assertIn("Market Observations", markdown)
+            self.assertIn("Nautilus Shadow Data Quality", markdown)
+            self.assertIn("Decision-time join", markdown)
             self.assertIn("priceBucket", markdown)
             self.assertIn("testnet", markdown)
             self.assertIn("mainnet", markdown)
@@ -351,6 +365,33 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
                         "no": {"coin": "#41", "bid": 0.49, "ask": 0.51},
                     },
                 },
+            ],
+        )
+        self._write_csv(
+            root.parent / "hip4_nautilus_shadow" / "data_quality.csv",
+            [
+                {
+                    "ts": "2026-05-03T08:00:00Z",
+                    "market_id": "BTC_GT_100_20260503_0815",
+                    "underlying": "BTC",
+                    "yes_coin": "#10",
+                    "no_coin": "#11",
+                    "yes_book_age_ms": "90",
+                    "no_book_age_ms": "120",
+                    "max_book_age_ms": "120",
+                    "book_pair_skew_ms": "30",
+                    "book_update_count_5s": "",
+                    "book_update_count_15s": "",
+                    "unique_book_count_5s": "",
+                    "unique_book_count_15s": "",
+                    "reference_age_ms": "",
+                    "reference_divergence_bps": "",
+                    "empty_book": "false",
+                    "crossed_book": "false",
+                    "quality_score": "0.95",
+                    "tradable_window": "true",
+                    "quality_reasons": "ok",
+                }
             ],
         )
 

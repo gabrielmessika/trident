@@ -1,0 +1,22 @@
+[hip4_nautilus_shadow]
+enabled = false
+mode = "shadow"
+environment = "mainnet"
+logs_dir = "./logs/hip4_nautilus_shadow"
+state_path = "./runtime/hip4_nautilus_shadow_state.json"
+loop_interval_seconds = 1
+max_markets = 4
+include_underlyings = ["BTC", "ETH", "SOL", "HYPE"]
+include_outcome_products = true
+include_hip3_products = false
+subscribe_all_mids = true
+subscribe_order_books = true
+book_depth_levels = 10
+warmup_seconds = 8
+stagger_subscriptions_ms = 1000
+max_ws_connects_per_minute = 6
+write_shadow_books = true
+write_shadow_quality = true
+write_shadow_instruments = true
+allow_orders = false
+allow_private_user_stream = false

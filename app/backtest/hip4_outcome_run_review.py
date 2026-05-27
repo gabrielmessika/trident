@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-md",
         default="server-data/replay_reports/hip4_outcome_run_review_latest.md",
     )
+    parser.add_argument(
+        "--nautilus-shadow-dir",
+        default=None,
+        help="Optional logs/hip4_nautilus_shadow directory for shadow data-quality buckets.",
+    )
     parser.add_argument("--min-testnet-settlements", type=int, default=20)
     parser.add_argument("--min-testnet-markets", type=int, default=5)
     parser.add_argument("--min-testnet-days", type=int, default=2)
@@ -60,7 +65,11 @@ def main() -> None:
         max_brier_score=args.max_brier_score,
         max_avg_fill_slippage=args.max_avg_fill_slippage,
     )
-    payload = analyze_profiles(profiles, thresholds=thresholds)
+    payload = analyze_profiles(
+        profiles,
+        thresholds=thresholds,
+        nautilus_shadow_dir=args.nautilus_shadow_dir,
+    )
 
     json_text = json.dumps(payload, indent=2, sort_keys=True)
     markdown = render_markdown(payload)

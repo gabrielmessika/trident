@@ -27,6 +27,17 @@ agents de code.
   utiles pour les anciens replays, mais ne remplacent pas les donnees courantes
   de `server-data/`.
 
+## Agent review donnees serveur
+
+- Quand l'utilisateur demande en langage naturel de verifier les donnees serveur
+  TRIDENT, de confirmer que tout est OK cote TRIDENT, de reviewer les data
+  fetchees sur les deux bots, ou d'analyser les resultats paper et
+  l'observation TRIDENT-HIP4, lire et suivre
+  `docs/server_data_review_agent.md`.
+- Le skill Codex correspondant est `$trident-server-data-review`. S'il est
+  disponible, l'utiliser pour ces demandes; sinon, appliquer directement le
+  guide `docs/server_data_review_agent.md`.
+
 ## Etat fonctionnel a garder en tete
 
 - TRIDENT orchestre les pods Hyperliquid A/C. Ne supposer aucune evolution

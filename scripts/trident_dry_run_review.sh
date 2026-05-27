@@ -388,6 +388,7 @@ run_hip4_outcome_run_review() {
                 --logs-dir "mainnet_paper=${LOCAL_DIR}/logs/hip4_outcome_mainnet_paper" \
                 --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
                 --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
+                --nautilus-shadow-dir "${LOCAL_DIR}/logs/hip4_nautilus_shadow" \
                 --output-json "${HIP4_RUN_REVIEW_JSON}" \
                 --output-md "${HIP4_RUN_REVIEW_MD}"
         elif command -v python3.12 >/dev/null 2>&1; then
@@ -396,6 +397,7 @@ run_hip4_outcome_run_review() {
                 --logs-dir "mainnet_paper=${LOCAL_DIR}/logs/hip4_outcome_mainnet_paper" \
                 --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
                 --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
+                --nautilus-shadow-dir "${LOCAL_DIR}/logs/hip4_nautilus_shadow" \
                 --output-json "${HIP4_RUN_REVIEW_JSON}" \
                 --output-md "${HIP4_RUN_REVIEW_MD}"
         elif command -v python3.11 >/dev/null 2>&1; then
@@ -404,6 +406,7 @@ run_hip4_outcome_run_review() {
                 --logs-dir "mainnet_paper=${LOCAL_DIR}/logs/hip4_outcome_mainnet_paper" \
                 --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
                 --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
+                --nautilus-shadow-dir "${LOCAL_DIR}/logs/hip4_nautilus_shadow" \
                 --output-json "${HIP4_RUN_REVIEW_JSON}" \
                 --output-md "${HIP4_RUN_REVIEW_MD}"
         else
@@ -412,6 +415,7 @@ run_hip4_outcome_run_review() {
                 --logs-dir "mainnet_paper=${LOCAL_DIR}/logs/hip4_outcome_mainnet_paper" \
                 --logs-dir "testnet=${LOCAL_DIR}/logs/hip4_outcome_testnet" \
                 --logs-dir "mainnet=${LOCAL_DIR}/logs/hip4_outcome_mainnet" \
+                --nautilus-shadow-dir "${LOCAL_DIR}/logs/hip4_nautilus_shadow" \
                 --output-json "${HIP4_RUN_REVIEW_JSON}" \
                 --output-md "${HIP4_RUN_REVIEW_MD}"
         fi

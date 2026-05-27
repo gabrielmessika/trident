@@ -5,6 +5,7 @@ import json
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ DEFAULT_PROFILE_LOGS: dict[str, str] = {
     "mainnet": "logs/hip4_outcome_mainnet",
     "paper": "logs/hip4_outcome_paper",
 }
+DEFAULT_NAUTILUS_SHADOW_LOGS = "logs/hip4_nautilus_shadow"
+DEFAULT_NAUTILUS_DECISION_JOIN_MAX_AGE_SECONDS = 300.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,10 +37,16 @@ def analyze_profiles(
     profiles: dict[str, str | Path],
     *,
     thresholds: ReviewThresholds | None = None,
+    nautilus_shadow_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     limits = thresholds or ReviewThresholds()
     profile_payloads = [
-        analyze_profile(name, Path(logs_dir), thresholds=limits)
+        analyze_profile(
+            name,
+            Path(logs_dir),
+            thresholds=limits,
+            nautilus_shadow_dir=nautilus_shadow_dir,
+        )
         for name, logs_dir in sorted(profiles.items())
     ]
     payload = {
@@ -64,6 +73,7 @@ def analyze_profile(
     logs_dir: str | Path,
     *,
     thresholds: ReviewThresholds | None = None,
+    nautilus_shadow_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     limits = thresholds or ReviewThresholds()
     root = Path(logs_dir)
@@ -93,6 +103,11 @@ def analyze_profile(
     calibration = _calibration_summary(settlement_rows)
     loss_review = _loss_review(settlement_rows)
     guardrail_candidates = _guardrail_candidate_analysis(settlement_rows, limits)
+    nautilus_shadow = _nautilus_shadow_summary(
+        _infer_nautilus_shadow_dir(root, nautilus_shadow_dir),
+        settlement_rows,
+        decisions,
+    )
 
     return {
         "profile": profile,
@@ -109,6 +124,7 @@ def analyze_profile(
             "short_expiry_features": len(short_features),
             "daily_summary": len(daily_summary),
             "market_observations": len(market_observations),
+            "nautilus_shadow_data_quality": nautilus_shadow.get("row_count", 0),
         },
         "window": _window(
             opportunities
@@ -134,6 +150,7 @@ def analyze_profile(
         "edge_decay": _edge_decay_summary(edge_decay),
         "latency": _latency_summary(latency),
         "short_expiry": _short_expiry_summary(short_features),
+        "nautilus_shadow": nautilus_shadow,
         "readiness": _profile_readiness(
             profile=profile,
             row_counts={
@@ -249,6 +266,109 @@ def render_markdown(payload: dict[str, Any]) -> str:
                 for row in support_reasons[:10]:
                     lines.append(f"| {row.get('support_reason')} | {row.get('count')} |")
                 lines.append("")
+
+        nautilus_shadow = profile.get("nautilus_shadow", {})
+        lines.extend(["### Nautilus Shadow Data Quality", ""])
+        lines.append(f"- Status: `{nautilus_shadow.get('status', 'nautilus_shadow_missing')}`")
+        if nautilus_shadow.get("status") != "nautilus_shadow_missing":
+            lines.append(
+                f"- Rows: `{nautilus_shadow.get('row_count', 0)}`; "
+                f"matched settlements: `{nautilus_shadow.get('matched_settlement_count', 0)}`; "
+                f"markets: `{nautilus_shadow.get('market_count', 0)}`"
+            )
+            lines.append(
+                f"- Avg quality: `{_fmt_num(nautilus_shadow.get('avg_quality_score'))}`; "
+                f"avg max age ms: `{_fmt_num(nautilus_shadow.get('avg_max_book_age_ms'))}`; "
+                f"avg skew ms: `{_fmt_num(nautilus_shadow.get('avg_book_pair_skew_ms'))}`"
+            )
+            row_buckets = nautilus_shadow.get("quality_row_buckets", {})
+            if isinstance(row_buckets, dict) and row_buckets.get("by_quality_score"):
+                lines.append("")
+                lines.append("| Data quality bucket | Count | Tradable rate | Avg max age ms | Avg skew ms |")
+                lines.append("|---|---:|---:|---:|---:|")
+                for row in row_buckets.get("by_quality_score", []):
+                    lines.append(
+                        f"| quality {row.get('bucket')} | {row.get('count')} | "
+                        f"{_fmt_num(row.get('tradable_rate'))} | "
+                        f"{_fmt_num(row.get('avg_max_book_age_ms'))} | "
+                        f"{_fmt_num(row.get('avg_book_pair_skew_ms'))} |"
+                    )
+                for row in row_buckets.get("by_max_book_age_ms", []):
+                    lines.append(
+                        f"| age {row.get('bucket')} | {row.get('count')} | "
+                        f"{_fmt_num(row.get('tradable_rate'))} | "
+                        f"{_fmt_num(row.get('avg_max_book_age_ms'))} | "
+                        f"{_fmt_num(row.get('avg_book_pair_skew_ms'))} |"
+                    )
+                for row in row_buckets.get("by_book_pair_skew_ms", []):
+                    lines.append(
+                        f"| skew {row.get('bucket')} | {row.get('count')} | "
+                        f"{_fmt_num(row.get('tradable_rate'))} | "
+                        f"{_fmt_num(row.get('avg_max_book_age_ms'))} | "
+                        f"{_fmt_num(row.get('avg_book_pair_skew_ms'))} |"
+                    )
+            decision_time = nautilus_shadow.get("decision_time", {})
+            if isinstance(decision_time, dict):
+                lines.append("")
+                lines.append(
+                    f"- Decision-time join: `{decision_time.get('matched_decision_count', 0)}` "
+                    f"matched decisions; `{decision_time.get('unmatched_decision_count', 0)}` "
+                    f"unmatched; max age `{_fmt_num(decision_time.get('max_match_age_seconds'))}`s"
+                )
+                lines.append(
+                    f"- Decision-time approved: `{decision_time.get('approved_count', 0)}`; "
+                    f"rejected: `{decision_time.get('rejected_count', 0)}`; "
+                    f"Nautilus would-block approved: `{decision_time.get('would_block_approved_count', 0)}`"
+                )
+                join_buckets = decision_time.get("buckets", {})
+                join_bucket_rows: list[tuple[str, dict[str, Any]]] = []
+                if isinstance(join_buckets, dict):
+                    for label, key in (
+                        ("quality", "by_quality_score"),
+                        ("age", "by_max_book_age_ms"),
+                        ("skew", "by_book_pair_skew_ms"),
+                        ("divergence", "by_reference_divergence_bps"),
+                    ):
+                        join_bucket_rows.extend(
+                            (label, row)
+                            for row in join_buckets.get(key, [])
+                            if isinstance(row, dict)
+                        )
+                if join_bucket_rows:
+                    lines.append("")
+                    lines.append("| Decision bucket | Count | Approved | Rejected | Would block | Avg age s | Avg quality |")
+                    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+                    for label, row in join_bucket_rows:
+                        lines.append(
+                            f"| {label} {row.get('bucket')} | {row.get('count')} | "
+                            f"{row.get('approved_count')} | {row.get('rejected_count')} | "
+                            f"{row.get('would_block_count')} | "
+                            f"{_fmt_num(row.get('avg_match_age_seconds'))} | "
+                            f"{_fmt_num(row.get('avg_quality_score'))} |"
+                        )
+            low_quality = nautilus_shadow.get("low_quality_settlements", {})
+            if isinstance(low_quality, dict):
+                metrics = low_quality.get("metrics", {})
+                lines.append(
+                    f"- Settled low-quality entries: `{low_quality.get('count', 0)}`; "
+                    f"PnL: `{_fmt_num(metrics.get('net_pnl_usdc'))}`; "
+                    f"PF: `{_fmt_num(metrics.get('profit_factor'))}`; "
+                    f"Brier: `{_fmt_num(metrics.get('brier_score'))}`"
+                )
+            buckets = nautilus_shadow.get("buckets", {})
+            quality_buckets = buckets.get("by_quality_score", []) if isinstance(buckets, dict) else []
+            if quality_buckets:
+                lines.append("")
+                lines.append("| Quality bucket | Count | PnL | PF | Brier |")
+                lines.append("|---|---:|---:|---:|---:|")
+                for row in quality_buckets:
+                    lines.append(
+                        f"| {row.get('bucket')} | {row.get('count')} | "
+                        f"{_fmt_num(row.get('net_pnl_usdc'))} | "
+                        f"{_fmt_num(row.get('profit_factor'))} | "
+                        f"{_fmt_num(row.get('brier_score'))} |"
+                    )
+        lines.append("")
 
         top_losses = profile.get("loss_review", {}).get("categories", [])
         if top_losses:
@@ -1227,6 +1347,487 @@ def _short_expiry_summary(rows: list[dict[str, str]]) -> dict[str, Any]:
     }
 
 
+def _infer_nautilus_shadow_dir(
+    profile_logs_dir: Path,
+    explicit: str | Path | None,
+) -> Path:
+    if explicit is not None:
+        return Path(explicit)
+    sibling = profile_logs_dir.parent / "hip4_nautilus_shadow"
+    if sibling.exists():
+        return sibling
+    return Path(DEFAULT_NAUTILUS_SHADOW_LOGS)
+
+
+def _nautilus_shadow_summary(
+    shadow_dir: Path,
+    settlement_rows: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    data_quality_path = shadow_dir / "data_quality.csv"
+    status_path = shadow_dir / "status.json"
+    rows = _read_csv(data_quality_path)
+    if not data_quality_path.exists():
+        return {
+            "status": "nautilus_shadow_missing",
+            "logs_dir": str(shadow_dir),
+            "data_quality_path": str(data_quality_path),
+            "status_path": str(status_path),
+            "row_count": 0,
+            "matched_settlement_count": 0,
+            "market_count": 0,
+            "decision_time": _decision_time_quality_summary(decisions, []),
+        }
+
+    quality_index = _latest_quality_by_market(rows)
+    matched = _settlements_with_quality(settlement_rows, quality_index)
+    low_quality = [row for row in matched if _quality_reject_reason(row)]
+    high_quality = [row for row in matched if not _quality_reject_reason(row)]
+    quality_scores = [_float(row.get("quality_score")) for row in rows if row.get("quality_score")]
+    max_ages = [_float(row.get("max_book_age_ms")) for row in rows if row.get("max_book_age_ms")]
+    skews = [_float(row.get("book_pair_skew_ms")) for row in rows if row.get("book_pair_skew_ms")]
+    status = "ok" if rows else "partial"
+    if not matched and settlement_rows:
+        status = "partial"
+
+    return {
+        "status": status,
+        "logs_dir": str(shadow_dir),
+        "data_quality_path": str(data_quality_path),
+        "status_path": str(status_path),
+        "row_count": len(rows),
+        "matched_settlement_count": len(matched),
+        "market_count": len(quality_index),
+        "avg_quality_score": _avg(quality_scores),
+        "avg_max_book_age_ms": _avg(max_ages),
+        "avg_book_pair_skew_ms": _avg(skews),
+        "low_quality_settlements": {
+            "count": len(low_quality),
+            "metrics": _guardrail_metrics(low_quality),
+            "reasons": _counter_rows(
+                Counter(
+                    reason
+                    for row in low_quality
+                    for reason in [_quality_reject_reason(row)]
+                    if reason
+                ),
+                "reason",
+            ),
+        },
+        "high_quality_settlements": {
+            "count": len(high_quality),
+            "metrics": _guardrail_metrics(high_quality),
+        },
+        "buckets": {
+            "by_quality_score": _aggregate_quality_bucket(
+                matched,
+                lambda row: _quality_score_bucket(row.get("_nautilus_quality", {})),
+            ),
+            "by_max_book_age_ms": _aggregate_quality_bucket(
+                matched,
+                lambda row: _age_bucket(
+                    _optional_float(
+                        _quality_payload(row).get("max_book_age_ms")
+                    )
+                ),
+            ),
+            "by_book_pair_skew_ms": _aggregate_quality_bucket(
+                matched,
+                lambda row: _skew_bucket(
+                    _optional_float(
+                        _quality_payload(row).get("book_pair_skew_ms")
+                    )
+                ),
+            ),
+        },
+        "quality_row_buckets": {
+            "by_quality_score": _aggregate_quality_rows(
+                rows,
+                lambda row: _quality_score_bucket(row),
+            ),
+            "by_max_book_age_ms": _aggregate_quality_rows(
+                rows,
+                lambda row: _age_bucket(_optional_float(row.get("max_book_age_ms"))),
+            ),
+            "by_book_pair_skew_ms": _aggregate_quality_rows(
+                rows,
+                lambda row: _skew_bucket(_optional_float(row.get("book_pair_skew_ms"))),
+            ),
+        },
+        "decision_time": _decision_time_quality_summary(decisions, rows),
+    }
+
+
+def _latest_quality_by_market(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    latest: dict[str, dict[str, str]] = {}
+    for row in sorted(rows, key=lambda item: str(item.get("ts", ""))):
+        market_id = str(row.get("market_id", "")).strip()
+        if market_id:
+            latest[market_id] = row
+    return latest
+
+
+def _settlements_with_quality(
+    settlement_rows: list[dict[str, Any]],
+    quality_index: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for row in settlement_rows:
+        quality = quality_index.get(str(row.get("market_id", "")).strip())
+        if not quality:
+            continue
+        enriched = dict(row)
+        enriched["_nautilus_quality"] = quality
+        output.append(enriched)
+    return output
+
+
+def _decision_time_quality_summary(
+    decisions: list[dict[str, Any]],
+    quality_rows: list[dict[str, str]],
+    *,
+    max_age_seconds: float = DEFAULT_NAUTILUS_DECISION_JOIN_MAX_AGE_SECONDS,
+) -> dict[str, Any]:
+    decision_rows = [_normalize_decision_for_quality_join(row) for row in decisions]
+    decision_rows = [row for row in decision_rows if row is not None]
+    quality_index = _quality_rows_by_market(quality_rows)
+    matched: list[dict[str, Any]] = []
+    unmatched_reasons: Counter[str] = Counter()
+
+    for decision in decision_rows:
+        decision_ts = decision.get("_ts")
+        market_id = str(decision.get("market_id", ""))
+        if not isinstance(decision_ts, datetime):
+            unmatched_reasons["decision_ts_missing"] += 1
+            continue
+        candidates = quality_index.get(market_id, [])
+        if not candidates:
+            unmatched_reasons["no_market_quality"] += 1
+            continue
+        match = _latest_quality_before_decision(candidates, decision_ts)
+        if match is None:
+            unmatched_reasons["no_prior_quality"] += 1
+            continue
+        quality_ts, quality = match
+        age_seconds = (decision_ts - quality_ts).total_seconds()
+        if age_seconds < 0:
+            unmatched_reasons["future_quality_only"] += 1
+            continue
+        if age_seconds > max_age_seconds:
+            unmatched_reasons["quality_too_old"] += 1
+            continue
+        quality_reject = _quality_reject_reason({"_nautilus_quality": quality})
+        matched.append(
+            {
+                **decision,
+                "_nautilus_quality": quality,
+                "match_age_seconds": round(age_seconds, 3),
+                "quality_reject_reason": quality_reject,
+            }
+        )
+
+    approved = [row for row in matched if bool(row.get("approved"))]
+    rejected = [row for row in matched if not bool(row.get("approved"))]
+    would_block = [row for row in matched if row.get("quality_reject_reason")]
+    would_block_approved = [row for row in approved if row.get("quality_reject_reason")]
+    return {
+        "max_match_age_seconds": max_age_seconds,
+        "decision_count": len(decision_rows),
+        "matched_decision_count": len(matched),
+        "unmatched_decision_count": max(len(decision_rows) - len(matched), 0),
+        "unmatched_reasons": _counter_rows(unmatched_reasons, "reason"),
+        "approved_count": len(approved),
+        "rejected_count": len(rejected),
+        "would_block_count": len(would_block),
+        "would_block_approved_count": len(would_block_approved),
+        "avg_match_age_seconds": _avg([float(row["match_age_seconds"]) for row in matched]),
+        "avg_quality_score": _avg(
+            [
+                _float(_quality_payload(row).get("quality_score"))
+                for row in matched
+                if _quality_payload(row).get("quality_score")
+            ]
+        ),
+        "by_approval": [
+            {"approved": True, **_decision_quality_join_metrics(approved)},
+            {"approved": False, **_decision_quality_join_metrics(rejected)},
+        ],
+        "would_block_reasons": _counter_rows(
+            Counter(str(row.get("quality_reject_reason")) for row in would_block),
+            "reason",
+        ),
+        "rejected_reasons": _counter_rows(
+            Counter(str(row.get("decision_reason") or "unknown") for row in rejected),
+            "reason",
+        ),
+        "buckets": {
+            "by_quality_score": _aggregate_decision_quality_bucket(
+                matched,
+                lambda row: _quality_score_bucket(row.get("_nautilus_quality", {})),
+            ),
+            "by_max_book_age_ms": _aggregate_decision_quality_bucket(
+                matched,
+                lambda row: _age_bucket(
+                    _optional_float(_quality_payload(row).get("max_book_age_ms"))
+                ),
+            ),
+            "by_book_pair_skew_ms": _aggregate_decision_quality_bucket(
+                matched,
+                lambda row: _skew_bucket(
+                    _optional_float(_quality_payload(row).get("book_pair_skew_ms"))
+                ),
+            ),
+            "by_reference_divergence_bps": _aggregate_decision_quality_bucket(
+                matched,
+                lambda row: _divergence_bucket(
+                    _optional_float(_quality_payload(row).get("reference_divergence_bps"))
+                ),
+            ),
+        },
+    }
+
+
+def _normalize_decision_for_quality_join(payload: dict[str, Any]) -> dict[str, Any] | None:
+    signal = payload.get("signal")
+    if not isinstance(signal, dict):
+        return None
+    market_id = str(signal.get("market_id") or "").strip()
+    if not market_id:
+        return None
+    decision = payload.get("supervisor_decision")
+    decision_payload = decision if isinstance(decision, dict) else {}
+    metadata = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
+    return {
+        "_ts": _parse_ts(payload.get("ts")),
+        "ts": payload.get("ts"),
+        "market_id": market_id,
+        "underlying": str(signal.get("underlying") or "").upper(),
+        "edge_type": str(signal.get("edge_type") or "unknown"),
+        "side": str(signal.get("side") or "unknown"),
+        "approved": bool(decision_payload.get("approved")),
+        "decision_reason": str(decision_payload.get("reason") or "unknown"),
+        "execution_mode": str(decision_payload.get("execution_mode") or "unknown"),
+        "net_edge": _first_optional_float(signal.get("net_edge"), metadata.get("net_edge")),
+        "confidence": _first_optional_float(signal.get("confidence"), metadata.get("probability_confidence")),
+    }
+
+
+def _quality_rows_by_market(
+    rows: list[dict[str, str]],
+) -> dict[str, list[tuple[datetime, dict[str, str]]]]:
+    grouped: dict[str, list[tuple[datetime, dict[str, str]]]] = defaultdict(list)
+    for row in rows:
+        market_id = str(row.get("market_id") or "").strip()
+        ts = _parse_ts(row.get("ts"))
+        if market_id and ts is not None:
+            grouped[market_id].append((ts, row))
+    return {
+        market_id: sorted(items, key=lambda item: item[0])
+        for market_id, items in grouped.items()
+    }
+
+
+def _latest_quality_before_decision(
+    candidates: list[tuple[datetime, dict[str, str]]],
+    decision_ts: datetime,
+) -> tuple[datetime, dict[str, str]] | None:
+    latest: tuple[datetime, dict[str, str]] | None = None
+    for item in candidates:
+        if item[0] <= decision_ts:
+            latest = item
+        else:
+            break
+    return latest
+
+
+def _aggregate_decision_quality_bucket(
+    rows: list[dict[str, Any]],
+    bucket_fn: Any,
+) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[str(bucket_fn(row))].append(row)
+    output: list[dict[str, Any]] = []
+    for bucket, items in groups.items():
+        output.append({"bucket": bucket, **_decision_quality_join_metrics(items)})
+    return sorted(output, key=lambda item: (str(item.get("bucket")), -int(item.get("count", 0))))
+
+
+def _decision_quality_join_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    approved = [row for row in rows if bool(row.get("approved"))]
+    rejected = [row for row in rows if not bool(row.get("approved"))]
+    would_block = [row for row in rows if row.get("quality_reject_reason")]
+    qualities = [_quality_payload(row) for row in rows]
+    return {
+        "count": len(rows),
+        "approved_count": len(approved),
+        "rejected_count": len(rejected),
+        "approval_rate": _safe_div(len(approved), len(rows)),
+        "would_block_count": len(would_block),
+        "would_block_approved_count": len(
+            [row for row in approved if row.get("quality_reject_reason")]
+        ),
+        "tradable_rate": _avg(
+            [1.0 if _boolish(quality.get("tradable_window")) else 0.0 for quality in qualities]
+        ),
+        "avg_match_age_seconds": _avg(
+            [float(row["match_age_seconds"]) for row in rows if row.get("match_age_seconds") is not None]
+        ),
+        "avg_quality_score": _avg(
+            [_float(quality.get("quality_score")) for quality in qualities if quality.get("quality_score")]
+        ),
+        "avg_max_book_age_ms": _avg(
+            [_float(quality.get("max_book_age_ms")) for quality in qualities if quality.get("max_book_age_ms")]
+        ),
+        "avg_book_pair_skew_ms": _avg(
+            [
+                _float(quality.get("book_pair_skew_ms"))
+                for quality in qualities
+                if quality.get("book_pair_skew_ms")
+            ]
+        ),
+        "avg_reference_divergence_bps": _avg(
+            [
+                _float(quality.get("reference_divergence_bps"))
+                for quality in qualities
+                if quality.get("reference_divergence_bps")
+            ]
+        ),
+    }
+
+
+def _aggregate_quality_bucket(
+    rows: list[dict[str, Any]],
+    bucket_fn: Any,
+) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[str(bucket_fn(row))].append(row)
+    output: list[dict[str, Any]] = []
+    for bucket, items in groups.items():
+        output.append({"bucket": bucket, **_guardrail_metrics(items)})
+    return sorted(output, key=lambda item: (str(item.get("bucket")), -int(item.get("count", 0))))
+
+
+def _aggregate_quality_rows(
+    rows: list[dict[str, str]],
+    bucket_fn: Any,
+) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        groups[str(bucket_fn(row))].append(row)
+    output: list[dict[str, Any]] = []
+    for bucket, items in groups.items():
+        output.append(
+            {
+                "bucket": bucket,
+                "count": len(items),
+                "tradable_rate": _avg([1.0 if _boolish(item.get("tradable_window")) else 0.0 for item in items]),
+                "avg_quality_score": _avg(
+                    [_float(item.get("quality_score")) for item in items if item.get("quality_score")]
+                ),
+                "avg_max_book_age_ms": _avg(
+                    [_float(item.get("max_book_age_ms")) for item in items if item.get("max_book_age_ms")]
+                ),
+                "avg_book_pair_skew_ms": _avg(
+                    [_float(item.get("book_pair_skew_ms")) for item in items if item.get("book_pair_skew_ms")]
+                ),
+            }
+        )
+    return sorted(output, key=lambda item: (str(item.get("bucket")), -int(item.get("count", 0))))
+
+
+def _quality_score_bucket(quality: object) -> str:
+    payload = quality if isinstance(quality, dict) else {}
+    score = _optional_float(payload.get("quality_score"))
+    if score is None:
+        return "missing"
+    if score < 0.4:
+        return "0.0-0.4"
+    if score < 0.6:
+        return "0.4-0.6"
+    if score < 0.8:
+        return "0.6-0.8"
+    return "0.8-1.0"
+
+
+def _age_bucket(value: float | None) -> str:
+    if value is None:
+        return "missing"
+    if value <= 250:
+        return "<=250ms"
+    if value <= 1000:
+        return "250-1000ms"
+    if value <= 3000:
+        return "1000-3000ms"
+    return ">3000ms"
+
+
+def _skew_bucket(value: float | None) -> str:
+    if value is None:
+        return "missing"
+    if value <= 100:
+        return "<=100ms"
+    if value <= 250:
+        return "100-250ms"
+    if value <= 1000:
+        return "250-1000ms"
+    return ">1000ms"
+
+
+def _divergence_bucket(value: float | None) -> str:
+    if value is None:
+        return "missing"
+    if value <= 1:
+        return "<=1bp"
+    if value <= 10:
+        return "1-10bps"
+    if value <= 50:
+        return "10-50bps"
+    return ">50bps"
+
+
+def _quality_reject_reason(row: dict[str, Any]) -> str | None:
+    quality = _quality_payload(row)
+    if _boolish(quality.get("empty_book")):
+        return "empty_book"
+    if _boolish(quality.get("crossed_book")):
+        return "crossed_book"
+    if not _boolish(quality.get("tradable_window"), default=True):
+        return "not_tradable_window"
+    score = _optional_float(quality.get("quality_score"))
+    max_age = _optional_float(quality.get("max_book_age_ms"))
+    skew = _optional_float(quality.get("book_pair_skew_ms"))
+    divergence = _optional_float(quality.get("reference_divergence_bps"))
+    if score is not None and score < 0.60:
+        return "quality_score_lt_0_60"
+    if max_age is not None and max_age > 3000:
+        return "max_book_age_gt_3000ms"
+    if skew is not None and skew > 1000:
+        return "book_pair_skew_gt_1000ms"
+    if divergence is not None and divergence > 50:
+        return "reference_divergence_gt_50bps"
+    return None
+
+
+def _quality_payload(row: dict[str, Any]) -> dict[str, Any]:
+    quality = row.get("_nautilus_quality")
+    return quality if isinstance(quality, dict) else {}
+
+
+def _boolish(value: object, *, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "y", "on"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _market_observation_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_class: Counter[str] = Counter()
     by_support: Counter[str] = Counter()
@@ -1628,6 +2229,20 @@ def _key(market_id: object, side: object) -> tuple[str, str]:
 def _date(value: object) -> str:
     text = str(value or "")
     return text[:10] if len(text) >= 10 else "unknown"
+
+
+def _parse_ts(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _counter_rows(counter: Counter[str], label: str) -> list[dict[str, Any]]:

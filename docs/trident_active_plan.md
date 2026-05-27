@@ -1004,33 +1004,78 @@ Artefacts a produire:
   - erreurs/reconnects;
   - decision `shadow_ready=true/false`.
 
-Phase 1 - Spike local sans service:
+Phase 1 - Shadow data local:
 
-- Installer Nautilus uniquement dans l'environnement local ou un venv research.
-- Verifier import minimal:
-  `python -c "import nautilus_trader; print(nautilus_trader.__version__)"`
-- Verifier que l'adapter Hyperliquid expose les types necessaires:
-  `HyperliquidDataClientConfig`, `HyperliquidProductType`,
-  `InstrumentProvider` ou equivalents courants.
-- Charger les instruments Hyperliquid en read-only:
-  - perps standard;
-  - HIP-3 builder perps en observation seulement;
-  - HIP-4 outcomes si exposes par la version installee.
-- Comparer la symbologie Nautilus avec la symbologie TRIDENT:
-  - TRIDENT wire coin outcome `#E`;
-  - Nautilus token form attendue `+E.HYPERLIQUID`;
-  - verifier conversion `outcome = floor(E / 10)`, `side = E % 10`.
-- Sortie attendue: `tmp/hip4_nautilus_instrument_probe_<date>.json`.
-- Aucune modification de config active.
+Implementation locale `2026-05-27`:
 
-Phase 2 - Shadow data local:
+- Module/runner/config/tests ajoutes:
+  `app/trident/hip4_outcome/nautilus_shadow.py`,
+  `app/live/hip4_nautilus_shadow_runner.py`,
+  `config/hip4_nautilus_shadow.toml`,
+  `tests/test_hip4_nautilus_shadow.py`.
+- Review HIP-4 branchee sur `logs/hip4_nautilus_shadow/data_quality.csv`
+  avec statut non bloquant `nautilus_shadow_missing` si absent.
+- Sidecar Docker/deploy/fetch ajoute en opt-in avec
+  `--with-nautilus-shadow`; il reste desactive par defaut et read-only.
+- Run local initial: `uv pip install nautilus_trader` a echoue car `clang`
+  est absent dans l'environnement local; le runner expose donc
+  `shadow_ready=false` et aucun artefact `data_quality.csv` exploitable.
+- Suite `2026-05-27`: une image dediee `Dockerfile.hip4-nautilus` ajoute
+  `clang`, `lld`, `libssl-dev`, `build-essential`, `pkg-config` et Rust
+  uniquement pour le sidecar `hip4-nautilus-shadow`. L'image TRIDENT A/C et
+  l'image HIP-4 principale restent sans toolchain Nautilus.
+- Test local wheel binaire: `nautilus_trader==1.208.0` s'installe depuis
+  l'index Nautilus mais l'import Hyperliquid echoue sur `libssl.so.1.1`; le
+  sidecar Docker force donc une version recente `1.227.0` construite/installee
+  dans son image dediee.
+- Le build Docker n'a pas pu etre valide localement dans ce workspace car la
+  commande `docker` est absente.
+- Validation serveur `2026-05-27`: `./trident-hip4/deploy.sh --start
+  --with-nautilus-shadow` a builde l'image dediee et demarre le sidecar.
+  L'API `server-data/hip4/api/hip4-nautilus-shadow-2026-05-27_075744.json`
+  expose `shadow_ready=true`, `reason=ok`, Nautilus `1.227.0` et
+  `HyperliquidProductType.OUTCOME`.
+- `server-data/hip4/logs/hip4_nautilus_shadow/data_quality.csv` existe apres
+  fetch; snapshot final `2026-05-27T08:44Z`: `130` lignes qualite, `260`
+  lignes parity, `260` snapshots books, `1` marche observe.
+- La review latest voit Nautilus en `partial`: `row_count=130`,
+  `market_count=1`, `matched_settlement_count=0`. Cela prouve la plomberie
+  shadow et le CSV, pas encore un apport trading mesurable.
+- `trident-hip4/fetch_data.sh` reutilise une connexion SSH multiplexee pour
+  eviter de rater les artefacts Nautilus actifs lors d'un fetch complet.
+- Etape 2 `2026-05-27`: le runner instancie maintenant
+  `HyperliquidInstrumentProvider` + `HyperliquidWebSocketClient`, charge les
+  instruments `OUTCOME`, souscrit les books des coins HIP-4 selectionnes, ecrit
+  `book_snapshots.jsonl` depuis Nautilus et remplit `parity_compare.csv` avec
+  `trident_bid/ask` vs `nautilus_bid/ask`.
+- Validation serveur propre apres archive des lignes du bug de parse et
+  redeploiement final: `shadow_ready=true`, `source=nautilus_hyperliquid_ws`,
+  `snapshot_count=2`, `errors=[]`.
+- La review latest expose maintenant aussi des buckets d'observation
+  `quality_row_buckets` sur toutes les lignes shadow. Mainnet paper:
+  `row_count=130`, `market_count=1`, `matched_settlement_count=0`,
+  `avg_quality_score=0.8940`, `avg_max_book_age_ms=1262.4769`,
+  `avg_book_pair_skew_ms=0.0`.
+- Etape decision-time `2026-05-27`: la review joint chaque decision HIP-4 a la
+  derniere ligne Nautilus du meme `market_id` anterieure a la decision et agee
+  de moins de `300s`. Snapshot mainnet paper `08:44Z`: `68` decisions
+  matchees, `4488` non matchees historiques, age moyen `7.41s`,
+  `would_block_count=9` pour `reference_divergence_gt_50bps`. Aucune decision
+  approuvee couverte pour l'instant, donc pas encore de conclusion PnL.
+- Replay/review local date:
+  `server-data/hip4/reviews/20260527T084458Z/hip4_outcome_run_review.md`.
+  Verdict initial: pas d'apport mesurable Nautilus avant donnees shadow
+  exploitables; a rejouer apres plusieurs settlements avec le CSV serveur.
 
-- Implementer `hip4_nautilus_shadow_runner --once`.
-- Lire les marches courants depuis `outcomeMeta` via TRIDENT existant ou via
-  Nautilus si l'instrument provider expose assez de metadata.
-- Souscrire seulement `max_markets` outcomes proches expiry.
+- `hip4_nautilus_shadow_runner --once` existe; l'import Nautilus et la source
+  order book Nautilus directe sont valides dans le sidecar serveur.
+- Lire les marches courants depuis `outcomeMeta` via TRIDENT existant: fait
+  dans le runner shadow.
+- Souscrire seulement `max_markets` outcomes proches expiry: fait via les
+  coins YES/NO des marches selectionnes.
 - Ecrire les fichiers `instruments.jsonl`, `book_snapshots.jsonl` et
-  `data_quality.csv`.
+  `data_quality.csv`: fait cote sidecar serveur et rapatrie dans
+  `server-data/hip4/logs/hip4_nautilus_shadow/`.
 - Ne pas brancher le shadow runner au detector d'edge.
 - Comparer les books Nautilus aux books TRIDENT HTTP sur le meme loop:
   - best bid/ask;
@@ -1042,7 +1087,7 @@ Phase 2 - Shadow data local:
   `server-data/replay_reports/hip4_nautilus_shadow_probe_<date>.md` ou `tmp/`
   si le run est purement local.
 
-Phase 3 - Integration review HIP-4:
+Phase 2 - Integration review HIP-4:
 
 - Ajouter la lecture optionnelle de `logs/hip4_nautilus_shadow/data_quality.csv`
   dans `app/trident/hip4_outcome/analysis.py`.
@@ -1060,7 +1105,7 @@ Phase 3 - Integration review HIP-4:
 - Ne pas changer les verdicts `go/watch/park/kill` automatiquement tant que le
   shadow n'a pas plusieurs jours de donnees.
 
-Phase 4 - Sidecar TRIDENT-HIP4 optionnel:
+Phase 3 - Sidecar TRIDENT-HIP4 optionnel:
 
 - Ajouter un service Docker desactive par defaut dans `docker-compose.hip4.yml`,
   nom propose: `hip4-nautilus-shadow`.
@@ -1073,7 +1118,7 @@ Phase 4 - Sidecar TRIDENT-HIP4 optionnel:
   `/api/hip4-nautilus-shadow`.
 - L'UI doit afficher clairement `shadow/read-only`, pas un executor.
 
-Phase 5 - Decision d'adoption:
+Phase 4 - Decision d'adoption:
 
 - Garder Nautilus si, sur au moins plusieurs jours mainnet paper:
   - il donne des books plus frais que le polling TRIDENT;
@@ -1104,7 +1149,7 @@ Chemin de migration partielle possible, non autorise au depart:
     confirmation operateur.
 - Jamais de remplacement global Pod A/C sans nouveau plan.
 
-Tests requis avant merge du spike:
+Tests requis avant merge du shadow:
 
 ```bash
 uv run python -m py_compile \
@@ -1127,7 +1172,7 @@ uv run python -m app.live.hip4_nautilus_shadow_runner \
   --once
 ```
 
-Impacts deploy/fetch/review a traiter si implementation:
+Impacts deploy/fetch/review traites ou a maintenir:
 
 - `trident-hip4/deploy.sh`:
   - ajouter le flag opt-in `--with-nautilus-shadow`;
@@ -1168,7 +1213,7 @@ Risques a surveiller:
 - Fausse impression de performance si le shadow voit un book plus frais mais
   non executable.
 
-Critere de fin du spike:
+Critere de fin du shadow initial:
 
 - Rapport experimental date avec:
   - version Nautilus;
@@ -1183,7 +1228,8 @@ Critere de fin du spike:
 - Aucun changement de trading actif.
 - Aucun changement des caps.
 - Aucun changement de baseline officielle.
-- Si le spike est `go`, ouvrir un plan d'implementation separe pour phase 3/4.
+- Si le shadow initial est `go`, ouvrir un plan d'implementation separe pour
+  une migration partielle.
 
 ### Backlog LLM Research Sidecar / TradingAgents
 

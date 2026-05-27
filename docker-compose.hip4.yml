@@ -116,3 +116,37 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+
+  hip4-nautilus-shadow:
+    build:
+      context: .
+      dockerfile: Dockerfile.hip4-nautilus
+    container_name: trident-hip4-nautilus-shadow
+    environment:
+      HIP4_NAUTILUS_SHADOW_ENABLED: ${HIP4_NAUTILUS_SHADOW_ENABLED:-true}
+      HIP4_NAUTILUS_SHADOW_CONFIG: ${HIP4_NAUTILUS_SHADOW_CONFIG:-config/hip4_nautilus_shadow.toml}
+      HIP4_OUTCOME_CONFIG: ${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}
+      HIP4_OUTCOME_ALLOW_TESTNET_ORDERS: "false"
+      TRIDENT_ENABLE_HIP4_OUTCOME: "true"
+    command:
+      - python
+      - -m
+      - app.live.hip4_nautilus_shadow_runner
+      - --config
+      - ${HIP4_NAUTILUS_SHADOW_CONFIG:-config/hip4_nautilus_shadow.toml}
+      - --hip4-config
+      - ${HIP4_OUTCOME_CONFIG:-config/hip4_outcome_mainnet_paper.toml}
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./runtime:/app/runtime
+    depends_on:
+      hip4-api:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["nautilus_shadow"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
