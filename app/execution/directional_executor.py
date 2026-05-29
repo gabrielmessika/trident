@@ -14,6 +14,7 @@ from app.trident.types import RiskDecision, SymbolMarketSnapshot
 class ExecutionBatch:
     opened_symbols: list[str]
     skipped_open_symbols: list[str]
+    skip_reasons_by_symbol: dict[str, str]
     closed_trades: list[ClosedTrade]
     fills: list[dict[str, object]]
     had_open_position_before: dict[str, bool]
@@ -55,6 +56,7 @@ class DirectionalExecutor:
         closed_trades: list[ClosedTrade] = []
         opened_symbols: list[str] = []
         skipped_open_symbols: list[str] = []
+        skip_reasons_by_symbol: dict[str, str] = {}
         fills: list[dict[str, object]] = []
         tracked_symbols = {
             *snapshot_by_symbol.keys(),
@@ -128,6 +130,10 @@ class DirectionalExecutor:
                 and decision.trade_plan.symbol not in entry_allowed_symbols
             ):
                 skipped_open_symbols.append(decision.trade_plan.symbol)
+                skip_reasons_by_symbol.setdefault(
+                    decision.trade_plan.symbol,
+                    "entry_not_allowed_by_routing",
+                )
                 continue
             if self.portfolio.in_reentry_cooldown(
                 decision.trade_plan.symbol,
@@ -136,6 +142,10 @@ class DirectionalExecutor:
                 bypass_reasons={"upgrade_setup"},
             ):
                 skipped_open_symbols.append(decision.trade_plan.symbol)
+                skip_reasons_by_symbol.setdefault(
+                    decision.trade_plan.symbol,
+                    "reentry_cooldown_active",
+                )
                 continue
             existing = self.portfolio.open_positions.get(decision.trade_plan.symbol)
             if existing is not None and self._should_scale_in(existing, decision.trade_plan, snapshot):
@@ -158,6 +168,13 @@ class DirectionalExecutor:
                     )
                     if fill is None:
                         skipped_open_symbols.append(decision.trade_plan.symbol)
+                        skip_reasons_by_symbol.setdefault(
+                            decision.trade_plan.symbol,
+                            self._venue_skip_reason(
+                                decision.trade_plan.symbol,
+                                "scale_in_open_fill_rejected",
+                            ),
+                        )
                         continue
                     if self.portfolio.scale_into_position(
                         decision.trade_plan.symbol,
@@ -185,8 +202,16 @@ class DirectionalExecutor:
                         fills.append(asdict(fill))
                     else:
                         skipped_open_symbols.append(decision.trade_plan.symbol)
+                        skip_reasons_by_symbol.setdefault(
+                            decision.trade_plan.symbol,
+                            "portfolio_scale_in_rejected",
+                        )
                 else:
                     skipped_open_symbols.append(decision.trade_plan.symbol)
+                    skip_reasons_by_symbol.setdefault(
+                        decision.trade_plan.symbol,
+                        "scale_in_not_allowed",
+                    )
                 continue
             if existing is not None and self._should_upgrade(existing, decision.trade_plan):
                 close_fill = self.venue.close_fill(
@@ -200,6 +225,13 @@ class DirectionalExecutor:
                 )
                 if close_fill is None:
                     skipped_open_symbols.append(decision.trade_plan.symbol)
+                    skip_reasons_by_symbol.setdefault(
+                        decision.trade_plan.symbol,
+                        self._venue_skip_reason(
+                            decision.trade_plan.symbol,
+                            "upgrade_close_fill_rejected",
+                        ),
+                    )
                     continue
                 if not bool(getattr(close_fill, "complete", True)):
                     self._reduce_open_position_notional(
@@ -208,6 +240,10 @@ class DirectionalExecutor:
                     )
                     fills.append(asdict(close_fill))
                     skipped_open_symbols.append(decision.trade_plan.symbol)
+                    skip_reasons_by_symbol.setdefault(
+                        decision.trade_plan.symbol,
+                        "upgrade_close_partial_fill",
+                    )
                     continue
                 trade = self.portfolio.close_position(
                     decision.trade_plan.symbol,
@@ -231,6 +267,13 @@ class DirectionalExecutor:
             )
             if fill is None:
                 skipped_open_symbols.append(decision.trade_plan.symbol)
+                skip_reasons_by_symbol.setdefault(
+                    decision.trade_plan.symbol,
+                    self._venue_skip_reason(
+                        decision.trade_plan.symbol,
+                        "open_fill_rejected",
+                    ),
+                )
                 continue
             plan = decision.trade_plan
             if float(fill.notional_usd) != float(plan.target_notional_usd):
@@ -256,10 +299,15 @@ class DirectionalExecutor:
                 fills.append(asdict(fill))
             else:
                 skipped_open_symbols.append(decision.trade_plan.symbol)
+                skip_reasons_by_symbol.setdefault(
+                    decision.trade_plan.symbol,
+                    "portfolio_open_rejected",
+                )
 
         return ExecutionBatch(
             opened_symbols=opened_symbols,
             skipped_open_symbols=skipped_open_symbols,
+            skip_reasons_by_symbol=skip_reasons_by_symbol,
             closed_trades=closed_trades,
             fills=fills,
             had_open_position_before=had_open_position_before,
@@ -268,6 +316,14 @@ class DirectionalExecutor:
             },
             close_reasons_by_symbol=close_reasons_by_symbol,
         )
+
+    def _venue_skip_reason(self, symbol: str, fallback: str) -> str:
+        reasons = getattr(self.venue, "last_block_reason_by_symbol", None)
+        if isinstance(reasons, dict):
+            reason = reasons.get(symbol)
+            if reason not in (None, ""):
+                return str(reason)
+        return fallback
 
     def _reduce_open_position_notional(self, symbol: str, closed_notional_usd: float) -> None:
         position = self.portfolio.open_positions.get(symbol)

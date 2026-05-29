@@ -571,6 +571,11 @@ class PodALiveRunner:
                                     if preview.symbol in decisions_by_symbol
                                     else 0.0
                                 ),
+                                "take_profit_bps": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.take_profit_bps
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
                             },
                             "execution": {
                                 "had_open_position_before": execution.had_open_position_before.get(
@@ -583,6 +588,7 @@ class PodALiveRunner:
                                 ),
                                 "opened": preview.symbol in execution.opened_symbols,
                                 "skipped_open": preview.symbol in execution.skipped_open_symbols,
+                                "skip_reason": execution.skip_reasons_by_symbol.get(preview.symbol),
                                 "close_reason": execution.close_reasons_by_symbol.get(
                                     preview.symbol
                                 ),

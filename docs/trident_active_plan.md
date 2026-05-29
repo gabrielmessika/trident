@@ -103,6 +103,12 @@ Source de verite operationnelle depuis le `2026-05-24`:
   `logs/pod_a_live.jsonl` et `logs/pod_c_live.jsonl`, afin que les closes
   Hyperliquid reels restent dans l'historique UI et le PnL realise apres un
   redemarrage de runner.
+- Observabilite UI `2026-05-29`: les onglets `Pod A` et `Pod C` exposent une
+  table `Opportunites recentes` issue des journaux live et du snapshot runtime.
+  Chaque candidat affiche son verdict risk/execution, la cause normalisee avec
+  tooltip operateur, le prix de reference, notional/marge et les prix SL/TP
+  calcules quand disponibles. Les listes de trades ouverts/fermes et `Activity`
+  affichent aussi prix d'entree, prix courant/sortie et prix SL/TP.
 - Le sizing live Pod A/C est cap-aware avant risk gate: quand un plan depasse
   `live_max_order_notional_usd`, le runner live abaisse le notionnel et le
   levier modelise en conservant la marge allouee si possible. Le cap respecte

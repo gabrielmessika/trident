@@ -467,10 +467,51 @@ class PodCLiveRunner:
                                 "reason": decisions_by_symbol.get(preview.symbol).reason
                                 if preview.symbol in decisions_by_symbol
                                 else "missing_trade_plan",
+                                "target_notional_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.target_notional_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "margin_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.margin_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "effective_leverage": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.effective_leverage
+                                    if preview.symbol in decisions_by_symbol
+                                    else 1.0
+                                ),
+                                "risk_budget_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.risk_budget_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "expected_loss_usd": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.expected_loss_usd
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "invalidation_price": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.invalidation_price
+                                    if preview.symbol in decisions_by_symbol
+                                    else None
+                                ),
+                                "stop_bps": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.stop_bps
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
+                                "take_profit_bps": (
+                                    decisions_by_symbol[preview.symbol].trade_plan.take_profit_bps
+                                    if preview.symbol in decisions_by_symbol
+                                    else 0.0
+                                ),
                             },
                             "execution": {
                                 "opened": preview.symbol in execution.opened_symbols,
                                 "skipped_open": preview.symbol in execution.skipped_open_symbols,
+                                "skip_reason": execution.skip_reasons_by_symbol.get(preview.symbol),
                                 "close_reason": execution.close_reasons_by_symbol.get(
                                     preview.symbol
                                 ),

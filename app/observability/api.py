@@ -839,6 +839,412 @@ def _humanize_close_reason(value: object) -> str:
     return mapping.get(reason, reason or "-")
 
 
+def _reason_code(value: object) -> str:
+    return str(value or "").strip().split(":", 1)[0]
+
+
+def _reason_detail(value: object) -> str:
+    raw = str(value or "").strip()
+    if ":" not in raw:
+        return ""
+    return raw.split(":", 1)[1].strip()
+
+
+def _humanize_opportunity_reason(value: object) -> str:
+    code = _reason_code(value)
+    mapping = {
+        "opened": "Ordre ouvert",
+        "accepted": "Accepté risk",
+        "accepted_no_open": "Accepté, pas encore ouvert",
+        "filtered": "Filtre stratégie",
+        "shadow_blocked_by_routing": "Bloqué routing shadow",
+        "missing_trade_plan": "Plan de trade absent",
+        "confidence_below_min": "Confiance trop basse",
+        "notional_below_min": "Notional trop petit",
+        "batch_limit_reached": "Limite batch atteinte",
+        "duplicate_symbol": "Symbole déjà candidat",
+        "symbol_blocked": "Symbole bloqué",
+        "setup_not_allowed": "Setup non autorisé",
+        "setup_disabled": "Setup désactivé",
+        "rolling_guardrail_intraday_setup": "Guardrail intraday setup",
+        "rolling_guardrail_setup": "Guardrail setup",
+        "rolling_guardrail_symbol_setup": "Guardrail symbole/setup",
+        "regime_filtered": "Régime filtré",
+        "symbol_mode_setup_filtered": "Filtre mode symbole/setup",
+        "symbol_mode_regime_filtered": "Filtre mode symbole/régime",
+        "symbol_mode_confidence_below_min": "Confiance trop basse pour ce symbole",
+        "margin_below_min": "Marge trop petite",
+        "leverage_above_asset_limit": "Levier au-dessus limite actif",
+        "leverage_above_limit": "Levier au-dessus limite",
+        "risk_budget_exceeded": "Budget risque dépassé",
+        "total_open_risk_exceeded": "Risque ouvert total dépassé",
+        "entry_not_allowed_by_routing": "Entrée non autorisée par routing",
+        "reentry_cooldown_active": "Cooldown de réentrée actif",
+        "scale_in_open_fill_rejected": "Scale-in refusé à l'ouverture",
+        "portfolio_scale_in_rejected": "Scale-in refusé portefeuille",
+        "scale_in_not_allowed": "Scale-in non autorisé",
+        "upgrade_close_fill_rejected": "Fermeture upgrade refusée",
+        "upgrade_close_partial_fill": "Fermeture upgrade partielle",
+        "open_fill_rejected": "Ouverture refusée par venue",
+        "portfolio_open_rejected": "Ouverture refusée portefeuille",
+        "invalid_notional_or_price": "Notional ou prix invalide",
+        "notional_above_live_cap": "Notional au-dessus cap live",
+        "stop_grace_exchange_sl_mismatch": "Blocage SL grace live",
+        "exchange_position_or_order_exists": "Exposition exchange déjà présente",
+        "size_rounds_to_zero": "Taille arrondie à zéro",
+        "post_only_size_rounds_to_zero": "Post-only arrondi à zéro",
+        "entry_order_resting_post_only": "Ordre post-only en attente",
+        "asset_not_resolved": "Actif exchange non résolu",
+        "execution_skipped": "Accepté puis non ouvert",
+    }
+    if code.startswith("pattern_veto_"):
+        return f"Pattern veto {code.removeprefix('pattern_veto_')}"
+    return mapping.get(code, str(value or "-"))
+
+
+def _opportunity_reason_tooltip(value: object) -> str:
+    code = _reason_code(value)
+    detail = _reason_detail(value)
+    mapping = {
+        "opened": "Le signal a passé le risk gate et une ouverture a été enregistrée dans les fills du pod.",
+        "accepted": "Le risk gate a accepté le plan: confiance, notional, marge, levier et budget risque passent les limites.",
+        "accepted_no_open": "Le plan est accepté par le risk gate, mais aucun fill d'ouverture n'est visible dans ce record de journal.",
+        "filtered": "Le superviseur ou la stratégie a filtré le candidat avant la création d'un plan de trade exécutable.",
+        "shadow_blocked_by_routing": "Le signal existe en shadow, mais le routing courant ne donne pas le symbole à ce pod pour l'ouverture.",
+        "missing_trade_plan": "Une preview de signal existe, mais aucun TradePlan correspondant n'a été construit pour le risk gate.",
+        "confidence_below_min": "La confiance du setup est sous le minimum configuré, donc le risk gate refuse le trade avant sizing.",
+        "notional_below_min": "Le notional calculé est sous le minimum autorisé; augmenter la taille peut parfois faire passer ce filtre.",
+        "batch_limit_reached": "Le nombre maximal de plans acceptés dans cette boucle est déjà atteint.",
+        "duplicate_symbol": "Un autre plan sur le même symbole est déjà présent dans cette boucle.",
+        "symbol_blocked": "Le symbole figure dans la liste de blocage du pod.",
+        "setup_not_allowed": "Le setup n'est pas dans la liste des setups autorisés pour ce pod ou ce mode de symbole.",
+        "setup_disabled": "Le setup est explicitement désactivé dans la config active.",
+        "rolling_guardrail_intraday_setup": "Le setup est coupé pour la journée car son historique intraday récent a dépassé la perte tolérée.",
+        "rolling_guardrail_setup": "Le setup est coupé car ses derniers trades visibles déclenchent le guardrail de performance.",
+        "rolling_guardrail_symbol_setup": "La paire symbole/setup est coupée car ses derniers trades visibles déclenchent le guardrail.",
+        "regime_filtered": "Le régime de marché courant est bloqué pour ce setup.",
+        "symbol_mode_setup_filtered": "Le mode spécifique du symbole autorise seulement certains setups, et celui-ci n'en fait pas partie.",
+        "symbol_mode_regime_filtered": "Le mode spécifique du symbole n'autorise pas le régime courant.",
+        "symbol_mode_confidence_below_min": "Le symbole a un seuil de confiance local plus élevé que le seuil global.",
+        "margin_below_min": "La marge calculée est sous la marge minimale du pod.",
+        "leverage_above_asset_limit": "Le levier effectif dépasse la limite propre à cet actif.",
+        "leverage_above_limit": "Le levier effectif dépasse la limite globale configurée.",
+        "risk_budget_exceeded": "La perte attendue du plan dépasse le budget risque attribué à ce trade.",
+        "total_open_risk_exceeded": "Ajouter ce trade ferait dépasser le risque ouvert total autorisé.",
+        "entry_not_allowed_by_routing": "Le superviseur ne permet pas à ce pod d'ouvrir ce symbole dans la boucle courante, même si le signal existe.",
+        "reentry_cooldown_active": "Le symbole vient d'être tradé et la fenêtre de cooldown interdit encore une réentrée.",
+        "scale_in_open_fill_rejected": "Le pod voulait ajouter à une position existante, mais l'ouverture additionnelle n'a pas été fillée.",
+        "portfolio_scale_in_rejected": "Le fill existe, mais l'état portefeuille local a refusé de l'ajouter à la position.",
+        "scale_in_not_allowed": "Une position existe déjà et les conditions de scale-in ne sont pas réunies.",
+        "upgrade_close_fill_rejected": "Le pod voulait fermer pour rouvrir un meilleur setup, mais la fermeture d'abord n'a pas été fillée.",
+        "upgrade_close_partial_fill": "La fermeture d'upgrade n'a rempli qu'une partie de la position, donc la réouverture est bloquée.",
+        "open_fill_rejected": "Le plan a passé le risk gate, mais la venue d'exécution n'a pas retourné de fill d'ouverture.",
+        "portfolio_open_rejected": "Le fill existe, mais l'état portefeuille local a refusé d'enregistrer la position.",
+        "invalid_notional_or_price": "Le prix ou le notional envoyé à la venue est nul ou invalide.",
+        "notional_above_live_cap": "Le notional demandé dépasse live_max_order_notional_usd; le live bloque l'ordre pour éviter une taille excessive.",
+        "stop_grace_exchange_sl_mismatch": "Ancien guardrail live: le setup était bloqué car le backtest ignore le SL pendant la grace, alors qu'un SL exchange immédiat pouvait sortir trop tôt. Avec le correctif, le live place un SL catastrophe puis rafraîchit le SL normal après la grace.",
+        "exchange_position_or_order_exists": "Hyperliquid montre déjà une position ou un ordre ouvert sur ce symbole, donc le pod évite une double exposition.",
+        "size_rounds_to_zero": "Après conversion notional/prix et arrondi aux décimales Hyperliquid, la taille d'ordre devient zéro.",
+        "post_only_size_rounds_to_zero": "Le retry post-only calcule une taille trop petite après arrondi.",
+        "entry_order_resting_post_only": "L'ordre post-only est resté dans le carnet sans fill immédiat; le pod le suit comme entrée pending.",
+        "asset_not_resolved": "Le symbole n'a pas pu être converti vers l'identifiant exchange attendu par Hyperliquid.",
+        "execution_skipped": "Le risk gate a accepté le plan, mais l'exécuteur l'a marqué skipped sans cause plus précise dans cet ancien journal.",
+    }
+    tooltip = mapping.get(code)
+    if tooltip is None:
+        if code.startswith("pattern_veto_"):
+            tooltip = "Une règle pattern_veto configurée a reconnu un contexte de marché à éviter pour ce plan."
+        else:
+            tooltip = "Cause brute remontée par le pod; elle n'a pas encore de description dédiée dans le dashboard."
+    if detail:
+        tooltip = f"{tooltip} Détail runtime: {detail}."
+    return tooltip
+
+
+def _tooltip_value(label: object, tooltip: object) -> str:
+    return (
+        "<span class='th-with-tooltip'>"
+        f"<span>{escape(str(label or '-'))}</span>"
+        "<button class='tooltip-trigger' type='button' aria-label='Afficher le détail'>i</button>"
+        f"<span class='tooltip-bubble'>{escape(str(tooltip or '-'))}</span>"
+        "</span>"
+    )
+
+
+def _opportunity_status_and_reason(signal: dict[str, object]) -> tuple[str, str]:
+    risk = signal.get("risk", {})
+    if not isinstance(risk, dict):
+        risk = {}
+    execution = signal.get("execution", {})
+    if not isinstance(execution, dict):
+        execution = {}
+    if bool(execution.get("opened")):
+        return "opened", "opened"
+    if bool(execution.get("skipped_open")):
+        return "skipped", str(execution.get("skip_reason") or "execution_skipped")
+    if bool(risk.get("accepted")):
+        return "accepted", str(risk.get("reason") or "accepted_no_open")
+    return "rejected", str(risk.get("reason") or "missing_trade_plan")
+
+
+def _opportunity_status_label(status: str) -> str:
+    return {
+        "opened": "Acceptée + ouverte",
+        "accepted": "Acceptée risk",
+        "skipped": "Acceptée, bloquée",
+        "rejected": "Refusée risk",
+        "filtered": "Filtrée",
+        "shadow": "Bloquée shadow",
+        "preview": "Preview",
+    }.get(status, status or "-")
+
+
+def _opportunity_status_tone(status: str) -> str:
+    return {
+        "opened": "good",
+        "accepted": "good",
+        "skipped": "warn",
+        "rejected": "bad",
+        "filtered": "warn",
+        "shadow": "warn",
+        "preview": "neutral",
+    }.get(status, "neutral")
+
+
+def _opportunity_detail(
+    *,
+    signal: dict[str, object] | None = None,
+    review: dict[str, object] | None = None,
+    risk: dict[str, object] | None = None,
+    execution: dict[str, object] | None = None,
+    row: dict[str, object] | None = None,
+) -> str:
+    parts: list[str] = []
+    if signal is not None:
+        summary = str(signal.get("reason_summary") or "").strip()
+        if summary:
+            parts.append(summary)
+    if review is not None:
+        summary = str(review.get("reason_summary") or review.get("reason") or "").strip()
+        if summary:
+            parts.append(summary)
+    if risk is not None:
+        target = _float_or_none(risk.get("target_notional_usd"))
+        margin = _float_or_none(risk.get("margin_usd"))
+        leverage = _float_or_none(risk.get("effective_leverage"))
+        expected_loss = _float_or_none(risk.get("expected_loss_usd"))
+        if target is not None:
+            parts.append(f"notional {target:.2f} USD")
+        if margin is not None:
+            parts.append(f"marge {margin:.2f} USD")
+        if leverage is not None:
+            parts.append(f"levier {leverage:.1f}x")
+        if expected_loss is not None:
+            parts.append(f"perte attendue {expected_loss:.2f} USD")
+    if row is not None:
+        stop_price = _float_or_none(row.get("stop_price"))
+        take_profit = _float_or_none(row.get("take_profit_price"))
+        if stop_price is not None:
+            parts.append(f"SL {stop_price:.6f}")
+        if take_profit is not None:
+            parts.append(f"TP {take_profit:.6f}")
+    if execution is not None:
+        open_fills = execution.get("open_fills")
+        close_fills = execution.get("close_fills")
+        if isinstance(open_fills, list) and open_fills:
+            parts.append(f"{len(open_fills)} fill(s) open")
+        if isinstance(close_fills, list) and close_fills:
+            parts.append(f"{len(close_fills)} fill(s) close")
+    return " · ".join(parts) if parts else "-"
+
+
+def _recent_directional_opportunity_rows(
+    snapshot: dict[str, object],
+    *,
+    pod: str,
+    limit: int = 24,
+) -> list[dict[str, object]]:
+    journal_name = {
+        "pod_a": "pod_a_live.jsonl",
+        "pod_c": "pod_c_live.jsonl",
+    }.get(pod)
+    if journal_name is None:
+        return []
+    rows: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    records = _tail_jsonl_records(
+        Path("logs") / journal_name,
+        limit=max(limit * 6, 60),
+        scan_lines=5000,
+    )
+    for record in records:
+        event_type = str(record.get("event_type") or "")
+        if event_type == "signal":
+            signal = record.get("signal")
+            if not isinstance(signal, dict):
+                continue
+            risk = signal.get("risk", {})
+            if not isinstance(risk, dict):
+                risk = {}
+            execution = signal.get("execution", {})
+            if not isinstance(execution, dict):
+                execution = {}
+            symbol_snapshot = record.get("symbol_snapshot", {})
+            if not isinstance(symbol_snapshot, dict):
+                symbol_snapshot = {}
+            status, reason = _opportunity_status_and_reason(signal)
+            row: dict[str, object] = {
+                "timestamp": str(record.get("timestamp") or "-"),
+                "pod": pod,
+                "symbol": str(signal.get("symbol") or symbol_snapshot.get("symbol") or "-"),
+                "side": str(signal.get("side") or "-"),
+                "setup": str(signal.get("setup") or "-"),
+                "confidence": signal.get("confidence"),
+                "status": status,
+                "status_label": _opportunity_status_label(status),
+                "tone": _opportunity_status_tone(status),
+                "reason": reason,
+                "cause_label": _humanize_opportunity_reason(reason),
+                "cause_tooltip": _opportunity_reason_tooltip(reason),
+                "entry_price": symbol_snapshot.get("price") or risk.get("entry_price"),
+                "current_price": symbol_snapshot.get("price"),
+                "target_notional_usd": risk.get("target_notional_usd"),
+                "margin_usd": risk.get("margin_usd"),
+                "effective_leverage": risk.get("effective_leverage"),
+                "invalidation_price": risk.get("invalidation_price"),
+                "stop_bps": risk.get("stop_bps"),
+                "take_profit_bps": risk.get("take_profit_bps"),
+            }
+            row["stop_price"] = _directional_stop_price(row)
+            row["take_profit_price"] = _directional_take_profit_price(row)
+            row["detail"] = _opportunity_detail(
+                signal=signal,
+                risk=risk,
+                execution=execution,
+                row=row,
+            )
+        elif event_type == "signal_review":
+            review = record.get("review")
+            if not isinstance(review, dict):
+                continue
+            status_raw = str(review.get("status") or "filtered")
+            status = "shadow" if status_raw == "shadow_blocked_by_routing" else "filtered"
+            symbol_snapshot = record.get("symbol_snapshot", {})
+            if not isinstance(symbol_snapshot, dict):
+                symbol_snapshot = {}
+            reason = str(review.get("reason") or review.get("reason_summary") or status_raw)
+            row = {
+                "timestamp": str(record.get("timestamp") or "-"),
+                "pod": pod,
+                "symbol": str(review.get("symbol") or symbol_snapshot.get("symbol") or "-"),
+                "side": str(review.get("preferred_side") or review.get("side") or "-"),
+                "setup": str(review.get("setup") or "-"),
+                "confidence": review.get("confidence"),
+                "status": status,
+                "status_label": _opportunity_status_label(status),
+                "tone": _opportunity_status_tone(status),
+                "reason": reason,
+                "cause_label": _humanize_opportunity_reason(status_raw),
+                "cause_tooltip": _opportunity_reason_tooltip(status_raw),
+                "entry_price": symbol_snapshot.get("price"),
+                "current_price": symbol_snapshot.get("price"),
+                "target_notional_usd": None,
+                "margin_usd": None,
+                "effective_leverage": None,
+                "invalidation_price": None,
+                "stop_bps": None,
+                "take_profit_bps": None,
+                "stop_price": None,
+                "take_profit_price": None,
+                "detail": _opportunity_detail(review=review),
+            }
+        else:
+            continue
+        key = (
+            str(row.get("timestamp")),
+            str(row.get("symbol")),
+            str(row.get("status")),
+            str(row.get("reason")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+
+    if rows:
+        return rows
+
+    preview_key = f"{pod}_signal_preview"
+    review_key = f"{pod}_signal_review"
+    review_items = snapshot.get(review_key, [])
+    if not isinstance(review_items, list):
+        review_items = []
+    for item in review_items:
+        if not isinstance(item, dict):
+            continue
+        status_raw = str(item.get("status") or "filtered")
+        if status_raw not in {"filtered", "shadow_blocked_by_routing"}:
+            continue
+        status = "shadow" if status_raw == "shadow_blocked_by_routing" else "filtered"
+        rows.append(
+            {
+                "timestamp": "-",
+                "pod": pod,
+                "symbol": str(item.get("symbol") or "-"),
+                "side": str(item.get("preferred_side") or item.get("side") or "-"),
+                "setup": str(item.get("setup") or "-"),
+                "confidence": item.get("confidence"),
+                "status": status,
+                "status_label": _opportunity_status_label(status),
+                "tone": _opportunity_status_tone(status),
+                "reason": str(item.get("reason_summary") or status_raw),
+                "cause_label": _humanize_opportunity_reason(status_raw),
+                "cause_tooltip": _opportunity_reason_tooltip(status_raw),
+                "entry_price": None,
+                "current_price": None,
+                "target_notional_usd": None,
+                "margin_usd": None,
+                "effective_leverage": None,
+                "stop_price": None,
+                "take_profit_price": None,
+                "detail": _opportunity_detail(review=item),
+            }
+        )
+    preview_items = snapshot.get(preview_key, [])
+    if not isinstance(preview_items, list):
+        preview_items = []
+    for item in preview_items:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "timestamp": "-",
+                "pod": pod,
+                "symbol": str(item.get("symbol") or "-"),
+                "side": str(item.get("side") or "-"),
+                "setup": str(item.get("setup") or "-"),
+                "confidence": item.get("confidence"),
+                "status": "preview",
+                "status_label": _opportunity_status_label("preview"),
+                "tone": _opportunity_status_tone("preview"),
+                "reason": "preview",
+                "cause_label": "Preview stratégie",
+                "cause_tooltip": "Signal proposé par la stratégie dans le snapshot runtime courant; il n'a pas encore de verdict risk/exécution dans les journaux live visibles.",
+                "entry_price": None,
+                "current_price": None,
+                "target_notional_usd": None,
+                "margin_usd": None,
+                "effective_leverage": None,
+                "stop_price": None,
+                "take_profit_price": None,
+                "detail": _opportunity_detail(signal=item),
+            }
+        )
+    return rows[:limit]
+
+
 def _parse_timestamp(value: object) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -896,11 +1302,15 @@ def _recent_directional_trade_rows(runtime_payload: dict[str, object] | None, *,
                 "close_reason": str(item.get("close_reason") or "-"),
                 "entry_price": item.get("entry_price"),
                 "exit_price": item.get("exit_price"),
+                "current_price": item.get("current_price") or item.get("exit_price"),
                 "notional_usd": item.get("target_notional_usd"),
                 "leverage": item.get("leverage"),
                 "pnl_usd": item.get("pnl_usd"),
                 "opened_at": item.get("opened_at"),
                 "closed_at": item.get("closed_at"),
+                "invalidation_price": item.get("invalidation_price"),
+                "stop_bps": item.get("stop_bps"),
+                "take_profit_bps": item.get("take_profit_bps"),
             }
         )
     return rows
@@ -2743,7 +3153,7 @@ def _control_center_html(
             if str(item.get("pod")) == pod_name and str(item.get("status")) == "closed"
         ]
         if not rows:
-            return "<tr><td colspan='10'>Aucun trade fermé visible pour le moment.</td></tr>"
+            return "<tr><td colspan='13'>Aucun trade fermé visible pour le moment.</td></tr>"
         return "".join(
             (
                 "<tr>"
@@ -2764,7 +3174,7 @@ def _control_center_html(
 
     def render_activity_open_rows() -> str:
         if not open_rows:
-            return "<tr><td colspan='11'>Aucune position ouverte visible pour le moment.</td></tr>"
+            return "<tr><td colspan='13'>Aucune position ouverte visible pour le moment.</td></tr>"
         return "".join(
             (
                 "<tr data-filter-status='open' "
@@ -5021,6 +5431,10 @@ def _control_center_html(
         for row in _trade_event_rows(snapshot)
         if str(row.get("pod")) in visible_pod_set
     ]
+    opportunity_rows = {
+        pod_name: _recent_directional_opportunity_rows(snapshot, pod=pod_name)
+        for pod_name in display_pods
+    }
     pod_trade_summary_rows = {
         pod_name: _pod_trade_summary(snapshot.get(f"{pod_name}_runtime"), pod=pod_name)
         for pod_name in display_pods
@@ -5549,7 +5963,7 @@ def _control_center_html(
             if str(item.get("pod")) == pod_name and str(item.get("status")) == "closed"
         ]
         if not rows:
-            return "<tr><td colspan='10'>Aucun trade fermé visible pour le moment.</td></tr>"
+            return "<tr><td colspan='13'>Aucun trade fermé visible pour le moment.</td></tr>"
         return "".join(
             (
                 "<tr>"
@@ -5560,6 +5974,9 @@ def _control_center_html(
                 f"<td>{escape(_humanize_close_reason(item.get('close_reason')))}</td>"
                 f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
                 f"<td>{fmt_number(item.get('exit_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('current_price') or item.get('exit_price'), 6)}</td>"
+                f"<td>{fmt_number(_directional_take_profit_price(item), 6)}</td>"
+                f"<td>{fmt_number(_directional_stop_price(item), 6)}</td>"
                 f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
                 f"<td>{_format_leverage(item.get('leverage'))}</td>"
                 f"<td>{fmt_signed_usd(item.get('pnl_usd'))}</td>"
@@ -5618,6 +6035,30 @@ def _control_center_html(
             )
         return "".join(rows)
 
+    def render_directional_opportunity_rows(pod_name: str) -> str:
+        rows = opportunity_rows.get(pod_name, [])
+        if not rows:
+            return "<tr><td colspan='12'>Aucune opportunité récente visible dans le journal live ou le snapshot runtime.</td></tr>"
+        return "".join(
+            (
+                "<tr>"
+                f"<td>{escape(str(item.get('timestamp') or '-'))}</td>"
+                f"<td>{escape(str(item.get('symbol') or '-'))}</td>"
+                f"<td>{escape(str(item.get('side') or '-'))}</td>"
+                f"<td>{escape(_humanize_setup_reason(item.get('setup')))}</td>"
+                f"<td>{_status_badge(str(item.get('tone') or 'neutral'), str(item.get('status_label') or '-'))}</td>"
+                f"<td>{_tooltip_value(item.get('cause_label'), item.get('cause_tooltip'))}</td>"
+                f"<td>{fmt_number(item.get('current_price') or item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('target_notional_usd'), 2)}</td>"
+                f"<td>{fmt_number(item.get('margin_usd'), 2)}</td>"
+                f"<td>{fmt_number(item.get('stop_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('take_profit_price'), 6)}</td>"
+                f"<td>{escape(str(item.get('detail') or '-'))}</td>"
+                "</tr>"
+            )
+            for item in rows
+        )
+
     def pod_header_metrics(summary: dict[str, object]) -> str:
         return render_metric_cards(
             [
@@ -5673,7 +6114,7 @@ def _control_center_html(
 
     def render_dashboard_open_rows() -> str:
         if not open_rows:
-            return "<tr><td colspan='8'>Aucune position ouverte A/C.</td></tr>"
+            return "<tr><td colspan='12'>Aucune position ouverte A/C.</td></tr>"
         return "".join(
             (
                 "<tr>"
@@ -5681,6 +6122,10 @@ def _control_center_html(
                 f"<td>{escape(str(item.get('symbol', '-')))}</td>"
                 f"<td>{escape(str(item.get('side', '-')))}</td>"
                 f"<td>{escape(_humanize_setup_reason(item.get('open_reason')))}</td>"
+                f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('current_price'), 6)}</td>"
+                f"<td>{fmt_number(_directional_take_profit_price(item), 6)}</td>"
+                f"<td>{fmt_number(_directional_stop_price(item), 6)}</td>"
                 f"<td>{fmt_number(item.get('margin_usd'), 2)}</td>"
                 f"<td>{fmt_number(item.get('current_notional_usd'), 2)}</td>"
                 f"<td>{fmt_signed_usd(item.get('unrealized_pnl_usd'))}</td>"
@@ -5693,7 +6138,7 @@ def _control_center_html(
     def render_dashboard_closed_rows() -> str:
         rows = [item for item in event_rows if str(item.get("status")) == "closed"]
         if not rows:
-            return "<tr><td colspan='8'>Aucun trade fermé A/C récent.</td></tr>"
+            return "<tr><td colspan='12'>Aucun trade fermé A/C récent.</td></tr>"
         return "".join(
             (
                 "<tr>"
@@ -5702,6 +6147,10 @@ def _control_center_html(
                 f"<td>{escape(str(item.get('side', '-')))}</td>"
                 f"<td>{escape(_humanize_setup_reason(item.get('open_reason')))}</td>"
                 f"<td>{escape(_humanize_close_reason(item.get('close_reason')))}</td>"
+                f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('current_price') or item.get('exit_price'), 6)}</td>"
+                f"<td>{fmt_number(_directional_take_profit_price(item), 6)}</td>"
+                f"<td>{fmt_number(_directional_stop_price(item), 6)}</td>"
                 f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
                 f"<td>{fmt_signed_usd(item.get('pnl_usd'))}</td>"
                 f"<td>{escape(str(item.get('closed_at') or item.get('timestamp') or '-'))}</td>"
@@ -5724,11 +6173,11 @@ def _control_center_html(
         <section class="two-col">
           <section class="panel">
             <div class="section-head"><h2>Positions ouvertes A/C</h2><p>Capital actuellement engagé par Pod A et Pod C.</p></div>
-            <div class="table-wrap"><table><thead><tr>{_table_header("Pod", "Pod qui porte la position.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison", "Setup qui a ouvert la position.")}{_table_header("Marge", "Capital immobilisé.")}{_table_header("Valeur USD", "Valeur notionnelle actuelle.")}{_table_header("PnL latent", "PnL non réalisé.")}{_table_header("Ouvert", "Horodatage d'ouverture.")}</tr></thead><tbody>{render_dashboard_open_rows()}</tbody></table></div>
+            <div class="table-wrap"><table><thead><tr>{_table_header("Pod", "Pod qui porte la position.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison", "Setup qui a ouvert la position.")}{_table_header("Prix entrée", "Prix moyen d'entrée.")}{_table_header("Prix courant", "Dernier prix live vu par le pod.")}{_table_header("Prix TP", "Take profit théorique ou configuré.")}{_table_header("Prix SL", "Stop loss courant, invalidation si disponible.")}{_table_header("Marge", "Capital immobilisé.")}{_table_header("Valeur USD", "Valeur notionnelle actuelle.")}{_table_header("PnL latent", "PnL non réalisé.")}{_table_header("Ouvert", "Horodatage d'ouverture.")}</tr></thead><tbody>{render_dashboard_open_rows()}</tbody></table></div>
           </section>
           <section class="panel">
             <div class="section-head"><h2>Trades fermés A/C</h2><p>Dernières sorties visibles, sans détails de pod trop bruyants.</p></div>
-            <div class="table-wrap"><table><thead><tr>{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens porté.")}{_table_header("Entrée", "Setup d'entrée.")}{_table_header("Sortie", "Raison de fermeture.")}{_table_header("Notional", "Notionnelle cible.")}{_table_header("PnL", "Résultat du trade.")}{_table_header("Fermé", "Horodatage de sortie.")}</tr></thead><tbody>{render_dashboard_closed_rows()}</tbody></table></div>
+            <div class="table-wrap"><table><thead><tr>{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens porté.")}{_table_header("Entrée", "Setup d'entrée.")}{_table_header("Sortie", "Raison de fermeture.")}{_table_header("Prix entrée", "Prix moyen d'entrée du trade.")}{_table_header("Prix courant/sortie", "Dernier prix connu; pour un trade fermé, on affiche le prix de sortie si aucun prix courant n'est conservé.")}{_table_header("Prix TP", "Take profit théorique enregistré avec le trade.")}{_table_header("Prix SL", "Stop loss ou invalidation enregistré avec le trade.")}{_table_header("Notional", "Notionnelle cible.")}{_table_header("PnL", "Résultat du trade.")}{_table_header("Fermé", "Horodatage de sortie.")}</tr></thead><tbody>{render_dashboard_closed_rows()}</tbody></table></div>
           </section>
         </section>
         <section class="panel">
@@ -5769,18 +6218,22 @@ def _control_center_html(
           </section>
         </div>
         <section class="panel">
+          <div class="section-head"><h3>Opportunités récentes</h3><p>Chaque candidat vu par le pod avec son verdict risk/exécution et la cause précise du refus ou de l'acceptation.</p></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Timestamp", "Horodatage du signal ou du filtre.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens proposé.")}{_table_header("Setup", "Setup stratégique qui a généré l'opportunité.")}{_table_header("Statut", "Verdict: ouvert, accepté risk, bloqué à l'exécution, refusé par le risk gate ou filtré avant risk.")}{_table_header("Cause", "Cause normalisée. Survole le i pour la signification concrète et le détail runtime.")}{_table_header("Prix ref", "Prix du snapshot utilisé pour décider, quand disponible.")}{_table_header("Notional", "Notionnelle cible du plan après caps live.")}{_table_header("Marge", "Marge calculée pour le plan.")}{_table_header("Prix SL", "Prix de stop ou invalidation calculé pour ce plan.")}{_table_header("Prix TP", "Prix de take profit calculé pour ce plan.")}{_table_header("Détail", "Résumé du signal, sizing et fills éventuels.")}</tr></thead><tbody>{render_directional_opportunity_rows(pod_name)}</tbody></table></div>
+        </section>
+        <section class="panel">
           <div class="section-head"><h3>Trades ouverts</h3><p>Prix courant, marge, TP/SL, PnL latent et trailing.</p></div>
           <div class="table-wrap"><table><thead><tr>{_table_header("Symbol", "Marché actuellement détenu par le pod.")}{_table_header("Side", "Sens de la position.")}{_table_header("Raison ouverture", "Setup qui a ouvert le trade.")}{_table_header("Prix entrée", "Prix moyen d'entrée.")}{_table_header("Prix courant", "Dernier prix live vu.")}{_table_header("Valeur USD", "Valeur notionnelle actuelle.")}{_table_header("Marge", "Capital immobilisé.")}{_table_header("Prix TP", "Take profit théorique.")}{_table_header("Prix SL", "Stop loss actuel.")}{_table_header("Unrealized PnL", "PnL latent au dernier prix.")}{_table_header("Trailing TP", "État du trailing.")}{_table_header("Ouvert le", "Horodatage d'ouverture.")}</tr></thead><tbody>{render_directional_open_rows(pod_name)}</tbody></table></div>
         </section>
         <section class="panel">
           <div class="section-head"><h3>Trades fermés récents</h3><p>Raisons d'ouverture et de fermeture en clair.</p></div>
-          <div class="table-wrap"><table><thead><tr>{_table_header("Fermé le", "Horodatage de sortie.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens porté.")}{_table_header("Raison ouverture", "Setup d'entrée.")}{_table_header("Raison fermeture", "Cause de sortie.")}{_table_header("Prix entrée", "Prix d'entrée.")}{_table_header("Prix sortie", "Prix de sortie.")}{_table_header("Notional USD", "Notionnelle cible.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("PnL USD", "Résultat net du trade.")}</tr></thead><tbody>{render_directional_closed_rows(pod_name)}</tbody></table></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Fermé le", "Horodatage de sortie.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens porté.")}{_table_header("Raison ouverture", "Setup d'entrée.")}{_table_header("Raison fermeture", "Cause de sortie.")}{_table_header("Prix entrée", "Prix d'entrée.")}{_table_header("Prix sortie", "Prix de sortie.")}{_table_header("Prix courant/sortie", "Dernier prix connu; pour un trade fermé, tombe sur le prix de sortie si le runtime n'a pas gardé de prix courant.")}{_table_header("Prix TP", "Take profit théorique enregistré avec le trade.")}{_table_header("Prix SL", "Stop loss ou invalidation enregistré avec le trade.")}{_table_header("Notional USD", "Notionnelle cible.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("PnL USD", "Résultat net du trade.")}</tr></thead><tbody>{render_directional_closed_rows(pod_name)}</tbody></table></div>
         </section>
       </section>"""
 
     def render_activity_open_rows() -> str:
         if not open_rows:
-            return "<tr><td colspan='11'>Aucune position ouverte visible pour le moment.</td></tr>"
+            return "<tr><td colspan='13'>Aucune position ouverte visible pour le moment.</td></tr>"
         return "".join(
             (
                 "<tr data-filter-status='open' "
@@ -5790,10 +6243,12 @@ def _control_center_html(
                 f"<td>{escape(str(item['side']))}</td>"
                 f"<td>{escape(str(item['open_reason']))}</td>"
                 f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('current_price'), 6)}</td>"
                 f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
                 f"<td>{_format_leverage(item.get('leverage'))}</td>"
                 f"<td>{fmt_number(item.get('confidence'), 2)}</td>"
-                f"<td>{fmt_number(item.get('stop_bps'), 1)}</td>"
+                f"<td>{fmt_number(_directional_stop_price(item), 6)}</td>"
+                f"<td>{fmt_number(_directional_take_profit_price(item), 6)}</td>"
                 f"<td>{escape(str(item.get('time_stop_hours') or '-'))}</td>"
                 f"<td>{escape(str(item.get('opened_at') or '-'))}</td>"
                 "</tr>"
@@ -5803,7 +6258,7 @@ def _control_center_html(
 
     def render_activity_event_rows() -> str:
         if not event_rows:
-            return "<tr><td colspan='12'>Aucun évènement de trade récent visible pour le moment.</td></tr>"
+            return "<tr><td colspan='15'>Aucun évènement de trade récent visible pour le moment.</td></tr>"
         return "".join(
             (
                 "<tr "
@@ -5817,7 +6272,10 @@ def _control_center_html(
                 f"<td>{escape(str(item.get('open_reason') or '-'))}</td>"
                 f"<td>{escape(str(item.get('close_reason') or '-'))}</td>"
                 f"<td>{fmt_number(item.get('entry_price'), 6)}</td>"
+                f"<td>{fmt_number(item.get('current_price') or item.get('exit_price'), 6)}</td>"
                 f"<td>{fmt_number(item.get('exit_price'), 6)}</td>"
+                f"<td>{fmt_number(_directional_stop_price(item), 6)}</td>"
+                f"<td>{fmt_number(_directional_take_profit_price(item), 6)}</td>"
                 f"<td>{fmt_number(item.get('notional_usd'), 2)}</td>"
                 f"<td>{_format_leverage(item.get('leverage'))}</td>"
                 f"<td>{fmt_signed_usd(item.get('pnl_usd'))}</td>"
@@ -5839,11 +6297,11 @@ def _control_center_html(
         </section>
         <section class="panel">
           <div class="section-head"><h3>Open positions</h3><p>Ce qui est en risque maintenant, tous pods confondus, sans PnL agrégé.</p></div>
-          <div class="table-wrap"><table><thead><tr>{_table_header("Pod", "Pod qui porte la position.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens.")}{_table_header("Open reason", "Pourquoi la position a été ouverte.")}{_table_header("Entry", "Prix d'entrée.")}{_table_header("Notional USD", "Valeur notionnelle.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("Confidence", "Confiance.")}{_table_header("Stop bps", "Distance du stop.")}{_table_header("Time stop h", "Durée max.")}{_table_header("Opened at", "Horodatage.")}</tr></thead><tbody>{render_activity_open_rows()}</tbody></table></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Pod", "Pod qui porte la position.")}{_table_header("Symbol", "Marché concerné.")}{_table_header("Side", "Sens.")}{_table_header("Open reason", "Pourquoi la position a été ouverte.")}{_table_header("Entry", "Prix d'entrée.")}{_table_header("Current", "Prix courant vu par le pod.")}{_table_header("Notional USD", "Valeur notionnelle.")}{_table_header("Leverage", "Levier configuré.")}{_table_header("Confidence", "Confiance.")}{_table_header("Prix SL", "Prix de stop ou invalidation.")}{_table_header("Prix TP", "Prix de take profit.")}{_table_header("Time stop h", "Durée max.")}{_table_header("Opened at", "Horodatage.")}</tr></thead><tbody>{render_activity_open_rows()}</tbody></table></div>
         </section>
         <section class="panel">
           <div class="section-head"><h3>Recent trade events</h3><p>Sorties directionnelles récentes.</p></div>
-          <div class="table-wrap"><table><thead><tr>{_table_header("Timestamp", "Horodatage.")}{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché.")}{_table_header("Side", "Sens.")}{_table_header("Status", "Statut.")}{_table_header("Open reason", "Raison d'ouverture.")}{_table_header("Close reason", "Raison de fermeture.")}{_table_header("Entry", "Prix d'entrée.")}{_table_header("Exit", "Prix de sortie.")}{_table_header("Notional USD", "Valeur notionnelle.")}{_table_header("Leverage", "Levier.")}{_table_header("PnL USD", "PnL du trade.")}</tr></thead><tbody>{render_activity_event_rows()}</tbody></table></div>
+          <div class="table-wrap"><table><thead><tr>{_table_header("Timestamp", "Horodatage.")}{_table_header("Pod", "Pod responsable.")}{_table_header("Symbol", "Marché.")}{_table_header("Side", "Sens.")}{_table_header("Status", "Statut.")}{_table_header("Open reason", "Raison d'ouverture.")}{_table_header("Close reason", "Raison de fermeture.")}{_table_header("Entry", "Prix d'entrée.")}{_table_header("Current/Exit", "Dernier prix connu; pour les fermés, fallback sur le prix de sortie.")}{_table_header("Exit", "Prix de sortie.")}{_table_header("Prix SL", "Stop loss ou invalidation enregistré.")}{_table_header("Prix TP", "Take profit enregistré.")}{_table_header("Notional USD", "Valeur notionnelle.")}{_table_header("Leverage", "Levier.")}{_table_header("PnL USD", "PnL du trade.")}</tr></thead><tbody>{render_activity_event_rows()}</tbody></table></div>
         </section>
       </section>"""
 

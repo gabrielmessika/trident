@@ -11,9 +11,12 @@ from app.observability.api import (
     _hip4_observation_health,
     _hip4_routes_enabled,
     _humanize_close_reason,
+    _humanize_opportunity_reason,
     _open_position_rows,
     _pod_trade_summary,
+    _recent_directional_opportunity_rows,
     _humanize_setup_reason,
+    _opportunity_reason_tooltip,
     dashboard_html,
     health_payload,
     hip4_outcome_html,
@@ -847,6 +850,9 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("Performance par coin", html)
         self.assertIn("Positions ouvertes", html)
         self.assertIn("Signaux et filtres", html)
+        self.assertIn("Opportunités récentes", html)
+        self.assertIn("Cause", html)
+        self.assertIn("Prix ref", html)
         self.assertIn("Leverage", html)
         self.assertIn("Prix courant", html)
         self.assertIn("Marge", html)
@@ -1055,6 +1061,9 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("Recent trade events", html)
         self.assertIn("Open reason", html)
         self.assertIn("Close reason", html)
+        self.assertIn("Current/Exit", html)
+        self.assertIn("Prix SL", html)
+        self.assertIn("Prix TP", html)
         self.assertIn("data-filter-group=\"status\"", html)
         self.assertIn("Open</button>", html)
         self.assertIn("Closed</button>", html)
@@ -1068,6 +1077,66 @@ class HealthApiTests(unittest.TestCase):
         self.assertIn("BOS retest long", _humanize_setup_reason("bos_retest_long"))
         self.assertIn("take profit", _humanize_close_reason("take_profit_hit").lower())
         self.assertIn("signal oppose", _humanize_close_reason("opposite_signal").lower())
+        self.assertIn(
+            "Blocage SL grace live",
+            _humanize_opportunity_reason("stop_grace_exchange_sl_mismatch:setup=x"),
+        )
+        self.assertIn(
+            "SL catastrophe",
+            _opportunity_reason_tooltip("stop_grace_exchange_sl_mismatch:setup=x"),
+        )
+
+    def test_directional_opportunity_rows_explain_live_skip_reason(self) -> None:
+        record = {
+            "event_type": "signal",
+            "timestamp": "2026-05-29T10:00:00Z",
+            "signal": {
+                "symbol": "ETH",
+                "side": "long",
+                "setup": "trend_pullback_long",
+                "confidence": 0.72,
+                "reason_summary": "pullback validé",
+                "risk": {
+                    "accepted": True,
+                    "reason": "accepted",
+                    "target_notional_usd": 125.0,
+                    "margin_usd": 25.0,
+                    "effective_leverage": 5.0,
+                    "expected_loss_usd": 1.25,
+                    "invalidation_price": 3800.0,
+                    "stop_bps": 40.0,
+                    "take_profit_bps": 80.0,
+                },
+                "execution": {
+                    "opened": False,
+                    "skipped_open": True,
+                    "skip_reason": "stop_grace_exchange_sl_mismatch:setup=trend_pullback_long,grace_minutes=45",
+                    "open_fills": [],
+                    "close_fills": [],
+                },
+            },
+            "symbol_snapshot": {"symbol": "ETH", "price": 3900.0},
+        }
+        previous_cwd = os.getcwd()
+        with TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / "logs"
+            logs_dir.mkdir()
+            (logs_dir / "pod_a_live.jsonl").write_text(
+                json.dumps(record) + "\n",
+                encoding="utf-8",
+            )
+            os.chdir(tmpdir)
+            try:
+                rows = _recent_directional_opportunity_rows({}, pod="pod_a")
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "skipped")
+        self.assertEqual(rows[0]["cause_label"], "Blocage SL grace live")
+        self.assertIn("SL catastrophe", rows[0]["cause_tooltip"])
+        self.assertEqual(rows[0]["stop_price"], 3800.0)
+        self.assertAlmostEqual(rows[0]["take_profit_price"], 3931.2)
 
     def test_env_override_enables_pod_b_for_supervisor(self) -> None:
         with patch.dict("os.environ", {"TRIDENT_ENABLE_POD_B": "true"}, clear=False):

@@ -439,6 +439,9 @@ Routes utiles :
 
 - `/`
 - `/dashboard`
+- `/dashboard#pod_a` et `/dashboard#pod_c` pour les positions, trades fermes
+  et opportunites recentes avec cause de refus/acceptation en tooltip
+- `/trades` pour la vue Activity A/C filtrable
 - `/health`
 - `/api/state`
 - `/api/metrics`
