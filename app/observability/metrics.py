@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
 from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
+from app.reporting.live_journal import attach_live_journal_report
 from app.reporting.multi_pod import (
     _is_supervisor_fallback_runtime,
     is_hip4_pod_b_replacement_runtime,
@@ -37,13 +38,22 @@ class MetricsRegistry:
         pod_health = supervisor.pod_health()
         pod_b_status = self._pod_b_runtime_status(supervisor) if hip4_enabled else {}
         symbol_ownership = supervisor.registry.snapshot()
-        pod_a_runtime = load_runtime_status("logs/pod_a_live_status.json")
+        live_journals_enabled = supervisor.mode == "live"
+        pod_a_runtime = attach_live_journal_report(
+            load_runtime_status("logs/pod_a_live_status.json"),
+            "logs/pod_a_live.jsonl",
+            enabled=live_journals_enabled,
+        )
         pod_b_runtime = (
             load_runtime_status("logs/pod_b_live_status.json")
             if hip4_enabled
             else None
         )
-        pod_c_runtime = load_runtime_status("logs/pod_c_live_status.json")
+        pod_c_runtime = attach_live_journal_report(
+            load_runtime_status("logs/pod_c_live_status.json"),
+            "logs/pod_c_live.jsonl",
+            enabled=live_journals_enabled,
+        )
         runtime_supervisor = merge_runtime_supervisor_snapshot(
             pod_a_runtime,
             pod_b_runtime,

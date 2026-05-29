@@ -137,6 +137,11 @@ live_close_slippage_bps = 12.0
 live_max_order_notional_usd = 250.0
 live_order_actions_per_minute = 12
 live_require_protective_orders = true
+# Pod A trend_pullback_long utilise une grace de stop en backtest/local. En live,
+# on ouvre maintenant avec un SL catastrophe exchange, puis on remplace ce SL par
+# le SL normal a la fin de la grace pour rester coherent avec le backtest.
+live_block_stop_grace_setups = false
+live_stop_grace_catastrophic_sl_bps = 300.0
 live_post_only_retry_on_upgrade = false
 live_post_only_buffer_bps = 1.0
 # Grace appliquee seulement quand un pod perd le droit d'ouvrir sur un symbol
@@ -342,7 +347,7 @@ setup_guardrail_enabled = false
 setup_guardrail_lookback_trades = 4
 setup_guardrail_min_closed_trades = 3
 setup_guardrail_max_cumulative_loss_usd = -12.0
-intraday_setup_guardrail_enabled = false
+intraday_setup_guardrail_enabled = true
 intraday_setup_guardrail_lookback_trades = 4
 intraday_setup_guardrail_min_closed_trades = 3
 intraday_setup_guardrail_max_cumulative_loss_usd = -10.0

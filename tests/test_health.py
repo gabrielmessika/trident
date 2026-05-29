@@ -274,6 +274,89 @@ class HealthApiTests(unittest.TestCase):
             "api_merged_runtime_view",
         )
 
+    def test_state_payload_uses_live_journal_for_closed_trade_history_after_restart(self) -> None:
+        supervisor = TridentSupervisor(
+            config=load_config("config/trident.toml"),
+            profile="trident",
+            mode="live",
+        )
+        metrics = MetricsRegistry()
+        pod_a_runtime = {
+            "pod": "pod_a",
+            "mode": "live",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "process_state": "running",
+            "open_positions": [],
+            "report": {
+                "closed_trade_count": 0,
+                "realized_pnl_usd": 0.0,
+                "closed_trade_log": [],
+            },
+        }
+
+        def _runtime_loader(path):
+            if str(path).endswith("pod_a_live_status.json"):
+                return pod_a_runtime
+            return None
+
+        trade_close = {
+            "event_type": "trade_close",
+            "source": "pod_a_live_trade",
+            "record_index": 9,
+            "timestamp": "2026-05-27T16:40:00Z",
+            "trade": {
+                "symbol": "ETH",
+                "side": "long",
+                "setup": "trend_pullback_long",
+                "entry_price": 3900.0,
+                "exit_price": 3875.0,
+                "target_notional_usd": 125.0,
+                "gross_pnl_usd": -2.05,
+                "fees_usd": 0.08,
+                "pnl_usd": -2.13,
+                "close_reason": "exchange_closed",
+                "opened_at": "2026-05-27T16:29:00+00:00",
+                "closed_at": "2026-05-27T16:40:00+00:00",
+            },
+        }
+
+        previous_cwd = os.getcwd()
+        with TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / "logs"
+            logs_dir.mkdir()
+            (logs_dir / "pod_a_live.jsonl").write_text(
+                json.dumps(trade_close) + "\n",
+                encoding="utf-8",
+            )
+            os.chdir(tmpdir)
+            try:
+                with patch(
+                    "app.observability.api.load_runtime_status",
+                    side_effect=_runtime_loader,
+                ), patch(
+                    "app.observability.metrics.load_runtime_status",
+                    side_effect=_runtime_loader,
+                ), patch(
+                    "app.reporting.multi_pod.load_runtime_status",
+                    side_effect=_runtime_loader,
+                ), patch(
+                    "app.observability.api._refresh_supervisor_from_latest_snapshot",
+                    return_value=False,
+                ):
+                    payload = state_payload(supervisor, metrics)
+            finally:
+                os.chdir(previous_cwd)
+
+        pod_a_report = payload["pod_a_runtime"]["report"]
+        self.assertEqual(pod_a_report["closed_trade_count"], 1)
+        self.assertEqual(pod_a_report["closed_trade_log"][0]["close_reason"], "exchange_closed")
+        self.assertEqual(payload["metrics"]["pod_a_closed_trade_count"], 1)
+        pod_a_runtime_report = next(
+            item for item in payload["runtime_report"]["pods"] if item["pod"] == "pod_a"
+        )
+        self.assertEqual(pod_a_runtime_report["total_fill_count"], 1)
+        self.assertAlmostEqual(pod_a_runtime_report["realized_pnl_usd"], -2.13)
+
     def test_metrics_payload_refreshes_registry(self) -> None:
         payload = metrics_payload(self.supervisor, self.metrics)
         self.assertEqual(payload["trident_bootstrap_ready"], 1)

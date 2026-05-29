@@ -248,6 +248,42 @@ TRIDENT_LIVE_STATE_PATH_POD_C=
 réconcilier. `TRIDENT_SECRET_KEY` doit être une API wallet approuvée, pas une
 clé à déplacer dans le repo.
 
+### Alertes crash par email
+
+Les alertes email sont optionnelles et se configurent aussi dans
+`/opt/trident/.env.trident` côté serveur. Ne pas écrire ces valeurs dans le repo.
+`scripts/trident_server.sh` charge automatiquement ce fichier via
+`docker compose --env-file .env.trident`, et `docker-compose.trident.yml`
+propage les variables à `trident-api`, `pod-a-live` et `pod-c-live`.
+
+Exemple SMTP :
+
+```bash
+TRIDENT_CRASH_ALERT_EMAIL_TO=ops@example.com
+TRIDENT_CRASH_ALERT_EMAIL_FROM=trident@example.com
+TRIDENT_CRASH_ALERT_SMTP_HOST=smtp.example.com
+TRIDENT_CRASH_ALERT_SMTP_PORT=587
+TRIDENT_CRASH_ALERT_SMTP_TLS=true
+TRIDENT_CRASH_ALERT_SMTP_USER=trident@example.com
+TRIDENT_CRASH_ALERT_SMTP_PASSWORD=...
+TRIDENT_CRASH_ALERT_COOLDOWN_SECONDS=300
+TRIDENT_CRASH_ALERT_STATE_PATH=runtime/trident/crash_alert_state.json
+```
+
+Alternative si le serveur dispose d'un MTA local :
+
+```bash
+TRIDENT_CRASH_ALERT_EMAIL_TO=ops@example.com
+TRIDENT_CRASH_ALERT_EMAIL_FROM=trident@ton-domaine
+TRIDENT_CRASH_ALERT_SENDMAIL_PATH=/usr/sbin/sendmail
+TRIDENT_CRASH_ALERT_COOLDOWN_SECONDS=300
+```
+
+Si `TRIDENT_CRASH_ALERT_EMAIL_TO` est vide, l'alerte est désactivée. Cette
+alerte couvre les exceptions Python non interceptées avant le redémarrage Docker;
+elle ne remplace pas une supervision serveur externe pour un `SIGKILL`, une
+coupure machine ou une panne réseau totale.
+
 ---
 
 ## 4. Contrôler le bot depuis le serveur

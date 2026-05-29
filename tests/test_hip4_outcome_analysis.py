@@ -78,6 +78,14 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
                 decision_time["buckets"]["by_quality_score"][0]["bucket"],
                 "0.8-1.0",
             )
+            trade_time = payload["nautilus_shadow"]["trade_time"]
+            self.assertEqual(trade_time["matched_trade_count"], 1)
+            self.assertEqual(trade_time["unmatched_trade_count"], 1)
+            self.assertEqual(trade_time["would_block_trade_count"], 0)
+            self.assertEqual(
+                trade_time["buckets"]["by_quality_score"][0]["bucket"],
+                "0.8-1.0",
+            )
             self.assertTrue(
                 any("Brier" in reason for reason in payload["readiness"]["reasons"])
             )
@@ -134,6 +142,7 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
             self.assertIn("Market Observations", markdown)
             self.assertIn("Nautilus Shadow Data Quality", markdown)
             self.assertIn("Decision-time join", markdown)
+            self.assertIn("Trade-time join", markdown)
             self.assertIn("priceBucket", markdown)
             self.assertIn("testnet", markdown)
             self.assertIn("mainnet", markdown)

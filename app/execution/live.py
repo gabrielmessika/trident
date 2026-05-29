@@ -4,6 +4,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any, Callable
 
@@ -109,6 +110,13 @@ class LiveExecutionVenue:
         self.require_protective_orders = bool(
             getattr(config.trident.execution, "live_require_protective_orders", True)
         )
+        self.stop_grace_catastrophic_sl_bps = float(
+            getattr(
+                config.trident.execution,
+                "live_stop_grace_catastrophic_sl_bps",
+                300.0,
+            )
+        )
         self.post_only_retry_on_upgrade = bool(
             getattr(config.trident.execution, "live_post_only_retry_on_upgrade", False)
         )
@@ -166,6 +174,11 @@ class LiveExecutionVenue:
                 symbol,
                 self.last_block_reason_by_symbol[symbol],
             )
+            return None
+        stop_grace_block = self._stop_grace_entry_block_reason(plan)
+        if stop_grace_block is not None:
+            self.last_block_reason_by_symbol[symbol] = stop_grace_block
+            logger.warning("Live open blocked for %s: %s", symbol, stop_grace_block)
             return None
         state = self.private_info_client.fetch_account_state(fills_lookback_hours=2.0)
         if self._has_exchange_exposure(state, symbol):
@@ -262,17 +275,24 @@ class LiveExecutionVenue:
             complete=True,
             raw_response=result.raw,
         )
+        stop_grace_metadata: dict[str, object] | None = None
         if plan is not None:
-            fill.protective_oids = self._place_protective_orders(
+            fill.protective_oids, stop_grace_metadata = self._place_protective_orders(
                 plan=plan,
                 fill=fill,
             )
-        self.orders_by_symbol[symbol] = {
+        order_metadata: dict[str, object] = {
             "entry_oid": fill.oid,
             "entry_cloid": fill.cloid,
+            "entry_filled_size": str(fill.filled_size),
+            "entry_avg_price": fill.price,
+            "side": side,
             "protective_oids": dict(fill.protective_oids),
             "last_open_response": result.raw,
         }
+        if stop_grace_metadata is not None:
+            order_metadata["stop_grace"] = stop_grace_metadata
+        self.orders_by_symbol[symbol] = order_metadata
         return fill
 
     def close_fill(
@@ -398,6 +418,32 @@ class LiveExecutionVenue:
             and POST_ONLY_UPGRADE_ERROR in str(result.error or "").lower()
         )
 
+    def _stop_grace_entry_block_reason(self, plan: TradePlan | None) -> str | None:
+        if plan is None:
+            return None
+        if not bool(
+            getattr(self.config.trident.execution, "live_block_stop_grace_setups", True)
+        ):
+            return None
+        stop_grace_minutes = self._stop_grace_minutes_for_plan(plan)
+        if stop_grace_minutes <= 0:
+            return None
+        return (
+            "stop_grace_exchange_sl_mismatch:"
+            f"setup={plan.setup},grace_minutes={stop_grace_minutes}"
+        )
+
+    def load_order_metadata(self, orders: dict[str, object] | None) -> None:
+        if not isinstance(orders, dict):
+            return
+        for symbol, metadata in orders.items():
+            if not isinstance(metadata, dict):
+                continue
+            normalized = normalize_hl_symbol(str(symbol))
+            if not normalized:
+                continue
+            self.orders_by_symbol[normalized] = dict(metadata)
+
     def _remember_pending_entry_order(
         self,
         *,
@@ -433,11 +479,16 @@ class LiveExecutionVenue:
         *,
         plan: TradePlan,
         fill: LiveExecutionFill,
-    ) -> dict[str, int | None]:
+    ) -> tuple[dict[str, int | None], dict[str, object] | None]:
         protective: dict[str, int | None] = {}
+        stop_grace_metadata = self._stop_grace_metadata(plan, fill)
         if fill.filled_size <= 0:
-            return protective
-        stop_price = self._stop_price(plan, fill.price)
+            return protective, stop_grace_metadata
+        stop_price = (
+            float(stop_grace_metadata["catastrophic_stop_price"])
+            if stop_grace_metadata is not None
+            else self._stop_price(plan, fill.price)
+        )
         if stop_price > 0:
             try:
                 sl = self._submit_trigger(
@@ -448,6 +499,8 @@ class LiveExecutionVenue:
                     tpsl="sl",
                 )
                 protective["sl"] = sl.oid
+                if stop_grace_metadata is not None:
+                    stop_grace_metadata["catastrophic_sl_oid"] = sl.oid
             except HyperliquidAPIError:
                 logger.exception("Protective SL trigger failed for %s", fill.symbol)
                 if self.require_protective_orders:
@@ -488,7 +541,173 @@ class LiveExecutionVenue:
                 timestamp=fill.timestamp,
             )
             raise HyperliquidAPIError(f"Missing SL trigger after live entry on {fill.symbol}")
-        return protective
+        if stop_grace_metadata is not None and protective.get("sl") is None:
+            stop_grace_metadata = None
+        return protective, stop_grace_metadata
+
+    def refresh_stop_grace_orders(
+        self,
+        symbol: str | None = None,
+        *,
+        now: datetime | str | None = None,
+    ) -> bool:
+        now_dt = _parse_utc_datetime(now) if now is not None else datetime.now(timezone.utc)
+        if now_dt is None:
+            now_dt = datetime.now(timezone.utc)
+        symbols = [normalize_hl_symbol(symbol)] if symbol is not None else list(self.orders_by_symbol)
+        changed = False
+        for normalized in symbols:
+            if not normalized:
+                continue
+            metadata = self.orders_by_symbol.get(normalized)
+            if not isinstance(metadata, dict):
+                continue
+            stop_grace = metadata.get("stop_grace")
+            if not isinstance(stop_grace, dict):
+                continue
+            if bool(stop_grace.get("normal_stop_placed")):
+                continue
+            grace_until = _parse_utc_datetime(stop_grace.get("grace_until"))
+            if grace_until is None or now_dt < grace_until:
+                continue
+            normal_stop_price = _float_or_zero(stop_grace.get("normal_stop_price"))
+            side = str(stop_grace.get("side") or metadata.get("side") or "").lower()
+            if normal_stop_price <= 0 or side not in {"long", "short"}:
+                logger.warning(
+                    "Stop-grace SL refresh skipped for %s: invalid metadata=%s",
+                    normalized,
+                    stop_grace,
+                )
+                continue
+            size = self._stop_grace_close_size(normalized, metadata)
+            if size is None or size <= 0:
+                logger.warning("Stop-grace SL refresh skipped for %s: no close size", normalized)
+                continue
+            protective = metadata.get("protective_oids", {})
+            old_sl_oid = None
+            if isinstance(protective, dict):
+                old_sl_oid = _maybe_int(protective.get("sl"))
+            if old_sl_oid is None:
+                old_sl_oid = _maybe_int(stop_grace.get("catastrophic_sl_oid"))
+            try:
+                normal_sl = self._submit_trigger(
+                    symbol=normalized,
+                    side=side,
+                    trigger_price=normal_stop_price,
+                    size=size,
+                    tpsl="sl",
+                )
+            except HyperliquidAPIError:
+                logger.exception("Stop-grace normal SL refresh failed for %s", normalized)
+                continue
+            if old_sl_oid is not None:
+                try:
+                    self._cancel_order(normalized, old_sl_oid)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to cancel stop-grace catastrophe SL oid=%s for %s: %s",
+                        old_sl_oid,
+                        normalized,
+                        exc,
+                    )
+            if not isinstance(protective, dict):
+                protective = {}
+            protective["sl"] = normal_sl.oid
+            metadata["protective_oids"] = protective
+            stop_grace["active"] = False
+            stop_grace["normal_stop_placed"] = True
+            stop_grace["normal_sl_oid"] = normal_sl.oid
+            stop_grace["activated_at"] = _format_utc(now_dt)
+            metadata["stop_grace"] = stop_grace
+            self.orders_by_symbol[normalized] = metadata
+            logger.info(
+                "Stop-grace SL refreshed for %s: old_oid=%s new_oid=%s trigger=%s",
+                normalized,
+                old_sl_oid,
+                normal_sl.oid,
+                normal_stop_price,
+            )
+            changed = True
+        return changed
+
+    def _stop_grace_metadata(
+        self,
+        plan: TradePlan,
+        fill: LiveExecutionFill,
+    ) -> dict[str, object] | None:
+        stop_grace_minutes = self._stop_grace_minutes_for_plan(plan)
+        if stop_grace_minutes <= 0:
+            return None
+        opened_at = _parse_utc_datetime(fill.timestamp) or datetime.now(timezone.utc)
+        normal_stop_price = self._stop_price(plan, fill.price)
+        catastrophe_stop_price = self._catastrophic_stop_price(plan, fill.price, normal_stop_price)
+        if catastrophe_stop_price <= 0:
+            return None
+        return {
+            "active": True,
+            "setup": plan.setup,
+            "side": plan.side,
+            "grace_minutes": stop_grace_minutes,
+            "opened_at": _format_utc(opened_at),
+            "grace_until": _format_utc(opened_at + timedelta(minutes=stop_grace_minutes)),
+            "entry_price": fill.price,
+            "normal_stop_price": normal_stop_price,
+            "catastrophic_stop_price": catastrophe_stop_price,
+            "normal_stop_placed": False,
+        }
+
+    def _stop_grace_minutes_for_plan(self, plan: TradePlan | None) -> int:
+        if plan is None:
+            return 0
+        stop_grace_minutes = max(int(getattr(self.config.pod_a, "stop_grace_minutes", 0)), 0)
+        if stop_grace_minutes <= 0:
+            return 0
+        if str(plan.setup or "") != "trend_pullback_long":
+            return 0
+        details = dict(plan.setup_details or {})
+        market_cluster = str(details.get("market_cluster", "") or "").strip().lower()
+        if market_cluster != "crypto":
+            return 0
+        return stop_grace_minutes
+
+    def _catastrophic_stop_price(
+        self,
+        plan: TradePlan,
+        entry_price: float,
+        normal_stop_price: float,
+    ) -> float:
+        bps = max(float(plan.stop_bps or 0.0), self.stop_grace_catastrophic_sl_bps)
+        if bps <= 0 or entry_price <= 0:
+            return normal_stop_price
+        if plan.side == "long":
+            catastrophe = self._round_price(entry_price * (1.0 - bps / 10_000.0))
+            if normal_stop_price > 0:
+                catastrophe = min(catastrophe, normal_stop_price)
+            return catastrophe
+        catastrophe = self._round_price(entry_price * (1.0 + bps / 10_000.0))
+        if normal_stop_price > 0:
+            catastrophe = max(catastrophe, normal_stop_price)
+        return catastrophe
+
+    def _stop_grace_close_size(
+        self,
+        symbol: str,
+        metadata: dict[str, object],
+    ) -> float | None:
+        size = self._close_size(symbol)
+        if size is not None:
+            return size
+        for key in ("entry_filled_size", "entry_size"):
+            raw = metadata.get(key)
+            try:
+                value = float(Decimal(str(raw)))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            decimals = self._size_decimals(symbol)
+            rounded = self._round_size(value, decimals=decimals)
+            if rounded > 0:
+                return rounded
+        return None
 
     def _submit_trigger(
         self,
@@ -867,3 +1086,32 @@ def _maybe_int(value: object) -> int | None:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _float_or_zero(value: object) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_utc_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text or text.lower() == "none":
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")

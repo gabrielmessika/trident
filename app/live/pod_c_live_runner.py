@@ -20,9 +20,12 @@ from app.hyperliquid.private_state import (
     HyperliquidPrivateInfoClient,
 )
 from app.live.collector import HyperliquidLiveCollector
+from app.live.crash_alerts import notify_crash
 from app.live.exchange_closed_fills import (
+    exchange_closed_reason_for_fill,
     exchange_fill_timestamp,
     known_exit_order_ids_for_symbol,
+    known_exit_order_roles_for_symbol,
     select_exchange_closed_fill,
 )
 from app.live.exchange_position_metrics import exchange_current_price
@@ -225,6 +228,9 @@ class PodCLiveRunner:
                 "Live reconciliation failed: "
                 + ",".join(self.live_reconciliation_report.reasons)
             )
+        self._load_live_order_metadata()
+        if self._refresh_live_stop_grace_orders():
+            self._persist_live_state()
         if os.getenv("TRIDENT_LIVE_SKIP_USER_WS_CHECK") != "true":
             credentials = HyperliquidCredentials.from_env()
             ws_check = await check_order_updates_subscription(
@@ -235,6 +241,24 @@ class PodCLiveRunner:
             if not ws_check.ok:
                 raise RuntimeError(f"orderUpdates websocket check failed: {ws_check.error}")
         self._persist_live_state()
+
+    def _load_live_order_metadata(self) -> None:
+        if self.live_state_store is None:
+            return
+        venue = getattr(self.executor, "venue", None)
+        if not isinstance(venue, LiveExecutionVenue):
+            return
+        orders = self.live_state_store.load().get("orders", {})
+        venue.load_order_metadata(orders if isinstance(orders, dict) else None)
+
+    def _refresh_live_stop_grace_orders(self) -> bool:
+        venue = getattr(self.executor, "venue", None)
+        if not isinstance(venue, LiveExecutionVenue):
+            return False
+        changed = False
+        for symbol in list(self.executor.portfolio.open_positions):
+            changed = venue.refresh_stop_grace_orders(symbol) or changed
+        return changed
 
     def _persist_live_state(self) -> None:
         if self.mode != "live" or self.live_state_store is None:
@@ -283,10 +307,12 @@ class PodCLiveRunner:
             if symbol in account_state.positions:
                 continue
             position = self.executor.portfolio.open_positions[symbol]
+            known_order_roles = known_exit_order_roles_for_symbol(self.live_state_store, symbol)
             fill = select_exchange_closed_fill(
                 position,
                 account_state.recent_fills,
-                known_order_ids=known_exit_order_ids_for_symbol(self.live_state_store, symbol),
+                known_order_ids=set(known_order_roles)
+                or known_exit_order_ids_for_symbol(self.live_state_store, symbol),
             )
             if fill is None:
                 logger.warning(
@@ -295,12 +321,16 @@ class PodCLiveRunner:
                 )
                 continue
             timestamp = exchange_fill_timestamp(fill)
+            close_reason = exchange_closed_reason_for_fill(
+                fill,
+                known_order_roles=known_order_roles,
+            )
             trade = self.executor.portfolio.close_position(
                 symbol,
                 fill.price,
                 fill.fee_usd,
                 timestamp,
-                "exchange_closed",
+                close_reason,
             )
             if trade is not None:
                 self._record_closed_trade(
@@ -311,6 +341,7 @@ class PodCLiveRunner:
                     timestamp=timestamp,
                 )
                 changed = True
+        changed = self._refresh_live_stop_grace_orders() or changed
         if changed:
             self._persist_live_state()
         return changed
@@ -957,7 +988,11 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    asyncio.run(_run_from_args())
+    try:
+        asyncio.run(_run_from_args())
+    except Exception as exc:
+        notify_crash(service_name="pod-c-live", exc=exc)
+        raise
 
 
 if __name__ == "__main__":

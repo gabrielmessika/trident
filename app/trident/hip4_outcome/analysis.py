@@ -107,6 +107,7 @@ def analyze_profile(
         _infer_nautilus_shadow_dir(root, nautilus_shadow_dir),
         settlement_rows,
         decisions,
+        trades,
     )
 
     return {
@@ -343,6 +344,45 @@ def render_markdown(payload: dict[str, Any]) -> str:
                             f"| {label} {row.get('bucket')} | {row.get('count')} | "
                             f"{row.get('approved_count')} | {row.get('rejected_count')} | "
                             f"{row.get('would_block_count')} | "
+                            f"{_fmt_num(row.get('avg_match_age_seconds'))} | "
+                            f"{_fmt_num(row.get('avg_quality_score'))} |"
+                        )
+            trade_time = nautilus_shadow.get("trade_time", {})
+            if isinstance(trade_time, dict):
+                lines.append("")
+                lines.append(
+                    f"- Trade-time join: `{trade_time.get('matched_trade_count', 0)}` "
+                    f"matched trades; `{trade_time.get('unmatched_trade_count', 0)}` "
+                    f"unmatched; max age `{_fmt_num(trade_time.get('max_match_age_seconds'))}`s"
+                )
+                lines.append(
+                    f"- Trade-time would-block trades: "
+                    f"`{trade_time.get('would_block_trade_count', 0)}`"
+                )
+                trade_buckets = trade_time.get("buckets", {})
+                trade_bucket_rows: list[tuple[str, dict[str, Any]]] = []
+                if isinstance(trade_buckets, dict):
+                    for label, key in (
+                        ("quality", "by_quality_score"),
+                        ("age", "by_max_book_age_ms"),
+                        ("skew", "by_book_pair_skew_ms"),
+                        ("divergence", "by_reference_divergence_bps"),
+                    ):
+                        trade_bucket_rows.extend(
+                            (label, row)
+                            for row in trade_buckets.get(key, [])
+                            if isinstance(row, dict)
+                        )
+                if trade_bucket_rows:
+                    lines.append("")
+                    lines.append(
+                        "| Trade bucket | Count | Would block | Avg age s | Avg quality |"
+                    )
+                    lines.append("|---|---:|---:|---:|---:|")
+                    for label, row in trade_bucket_rows:
+                        lines.append(
+                            f"| {label} {row.get('bucket')} | {row.get('count')} | "
+                            f"{row.get('would_block_trade_count')} | "
                             f"{_fmt_num(row.get('avg_match_age_seconds'))} | "
                             f"{_fmt_num(row.get('avg_quality_score'))} |"
                         )
@@ -1363,6 +1403,7 @@ def _nautilus_shadow_summary(
     shadow_dir: Path,
     settlement_rows: list[dict[str, Any]],
     decisions: list[dict[str, Any]],
+    trades: list[dict[str, str]],
 ) -> dict[str, Any]:
     data_quality_path = shadow_dir / "data_quality.csv"
     status_path = shadow_dir / "status.json"
@@ -1377,6 +1418,7 @@ def _nautilus_shadow_summary(
             "matched_settlement_count": 0,
             "market_count": 0,
             "decision_time": _decision_time_quality_summary(decisions, []),
+            "trade_time": _trade_time_quality_summary(trades, []),
         }
 
     quality_index = _latest_quality_by_market(rows)
@@ -1455,6 +1497,7 @@ def _nautilus_shadow_summary(
             ),
         },
         "decision_time": _decision_time_quality_summary(decisions, rows),
+        "trade_time": _trade_time_quality_summary(trades, rows),
     }
 
 
@@ -1587,6 +1630,101 @@ def _decision_time_quality_summary(
     }
 
 
+def _trade_time_quality_summary(
+    trades: list[dict[str, str]],
+    quality_rows: list[dict[str, str]],
+    *,
+    max_age_seconds: float = DEFAULT_NAUTILUS_DECISION_JOIN_MAX_AGE_SECONDS,
+) -> dict[str, Any]:
+    trade_rows = [_normalize_trade_for_quality_join(row) for row in trades]
+    trade_rows = [row for row in trade_rows if row is not None]
+    quality_index = _quality_rows_by_market(quality_rows)
+    matched: list[dict[str, Any]] = []
+    unmatched_reasons: Counter[str] = Counter()
+
+    for trade in trade_rows:
+        trade_ts = trade.get("_ts")
+        market_id = str(trade.get("market_id", ""))
+        if not isinstance(trade_ts, datetime):
+            unmatched_reasons["trade_ts_missing"] += 1
+            continue
+        candidates = quality_index.get(market_id, [])
+        if not candidates:
+            unmatched_reasons["no_market_quality"] += 1
+            continue
+        match = _latest_quality_before_decision(candidates, trade_ts)
+        if match is None:
+            unmatched_reasons["no_prior_quality"] += 1
+            continue
+        quality_ts, quality = match
+        age_seconds = (trade_ts - quality_ts).total_seconds()
+        if age_seconds < 0:
+            unmatched_reasons["future_quality_only"] += 1
+            continue
+        if age_seconds > max_age_seconds:
+            unmatched_reasons["quality_too_old"] += 1
+            continue
+        quality_reject = _quality_reject_reason({"_nautilus_quality": quality})
+        matched.append(
+            {
+                **trade,
+                "_nautilus_quality": quality,
+                "match_age_seconds": round(age_seconds, 3),
+                "quality_reject_reason": quality_reject,
+            }
+        )
+
+    would_block = [row for row in matched if row.get("quality_reject_reason")]
+    return {
+        "max_match_age_seconds": max_age_seconds,
+        "trade_count": len(trade_rows),
+        "matched_trade_count": len(matched),
+        "unmatched_trade_count": max(len(trade_rows) - len(matched), 0),
+        "unmatched_reasons": _counter_rows(unmatched_reasons, "reason"),
+        "would_block_trade_count": len(would_block),
+        "avg_match_age_seconds": _avg(
+            [float(row["match_age_seconds"]) for row in matched]
+        ),
+        "avg_quality_score": _avg(
+            [
+                _float(_quality_payload(row).get("quality_score"))
+                for row in matched
+                if _quality_payload(row).get("quality_score")
+            ]
+        ),
+        "would_block_reasons": _counter_rows(
+            Counter(str(row.get("quality_reject_reason")) for row in would_block),
+            "reason",
+        ),
+        "buckets": {
+            "by_quality_score": _aggregate_trade_quality_bucket(
+                matched,
+                lambda row: _quality_score_bucket(row.get("_nautilus_quality", {})),
+            ),
+            "by_max_book_age_ms": _aggregate_trade_quality_bucket(
+                matched,
+                lambda row: _age_bucket(
+                    _optional_float(_quality_payload(row).get("max_book_age_ms"))
+                ),
+            ),
+            "by_book_pair_skew_ms": _aggregate_trade_quality_bucket(
+                matched,
+                lambda row: _skew_bucket(
+                    _optional_float(_quality_payload(row).get("book_pair_skew_ms"))
+                ),
+            ),
+            "by_reference_divergence_bps": _aggregate_trade_quality_bucket(
+                matched,
+                lambda row: _divergence_bucket(
+                    _optional_float(
+                        _quality_payload(row).get("reference_divergence_bps")
+                    )
+                ),
+            ),
+        },
+    }
+
+
 def _normalize_decision_for_quality_join(payload: dict[str, Any]) -> dict[str, Any] | None:
     signal = payload.get("signal")
     if not isinstance(signal, dict):
@@ -1609,6 +1747,26 @@ def _normalize_decision_for_quality_join(payload: dict[str, Any]) -> dict[str, A
         "execution_mode": str(decision_payload.get("execution_mode") or "unknown"),
         "net_edge": _first_optional_float(signal.get("net_edge"), metadata.get("net_edge")),
         "confidence": _first_optional_float(signal.get("confidence"), metadata.get("probability_confidence")),
+    }
+
+
+def _normalize_trade_for_quality_join(row: dict[str, str]) -> dict[str, Any] | None:
+    market_id = str(row.get("market_id") or "").strip()
+    if not market_id:
+        return None
+    return {
+        "_ts": _parse_ts(row.get("ts")),
+        "ts": row.get("ts"),
+        "market_id": market_id,
+        "outcome": str(row.get("outcome") or ""),
+        "underlying": str(row.get("underlying") or "").upper(),
+        "edge_type": str(row.get("edge_type") or "unknown"),
+        "side": str(row.get("side") or "unknown"),
+        "coin": str(row.get("coin") or ""),
+        "status": str(row.get("status") or "unknown"),
+        "price": _optional_float(row.get("price")),
+        "size_usdc": _optional_float(row.get("size_usdc")),
+        "token_qty": _optional_float(row.get("token_qty")),
     }
 
 
@@ -1653,6 +1811,19 @@ def _aggregate_decision_quality_bucket(
     return sorted(output, key=lambda item: (str(item.get("bucket")), -int(item.get("count", 0))))
 
 
+def _aggregate_trade_quality_bucket(
+    rows: list[dict[str, Any]],
+    bucket_fn: Any,
+) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[str(bucket_fn(row))].append(row)
+    output: list[dict[str, Any]] = []
+    for bucket, items in groups.items():
+        output.append({"bucket": bucket, **_trade_quality_join_metrics(items)})
+    return sorted(output, key=lambda item: (str(item.get("bucket")), -int(item.get("count", 0))))
+
+
 def _decision_quality_join_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     approved = [row for row in rows if bool(row.get("approved"))]
     rejected = [row for row in rows if not bool(row.get("approved"))]
@@ -1667,6 +1838,41 @@ def _decision_quality_join_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]
         "would_block_approved_count": len(
             [row for row in approved if row.get("quality_reject_reason")]
         ),
+        "tradable_rate": _avg(
+            [1.0 if _boolish(quality.get("tradable_window")) else 0.0 for quality in qualities]
+        ),
+        "avg_match_age_seconds": _avg(
+            [float(row["match_age_seconds"]) for row in rows if row.get("match_age_seconds") is not None]
+        ),
+        "avg_quality_score": _avg(
+            [_float(quality.get("quality_score")) for quality in qualities if quality.get("quality_score")]
+        ),
+        "avg_max_book_age_ms": _avg(
+            [_float(quality.get("max_book_age_ms")) for quality in qualities if quality.get("max_book_age_ms")]
+        ),
+        "avg_book_pair_skew_ms": _avg(
+            [
+                _float(quality.get("book_pair_skew_ms"))
+                for quality in qualities
+                if quality.get("book_pair_skew_ms")
+            ]
+        ),
+        "avg_reference_divergence_bps": _avg(
+            [
+                _float(quality.get("reference_divergence_bps"))
+                for quality in qualities
+                if quality.get("reference_divergence_bps")
+            ]
+        ),
+    }
+
+
+def _trade_quality_join_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    would_block = [row for row in rows if row.get("quality_reject_reason")]
+    qualities = [_quality_payload(row) for row in rows]
+    return {
+        "count": len(rows),
+        "would_block_trade_count": len(would_block),
         "tradable_rate": _avg(
             [1.0 if _boolish(quality.get("tradable_window")) else 0.0 for quality in qualities]
         ),

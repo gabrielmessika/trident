@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 
+from app.live.crash_alerts import notify_crash
 from app.observability.api import run_http_server
 from app.observability.metrics import MetricsRegistry
 from app.settings import load_config
@@ -42,18 +43,22 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    args = build_parser().parse_args()
-    config = load_config(args.config)
-    host = args.host or config.general.host
-    port = args.port or config.general.port
+    try:
+        args = build_parser().parse_args()
+        config = load_config(args.config)
+        host = args.host or config.general.host
+        port = args.port or config.general.port
 
-    supervisor = TridentSupervisor(config=config, profile=args.profile, mode=args.mode)
-    run_http_server(
-        host=host,
-        port=port,
-        supervisor=supervisor,
-        metrics=MetricsRegistry(),
-    )
+        supervisor = TridentSupervisor(config=config, profile=args.profile, mode=args.mode)
+        run_http_server(
+            host=host,
+            port=port,
+            supervisor=supervisor,
+            metrics=MetricsRegistry(),
+        )
+    except Exception as exc:
+        notify_crash(service_name="trident-api", exc=exc)
+        raise
 
 
 if __name__ == "__main__":

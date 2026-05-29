@@ -21,6 +21,7 @@ from app.reporting.multi_pod import (
     _is_supervisor_fallback_runtime,
     is_hip4_pod_b_replacement_runtime,
 )
+from app.reporting.live_journal import attach_live_journal_report
 from app.trident.hip4_outcome.reporting import replay_opportunities
 from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
 from app.live.runtime_status import (
@@ -829,6 +830,10 @@ def _humanize_close_reason(value: object) -> str:
         "routing_revoked": "Routing revoke: le symbole n'etait plus autorise pour ce pod",
         "opposite_signal": "Signal oppose: un signal inverse a force la fermeture",
         "upgrade_setup": "Upgrade setup: fermeture pour reouvrir sur un setup juge meilleur",
+        "exchange_closed": "Cloture exchange: position fermee cote exchange, raison non classee",
+        "exchange_closed_stop_loss": "Stop loss exchange declenche: ordre protecteur SL execute",
+        "exchange_closed_take_profit": "Take profit exchange declenche: ordre protecteur TP execute",
+        "exchange_closed_liquidation": "Liquidation exchange detectee: cloture cote exchange",
         "end_of_backtest": "Fin de replay: cloture technique de fin de session",
     }
     return mapping.get(reason, reason or "-")
@@ -1812,13 +1817,22 @@ def _merge_runtime_snapshot(
     allow_runtime_authority_override: bool = True,
 ) -> dict[str, object]:
     hip4_enabled = _hip4_routes_enabled()
-    pod_a_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_a_live_status.json"))
+    live_journals_enabled = str(snapshot.get("mode", "")).strip().lower() == "live"
+    pod_a_runtime = attach_live_journal_report(
+        _normalized_runtime_payload(load_runtime_status("logs/pod_a_live_status.json")),
+        "logs/pod_a_live.jsonl",
+        enabled=live_journals_enabled,
+    )
     pod_b_runtime = (
         _normalized_runtime_payload(load_runtime_status("logs/pod_b_live_status.json"))
         if hip4_enabled
         else None
     )
-    pod_c_runtime = _normalized_runtime_payload(load_runtime_status("logs/pod_c_live_status.json"))
+    pod_c_runtime = attach_live_journal_report(
+        _normalized_runtime_payload(load_runtime_status("logs/pod_c_live_status.json")),
+        "logs/pod_c_live.jsonl",
+        enabled=live_journals_enabled,
+    )
     snapshot["pod_a_runtime"] = pod_a_runtime
     snapshot["pod_b_runtime"] = pod_b_runtime
     snapshot["pod_c_runtime"] = pod_c_runtime

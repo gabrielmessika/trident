@@ -69,20 +69,44 @@ class _FakeRateLimiter:
 
 
 class _FakePrivateInfoSdk:
+    def __init__(
+        self,
+        *,
+        user_states_by_dex: dict[str, dict[str, object]] | None = None,
+        open_orders_by_dex: dict[str, list[object]] | None = None,
+        frontend_open_orders_by_dex: dict[str, list[object]] | None = None,
+        recent_fills: list[object] | None = None,
+    ) -> None:
+        self.user_states_by_dex = user_states_by_dex or {
+            "": {"marginSummary": {"accountValue": "1000", "totalMarginUsed": "0"}}
+        }
+        self.open_orders_by_dex = open_orders_by_dex or {}
+        self.frontend_open_orders_by_dex = frontend_open_orders_by_dex or {}
+        self.recent_fills = recent_fills or []
+        self.user_state_calls: list[str] = []
+        self.open_order_calls: list[str] = []
+        self.frontend_open_order_calls: list[str] = []
+
     def query_user_abstraction_state(self, address: str) -> str:
         return "unifiedAccount"
 
-    def user_state(self, address: str) -> dict[str, object]:
-        return {"marginSummary": {"accountValue": "1000", "totalMarginUsed": "0"}}
+    def user_state(self, address: str, dex: str = "") -> dict[str, object]:
+        self.user_state_calls.append(dex)
+        return self.user_states_by_dex.get(
+            dex,
+            {"marginSummary": {"accountValue": "1000", "totalMarginUsed": "0"}},
+        )
 
     def spot_user_state(self, address: str) -> dict[str, object]:
         return {"balances": []}
 
-    def open_orders(self, address: str) -> list[object]:
-        return []
+    def open_orders(self, address: str, dex: str = "") -> list[object]:
+        self.open_order_calls.append(dex)
+        return self.open_orders_by_dex.get(dex, [])
 
-    def frontend_open_orders(self, address: str) -> list[object]:
-        return []
+    def frontend_open_orders(self, address: str, dex: str = "") -> list[object]:
+        self.frontend_open_order_calls.append(dex)
+        return self.frontend_open_orders_by_dex.get(dex, [])
 
     def user_fills_by_time(
         self,
@@ -91,7 +115,7 @@ class _FakePrivateInfoSdk:
         *,
         aggregate_by_time: bool = False,
     ) -> list[object]:
-        return []
+        return self.recent_fills
 
 
 class _FakePrivateAccountClient:
@@ -617,11 +641,85 @@ class LiveReadinessTests(unittest.TestCase):
         state = client.fetch_account_state()
 
         self.assertEqual(state.account_value_usd, 1000.0)
-        self.assertEqual(len(limiter.acquires), 5)
+        self.assertEqual(len(limiter.acquires), 8)
         self.assertTrue(
             all(call["key"] == "http_private_info" for call in limiter.acquires)
         )
         self.assertTrue(all(call["capacity"] == 5 for call in limiter.acquires))
+
+    def test_private_info_client_merges_builder_dex_account_state(self) -> None:
+        config = load_config("config/trident.toml").hyperliquid
+        sdk = _FakePrivateInfoSdk(
+            user_states_by_dex={
+                "": {
+                    "marginSummary": {"accountValue": "1000", "totalMarginUsed": "0"},
+                    "assetPositions": [],
+                },
+                "xyz": {
+                    "marginSummary": {"accountValue": "1000", "totalMarginUsed": "25"},
+                    "assetPositions": [
+                        {
+                            "position": {
+                                "coin": "xyz:GOLD",
+                                "szi": "0.0562",
+                                "entryPx": "4442.39",
+                                "positionValue": "249.90",
+                                "marginUsed": "25",
+                                "unrealizedPnl": "0.24",
+                                "leverage": {"type": "isolated", "value": 10},
+                            }
+                        }
+                    ],
+                },
+            },
+            open_orders_by_dex={
+                "xyz": [
+                    {
+                        "coin": "xyz:GOLD",
+                        "oid": 10,
+                        "side": "A",
+                        "sz": "0.0562",
+                        "limitPx": "4500",
+                        "reduceOnly": True,
+                    }
+                ]
+            },
+            frontend_open_orders_by_dex={
+                "xyz": [
+                    {
+                        "coin": "xyz:GOLD",
+                        "oid": 11,
+                        "side": "A",
+                        "origSz": "0.0562",
+                        "limitPx": "4380",
+                        "reduceOnly": True,
+                        "isTrigger": True,
+                        "triggerPx": "4380",
+                        "orderType": "Stop Market",
+                    }
+                ]
+            },
+        )
+        client = HyperliquidPrivateInfoClient(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+            ),
+            info_client=sdk,
+            now_ms_fn=lambda: 1_000_000,
+            sleep_fn=lambda _: None,
+            rate_limiter=_FakeRateLimiter(),
+        )
+
+        state = client.fetch_account_state()
+
+        self.assertEqual(sdk.user_state_calls, ["", "xyz"])
+        self.assertEqual(sdk.open_order_calls, ["", "xyz"])
+        self.assertEqual(sdk.frontend_open_order_calls, ["", "xyz"])
+        self.assertIn("XYZ:GOLD", state.positions)
+        self.assertEqual(state.positions["XYZ:GOLD"].side, "long")
+        self.assertEqual([order.symbol for order in state.all_orders], ["XYZ:GOLD", "XYZ:GOLD"])
+        self.assertTrue(any(order.is_trigger for order in state.all_orders))
 
     def test_private_info_client_can_fetch_account_mode_for_ui_capital(self) -> None:
         config = load_config("config/trident.toml").hyperliquid
@@ -640,7 +738,7 @@ class LiveReadinessTests(unittest.TestCase):
         state = client.fetch_account_state(include_account_mode=True)
 
         self.assertEqual(state.account_mode, "unifiedAccount")
-        self.assertEqual(len(limiter.acquires), 6)
+        self.assertEqual(len(limiter.acquires), 9)
 
     def test_live_exchange_actions_use_order_rate_limiter(self) -> None:
         config = load_config("config/trident.toml")
@@ -969,6 +1067,125 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertEqual(
             exchange.orders[1]["order_type"],
             {"trigger": {"isMarket": True, "triggerPx": 2132.6, "tpsl": "sl"}},
+        )
+
+    def test_live_stop_grace_uses_catastrophic_sl_then_refreshes_normal_sl(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        config.trident.execution.live_block_stop_grace_setups = False
+        config.trident.execution.live_stop_grace_catastrophic_sl_bps = 300.0
+        exchange = _FakeExchange()
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "ETH", "szDecimals": 4}]}
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.open_fill(
+            symbol="ETH",
+            side="long",
+            mid_price=3000.0,
+            spread_bps=1.0,
+            notional_usd=100.0,
+            timestamp="2026-05-27T00:00:00Z",
+            plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.8,
+                target_notional_usd=100.0,
+                stop_bps=80.0,
+                time_stop_hours=24,
+                setup_details={"market_cluster": "crypto"},
+            ),
+        )
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(len(exchange.orders), 2)
+        self.assertEqual(exchange.orders[1]["limit_px"], 2912.3)
+        self.assertEqual(
+            exchange.orders[1]["order_type"],
+            {"trigger": {"isMarket": True, "triggerPx": 2912.3, "tpsl": "sl"}},
+        )
+        metadata = venue.orders_by_symbol["ETH"]
+        stop_grace = metadata["stop_grace"]  # type: ignore[index]
+        self.assertEqual(stop_grace["grace_minutes"], config.pod_a.stop_grace_minutes)  # type: ignore[index]
+        self.assertEqual(stop_grace["normal_stop_price"], 2978.4)  # type: ignore[index]
+        self.assertEqual(stop_grace["catastrophic_stop_price"], 2912.3)  # type: ignore[index]
+        self.assertFalse(stop_grace["normal_stop_placed"])  # type: ignore[index]
+
+        self.assertFalse(
+            venue.refresh_stop_grace_orders(
+                "ETH",
+                now="2026-05-27T00:30:00Z",
+            )
+        )
+        self.assertTrue(
+            venue.refresh_stop_grace_orders(
+                "ETH",
+                now="2026-05-27T02:46:00Z",
+            )
+        )
+        self.assertEqual(exchange.cancels, [("ETH", 7)])
+        self.assertEqual(exchange.orders[2]["limit_px"], 2978.4)
+        refreshed = venue.orders_by_symbol["ETH"]["stop_grace"]  # type: ignore[index]
+        self.assertTrue(refreshed["normal_stop_placed"])  # type: ignore[index]
+        self.assertFalse(refreshed["active"])  # type: ignore[index]
+
+    def test_live_stop_grace_kill_switch_can_still_block_entries(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        config.trident.execution.live_block_stop_grace_setups = True
+        exchange = _FakeExchange()
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "ETH", "szDecimals": 4}]}
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.open_fill(
+            symbol="ETH",
+            side="long",
+            mid_price=3000.0,
+            spread_bps=1.0,
+            notional_usd=100.0,
+            timestamp="2026-05-27T00:00:00Z",
+            plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.8,
+                target_notional_usd=100.0,
+                stop_bps=80.0,
+                time_stop_hours=24,
+                setup_details={"market_cluster": "crypto"},
+            ),
+        )
+
+        self.assertIsNone(fill)
+        self.assertEqual(exchange.orders, [])
+        self.assertTrue(
+            venue.last_block_reason_by_symbol["ETH"].startswith(
+                "stop_grace_exchange_sl_mismatch:"
+            )
         )
 
     def test_optional_live_protective_trigger_failure_keeps_entry_fill(self) -> None:

@@ -84,6 +84,25 @@ Source de verite operationnelle depuis le `2026-05-24`:
 - Ajustement operateur `2026-05-26`: `live_max_order_notional_usd` passe de
   `100` a `250` pour debloquer le canary Pod A sans ouvrir tout le sizing
   calcule; review requise apres les premiers cycles `open -> close`.
+- Incident live `2026-05-27`: les runners `pod-a-live` et `pod-c-live` ont ete
+  stoppes manuellement sur le serveur a `17:01Z` apres une serie de closes Pod A
+  `exchange_closed` perdants et une reconciliation Pod C KO sur `XYZ:GOLD`
+  locale absente de l'exchange. Cause racine Pod C identifiee: la lecture privee
+  ne fusionnait pas encore le builder-dex `xyz`, alors que la position
+  `XYZ:GOLD` et ses ordres protecteurs etaient bien presents sous `dex="xyz"`.
+  Cause racine Pod A identifiee: le live posait
+  un SL exchange immediat alors que `PodAExecutor` applique une grace de stop
+  locale/backtest de `165m` sur `trend_pullback_long` crypto. Correction
+  `2026-05-29`: le live ouvre maintenant ces setups avec un SL catastrophe
+  exchange pendant la grace, puis remplace ce SL par le SL normal apres
+  expiration de la fenetre; les metadonnees d'ordres sont rechargees au
+  redemarrage pour faire le remplacement/cancel proprement. Ne pas relancer
+  Pod A/C live sans redeploiement cible et preflight.
+  Redeploiement A/C effectue ensuite avec preflight OK; le reporting live
+  reconstruit maintenant les trades fermes depuis les journaux append-only
+  `logs/pod_a_live.jsonl` et `logs/pod_c_live.jsonl`, afin que les closes
+  Hyperliquid reels restent dans l'historique UI et le PnL realise apres un
+  redemarrage de runner.
 - Le sizing live Pod A/C est cap-aware avant risk gate: quand un plan depasse
   `live_max_order_notional_usd`, le runner live abaisse le notionnel et le
   levier modelise en conservant la marge allouee si possible. Le cap respecte
@@ -93,6 +112,10 @@ Source de verite operationnelle depuis le `2026-05-24`:
 - Le close live reduce-only utilise la taille exacte de la position exchange,
   au lieu de reconstruire une taille depuis un notionnel local potentiellement
   stale.
+- Alertes crash email optionnelles `2026-05-29`: `trident-api`,
+  `pod-a-live` et `pod-c-live` appellent un notifier best-effort sur exception
+  Python non interceptée. Les paramètres SMTP/sendmail restent exclusivement
+  dans `/opt/trident/.env.trident`; voir `docs/deployment.md`.
 - La page `Status > Pods` affiche maintenant `PnL realise` et `PnL latent` dans
   la carte de chaque pod.
 - Pods actifs dry-run TRIDENT: `Pod A` crypto core avec `a_grade_enabled`,

@@ -191,6 +191,16 @@ def _known_order_ids(state_stores: Sequence[LiveStateStore]) -> set[int]:
                         known.add(int(value))
                     except (TypeError, ValueError):
                         pass
+            stop_grace = metadata.get("stop_grace", {})
+            if isinstance(stop_grace, dict):
+                for key in ("catastrophic_sl_oid", "normal_sl_oid"):
+                    value = stop_grace.get(key)
+                    if value is None:
+                        continue
+                    try:
+                        known.add(int(value))
+                    except (TypeError, ValueError):
+                        pass
     return known
 
 

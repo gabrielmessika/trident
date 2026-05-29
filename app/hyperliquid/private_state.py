@@ -9,7 +9,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from app.hyperliquid.rate_limiter import SharedRateLimiter, jitter_seconds
-from app.hyperliquid.symbols import normalize_hl_symbol
+from app.hyperliquid.symbols import group_hl_symbols_by_dex, normalize_hl_symbol
 from app.live.errors import (
     HyperliquidAPIError,
     HyperliquidRateLimitError,
@@ -241,6 +241,7 @@ class HyperliquidPrivateInfoClient:
         credentials: HyperliquidCredentials,
         *,
         info_client: Any | None = None,
+        perp_dexs: list[str] | None = None,
         now_ms_fn: Any | None = None,
         sleep_fn: Callable[[float], None] | None = None,
         rate_limiter: Any | None = None,
@@ -248,6 +249,9 @@ class HyperliquidPrivateInfoClient:
         self.config = config
         self.credentials = credentials
         self._info_client = info_client
+        self._perp_dexs = self._normalize_perp_dexs(
+            perp_dexs if perp_dexs is not None else self._configured_perp_dexs()
+        )
         self._now_ms_fn = now_ms_fn or (lambda: int(time.time() * 1000))
         self.sleep_fn = sleep_fn or time.sleep
         self.stats = HyperliquidPrivateInfoStats()
@@ -273,6 +277,7 @@ class HyperliquidPrivateInfoClient:
             self._info_client = Info(
                 sdk_base_url_from_info_url(self.config.info_url),
                 skip_ws=True,
+                perp_dexs=["", *self._perp_dexs] if self._perp_dexs else None,
                 timeout=self.config.connect_timeout_seconds,
             )
         return self._info_client
@@ -293,10 +298,17 @@ class HyperliquidPrivateInfoClient:
             account_mode = None
             if include_account_mode:
                 account_mode = self._fetch_account_mode(address)
-            user_state = self._call_private_info(self.info_client.user_state, address)
+            user_states = [
+                self._call_private_info(
+                    self.info_client.user_state,
+                    address,
+                    dex=dex,
+                )
+                for dex in self._perp_state_dexs()
+            ]
             spot_state = self._call_private_info(self.info_client.spot_user_state, address)
-            open_orders = self._call_private_info(self.info_client.open_orders, address)
-            frontend_orders = self._call_private_info(
+            open_orders = self._fetch_perp_private_items(self.info_client.open_orders, address)
+            frontend_orders = self._fetch_perp_private_items(
                 self.info_client.frontend_open_orders,
                 address,
             )
@@ -315,12 +327,55 @@ class HyperliquidPrivateInfoClient:
         return parse_account_state(
             account_address=address,
             account_mode=account_mode,
-            user_state=user_state,
+            user_state=_merge_user_states(user_states),
             spot_state=spot_state,
             open_orders=open_orders,
             frontend_open_orders=frontend_orders,
             recent_fills=fills,
         )
+
+    def _fetch_perp_private_items(
+        self,
+        fn: Callable[..., object],
+        address: str,
+    ) -> list[object]:
+        merged: list[object] = []
+        seen: set[tuple[object, ...]] = set()
+        for dex in self._perp_state_dexs():
+            payload = self._call_private_info(fn, address, dex=dex)
+            if not isinstance(payload, list):
+                continue
+            for item in payload:
+                key = _order_identity(item)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+        return merged
+
+    def _perp_state_dexs(self) -> list[str]:
+        return ["", *self._perp_dexs]
+
+    def _configured_perp_dexs(self) -> list[str]:
+        symbols: list[str] = []
+        symbols.extend(self.config.observation_universe or [])
+        symbols.extend(self.config.default_coins or [])
+        symbols.extend(self.config.market_cluster_overrides.keys())
+        for leaders in self.config.cluster_leaders.values():
+            symbols.extend(leaders)
+        grouped = group_hl_symbols_by_dex(symbols)
+        return sorted(dex for dex in grouped if dex is not None)
+
+    def _normalize_perp_dexs(self, values: list[str] | None) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values or []:
+            dex = str(value or "").strip().lower()
+            if not dex or dex in seen:
+                continue
+            seen.add(dex)
+            normalized.append(dex)
+        return normalized
 
     def _fetch_account_mode(self, address: str) -> str | None:
         now = time.monotonic()
@@ -385,6 +440,60 @@ class HyperliquidPrivateInfoClient:
             raise
         self.rate_limiter.record_success(key)
         return result
+
+
+def _merge_user_states(payloads: list[object]) -> object:
+    states = [payload for payload in payloads if isinstance(payload, dict)]
+    if not states:
+        return {}
+    merged = dict(_preferred_account_state(states))
+    positions: list[object] = []
+    seen_symbols: set[str] = set()
+    for state in states:
+        raw_positions = state.get("assetPositions", [])
+        if not isinstance(raw_positions, list):
+            continue
+        for item in raw_positions:
+            symbol = _position_symbol(item)
+            if not symbol or symbol in seen_symbols:
+                continue
+            seen_symbols.add(symbol)
+            positions.append(item)
+    merged["assetPositions"] = positions
+    return merged
+
+
+def _preferred_account_state(states: list[dict[str, object]]) -> dict[str, object]:
+    for state in states:
+        margin_summary = state.get("marginSummary", {})
+        if isinstance(margin_summary, dict) and (
+            _float(margin_summary.get("accountValue")) > 0
+            or _float(margin_summary.get("totalMarginUsed")) > 0
+            or _float(state.get("withdrawable")) > 0
+        ):
+            return state
+    return states[0]
+
+
+def _position_symbol(item: object) -> str:
+    if not isinstance(item, dict):
+        return ""
+    raw_position = item.get("position", item)
+    if not isinstance(raw_position, dict):
+        return ""
+    return normalize_hl_symbol(str(raw_position.get("coin", "")))
+
+
+def _order_identity(item: object) -> tuple[object, ...]:
+    if not isinstance(item, dict):
+        return ("raw", repr(item))
+    return (
+        normalize_hl_symbol(str(item.get("coin", ""))),
+        item.get("oid"),
+        item.get("cloid"),
+        item.get("orderType"),
+        item.get("isTrigger"),
+    )
 
 
 def parse_account_state(

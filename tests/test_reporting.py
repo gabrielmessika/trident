@@ -1,6 +1,9 @@
+import json
 import os
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from app.live.runtime_status import runtime_status_is_fresh
@@ -116,6 +119,98 @@ class ReportingTests(unittest.TestCase):
         self.assertAlmostEqual(pod_a["total_unrealized_pnl_usd"], 0.75)
         self.assertEqual(report["active_position_count"], 2)
         self.assertAlmostEqual(report["total_unrealized_pnl_usd"], 0.75)
+
+    def test_build_runtime_report_counts_live_journal_closed_trades_after_restart(self) -> None:
+        config = load_config("config/trident.toml")
+        supervisor = TridentSupervisor(
+            config=config,
+            profile="trident-reporting-live-journal",
+            mode="live",
+        )
+        pod_a_runtime = {
+            "pod": "pod_a",
+            "mode": "live",
+            "updated_at": "2999-01-01T00:00:00Z",
+            "process_state": "running",
+            "open_positions": [],
+            "report": {
+                "closed_trade_count": 0,
+                "realized_pnl_usd": 0.0,
+                "closed_trade_log": [],
+            },
+        }
+
+        def runtime_status_for(path: object) -> dict[str, object] | None:
+            if str(path).endswith("pod_a_live_status.json"):
+                return pod_a_runtime
+            return None
+
+        records = [
+            {
+                "event_type": "trade_close",
+                "source": "pod_a_live_trade",
+                "record_index": 1,
+                "timestamp": "2026-05-27T16:30:00Z",
+                "trade": {
+                    "symbol": "ETH",
+                    "side": "long",
+                    "setup": "trend_pullback_long",
+                    "entry_price": 3900.0,
+                    "exit_price": 3880.0,
+                    "target_notional_usd": 125.0,
+                    "gross_pnl_usd": -1.74,
+                    "fees_usd": 0.08,
+                    "pnl_usd": -1.82,
+                    "close_reason": "exchange_closed",
+                    "opened_at": "2026-05-27T16:21:00+00:00",
+                    "closed_at": "2026-05-27T16:30:00+00:00",
+                },
+            },
+            {
+                "event_type": "trade_close",
+                "source": "pod_a_live_trade",
+                "record_index": 2,
+                "timestamp": "2026-05-27T16:35:00Z",
+                "trade": {
+                    "symbol": "SOL",
+                    "side": "long",
+                    "setup": "trend_pullback_long",
+                    "entry_price": 178.0,
+                    "exit_price": 176.2,
+                    "target_notional_usd": 125.0,
+                    "gross_pnl_usd": -2.1,
+                    "fees_usd": 0.08,
+                    "pnl_usd": -2.18,
+                    "close_reason": "exchange_closed",
+                    "opened_at": "2026-05-27T16:26:00+00:00",
+                    "closed_at": "2026-05-27T16:35:00+00:00",
+                },
+            },
+        ]
+
+        previous_cwd = os.getcwd()
+        with TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / "logs"
+            logs_dir.mkdir()
+            (logs_dir / "pod_a_live.jsonl").write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+            os.chdir(tmpdir)
+            try:
+                with patch(
+                    "app.reporting.multi_pod.load_runtime_status",
+                    side_effect=runtime_status_for,
+                ):
+                    report = build_runtime_report(supervisor).to_dict()
+            finally:
+                os.chdir(previous_cwd)
+
+        pod_a = next(item for item in report["pods"] if item["pod"] == "pod_a")
+        self.assertEqual(pod_a["total_fill_count"], 2)
+        self.assertEqual(pod_a["loss_count"], 2)
+        self.assertAlmostEqual(pod_a["realized_pnl_usd"], -4.0)
+        self.assertAlmostEqual(report["realized_pnl_usd"], -4.0)
 
     def test_build_runtime_report_ignores_disabled_pod_runtime_artifacts(self) -> None:
         config = load_config("config/trident.toml")

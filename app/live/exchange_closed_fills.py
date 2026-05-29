@@ -39,6 +39,23 @@ def select_exchange_closed_fill(
     return max(candidates, key=lambda fill: _close_fill_score(fill, known_order_ids))
 
 
+def exchange_closed_reason_for_fill(
+    fill: ExchangeFill,
+    *,
+    known_order_roles: dict[int, str] | None = None,
+) -> str:
+    if fill.oid is not None and known_order_roles:
+        role = known_order_roles.get(int(fill.oid))
+        if role == "stop_loss":
+            return "exchange_closed_stop_loss"
+        if role == "take_profit":
+            return "exchange_closed_take_profit"
+    direction = str(fill.direction).lower()
+    if "liquid" in direction:
+        return "exchange_closed_liquidation"
+    return "exchange_closed"
+
+
 def exchange_fill_timestamp(fill: ExchangeFill) -> str:
     return (
         datetime.fromtimestamp(fill.timestamp_ms / 1000, tz=timezone.utc)
@@ -47,16 +64,29 @@ def exchange_fill_timestamp(fill: ExchangeFill) -> str:
     )
 
 
+def known_exit_order_roles_for_symbol(state_store: Any, symbol: str) -> dict[int, str]:
+    metadata = _order_metadata_for_symbol(state_store, symbol)
+    if not metadata:
+        return {}
+    known: dict[int, str] = {}
+    for key, role in (("sl_oid", "stop_loss"), ("tp_oid", "take_profit")):
+        _add_order_role(known, metadata.get(key), role)
+    protective = metadata.get("protective_oids", {})
+    if isinstance(protective, dict):
+        for key, value in protective.items():
+            role = _protective_order_role(key)
+            if role is not None:
+                _add_order_role(known, value, role)
+    stop_grace = metadata.get("stop_grace", {})
+    if isinstance(stop_grace, dict):
+        for key in ("catastrophic_sl_oid", "normal_sl_oid"):
+            _add_order_role(known, stop_grace.get(key), "stop_loss")
+    return known
+
+
 def known_exit_order_ids_for_symbol(state_store: Any, symbol: str) -> set[int]:
-    try:
-        payload = state_store.load()
-    except Exception:
-        return set()
-    orders = payload.get("orders", {}) if isinstance(payload, dict) else {}
-    if not isinstance(orders, dict):
-        return set()
-    metadata = orders.get(str(symbol).upper()) or orders.get(symbol)
-    if not isinstance(metadata, dict):
+    metadata = _order_metadata_for_symbol(state_store, symbol)
+    if not metadata:
         return set()
     known: set[int] = set()
     for key in ("sl_oid", "tp_oid"):
@@ -65,7 +95,25 @@ def known_exit_order_ids_for_symbol(state_store: Any, symbol: str) -> set[int]:
     if isinstance(protective, dict):
         for value in protective.values():
             _add_order_id(known, value)
+    stop_grace = metadata.get("stop_grace", {})
+    if isinstance(stop_grace, dict):
+        for key in ("catastrophic_sl_oid", "normal_sl_oid"):
+            _add_order_id(known, stop_grace.get(key))
     return known
+
+
+def _order_metadata_for_symbol(state_store: Any, symbol: str) -> dict[str, Any] | None:
+    try:
+        payload = state_store.load()
+    except Exception:
+        return None
+    orders = payload.get("orders", {}) if isinstance(payload, dict) else {}
+    if not isinstance(orders, dict):
+        return None
+    metadata = orders.get(str(symbol).upper()) or orders.get(symbol)
+    if not isinstance(metadata, dict):
+        return None
+    return metadata
 
 
 def _timestamp_ms(value: datetime | None) -> int | None:
@@ -99,6 +147,24 @@ def _close_fill_score(fill: ExchangeFill, known_order_ids: set[int]) -> tuple[in
         1 if abs(float(fill.closed_pnl_usd)) > 0 else 0,
         int(fill.timestamp_ms),
     )
+
+
+def _protective_order_role(key: object) -> str | None:
+    normalized = str(key).strip().lower()
+    if normalized in {"sl", "stop", "stop_loss"}:
+        return "stop_loss"
+    if normalized in {"tp", "take_profit", "profit"}:
+        return "take_profit"
+    return None
+
+
+def _add_order_role(known: dict[int, str], value: object, role: str) -> None:
+    if value is None:
+        return
+    try:
+        known[int(value)] = role
+    except (TypeError, ValueError):
+        return
 
 
 def _add_order_id(known: set[int], value: object) -> None:

@@ -65,6 +65,8 @@ class ExecutionConfig:
     live_max_order_notional_usd: float = 50.0
     live_order_actions_per_minute: int = 12
     live_require_protective_orders: bool = True
+    live_block_stop_grace_setups: bool = True
+    live_stop_grace_catastrophic_sl_bps: float = 300.0
     live_post_only_retry_on_upgrade: bool = False
     live_post_only_buffer_bps: float = 1.0
     routing_revoke_grace_minutes: int = 0
@@ -1356,6 +1358,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 ),
                 live_require_protective_orders=bool(
                     execution_data.get("live_require_protective_orders", True)
+                ),
+                live_block_stop_grace_setups=bool(
+                    execution_data.get("live_block_stop_grace_setups", True)
+                ),
+                live_stop_grace_catastrophic_sl_bps=float(
+                    execution_data.get("live_stop_grace_catastrophic_sl_bps", 300.0)
                 ),
                 live_post_only_retry_on_upgrade=bool(
                     execution_data.get("live_post_only_retry_on_upgrade", False)

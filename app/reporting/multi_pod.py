@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from app.live.runtime_status import load_runtime_status, runtime_status_is_fresh
 from app.observability.runtime_merge import merge_runtime_supervisor_snapshot
+from app.reporting.live_journal import attach_live_journal_report
+from app.trident.market_clusters import cluster_for_symbol
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName
 
@@ -152,9 +154,26 @@ def build_runtime_report(
 ) -> MultiPodRuntimeReport:
     if metrics is not None:
         metrics.refresh_from_supervisor(supervisor)
-    pod_a_runtime = load_runtime_status("logs/pod_a_live_status.json")
+    live_journals_enabled = supervisor.mode == "live"
+    pod_a_runtime = attach_live_journal_report(
+        load_runtime_status("logs/pod_a_live_status.json"),
+        "logs/pod_a_live.jsonl",
+        enabled=live_journals_enabled,
+        market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+            supervisor.config,
+            symbol,
+        ),
+    )
     pod_b_runtime = load_runtime_status("logs/pod_b_live_status.json")
-    pod_c_runtime = load_runtime_status("logs/pod_c_live_status.json")
+    pod_c_runtime = attach_live_journal_report(
+        load_runtime_status("logs/pod_c_live_status.json"),
+        "logs/pod_c_live.jsonl",
+        enabled=live_journals_enabled,
+        market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+            supervisor.config,
+            symbol,
+        ),
+    )
     runtime_supervisor = (
         runtime_snapshot
         if isinstance(runtime_snapshot, dict)
