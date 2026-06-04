@@ -3018,6 +3018,7 @@ def _pnl_levers_payload(config: Hip4OutcomeConfig) -> dict[str, Any]:
                 "bankroll_usdc": float(config.shadow_sizing_bankroll_usdc),
                 "kelly_fraction_cap": float(config.shadow_sizing_kelly_fraction_cap),
                 "probability_haircut": float(config.shadow_sizing_probability_haircut),
+                "min_active_kelly_size_usdc": float(config.min_shadow_kelly_size_usdc),
                 "log": "shadow_sizing.csv",
             },
             {

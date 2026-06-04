@@ -687,7 +687,7 @@ min_margin_usd = 20
 min_notional_usd = 10
 reentry_cooldown_minutes = 90
 time_stop_hours = 6
-blocked_symbols = []
+blocked_symbols = ["XYZ:SILVER"]
 min_bucket_notional_usd = 100.0
 min_bucket_trade_count = 3
 min_trend_bps = 8.0
@@ -738,6 +738,9 @@ trailing_distance_multiplier = 1.00
 enabled = true
 allowed_setups = ["tradfi_continuation_long"]
 take_profit_multiplier = 1.08
+break_even_multiplier = 0.90
+trailing_activation_multiplier = 0.75
+trailing_distance_multiplier = 0.75
 
 [pod_c.cluster_modes.gold]
 enabled = true

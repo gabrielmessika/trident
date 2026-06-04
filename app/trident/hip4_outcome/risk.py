@@ -65,6 +65,15 @@ class OutcomeRiskManager:
             return self._reject("reference_divergence_guard", constraints=reference_guard)
         if any(position.market_id == market.market_id and position.status == "open" for position in open_positions):
             return self._reject("market_already_open")
+        shadow_kelly_guard = self._shadow_kelly_guard(
+            opportunity=opportunity,
+            order_book=order_book,
+        )
+        if shadow_kelly_guard is not None:
+            return self._reject(
+                str(shadow_kelly_guard.pop("reason")),
+                constraints=shadow_kelly_guard,
+            )
 
         active_positions = [position for position in open_positions if position.status == "open"]
         if len(active_positions) >= self.config.max_outcome_markets_open:
@@ -241,6 +250,46 @@ class OutcomeRiskManager:
             if qty * self._min_value_price(limit_price) < min_order_value:
                 return "below_exchange_min_order_value_named_basket"
         return None
+
+    def _shadow_kelly_guard(
+        self,
+        *,
+        opportunity: OutcomeOpportunity,
+        order_book: OutcomeOrderBook,
+    ) -> dict[str, object] | None:
+        minimum_size = max(float(self.config.min_shadow_kelly_size_usdc), 0.0)
+        if minimum_size <= 0 or self.config.mode != "paper":
+            return None
+        if opportunity.side not in {"BUY_YES", "BUY_NO", "BUY_BOTH"}:
+            return None
+        entry_price = _opportunity_entry_price(opportunity, order_book)
+        win_probability = _opportunity_win_probability(opportunity)
+        if entry_price is None or entry_price <= 0 or win_probability is None:
+            return {
+                "reason": "shadow_kelly_unavailable",
+                "min_shadow_kelly_size_usdc": minimum_size,
+                "side": opportunity.side,
+                "edge_type": opportunity.edge_type,
+            }
+        conservative_probability = max(
+            min(win_probability - max(float(self.config.shadow_sizing_probability_haircut), 0.0), 1.0),
+            0.0,
+        )
+        kelly_fraction = _binary_kelly_fraction(conservative_probability, entry_price)
+        bankroll = max(float(self.config.shadow_sizing_bankroll_usdc), 0.0)
+        kelly_size = bankroll * max(kelly_fraction, 0.0)
+        if kelly_size >= minimum_size:
+            return None
+        return {
+            "reason": "shadow_kelly_size_too_low",
+            "min_shadow_kelly_size_usdc": round(minimum_size, 8),
+            "shadow_kelly_size_usdc": round(kelly_size, 8),
+            "shadow_kelly_fraction": round(kelly_fraction, 8),
+            "shadow_kelly_bankroll_usdc": round(bankroll, 8),
+            "shadow_kelly_entry_price": round(entry_price, 8),
+            "shadow_kelly_win_probability": round(win_probability, 8),
+            "shadow_kelly_conservative_probability": round(conservative_probability, 8),
+        }
 
     def _floor_size(self, value: float) -> float:
         decimals = max(int(self.config.outcome_size_decimals), 0)
@@ -459,6 +508,59 @@ def _basket_legs(opportunity: OutcomeOpportunity) -> list[dict[str, object]]:
     if not isinstance(raw_legs, list):
         return []
     return [leg for leg in raw_legs if isinstance(leg, dict)]
+
+
+def _opportunity_entry_price(
+    opportunity: OutcomeOpportunity,
+    order_book: OutcomeOrderBook,
+) -> float | None:
+    if opportunity.side == "BUY_YES":
+        return order_book.yes.ask or _optional_float(opportunity.metadata.get("yes_ask"))
+    if opportunity.side == "BUY_NO":
+        return order_book.no.ask or _optional_float(opportunity.metadata.get("no_ask"))
+    if opportunity.side == "BUY_BOTH":
+        yes_ask = order_book.yes.ask or _optional_float(opportunity.metadata.get("yes_ask"))
+        no_ask = order_book.no.ask or _optional_float(opportunity.metadata.get("no_ask"))
+        if yes_ask is None or no_ask is None:
+            return None
+        return yes_ask + no_ask
+    return None
+
+
+def _opportunity_win_probability(opportunity: OutcomeOpportunity) -> float | None:
+    metadata = opportunity.metadata
+    if opportunity.edge_type in {"LATE_EXPIRY", "PARITY"}:
+        return 1.0
+    if opportunity.side == "BUY_YES":
+        probability = _first_float(
+            metadata,
+            ("short_probability_yes", "probability_bucket", "probability_yes"),
+        )
+        return None if probability is None else max(min(probability, 1.0), 0.0)
+    if opportunity.side == "BUY_NO":
+        direct_no = _first_float(metadata, ("probability_outside_bucket", "probability_no"))
+        if direct_no is not None:
+            return max(min(direct_no, 1.0), 0.0)
+        probability_yes = _first_float(
+            metadata,
+            ("short_probability_yes", "probability_bucket", "probability_yes"),
+        )
+        return None if probability_yes is None else max(min(1.0 - probability_yes, 1.0), 0.0)
+    return None
+
+
+def _first_float(payload: dict[str, object], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _optional_float(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _binary_kelly_fraction(win_probability: float, entry_price: float) -> float:
+    price = max(min(float(entry_price), 0.999999), 0.000001)
+    probability = max(min(float(win_probability), 1.0), 0.0)
+    return max((probability - price) / max(1.0 - price, 0.000001), 0.0)
 
 
 def _compact_rejected_sources(value: object) -> list[dict[str, object]]:

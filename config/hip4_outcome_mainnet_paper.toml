@@ -137,12 +137,13 @@ enable_shadow_sizing = true
 shadow_sizing_bankroll_usdc = 500
 shadow_sizing_kelly_fraction_cap = 0.25
 shadow_sizing_probability_haircut = 0.03
+min_shadow_kelly_size_usdc = 2.0
 enable_shadow_maker_quotes = true
 shadow_maker_price_improvement = 0.01
 shadow_maker_min_net_edge = 0.01
 
 default_annualized_vol = 0.85
-max_position_usdc = 50
+max_position_usdc = 12
 pod_b_budget_usdc = 500
 max_total_outcome_exposure_usdc = 500
 max_per_underlying_outcome_exposure_usdc = 150

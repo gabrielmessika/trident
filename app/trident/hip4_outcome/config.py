@@ -170,6 +170,7 @@ class Hip4OutcomeConfig:
     shadow_sizing_bankroll_usdc: float = 25.0
     shadow_sizing_kelly_fraction_cap: float = 0.25
     shadow_sizing_probability_haircut: float = 0.03
+    min_shadow_kelly_size_usdc: float = 0.0
     enable_shadow_maker_quotes: bool = False
     shadow_maker_price_improvement: float = 0.01
     shadow_maker_min_net_edge: float = 0.01
@@ -433,6 +434,10 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
         ),
         shadow_sizing_kelly_fraction_cap=float(section.get("shadow_sizing_kelly_fraction_cap", 0.25)),
         shadow_sizing_probability_haircut=float(section.get("shadow_sizing_probability_haircut", 0.03)),
+        min_shadow_kelly_size_usdc=env_float(
+            "HIP4_OUTCOME_MIN_SHADOW_KELLY_SIZE_USDC",
+            float(section.get("min_shadow_kelly_size_usdc", 0.0)),
+        ),
         enable_shadow_maker_quotes=env_bool(
             "HIP4_OUTCOME_ENABLE_SHADOW_MAKER_QUOTES",
             bool(section.get("enable_shadow_maker_quotes", False)),

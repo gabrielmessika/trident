@@ -1024,6 +1024,97 @@ class HIP4OutcomePodTests(unittest.TestCase):
         self.assertTrue(decision.approved)
         self.assertEqual(decision.approved_size_usdc, 28.4)
 
+    def test_risk_rejects_paper_order_when_shadow_kelly_size_is_too_low(self) -> None:
+        market = self._market()
+        book = self._book()
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_YES",
+            edge_type="MODEL",
+            gross_edge=0.08,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.04,
+            confidence=0.9,
+            requested_size_usdc=25.0,
+            max_loss_usdc=25.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={"probability_yes": 0.25},
+        )
+        config = Hip4OutcomeConfig(
+            mode="paper",
+            min_shadow_kelly_size_usdc=2.0,
+            shadow_sizing_bankroll_usdc=500.0,
+            shadow_sizing_probability_haircut=0.03,
+            max_position_usdc=12.0,
+            max_total_outcome_exposure_usdc=100.0,
+            max_per_underlying_outcome_exposure_usdc=100.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+            min_order_value_usdc=10.0,
+            outcome_size_decimals=0,
+        )
+
+        decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 3600,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "shadow_kelly_size_too_low")
+        self.assertLess(decision.constraints["shadow_kelly_size_usdc"], 2.0)
+
+    def test_risk_approves_paper_order_when_shadow_kelly_size_meets_threshold(self) -> None:
+        market = self._market()
+        book = self._book()
+        opportunity = OutcomeOpportunity(
+            market_id=market.market_id,
+            outcome=market.outcome,
+            underlying=market.underlying,
+            side="BUY_YES",
+            edge_type="MODEL",
+            gross_edge=0.10,
+            estimated_fees=0.0,
+            estimated_slippage=0.0,
+            net_edge=0.06,
+            confidence=0.9,
+            requested_size_usdc=25.0,
+            max_loss_usdc=25.0,
+            expiry_ts=market.expiry_ts,
+            reason="test",
+            metadata={"probability_yes": 0.30},
+        )
+        config = Hip4OutcomeConfig(
+            mode="paper",
+            min_shadow_kelly_size_usdc=2.0,
+            shadow_sizing_bankroll_usdc=500.0,
+            shadow_sizing_probability_haircut=0.03,
+            max_position_usdc=12.0,
+            max_total_outcome_exposure_usdc=100.0,
+            max_per_underlying_outcome_exposure_usdc=100.0,
+            min_yes_depth_usdc=1.0,
+            min_no_depth_usdc=1.0,
+            min_order_value_usdc=10.0,
+            outcome_size_decimals=0,
+        )
+
+        decision = OutcomeRiskManager(config).evaluate(
+            opportunity=opportunity,
+            market=market,
+            order_book=book,
+            open_positions=[],
+            now_ts=market.expiry_ts - 3600,
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.approved_size_usdc, 12.0)
+
     def test_builds_parity_order_legs_with_equal_token_qty(self) -> None:
         market = self._market()
         book = self._book()
@@ -1418,6 +1509,8 @@ reference_divergence_edge_types = ["model"]
         self.assertEqual(config.early_exit_stop_max_loss_roi, 0.20)
         self.assertEqual(config.early_exit_ev_exit_fraction, 0.5)
         self.assertTrue(config.early_exit_reentry_lock_until_settlement)
+        self.assertEqual(config.min_shadow_kelly_size_usdc, 2.0)
+        self.assertEqual(config.max_position_usdc, 12.0)
         self.assertTrue(config.enable_short_expiry)
         self.assertTrue(config.short_expiry_observe_only)
 
@@ -3255,6 +3348,8 @@ reference_divergence_edge_types = ["model"]
         self.assertFalse(config.enforce_testnet_balance_check)
         self.assertEqual(config.include_underlyings, [])
         self.assertTrue(config.enable_named_outcome_basket)
+        self.assertEqual(config.min_shadow_kelly_size_usdc, 2.0)
+        self.assertEqual(config.max_position_usdc, 12.0)
         self.assertIn("hip4_outcome_mainnet_paper", config.logs_dir)
         self.assertIn("hip4_outcome_mainnet_paper", config.state_path)
         self.assertIn("hip4_outcome_mainnet_paper", config.rate_limit_state_path)

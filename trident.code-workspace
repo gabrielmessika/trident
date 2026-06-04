@@ -2,15 +2,6 @@
     "folders": [
         {
             "path": "."
-        },
-        {
-            "path": "./../gbot"
-        },
-        {
-            "path": "./../t-bot"
-        },
-        {
-            "path": "./../tbot-scalp"
         }
     ],
     "settings": {

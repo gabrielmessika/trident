@@ -278,11 +278,12 @@ write_review() {
     [ -n "$latest_report" ] && cp "$latest_report" "${raw_dir}/report.json" || : > "${raw_dir}/report.json"
     [ -n "$latest_metrics" ] && cp "$latest_metrics" "${raw_dir}/metrics.json" || : > "${raw_dir}/metrics.json"
 
-    python3 - "$output" "$LOG_DIR" "$RUNTIME_DIR" "$DOCKER_DIR" <<'PY'
+    python3 - "$output" "$LOG_DIR" "$RUNTIME_DIR" "$DOCKER_DIR" "$CONFIG_DIR" <<'PY'
 from __future__ import annotations
 
 import json
 import sys
+import ast
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -290,6 +291,7 @@ output = Path(sys.argv[1])
 log_dir = Path(sys.argv[2])
 runtime_dir = Path(sys.argv[3])
 docker_dir = Path(sys.argv[4])
+config_dir = Path(sys.argv[5])
 raw = output / "raw"
 
 def load_json(path: Path) -> dict:
@@ -299,9 +301,61 @@ def load_json(path: Path) -> dict:
     except Exception:
         return {}
 
+def load_toml(path: Path) -> dict:
+    try:
+        lines = path.read_text().splitlines()
+    except Exception:
+        return {}
+    data: dict[str, object] = {}
+    section: list[str] = []
+    for raw_line in lines:
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = [part.strip() for part in line.strip("[]").split(".") if part.strip()]
+            target = data
+            for part in section:
+                target = target.setdefault(part, {})  # type: ignore[assignment]
+            continue
+        if "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        target = data
+        for part in section:
+            target = target.setdefault(part, {})  # type: ignore[assignment]
+        target[key.strip()] = parse_toml_value(raw_value.strip())  # type: ignore[index]
+    return data
+
+def parse_toml_value(value: str) -> object:
+    if value in {"true", "false"}:
+        return value == "true"
+    try:
+        return ast.literal_eval(value)
+    except Exception:
+        pass
+    try:
+        if any(char in value for char in (".", "e", "E")):
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value.strip('"')
+
+def as_float(value: object, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+def as_list(value: object) -> list:
+    return value if isinstance(value, list) else []
+
 health = load_json(raw / "health.json")
 state = load_json(raw / "state.json")
 report = load_json(raw / "report.json")
+config = load_toml(config_dir / "trident.toml")
 
 def pod_report(name: str) -> dict:
     for item in report.get("pods", []) or []:
@@ -312,12 +366,120 @@ def pod_report(name: str) -> dict:
 def runtime_status(name: str) -> dict:
     return load_json(runtime_dir / f"{name}_live_status.json")
 
+runtime_statuses = {pod: runtime_status(pod) for pod in ("pod_a", "pod_c")}
+
 def log_has_bad_patterns(path: Path) -> tuple[int, int]:
     try:
         text = path.read_text(errors="ignore").lower()
     except Exception:
         return 0, 0
     return text.count("traceback"), text.count("decimal is not json serializable")
+
+def fmt_usd(value: float) -> str:
+    return f"{value:.2f}"
+
+def runtime_report(name: str) -> dict:
+    status = runtime_statuses.get(name, {})
+    value = status.get("report") if isinstance(status, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+def sorted_pnl_items(value: object, limit: int = 5) -> list[tuple[str, float]]:
+    if not isinstance(value, dict):
+        return []
+    items = [(str(key), as_float(raw_value)) for key, raw_value in value.items()]
+    return sorted(items, key=lambda item: item[1])[:limit]
+
+def trade_pnl(trade: dict) -> float:
+    if "pnl_usd" in trade:
+        return as_float(trade.get("pnl_usd"))
+    gross = as_float(trade.get("gross_pnl_usd"))
+    fees = as_float(trade.get("fees_usd"))
+    return gross - fees
+
+def stop_loss_focus(name: str) -> dict:
+    trades = as_list(runtime_report(name).get("closed_trade_log"))
+    rows: list[dict[str, object]] = []
+    actual = 0.0
+    planned = 0.0
+    for item in trades:
+        if not isinstance(item, dict):
+            continue
+        if item.get("close_reason") != "exchange_closed_stop_loss":
+            continue
+        pnl = trade_pnl(item)
+        notional = as_float(item.get("target_notional_usd"))
+        stop_bps = as_float(item.get("stop_bps"))
+        fees = as_float(item.get("fees_usd"))
+        planned_loss = -(notional * stop_bps / 10000.0 + fees) if stop_bps > 0.0 else 0.0
+        excess = pnl - planned_loss
+        actual += pnl
+        planned += planned_loss
+        rows.append(
+            {
+                "symbol": item.get("symbol"),
+                "opened_at": item.get("opened_at"),
+                "closed_at": item.get("closed_at"),
+                "pnl_usd": round(pnl, 4),
+                "planned_stop_loss_usd": round(planned_loss, 4),
+                "excess_vs_planned_usd": round(excess, 4),
+                "stop_bps": item.get("stop_bps"),
+                "target_notional_usd": item.get("target_notional_usd"),
+            }
+        )
+    rows.sort(key=lambda row: as_float(row.get("excess_vs_planned_usd")))
+    return {
+        "count": len(rows),
+        "actual_pnl_usd": round(actual, 4),
+        "planned_stop_loss_usd": round(planned, 4),
+        "excess_vs_planned_usd": round(actual - planned, 4),
+        "worst": rows[:5],
+    }
+
+trident_config = config.get("trident", {}) if isinstance(config.get("trident"), dict) else {}
+execution_config = (
+    trident_config.get("execution", {}) if isinstance(trident_config.get("execution"), dict) else {}
+)
+pod_a_config = config.get("pod_a", {}) if isinstance(config.get("pod_a"), dict) else {}
+pod_c_config = config.get("pod_c", {}) if isinstance(config.get("pod_c"), dict) else {}
+pod_c_cluster_modes = (
+    pod_c_config.get("cluster_modes", {}) if isinstance(pod_c_config.get("cluster_modes"), dict) else {}
+)
+silver_mode = (
+    pod_c_cluster_modes.get("silver", {})
+    if isinstance(pod_c_cluster_modes.get("silver"), dict)
+    else {}
+)
+
+operator_context = {
+    "live_max_order_notional_usd": execution_config.get("live_max_order_notional_usd"),
+    "live_block_stop_grace_setups": execution_config.get("live_block_stop_grace_setups"),
+    "live_stop_grace_catastrophic_sl_bps": execution_config.get("live_stop_grace_catastrophic_sl_bps"),
+    "pod_a_stop_grace_minutes": pod_a_config.get("stop_grace_minutes"),
+    "pod_c_blocked_symbols": pod_c_config.get("blocked_symbols", []),
+    "pod_c_silver_mode": {
+        "enabled": silver_mode.get("enabled"),
+        "break_even_multiplier": silver_mode.get("break_even_multiplier"),
+        "trailing_activation_multiplier": silver_mode.get("trailing_activation_multiplier"),
+        "trailing_distance_multiplier": silver_mode.get("trailing_distance_multiplier"),
+    },
+}
+
+performance_focus = {
+    "pod_a": {
+        "runtime_realized_pnl_usd": runtime_report("pod_a").get("realized_pnl_usd"),
+        "runtime_pnl_by_symbol_worst": sorted_pnl_items(
+            runtime_report("pod_a").get("pnl_by_symbol")
+        ),
+        "stop_loss_focus": stop_loss_focus("pod_a"),
+    },
+    "pod_c": {
+        "runtime_realized_pnl_usd": runtime_report("pod_c").get("realized_pnl_usd"),
+        "runtime_pnl_by_symbol_worst": sorted_pnl_items(
+            runtime_report("pod_c").get("pnl_by_symbol")
+        ),
+        "stop_loss_focus": stop_loss_focus("pod_c"),
+    },
+}
 
 checks: list[str] = []
 warnings: list[str] = []
@@ -329,7 +491,7 @@ else:
     failures.append(f"API /health inattendu: {health.get('status')!r}")
 
 for pod in ("pod_a", "pod_c"):
-    status = runtime_status(pod)
+    status = runtime_statuses.get(pod, {})
     rep = pod_report(pod)
     label = "Pod A" if pod == "pod_a" else "Pod C"
     if rep.get("healthy") is True:
@@ -357,6 +519,20 @@ for name in ("pod_a_live", "pod_c_live", "trident-api"):
     if decimal_errors:
         failures.append(f"Erreur Decimal JSON récente dans {name}.log")
 
+if as_float(operator_context["live_max_order_notional_usd"], 999999.0) > 250.0:
+    warnings.append(
+        "Cap live A/C superieur a 250 apres le rollback demande; verifier le deploiement"
+    )
+if operator_context["live_block_stop_grace_setups"] is not False:
+    warnings.append(
+        "Pod A live_block_stop_grace_setups n'est pas false; cela bloque les setups grace"
+    )
+blocked_symbols = {
+    str(symbol).upper() for symbol in as_list(operator_context["pod_c_blocked_symbols"])
+}
+if "XYZ:SILVER" not in blocked_symbols:
+    warnings.append("Pod C XYZ:SILVER n'est pas bloque; verifier le contexte de review")
+
 status = "PASS" if not failures else "FAIL"
 if warnings and status == "PASS":
     status = "WARN"
@@ -370,8 +546,53 @@ lines = [
     f"- exchange_network: `{health.get('exchange_network', (state.get('exchange') or {}).get('network', 'unknown'))}`",
     f"- ownership_conflict_count: `{report.get('ownership_conflict_count', len(state.get('ownership_conflicts', []) or []))}`",
     "",
-    "## Checks",
+    "## Operator Context",
+    f"- live_max_order_notional_usd: `{operator_context['live_max_order_notional_usd']}`",
+    f"- live_block_stop_grace_setups: `{operator_context['live_block_stop_grace_setups']}`",
+    f"- live_stop_grace_catastrophic_sl_bps: `{operator_context['live_stop_grace_catastrophic_sl_bps']}`",
+    f"- pod_a_stop_grace_minutes: `{operator_context['pod_a_stop_grace_minutes']}`",
+    f"- pod_c_blocked_symbols: `{operator_context['pod_c_blocked_symbols']}`",
+    f"- pod_c_silver_mode: `{operator_context['pod_c_silver_mode']}`",
+    "",
+    "## Performance Focus",
 ]
+for pod, label in (("pod_a", "Pod A"), ("pod_c", "Pod C")):
+    focus = performance_focus[pod]
+    worst_symbols = ", ".join(
+        f"{symbol}:{fmt_usd(pnl)}" for symbol, pnl in focus["runtime_pnl_by_symbol_worst"]
+    ) or "n/a"
+    stop_focus = focus["stop_loss_focus"]
+    lines.extend(
+        [
+            f"- {label} runtime_realized_pnl_usd: `{focus['runtime_realized_pnl_usd']}`",
+            f"- {label} worst_symbols_runtime: `{worst_symbols}`",
+            (
+                f"- {label} stop_loss_actual_vs_planned: "
+                f"`count={stop_focus['count']}, actual={fmt_usd(as_float(stop_focus['actual_pnl_usd']))}, "
+                f"planned={fmt_usd(as_float(stop_focus['planned_stop_loss_usd']))}, "
+                f"excess={fmt_usd(as_float(stop_focus['excess_vs_planned_usd']))}`"
+            ),
+        ]
+    )
+    for row in stop_focus["worst"][:3]:
+        lines.append(
+            "- "
+            f"{label} worst_stop_loss: "
+            f"`{row.get('symbol')} pnl={row.get('pnl_usd')} planned={row.get('planned_stop_loss_usd')} "
+            f"excess={row.get('excess_vs_planned_usd')} opened={row.get('opened_at')}`"
+        )
+
+lines.extend(
+    [
+        "",
+        "## Next Review Focus",
+        "- Verifier que le serveur expose bien `live_max_order_notional_usd=250` et `live_block_stop_grace_setups=false`.",
+        "- Pod A: surveiller les nouveaux `exchange_closed_stop_loss`; comparer perte reelle vs stop planifie, surtout TON/NEAR/ONDO/VVV.",
+        "- Pod C: verifier qu'aucun nouveau trade `XYZ:SILVER` ne s'ouvre et que les signaux silver sont rejetes `symbol_blocked` si presents.",
+        "",
+        "## Checks",
+    ]
+)
 lines.extend(f"- {item}" for item in checks)
 if warnings:
     lines.append("")
@@ -391,7 +612,19 @@ for pod in ("pod_a", "pod_c"):
 
 (output / "review_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 (output / "review_summary.json").write_text(
-    json.dumps({"status": status, "checks": checks, "warnings": warnings, "failures": failures}, indent=2, sort_keys=True) + "\n",
+    json.dumps(
+        {
+            "status": status,
+            "operator_context": operator_context,
+            "performance_focus": performance_focus,
+            "checks": checks,
+            "warnings": warnings,
+            "failures": failures,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n",
     encoding="utf-8",
 )
 PY

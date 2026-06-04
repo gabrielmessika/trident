@@ -23,6 +23,10 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertTrue(config.pod_c.cluster_aware_v2_enabled)
         self.assertEqual(config.pod_c.min_confidence, 0.66)
         self.assertEqual(config.pod_c.size_multiplier, 0.70)
+        self.assertEqual(config.pod_c.blocked_symbols, ["XYZ:SILVER"])
+        self.assertEqual(config.pod_c.cluster_modes["silver"].break_even_multiplier, 0.90)
+        self.assertEqual(config.pod_c.cluster_modes["silver"].trailing_activation_multiplier, 0.75)
+        self.assertEqual(config.pod_c.cluster_modes["silver"].trailing_distance_multiplier, 0.75)
 
     def test_testnet_config_extends_main_config_and_switches_hyperliquid_network(self) -> None:
         config = load_config("config/trident_testnet.toml")

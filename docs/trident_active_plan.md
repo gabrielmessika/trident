@@ -84,6 +84,33 @@ Source de verite operationnelle depuis le `2026-05-24`:
 - Ajustement operateur `2026-05-26`: `live_max_order_notional_usd` passe de
   `100` a `250` pour debloquer le canary Pod A sans ouvrir tout le sizing
   calcule; review requise apres les premiers cycles `open -> close`.
+- Ajustement operateur `2026-06-02`: Pod A a rattrape les pertes liees au
+  probleme de config des premiers jours live et repasse positif. Le cap live
+  A/C passe de `250` a `500` notionnel max, par palier prudent avant toute
+  ouverture plus large du sizing strategique.
+- Ajustement Pod C `2026-06-02`: sur `silver`, les trades live montrent des
+  excursions favorables qui approchent le break-even/trailing sans toujours
+  securiser le trade. Le mode cluster `silver` garde son TP actuel mais abaisse
+  `break_even_multiplier` a `0.90`, `trailing_activation_multiplier` a `0.75`
+  et `trailing_distance_multiplier` a `0.75`; validation par replay requise
+  avant de considerer ce reglage comme definitivement promu.
+- Ajustement operateur `2026-06-04`: apres review serveur A/C, Pod A repasse
+  negatif surtout a cause des stops catastrophe pendant la grace live
+  `trend_pullback_long` sous cap `500`: les stops reels peuvent sortir bien
+  au-dela du stop planifie. Le cap live A/C revient a `250`; ne pas remettre
+  `live_block_stop_grace_setups=true` sauf freeze explicite, car ce guardrail
+  bloque les entrees au lieu de corriger le chemin de stop. Pod C bloque
+  temporairement `XYZ:SILVER` (`pod_c.blocked_symbols`) apres `4/4` stops
+  perdants depuis le `2026-06-02`; continuer a observer silver, mais ne pas
+  reautoriser l'execution sans replay/review dedie.
+- Ajustement HIP-4 mainnet paper `2026-06-02`: le PnL reste trop fragile
+  (`14` settlements, profit factor proche de `1.06`) avec quelques pertes qui
+  absorbent la majorite des gains. Le profil paper active un gate d'entree
+  `min_shadow_kelly_size_usdc = 2.0` et abaisse `max_position_usdc` a `12`,
+  taille mini-pratique avec buffer de quantization pour les prix observes, afin
+  de ne plus transformer un signal Kelly faible en position paper fixe de
+  `50 USDC`. Validation counterfactual locale:
+  `server-data/hip4/replay_reports/hip4_kelly_gate_counterfactual_20260602.md`.
 - Incident live `2026-05-27`: les runners `pod-a-live` et `pod-c-live` ont ete
   stoppes manuellement sur le serveur a `17:01Z` apres une serie de closes Pod A
   `exchange_closed` perdants et une reconciliation Pod C KO sur `XYZ:GOLD`
