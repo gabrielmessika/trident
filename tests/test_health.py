@@ -15,8 +15,11 @@ from app.observability.api import (
     _open_position_rows,
     _pod_trade_summary,
     _recent_directional_opportunity_rows,
+    _latest_snapshot_record,
     _humanize_setup_reason,
     _opportunity_reason_tooltip,
+    _tail_csv_records,
+    _tail_jsonl_records,
     dashboard_html,
     health_payload,
     hip4_outcome_html,
@@ -49,6 +52,106 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["profile"], "trident")
         self.assertEqual(payload["exchange_network"], "mainnet")
+
+    def test_tail_jsonl_records_reads_recent_window(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "journal.jsonl"
+            records = [
+                {"event_type": "signal", "record_index": index}
+                for index in range(20)
+            ]
+            records.extend(
+                {"event_type": "trade_close", "record_index": index}
+                for index in range(20, 30)
+            )
+            path.write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+
+            rows = _tail_jsonl_records(
+                path,
+                event_type="trade_close",
+                limit=3,
+                scan_lines=5,
+            )
+
+        self.assertEqual([row["record_index"] for row in rows], [29, 28, 27])
+
+    def test_tail_csv_records_reads_recent_rows_with_header(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "rows.csv"
+            path.write_text(
+                "ts,value\n" + "".join(f"2026-06-05T00:{index:02d}:00Z,{index}\n" for index in range(30)),
+                encoding="utf-8",
+            )
+
+            rows = _tail_csv_records(path, limit=3)
+
+        self.assertEqual([row["value"] for row in rows], ["27", "28", "29"])
+
+    def test_latest_snapshot_record_uses_latest_merged_tail_group(self) -> None:
+        def symbol_payload(symbol: str) -> dict[str, object]:
+            return {
+                "symbol": symbol,
+                "price": 100.0,
+                "ema_fast": 101.0,
+                "ema_slow": 99.0,
+                "vwap_distance_bps": 1.0,
+                "structure_score": 0.2,
+                "funding_rate": 0.0,
+                "spread_bps": 1.0,
+                "btc_aligned": True,
+            }
+
+        def snapshot_payload(timestamp: str, symbols: list[str]) -> dict[str, object]:
+            return {
+                "timestamp": timestamp,
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 20.0,
+                    "atr_ratio": 1.0,
+                    "range_width_bps": 120.0,
+                    "structure_score": 0.4,
+                    "btc_impulse": True,
+                },
+                "symbols": [symbol_payload(symbol) for symbol in symbols],
+                "cluster_regime_snapshots": {
+                    "crypto": {
+                        "ready": True,
+                        "adx": 20.0,
+                        "atr_ratio": 1.0,
+                        "range_width_bps": 120.0,
+                        "structure_score": 0.4,
+                        "btc_impulse": True,
+                    }
+                },
+            }
+
+        with TemporaryDirectory() as tmpdir:
+            snapshot_dir = Path(tmpdir)
+            path = snapshot_dir / "2026-06-05.jsonl"
+            payloads = [
+                snapshot_payload("2026-06-05T00:00:00Z", ["OLD"]),
+                snapshot_payload("2026-06-05T00:01:00Z", ["BTC"]),
+                snapshot_payload("2026-06-05T00:01:00Z", ["XYZ:GOLD"]),
+            ]
+            path.write_text(
+                "".join(json.dumps(payload) + "\n" for payload in payloads),
+                encoding="utf-8",
+            )
+
+            record = _latest_snapshot_record(
+                snapshot_dir=snapshot_dir,
+                max_snapshot_age_seconds=10**9,
+            )
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record.timestamp, "2026-06-05T00:01:00Z")
+        self.assertEqual(
+            {item["symbol"] for item in record.symbols},
+            {"BTC", "XYZ:GOLD"},
+        )
 
     def test_hip4_routes_are_disabled_by_default_for_trident_app(self) -> None:
         with patch.dict(

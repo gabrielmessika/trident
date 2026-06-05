@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from app.live.runtime_status import runtime_status_is_fresh
 from app.reporting.export_daily import build_daily_summary, render_daily_markdown
+from app.reporting.live_journal import _LIVE_JOURNAL_REPORT_CACHE, load_live_journal_report
 from app.reporting.multi_pod import build_cohabitation_summary, build_runtime_report
 from app.settings import load_config
 from app.trident.supervisor import TridentSupervisor
@@ -16,6 +17,47 @@ from app.trident.types import SymbolMarketSnapshot
 
 
 class ReportingTests(unittest.TestCase):
+    def test_live_journal_report_cache_tracks_appended_records(self) -> None:
+        _LIVE_JOURNAL_REPORT_CACHE.clear()
+
+        def trade_record(index: int, symbol: str, pnl: float) -> dict[str, object]:
+            return {
+                "event_type": "trade_close",
+                "source": "pod_a_live_trade",
+                "record_index": index,
+                "timestamp": f"2026-06-05T00:0{index}:00Z",
+                "trade": {
+                    "symbol": symbol,
+                    "side": "long",
+                    "setup": "trend_pullback_long",
+                    "entry_price": 100.0,
+                    "exit_price": 101.0,
+                    "target_notional_usd": 100.0,
+                    "gross_pnl_usd": pnl,
+                    "fees_usd": 0.01,
+                    "pnl_usd": pnl,
+                    "close_reason": "exchange_closed",
+                    "opened_at": f"2026-06-05T00:0{index}:00+00:00",
+                    "closed_at": f"2026-06-05T00:0{index}:30+00:00",
+                },
+            }
+
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "pod_a_live.jsonl"
+            path.write_text(
+                json.dumps(trade_record(1, "ETH", 1.5)) + "\n",
+                encoding="utf-8",
+            )
+            first = load_live_journal_report(path)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(trade_record(2, "SOL", -0.5)) + "\n")
+            second = load_live_journal_report(path)
+
+        _LIVE_JOURNAL_REPORT_CACHE.clear()
+        self.assertEqual(first["closed_trade_count"], 1)
+        self.assertEqual(second["closed_trade_count"], 2)
+        self.assertAlmostEqual(second["realized_pnl_usd"], 1.0)
+
     def test_build_runtime_report_includes_pod_sections(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_b.enabled = True

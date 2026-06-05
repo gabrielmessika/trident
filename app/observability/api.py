@@ -3,10 +3,11 @@ from __future__ import annotations
 import contextlib
 import copy
 import csv
+import io
 import json
 import math
 import os
-from collections import Counter, deque
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from html import escape
 from http import HTTPStatus
@@ -23,7 +24,7 @@ from app.reporting.multi_pod import (
 )
 from app.reporting.live_journal import attach_live_journal_report
 from app.trident.hip4_outcome.reporting import replay_opportunities
-from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
+from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord, merge_snapshot_records
 from app.live.runtime_status import (
     load_runtime_status,
     sanitize_runtime_status_payload,
@@ -116,12 +117,8 @@ def _tail_jsonl_records(
 ) -> list[dict[str, object]]:
     if not path.exists():
         return []
-    lines: deque[str] = deque(maxlen=scan_lines)
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            lines.append(line)
     records: list[dict[str, object]] = []
-    for raw in reversed(lines):
+    for raw in reversed(_tail_text_lines(path, max_lines=scan_lines)):
         with contextlib.suppress(json.JSONDecodeError):
             record = json.loads(raw)
             if not isinstance(record, dict):
@@ -138,11 +135,52 @@ def _tail_csv_records(path: Path, *, limit: int = 20) -> list[dict[str, str]]:
     if not path.exists():
         return []
     try:
-        with path.open(newline="", encoding="utf-8") as handle:
-            rows = list(csv.DictReader(handle))
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            header = handle.readline().rstrip("\r\n")
     except (OSError, csv.Error):
         return []
+    if not header:
+        return []
+    tail_lines = _tail_text_lines(path, max_lines=max(limit + 1, 2))
+    data_lines = [line for line in tail_lines if line.strip()]
+    if data_lines and data_lines[0] == header:
+        csv_lines = data_lines
+    else:
+        csv_lines = [header, *[line for line in data_lines if line != header][-limit:]]
+    try:
+        rows = list(csv.DictReader(io.StringIO("\n".join(csv_lines) + "\n")))
+    except csv.Error:
+        return []
     return rows[-limit:]
+
+
+def _tail_text_lines(
+    path: Path,
+    *,
+    max_lines: int,
+    chunk_size: int = 64 * 1024,
+) -> list[str]:
+    if max_lines <= 0 or not path.exists():
+        return []
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            chunks: list[bytes] = []
+            newline_count = 0
+            while position > 0 and newline_count <= max_lines:
+                read_size = min(chunk_size, position)
+                position -= read_size
+                handle.seek(position)
+                chunk = handle.read(read_size)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+    except OSError:
+        return []
+    if not chunks:
+        return []
+    data = b"".join(reversed(chunks))
+    return data.decode("utf-8", errors="replace").splitlines()[-max_lines:]
 
 
 def _float_or_none(value: object) -> float | None:
@@ -2113,6 +2151,10 @@ def state_payload(
     snapshot = _merge_runtime_snapshot(
         snapshot,
         allow_runtime_authority_override=not refreshed_from_snapshots,
+        market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+            supervisor.config,
+            symbol,
+        ),
     )
     snapshot["exchange"] = {
         "network": _exchange_network_from_url(supervisor.config.hyperliquid.info_url),
@@ -2170,6 +2212,10 @@ def report_payload(
     snapshot = _merge_runtime_snapshot(
         supervisor.snapshot(),
         allow_runtime_authority_override=not refreshed_from_snapshots,
+        market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+            supervisor.config,
+            symbol,
+        ),
     )
     return build_runtime_report(supervisor, metrics, runtime_snapshot=snapshot).to_dict()
 
@@ -2225,6 +2271,7 @@ def _merge_runtime_snapshot(
     snapshot: dict[str, object],
     *,
     allow_runtime_authority_override: bool = True,
+    market_cluster_for_symbol: Callable[[str], str | None] | None = None,
 ) -> dict[str, object]:
     hip4_enabled = _hip4_routes_enabled()
     live_journals_enabled = str(snapshot.get("mode", "")).strip().lower() == "live"
@@ -2232,6 +2279,7 @@ def _merge_runtime_snapshot(
         _normalized_runtime_payload(load_runtime_status("logs/pod_a_live_status.json")),
         "logs/pod_a_live.jsonl",
         enabled=live_journals_enabled,
+        market_cluster_for_symbol=market_cluster_for_symbol,
     )
     pod_b_runtime = (
         _normalized_runtime_payload(load_runtime_status("logs/pod_b_live_status.json"))
@@ -2242,6 +2290,7 @@ def _merge_runtime_snapshot(
         _normalized_runtime_payload(load_runtime_status("logs/pod_c_live_status.json")),
         "logs/pod_c_live.jsonl",
         enabled=live_journals_enabled,
+        market_cluster_for_symbol=market_cluster_for_symbol,
     )
     snapshot["pod_a_runtime"] = pod_a_runtime
     snapshot["pod_b_runtime"] = pod_b_runtime
@@ -2493,10 +2542,48 @@ def _latest_snapshot_record(
     if age_seconds > max_snapshot_age_seconds:
         return None
     loader = SnapshotLoader()
-    latest_record: SnapshotRecord | None = None
-    for record in loader.iter_merged_jsonl(latest_file):
-        latest_record = record
-    return latest_record
+    records: list[SnapshotRecord] = []
+    for record_index, line in enumerate(_tail_text_lines(latest_file, max_lines=200), start=1):
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        if not isinstance(payload, dict):
+            continue
+        loader._validate_payload(payload, file_path=latest_file)
+        enriched_payload = loader._enrich_payload(payload)
+        cluster_raw = enriched_payload.get("cluster_regime_snapshots")
+        records.append(
+            SnapshotRecord(
+                record_index=record_index,
+                source_file=latest_file.name,
+                timestamp=enriched_payload.get("timestamp"),
+                regime_snapshot=enriched_payload["regime_snapshot"],
+                symbols=enriched_payload.get("symbols", []),
+                cluster_regime_snapshots=(
+                    cluster_raw if isinstance(cluster_raw, dict) else None
+                ),
+                capture_reason=(
+                    enriched_payload.get("capture_reason")
+                    if isinstance(enriched_payload.get("capture_reason"), str)
+                    else None
+                ),
+                stream_source=(
+                    enriched_payload.get("stream_source")
+                    if isinstance(enriched_payload.get("stream_source"), str)
+                    else None
+                ),
+            )
+        )
+    if not records:
+        return None
+    latest_key = (records[-1].source_file, records[-1].timestamp)
+    latest_group: list[SnapshotRecord] = []
+    for record in reversed(records):
+        if (record.source_file, record.timestamp) != latest_key:
+            break
+        latest_group.append(record)
+    latest_group.reverse()
+    return merge_snapshot_records(latest_group)
 
 
 def _pod_label(pod_name: str) -> str:

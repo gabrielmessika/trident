@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
+import os
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -31,6 +34,20 @@ TRADE_OUTCOME_REPORT_KEYS = (
     "pnl_by_date",
     "closed_trade_log",
 )
+
+
+@dataclass(slots=True)
+class _LiveJournalReportCache:
+    report: PodABacktestReport = field(default_factory=PodABacktestReport)
+    seen: set[tuple[str, ...]] = field(default_factory=set)
+    offset: int = 0
+    line_count: int = 0
+    device: int | None = None
+    inode: int | None = None
+    mtime_ns: int = 0
+
+
+_LIVE_JOURNAL_REPORT_CACHE: dict[tuple[str, bool], _LiveJournalReportCache] = {}
 
 
 def attach_live_journal_report(
@@ -70,35 +87,89 @@ def load_live_journal_report(
     market_cluster_for_symbol: Callable[[str], str | None] | None = None,
 ) -> dict[str, object]:
     path = Path(journal_path)
-    report = PodABacktestReport()
     if not path.exists():
-        return report.to_dict()
+        return PodABacktestReport().to_dict()
 
-    seen: set[tuple[str, ...]] = set()
-    with path.open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            raw_line = line.strip()
-            if not raw_line:
-                continue
-            with contextlib.suppress(json.JSONDecodeError):
-                record = json.loads(raw_line)
-                if not isinstance(record, dict) or record.get("event_type") != "trade_close":
-                    continue
-                trade = record.get("trade")
-                if not isinstance(trade, dict):
-                    continue
-                identity = _trade_identity(trade, record, line_number)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                _add_trade_record(
-                    report,
-                    trade,
-                    record,
-                    market_cluster_for_symbol=market_cluster_for_symbol,
-                )
+    stat = path.stat()
+    cache_key = _live_journal_cache_key(path, market_cluster_for_symbol)
+    cache = _LIVE_JOURNAL_REPORT_CACHE.get(cache_key)
+    if cache is None or _live_journal_cache_invalid(cache, stat):
+        cache = _LiveJournalReportCache(
+            device=getattr(stat, "st_dev", None),
+            inode=getattr(stat, "st_ino", None),
+        )
+        _LIVE_JOURNAL_REPORT_CACHE[cache_key] = cache
 
-    return report.to_dict()
+    with path.open("rb") as handle:
+        handle.seek(cache.offset)
+        for raw_line in handle:
+            cache.line_count += 1
+            _consume_live_journal_line(
+                cache.report,
+                cache.seen,
+                raw_line.decode("utf-8", errors="replace"),
+                line_number=cache.line_count,
+                market_cluster_for_symbol=market_cluster_for_symbol,
+            )
+        cache.offset = handle.tell()
+    cache.mtime_ns = int(getattr(stat, "st_mtime_ns", 0) or 0)
+    return copy.deepcopy(cache.report.to_dict())
+
+
+def _live_journal_cache_key(
+    path: Path,
+    market_cluster_for_symbol: Callable[[str], str | None] | None,
+) -> tuple[str, bool]:
+    return (str(path.resolve(strict=False)), market_cluster_for_symbol is not None)
+
+
+def _live_journal_cache_invalid(
+    cache: _LiveJournalReportCache,
+    stat: os.stat_result,
+) -> bool:
+    if int(getattr(stat, "st_size", 0) or 0) < cache.offset:
+        return True
+    device = getattr(stat, "st_dev", None)
+    inode = getattr(stat, "st_ino", None)
+    if cache.device is not None and device is not None and cache.device != device:
+        return True
+    if cache.inode is not None and inode is not None and cache.inode != inode:
+        return True
+    mtime_ns = int(getattr(stat, "st_mtime_ns", 0) or 0)
+    size = int(getattr(stat, "st_size", 0) or 0)
+    if size == cache.offset and cache.mtime_ns and mtime_ns != cache.mtime_ns:
+        return True
+    return False
+
+
+def _consume_live_journal_line(
+    report: PodABacktestReport,
+    seen: set[tuple[str, ...]],
+    line: str,
+    *,
+    line_number: int,
+    market_cluster_for_symbol: Callable[[str], str | None] | None,
+) -> None:
+    raw_line = line.strip()
+    if not raw_line:
+        return
+    with contextlib.suppress(json.JSONDecodeError):
+        record = json.loads(raw_line)
+        if not isinstance(record, dict) or record.get("event_type") != "trade_close":
+            return
+        trade = record.get("trade")
+        if not isinstance(trade, dict):
+            return
+        identity = _trade_identity(trade, record, line_number)
+        if identity in seen:
+            return
+        seen.add(identity)
+        _add_trade_record(
+            report,
+            trade,
+            record,
+            market_cluster_for_symbol=market_cluster_for_symbol,
+        )
 
 
 def merge_report_with_live_journal(

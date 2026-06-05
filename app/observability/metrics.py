@@ -10,6 +10,7 @@ from app.reporting.multi_pod import (
     _is_supervisor_fallback_runtime,
     is_hip4_pod_b_replacement_runtime,
 )
+from app.trident.market_clusters import cluster_for_symbol
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName
 
@@ -43,6 +44,10 @@ class MetricsRegistry:
             load_runtime_status("logs/pod_a_live_status.json"),
             "logs/pod_a_live.jsonl",
             enabled=live_journals_enabled,
+            market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+                supervisor.config,
+                symbol,
+            ),
         )
         pod_b_runtime = (
             load_runtime_status("logs/pod_b_live_status.json")
@@ -53,6 +58,10 @@ class MetricsRegistry:
             load_runtime_status("logs/pod_c_live_status.json"),
             "logs/pod_c_live.jsonl",
             enabled=live_journals_enabled,
+            market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+                supervisor.config,
+                symbol,
+            ),
         )
         runtime_supervisor = merge_runtime_supervisor_snapshot(
             pod_a_runtime,

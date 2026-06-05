@@ -152,28 +152,55 @@ def build_runtime_report(
     metrics: MetricsRegistry | None = None,
     runtime_snapshot: dict[str, object] | None = None,
 ) -> MultiPodRuntimeReport:
-    if metrics is not None:
+    if metrics is not None and not isinstance(runtime_snapshot, dict):
         metrics.refresh_from_supervisor(supervisor)
     live_journals_enabled = supervisor.mode == "live"
-    pod_a_runtime = attach_live_journal_report(
-        load_runtime_status("logs/pod_a_live_status.json"),
-        "logs/pod_a_live.jsonl",
-        enabled=live_journals_enabled,
-        market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
-            supervisor.config,
-            symbol,
-        ),
-    )
-    pod_b_runtime = load_runtime_status("logs/pod_b_live_status.json")
-    pod_c_runtime = attach_live_journal_report(
-        load_runtime_status("logs/pod_c_live_status.json"),
-        "logs/pod_c_live.jsonl",
-        enabled=live_journals_enabled,
-        market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
-            supervisor.config,
-            symbol,
-        ),
-    )
+    if isinstance(runtime_snapshot, dict):
+        pod_a_runtime = runtime_snapshot.get("pod_a_runtime")
+        if not isinstance(pod_a_runtime, dict):
+            pod_a_runtime = attach_live_journal_report(
+                load_runtime_status("logs/pod_a_live_status.json"),
+                "logs/pod_a_live.jsonl",
+                enabled=live_journals_enabled,
+                market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+                    supervisor.config,
+                    symbol,
+                ),
+            )
+        pod_b_runtime = runtime_snapshot.get("pod_b_runtime")
+        if not isinstance(pod_b_runtime, dict):
+            pod_b_runtime = load_runtime_status("logs/pod_b_live_status.json")
+        pod_c_runtime = runtime_snapshot.get("pod_c_runtime")
+        if not isinstance(pod_c_runtime, dict):
+            pod_c_runtime = attach_live_journal_report(
+                load_runtime_status("logs/pod_c_live_status.json"),
+                "logs/pod_c_live.jsonl",
+                enabled=live_journals_enabled,
+                market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+                    supervisor.config,
+                    symbol,
+                ),
+            )
+    else:
+        pod_a_runtime = attach_live_journal_report(
+            load_runtime_status("logs/pod_a_live_status.json"),
+            "logs/pod_a_live.jsonl",
+            enabled=live_journals_enabled,
+            market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+                supervisor.config,
+                symbol,
+            ),
+        )
+        pod_b_runtime = load_runtime_status("logs/pod_b_live_status.json")
+        pod_c_runtime = attach_live_journal_report(
+            load_runtime_status("logs/pod_c_live_status.json"),
+            "logs/pod_c_live.jsonl",
+            enabled=live_journals_enabled,
+            market_cluster_for_symbol=lambda symbol: cluster_for_symbol(
+                supervisor.config,
+                symbol,
+            ),
+        )
     runtime_supervisor = (
         runtime_snapshot
         if isinstance(runtime_snapshot, dict)
