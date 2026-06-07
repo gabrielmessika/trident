@@ -1,0 +1,159 @@
+{
+  "now": "2026-06-07T12:00:00Z",
+  "market_contexts": [
+    {
+      "schema_version": "trident_ai_market_context_v1",
+      "context_id": "market_BTC_20260607T120000Z",
+      "as_of": "2026-06-07T11:59:30Z",
+      "symbol": "BTC",
+      "price": 60000.0,
+      "regime": "TrendExpansion",
+      "source": "fixture",
+      "features": {
+        "ema_alignment": "bullish",
+        "spread_bps": 1.2,
+        "funding_rate": 0.0001,
+        "trade_flow_bias": 0.18
+      }
+    },
+    {
+      "schema_version": "trident_ai_market_context_v1",
+      "context_id": "market_ETH_20260607T120000Z",
+      "as_of": "2026-06-07T11:59:30Z",
+      "symbol": "ETH",
+      "price": 3000.0,
+      "regime": "TrendExpansion",
+      "source": "fixture",
+      "features": {
+        "ema_alignment": "bullish",
+        "spread_bps": 1.8,
+        "funding_rate": 0.00008,
+        "trade_flow_bias": 0.14
+      }
+    },
+    {
+      "schema_version": "trident_ai_market_context_v1",
+      "context_id": "market_SOL_20260607T120000Z",
+      "as_of": "2026-06-07T11:59:30Z",
+      "symbol": "SOL",
+      "price": 142.1,
+      "regime": "TrendExpansion",
+      "source": "fixture",
+      "features": {
+        "ema_alignment": "bullish",
+        "spread_bps": 2.1,
+        "funding_rate": 0.00012,
+        "trade_flow_bias": 0.22
+      }
+    },
+    {
+      "schema_version": "trident_ai_market_context_v1",
+      "context_id": "market_HYPE_20260607T120000Z",
+      "as_of": "2026-06-07T11:59:30Z",
+      "symbol": "HYPE",
+      "price": 35.4,
+      "regime": "TrendExpansion",
+      "source": "fixture",
+      "features": {
+        "ema_alignment": "neutral",
+        "spread_bps": 2.8,
+        "funding_rate": 0.00015,
+        "trade_flow_bias": 0.08
+      }
+    }
+  ],
+  "intel_digest": {
+    "schema_version": "trident_ai_intel_digest_v1",
+    "digest_id": "intel_digest_20260607T115900Z",
+    "as_of": "2026-06-07T11:59:00Z",
+    "global_market_impact": "neutral",
+    "source": "fixture",
+    "items": []
+  },
+  "proposals": [
+    {
+      "schema_version": "trident_ai_proposal_v1",
+      "decision_id": "20260607T120000Z_BTC_001",
+      "as_of": "2026-06-07T12:00:00Z",
+      "valid_until": "2026-06-07T12:05:00Z",
+      "action": "open",
+      "symbol": "BTC",
+      "side": "long",
+      "confidence": 0.62,
+      "time_horizon_minutes": 120,
+      "max_notional_usd": 25.0,
+      "max_leverage": 1.0,
+      "entry_style": "ioc",
+      "invalidation_price": 59490.0,
+      "stop_bps": 85.0,
+      "take_profit_bps": 160.0,
+      "time_stop_minutes": 180,
+      "rationale_tags": ["trend_aligned", "news_neutral"],
+      "evidence_ids": ["market_BTC_20260607T120000Z", "intel_digest_20260607T115900Z"],
+      "risk_notes": ["spread_ok", "funding_ok"]
+    },
+    {
+      "schema_version": "trident_ai_proposal_v1",
+      "decision_id": "20260607T120000Z_ETH_001",
+      "as_of": "2026-06-07T12:00:00Z",
+      "valid_until": "2026-06-07T12:05:00Z",
+      "action": "open",
+      "symbol": "ETH",
+      "side": "long",
+      "confidence": 0.61,
+      "time_horizon_minutes": 120,
+      "max_notional_usd": 25.0,
+      "max_leverage": 1.0,
+      "entry_style": "ioc",
+      "invalidation_price": 2974.5,
+      "stop_bps": 85.0,
+      "take_profit_bps": 160.0,
+      "time_stop_minutes": 180,
+      "rationale_tags": ["trend_aligned", "news_neutral"],
+      "evidence_ids": ["market_ETH_20260607T120000Z", "intel_digest_20260607T115900Z"],
+      "risk_notes": ["spread_ok", "funding_ok"]
+    },
+    {
+      "schema_version": "trident_ai_proposal_v1",
+      "decision_id": "20260607T120000Z_SOL_001",
+      "as_of": "2026-06-07T12:00:00Z",
+      "valid_until": "2026-06-07T12:05:00Z",
+      "action": "open",
+      "symbol": "SOL",
+      "side": "long",
+      "confidence": 0.63,
+      "time_horizon_minutes": 120,
+      "max_notional_usd": 25.0,
+      "max_leverage": 1.0,
+      "entry_style": "ioc",
+      "invalidation_price": 140.89,
+      "stop_bps": 85.0,
+      "take_profit_bps": 160.0,
+      "time_stop_minutes": 180,
+      "rationale_tags": ["trend_aligned", "news_neutral"],
+      "evidence_ids": ["market_SOL_20260607T120000Z", "intel_digest_20260607T115900Z"],
+      "risk_notes": ["spread_ok", "funding_ok"]
+    },
+    {
+      "schema_version": "trident_ai_proposal_v1",
+      "decision_id": "20260607T120000Z_HYPE_001",
+      "as_of": "2026-06-07T12:00:00Z",
+      "valid_until": "2026-06-07T12:05:00Z",
+      "action": "open",
+      "symbol": "HYPE",
+      "side": "long",
+      "confidence": 0.58,
+      "time_horizon_minutes": 120,
+      "max_notional_usd": 25.0,
+      "max_leverage": 1.0,
+      "entry_style": "ioc",
+      "invalidation_price": 35.1,
+      "stop_bps": 85.0,
+      "take_profit_bps": 160.0,
+      "time_stop_minutes": 180,
+      "rationale_tags": ["watchlist_member", "news_neutral"],
+      "evidence_ids": ["market_HYPE_20260607T120000Z", "intel_digest_20260607T115900Z"],
+      "risk_notes": ["spread_ok", "funding_ok"]
+    }
+  ]
+}

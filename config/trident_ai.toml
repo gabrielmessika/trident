@@ -1,0 +1,40 @@
+[trident_ai]
+enabled = false
+mode = "shadow"
+max_monthly_ai_budget_usd = 30.0
+decision_interval_seconds = 900
+max_symbols_per_cycle = 5
+tradable_symbols = ["BTC", "ETH", "SOL", "HYPE"]
+require_independent_hyperliquid_account = true
+
+[trident_ai.paths]
+runtime_dir = "./runtime/trident_ai"
+llm_cache_dir = "./runtime/trident_ai/llm_cache"
+log_dir = "./logs"
+status_path = "./logs/trident_ai_status.json"
+shadow_journal_path = "./logs/trident_ai_shadow.jsonl"
+replay_output_dir = "./server-data/replay_reports"
+
+[trident_ai.risk]
+min_confidence = 0.55
+live_max_order_notional_usd = 25.0
+max_daily_loss_usd = 5.0
+max_open_positions = 1
+max_trades_per_day = 3
+max_leverage = 1.0
+max_proposal_age_seconds = 300.0
+max_market_context_age_seconds = 300.0
+max_intel_digest_age_seconds = 1800.0
+max_clock_skew_seconds = 60.0
+require_stop = true
+require_evidence = true
+
+[trident_ai.llm]
+provider = "openai"
+model = "gpt-5.4-mini"
+verifier_provider = "openai"
+verifier_model = "gpt-5.4"
+temperature = 0.1
+timeout_seconds = 20.0
+max_retries = 1
+cache_enabled = true
