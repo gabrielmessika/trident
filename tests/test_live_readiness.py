@@ -15,6 +15,7 @@ from app.hyperliquid.private_state import (
     HyperliquidPrivateInfoClient,
     parse_account_state,
 )
+from app.live.errors import HyperliquidAPIError
 from app.live.preflight import build_parser, run_preflight
 from app.live.reconciliation import reconcile_exchange_state
 from app.live.state_store import LiveStateStore, open_position_from_metadata
@@ -781,6 +782,158 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertTrue(all(call["capacity"] == 7 for call in limiter.acquires))
         self.assertEqual(limiter.successes, [LIVE_EXCHANGE_ACTION_RATE_LIMIT_KEY] * 2)
 
+    def test_live_open_fill_persists_pending_position_for_recovery(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        callback_count = 0
+
+        def note_orders_changed() -> None:
+            nonlocal callback_count
+            callback_count += 1
+
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=_FakeExchange(),
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "ETH", "szDecimals": 4}]}
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+            orders_changed_callback=note_orders_changed,
+        )
+
+        fill = venue.open_fill(
+            symbol="ETH",
+            side="long",
+            mid_price=3000.0,
+            spread_bps=1.0,
+            notional_usd=100.0,
+            timestamp="2026-06-07T02:46:06Z",
+            plan=TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.8,
+                target_notional_usd=100.0,
+                stop_bps=80.0,
+                time_stop_hours=24,
+                setup_details={"market_cluster": "crypto"},
+            ),
+        )
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(callback_count, 2)
+        metadata = venue.orders_by_symbol["ETH"]
+        self.assertEqual(metadata["entry_oid"], 7)
+        self.assertEqual(metadata["pending_position"]["setup"], "trend_pullback_long")  # type: ignore[index]
+        self.assertEqual(metadata["pending_position"]["entry_price"], fill.price)  # type: ignore[index]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LiveStateStore(Path(tmpdir) / "live_state.json")
+            store.save_portfolio(DirectionalPortfolioState(), orders=venue.orders_by_symbol)
+            self.assertIn("ETH", store.load()["orders"])
+            self.assertEqual(store.load()["positions"], {})
+
+            portfolio = DirectionalPortfolioState()
+            report = reconcile_exchange_state(
+                account_state=parse_account_state(
+                    account_address="0x0000000000000000000000000000000000000000",
+                    user_state={
+                        "marginSummary": {
+                            "accountValue": "1000",
+                            "totalMarginUsed": "10",
+                        },
+                        "assetPositions": [
+                            {
+                                "position": {
+                                    "coin": "ETH",
+                                    "szi": "0.03",
+                                    "entryPx": "3000",
+                                    "positionValue": "90",
+                                    "marginUsed": "10",
+                                    "unrealizedPnl": "0",
+                                    "leverage": {"type": "isolated", "value": 10},
+                                }
+                            }
+                        ],
+                    },
+                    spot_state={"balances": []},
+                    open_orders=[],
+                    frontend_open_orders=[],
+                    recent_fills=[],
+                ),
+                portfolio=portfolio,
+                state_store=store,
+            )
+
+        self.assertTrue(report.ready)
+        self.assertEqual(report.recovered_symbols, ["ETH"])
+        self.assertIn("ETH", portfolio.open_positions)
+        self.assertEqual(portfolio.open_positions["ETH"].setup, "trend_pullback_long")
+        self.assertEqual(portfolio.open_positions["ETH"].target_notional_usd, 90.0)
+
+    def test_live_open_fill_persists_before_protective_order_failure(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        callback_count = 0
+
+        def note_orders_changed() -> None:
+            nonlocal callback_count
+            callback_count += 1
+
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=_FakeExchange(trigger_error=True),
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "ETH", "szDecimals": 4}]}
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+            orders_changed_callback=note_orders_changed,
+        )
+
+        with self.assertRaises(HyperliquidAPIError):
+            venue.open_fill(
+                symbol="ETH",
+                side="long",
+                mid_price=3000.0,
+                spread_bps=1.0,
+                notional_usd=100.0,
+                timestamp="2026-06-07T02:46:06Z",
+                plan=TradePlan(
+                    symbol="ETH",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.8,
+                    target_notional_usd=100.0,
+                    stop_bps=80.0,
+                    time_stop_hours=24,
+                    setup_details={"market_cluster": "crypto"},
+                ),
+            )
+
+        self.assertEqual(callback_count, 1)
+        metadata = venue.orders_by_symbol["ETH"]
+        self.assertEqual(metadata["entry_oid"], 7)
+        self.assertEqual(metadata["protective_oids"], {})
+        self.assertEqual(metadata["pending_position"]["setup"], "trend_pullback_long")  # type: ignore[index]
+        self.assertEqual(metadata["stop_grace"]["normal_stop_price"], 2978.4)  # type: ignore[index]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LiveStateStore(Path(tmpdir) / "live_state.json")
+            store.save_portfolio(DirectionalPortfolioState(), orders=venue.orders_by_symbol)
+            self.assertIn("ETH", store.load()["orders"])
+
     def test_live_orders_use_hyperliquid_price_and_size_precision(self) -> None:
         config = load_config("config/trident.toml")
         config.trident.execution.live_max_order_notional_usd = 200.0
@@ -1069,6 +1222,27 @@ class LiveReadinessTests(unittest.TestCase):
             {"trigger": {"isMarket": True, "triggerPx": 2132.6, "tpsl": "sl"}},
         )
 
+    def test_live_sub_dollar_trigger_price_respects_hyperliquid_decimal_limit(self) -> None:
+        config = load_config("config/trident.toml")
+        exchange = _FakeExchange()
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "ARB", "szDecimals": 1}]}
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        self.assertEqual(venue._round_price(0.0803928, symbol="ARB"), 0.08039)
+        self.assertEqual(venue._round_price(0.079249, symbol="ARB"), 0.07925)
+
     def test_live_stop_grace_uses_catastrophic_sl_then_refreshes_normal_sl(self) -> None:
         config = load_config("config/trident.toml")
         config.trident.execution.live_max_order_notional_usd = 200.0
@@ -1265,7 +1439,7 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertIsNone(fill)
         self.assertEqual(exchange.orders[0]["order_type"], {"limit": {"tif": "Ioc"}})
         self.assertEqual(exchange.orders[1]["order_type"], {"limit": {"tif": "Alo"}})
-        self.assertEqual(exchange.orders[1]["limit_px"], 99.97)
+        self.assertEqual(exchange.orders[1]["limit_px"], 100.0)
         self.assertEqual(venue.orders_by_symbol["BTC"]["entry_oid"], 8)
         self.assertEqual(
             venue.orders_by_symbol["BTC"]["pending_position"]["side"],  # type: ignore[index]

@@ -126,6 +126,7 @@ class PodCLiveRunner:
                 self.config,
                 credentials,
                 private_info_client=self._live_private_client,
+                orders_changed_callback=self._persist_live_state,
             )
             self._live_user_stream = UserOrderUpdateMonitor(
                 self.config.hyperliquid,

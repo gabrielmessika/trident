@@ -75,6 +75,7 @@ class LiveExecutionVenue:
         private_info_client: HyperliquidPrivateInfoClient | None = None,
         order_rate_limiter: Any | None = None,
         sleep_fn: Callable[[float], None] | None = None,
+        orders_changed_callback: Callable[[], None] | None = None,
     ) -> None:
         errors = credentials.validate_for_trading()
         if errors:
@@ -124,6 +125,7 @@ class LiveExecutionVenue:
             getattr(config.trident.execution, "live_post_only_buffer_bps", 1.0)
         )
         self.orders_by_symbol: dict[str, dict[str, object]] = {}
+        self.orders_changed_callback = orders_changed_callback
         self.last_block_reason_by_symbol: dict[str, str] = {}
         self._size_decimals_by_symbol: dict[str, int] | None = None
 
@@ -188,6 +190,7 @@ class LiveExecutionVenue:
         is_buy = side == "long"
         limit_px = self._limit_price(
             mid_price,
+            symbol=symbol,
             side=side,
             action="open",
             slippage_bps=self.order_slippage_bps,
@@ -209,6 +212,7 @@ class LiveExecutionVenue:
         if self._should_retry_post_only(result):
             limit_px = self._post_only_limit_price(
                 mid_price,
+                symbol=symbol,
                 side=side,
                 action="open",
                 spread_bps=spread_bps,
@@ -275,24 +279,43 @@ class LiveExecutionVenue:
             complete=True,
             raw_response=result.raw,
         )
-        stop_grace_metadata: dict[str, object] | None = None
-        if plan is not None:
-            fill.protective_oids, stop_grace_metadata = self._place_protective_orders(
-                plan=plan,
-                fill=fill,
-            )
+        initial_stop_grace_metadata = (
+            self._stop_grace_metadata(plan, fill) if plan is not None else None
+        )
         order_metadata: dict[str, object] = {
             "entry_oid": fill.oid,
             "entry_cloid": fill.cloid,
             "entry_filled_size": str(fill.filled_size),
             "entry_avg_price": fill.price,
             "side": side,
+            "pending_position": self._pending_position_metadata(
+                symbol=symbol,
+                side=side,
+                notional_usd=fill.notional_usd,
+                timestamp=timestamp,
+                plan=plan,
+                entry_price=fill.price,
+                entry_fee_usd=fill.fee_usd,
+            ),
             "protective_oids": dict(fill.protective_oids),
             "last_open_response": result.raw,
         }
-        if stop_grace_metadata is not None:
-            order_metadata["stop_grace"] = stop_grace_metadata
+        if initial_stop_grace_metadata is not None:
+            order_metadata["stop_grace"] = initial_stop_grace_metadata
         self.orders_by_symbol[symbol] = order_metadata
+        self._notify_orders_changed()
+
+        stop_grace_metadata: dict[str, object] | None = None
+        if plan is not None:
+            fill.protective_oids, stop_grace_metadata = self._place_protective_orders(
+                plan=plan,
+                fill=fill,
+            )
+            order_metadata["protective_oids"] = dict(fill.protective_oids)
+            if stop_grace_metadata is not None:
+                order_metadata["stop_grace"] = stop_grace_metadata
+            self.orders_by_symbol[symbol] = order_metadata
+            self._notify_orders_changed()
         return fill
 
     def close_fill(
@@ -313,6 +336,7 @@ class LiveExecutionVenue:
         is_buy = side == "short"
         limit_px = self._limit_price(
             mid_price,
+            symbol=symbol,
             side=side,
             action="close",
             slippage_bps=self.close_slippage_bps,
@@ -473,6 +497,12 @@ class LiveExecutionVenue:
             ),
             "last_open_response": result.raw,
         }
+        self._notify_orders_changed()
+
+    def _notify_orders_changed(self) -> None:
+        if self.orders_changed_callback is None:
+            return
+        self.orders_changed_callback()
 
     def _place_protective_orders(
         self,
@@ -680,11 +710,17 @@ class LiveExecutionVenue:
         if bps <= 0 or entry_price <= 0:
             return normal_stop_price
         if plan.side == "long":
-            catastrophe = self._round_price(entry_price * (1.0 - bps / 10_000.0))
+            catastrophe = self._round_price(
+                entry_price * (1.0 - bps / 10_000.0),
+                symbol=plan.symbol,
+            )
             if normal_stop_price > 0:
                 catastrophe = min(catastrophe, normal_stop_price)
             return catastrophe
-        catastrophe = self._round_price(entry_price * (1.0 + bps / 10_000.0))
+        catastrophe = self._round_price(
+            entry_price * (1.0 + bps / 10_000.0),
+            symbol=plan.symbol,
+        )
         if normal_stop_price > 0:
             catastrophe = max(catastrophe, normal_stop_price)
         return catastrophe
@@ -724,13 +760,13 @@ class LiveExecutionVenue:
             symbol=symbol,
             is_buy=is_buy,
             size=size,
-            limit_px=self._round_price(trigger_price),
+            limit_px=self._round_price(trigger_price, symbol=symbol),
             reduce_only=True,
             cloid=cloid,
             order_type={
                 "trigger": {
                     "isMarket": True,
-                    "triggerPx": self._round_price(trigger_price),
+                    "triggerPx": self._round_price(trigger_price, symbol=symbol),
                     "tpsl": tpsl,
                 }
             },
@@ -819,6 +855,7 @@ class LiveExecutionVenue:
         self,
         mid_price: float,
         *,
+        symbol: str,
         side: str,
         action: str,
         slippage_bps: float,
@@ -828,12 +865,16 @@ class LiveExecutionVenue:
             sign = 1.0 if action == "open" else -1.0
         else:
             sign = -1.0 if action == "open" else 1.0
-        return self._round_price(mid_price * (1.0 + sign * slippage_bps / 10_000.0))
+        return self._round_price(
+            mid_price * (1.0 + sign * slippage_bps / 10_000.0),
+            symbol=symbol,
+        )
 
     def _post_only_limit_price(
         self,
         mid_price: float,
         *,
+        symbol: str,
         side: str,
         action: str,
         spread_bps: float,
@@ -843,7 +884,10 @@ class LiveExecutionVenue:
         )
         buffer_bps = max(float(spread_bps) / 2.0 + self.post_only_buffer_bps, 0.1)
         sign = -1.0 if is_buy else 1.0
-        return self._round_price(mid_price * (1.0 + sign * buffer_bps / 10_000.0))
+        return self._round_price(
+            mid_price * (1.0 + sign * buffer_bps / 10_000.0),
+            symbol=symbol,
+        )
 
     def _pending_position_metadata(
         self,
@@ -853,9 +897,11 @@ class LiveExecutionVenue:
         notional_usd: float,
         timestamp: str | None,
         plan: TradePlan | None,
+        entry_price: float | None = None,
+        entry_fee_usd: float | None = None,
     ) -> dict[str, object]:
         if plan is None:
-            return {
+            metadata: dict[str, object] = {
                 "symbol": symbol,
                 "side": side,
                 "setup": "live_post_only_entry",
@@ -863,28 +909,34 @@ class LiveExecutionVenue:
                 "target_notional_usd": notional_usd,
                 "opened_at": timestamp,
             }
-        return {
-            "symbol": plan.symbol,
-            "side": plan.side,
-            "setup": plan.setup,
-            "confidence": plan.confidence,
-            "target_notional_usd": plan.target_notional_usd,
-            "stop_bps": plan.stop_bps,
-            "time_stop_hours": plan.time_stop_hours,
-            "take_profit_bps": plan.take_profit_bps,
-            "break_even_trigger_bps": plan.break_even_trigger_bps,
-            "trailing_activation_bps": plan.trailing_activation_bps,
-            "trailing_distance_bps": plan.trailing_distance_bps,
-            "reentry_cooldown_minutes": plan.reentry_cooldown_minutes,
-            "margin_usd": plan.margin_usd,
-            "effective_leverage": plan.effective_leverage,
-            "risk_budget_usd": plan.risk_budget_usd,
-            "expected_loss_usd": plan.expected_loss_usd,
-            "invalidation_price": plan.invalidation_price,
-            "isolated": plan.isolated,
-            "setup_details": dict(plan.setup_details),
-            "opened_at": timestamp,
-        }
+        else:
+            metadata = {
+                "symbol": plan.symbol,
+                "side": plan.side,
+                "setup": plan.setup,
+                "confidence": plan.confidence,
+                "target_notional_usd": plan.target_notional_usd,
+                "stop_bps": plan.stop_bps,
+                "time_stop_hours": plan.time_stop_hours,
+                "take_profit_bps": plan.take_profit_bps,
+                "break_even_trigger_bps": plan.break_even_trigger_bps,
+                "trailing_activation_bps": plan.trailing_activation_bps,
+                "trailing_distance_bps": plan.trailing_distance_bps,
+                "reentry_cooldown_minutes": plan.reentry_cooldown_minutes,
+                "margin_usd": plan.margin_usd,
+                "effective_leverage": plan.effective_leverage,
+                "risk_budget_usd": plan.risk_budget_usd,
+                "expected_loss_usd": plan.expected_loss_usd,
+                "invalidation_price": plan.invalidation_price,
+                "isolated": plan.isolated,
+                "setup_details": dict(plan.setup_details),
+                "opened_at": timestamp,
+            }
+        if entry_price is not None:
+            metadata["entry_price"] = entry_price
+        if entry_fee_usd is not None:
+            metadata["entry_fee_usd"] = entry_fee_usd
+        return metadata
 
     def _size_from_notional(
         self,
@@ -898,17 +950,17 @@ class LiveExecutionVenue:
 
     def _stop_price(self, plan: TradePlan, entry_price: float) -> float:
         if plan.invalidation_price and plan.invalidation_price > 0:
-            return self._round_price(plan.invalidation_price)
+            return self._round_price(plan.invalidation_price, symbol=plan.symbol)
         delta = plan.stop_bps / 10_000.0
         if plan.side == "long":
-            return self._round_price(entry_price * (1.0 - delta))
-        return self._round_price(entry_price * (1.0 + delta))
+            return self._round_price(entry_price * (1.0 - delta), symbol=plan.symbol)
+        return self._round_price(entry_price * (1.0 + delta), symbol=plan.symbol)
 
     def _take_profit_price(self, plan: TradePlan, entry_price: float) -> float:
         delta = plan.take_profit_bps / 10_000.0
         if plan.side == "long":
-            return self._round_price(entry_price * (1.0 + delta))
-        return self._round_price(entry_price * (1.0 - delta))
+            return self._round_price(entry_price * (1.0 + delta), symbol=plan.symbol)
+        return self._round_price(entry_price * (1.0 - delta), symbol=plan.symbol)
 
     def _new_cloid(self) -> str:
         millis = int(time.time() * 1000) & ((1 << 48) - 1)
@@ -918,7 +970,7 @@ class LiveExecutionVenue:
     def _round_wire(self, value: float) -> float:
         return float(f"{value:.8f}")
 
-    def _round_price(self, value: float) -> float:
+    def _round_price(self, value: float, *, symbol: str | None = None) -> float:
         try:
             price = Decimal(str(value))
         except (InvalidOperation, ValueError):
@@ -927,9 +979,16 @@ class LiveExecutionVenue:
             return 0.0
         significant_quantum = Decimal("1e{}".format(price.adjusted() - 4))
         rounded = price.quantize(significant_quantum, rounding=ROUND_HALF_UP)
-        if rounded.as_tuple().exponent < -6:
-            rounded = rounded.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+        max_price_decimals = self._max_price_decimals(symbol)
+        if rounded.as_tuple().exponent < -max_price_decimals:
+            decimal_quantum = Decimal("1").scaleb(-max_price_decimals)
+            rounded = rounded.quantize(decimal_quantum, rounding=ROUND_HALF_UP)
         return float(rounded)
+
+    def _max_price_decimals(self, symbol: str | None) -> int:
+        if not symbol:
+            return 6
+        return max(6 - self._size_decimals(symbol), 0)
 
     def _round_size(self, value: float, *, decimals: int) -> float:
         try:

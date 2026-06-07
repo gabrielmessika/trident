@@ -50,8 +50,8 @@ tradable_max_spread_bps = 10.0
 tradable_min_bucket_notional_usd = 100.0
 tradable_min_bucket_trade_count = 3
 tradable_max_abs_funding_rate = 0.01
-# Observe le symbole mais l'exclut du pool tradable de tous les pods.
-tradable_blocked_symbols = ["TAO"]
+# Observe les symboles mais les exclut du pool tradable de tous les pods.
+tradable_blocked_symbols = ["TAO", "AAVE", "ADA", "AVAX", "HYPE", "ICP", "NEAR", "ONDO", "PENDLE", "TON", "VVV", "XRP"]
 # Backward compat pour les anciennes commandes/tests.
 default_coins = ["BTC", "ETH", "SOL", "HYPE"]
 
@@ -134,7 +134,7 @@ dry_run_slippage_bps = 0.5
 dry_run_spread_multiplier = 0.5
 live_order_slippage_bps = 8.0
 live_close_slippage_bps = 12.0
-live_max_order_notional_usd = 250.0
+live_max_order_notional_usd = 200.0
 live_order_actions_per_minute = 12
 live_require_protective_orders = true
 # Pod A trend_pullback_long utilise une grace de stop en backtest/local. En live,
@@ -322,7 +322,7 @@ target_pct = 0.00
 [pod_a]
 enabled = true
 allowed_market_clusters = ["crypto"]
-blocked_symbols = []
+blocked_symbols = ["AAVE", "ADA", "AVAX", "HYPE", "ICP", "NEAR", "ONDO", "PENDLE", "TON", "VVV", "XRP"]
 max_allocation_pct = 0.85
 default_leverage = 2.0
 max_leverage = 30.0

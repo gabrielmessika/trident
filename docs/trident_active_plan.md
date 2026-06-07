@@ -103,6 +103,33 @@ Source de verite operationnelle depuis le `2026-05-24`:
   temporairement `XYZ:SILVER` (`pod_c.blocked_symbols`) apres `4/4` stops
   perdants depuis le `2026-06-02`; continuer a observer silver, mais ne pas
   reautoriser l'execution sans replay/review dedie.
+- Ajustement operateur `2026-06-05`: apres review serveur A/C pendant le selloff
+  crypto proche de `BTC 60k`, garder `live_block_stop_grace_setups=false` pour
+  ne pas neutraliser totalement les entrees de rebond, mais reduire le cap live
+  A/C a `200` notionnel max. Les alts ayant produit les pires pertes recentes
+  (`AAVE`, `ADA`, `AVAX`, `HYPE`, `ICP`, `NEAR`, `ONDO`, `PENDLE`, `TON`,
+  `VVV`, `XRP`) sont exclus du pool tradable via
+  `hyperliquid.tradable_blocked_symbols` et gardes en garde-fou via
+  `pod_a.blocked_symbols`; continuer a les observer, mais ne pas les
+  reautoriser sans review/replay dedie du chemin `trend_pullback_long` et de la
+  perte reelle vs stop planifie.
+- Incident live `2026-06-07`: Pod A a ouvert une position ARB mainnet
+  (`oid=461196360588`, long `2446.4`, entry `0.0817`, cap live ~`200 USDC`)
+  mais le state/journal n'a pas garde la position avant crash/restart. Pod A
+  est entre en crash loop sur `unknown_exchange_positions=['ARB']` et Pod C a
+  pause les entrees en voyant ARB inconnue. Recovery operateur: import ARB dans
+  `runtime/trident/live_state_pod_a.json`, preflight Pod A/Pod C OK, puis
+  pose d'un SL reduce-only exchange connu par le state (`oid=461525656182`,
+  trigger `0.08039`). Correction code: `LiveExecutionVenue` ecrit maintenant une
+  `pending_position` durable immediatement apres fill d'entree, puis reecrit
+  apres les ordres protecteurs via callback Pod A/C; le rounding de prix live
+  respecte aussi la limite Hyperliquid `6 - szDecimals` pour eviter les rejets
+  de triggers sub-dollar (`Order has invalid price`). Verification post-fix:
+  review A/C `server-data/reviews/20260607T112401Z/review_summary.md` en
+  `PASS`, Pod A/Pod C `ready=true`, `unknown_exchange_positions=[]`,
+  `trigger_orders=[]`. Ne pas contourner ce type d'incident avec
+  `TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS=true`; reconstruire le state confirme
+  ou fermer manuellement en reduce-only.
 - Ajustement HIP-4 mainnet paper `2026-06-02`: le PnL reste trop fragile
   (`14` settlements, profit factor proche de `1.06`) avec quelques pertes qui
   absorbent la majorite des gains. Le profil paper active un gate d'entree
