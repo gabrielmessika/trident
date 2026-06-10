@@ -148,6 +148,7 @@ class Hip4OutcomeConfig:
     min_gross_edge: float = 0.025
     min_net_edge: float = 0.015
     enable_early_exit: bool = False
+    early_exit_policy: str = "default"
     early_exit_probability_haircut: float = 0.03
     early_exit_min_ev_premium: float = 0.02
     early_exit_min_ev_exit_roi: float = 0.05
@@ -394,6 +395,10 @@ def load_hip4_outcome_config(path: str | Path | None = None, *, apply_env: bool 
             "HIP4_OUTCOME_ENABLE_EARLY_EXIT",
             bool(section.get("enable_early_exit", False)),
         ),
+        early_exit_policy=env_str(
+            "HIP4_OUTCOME_EARLY_EXIT_POLICY",
+            section.get("early_exit_policy", "default"),
+        ).strip().lower(),
         early_exit_probability_haircut=float(section.get("early_exit_probability_haircut", 0.03)),
         early_exit_min_ev_premium=float(section.get("early_exit_min_ev_premium", 0.02)),
         early_exit_min_ev_exit_roi=float(section.get("early_exit_min_ev_exit_roi", 0.05)),

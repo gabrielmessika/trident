@@ -1075,6 +1075,7 @@ class LiveReadinessTests(unittest.TestCase):
     def test_live_cap_does_not_hide_pod_c_margin_floor(self) -> None:
         config = load_config("config/trident.toml")
         config.trident.execution.live_max_order_notional_usd = 250.0
+        config.pod_c.blocked_symbols = []
         plan = TradePlan(
             symbol="XYZ:SILVER",
             side="long",
@@ -1247,7 +1248,6 @@ class LiveReadinessTests(unittest.TestCase):
         config = load_config("config/trident.toml")
         config.trident.execution.live_max_order_notional_usd = 200.0
         config.trident.execution.live_block_stop_grace_setups = False
-        config.trident.execution.live_stop_grace_catastrophic_sl_bps = 300.0
         exchange = _FakeExchange()
         venue = LiveExecutionVenue(
             config,
@@ -1285,16 +1285,16 @@ class LiveReadinessTests(unittest.TestCase):
 
         self.assertIsNotNone(fill)
         self.assertEqual(len(exchange.orders), 2)
-        self.assertEqual(exchange.orders[1]["limit_px"], 2912.3)
+        self.assertEqual(exchange.orders[1]["limit_px"], 2954.4)
         self.assertEqual(
             exchange.orders[1]["order_type"],
-            {"trigger": {"isMarket": True, "triggerPx": 2912.3, "tpsl": "sl"}},
+            {"trigger": {"isMarket": True, "triggerPx": 2954.4, "tpsl": "sl"}},
         )
         metadata = venue.orders_by_symbol["ETH"]
         stop_grace = metadata["stop_grace"]  # type: ignore[index]
         self.assertEqual(stop_grace["grace_minutes"], config.pod_a.stop_grace_minutes)  # type: ignore[index]
         self.assertEqual(stop_grace["normal_stop_price"], 2978.4)  # type: ignore[index]
-        self.assertEqual(stop_grace["catastrophic_stop_price"], 2912.3)  # type: ignore[index]
+        self.assertEqual(stop_grace["catastrophic_stop_price"], 2954.4)  # type: ignore[index]
         self.assertFalse(stop_grace["normal_stop_placed"])  # type: ignore[index]
 
         self.assertFalse(
@@ -1306,7 +1306,7 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertTrue(
             venue.refresh_stop_grace_orders(
                 "ETH",
-                now="2026-05-27T02:46:00Z",
+                now="2026-05-27T01:01:00Z",
             )
         )
         self.assertEqual(exchange.cancels, [("ETH", 7)])

@@ -67,6 +67,9 @@ class ExecutionConfig:
     live_require_protective_orders: bool = True
     live_block_stop_grace_setups: bool = True
     live_stop_grace_catastrophic_sl_bps: float = 300.0
+    live_stop_grace_catastrophic_sl_multiplier: float = 0.0
+    live_stop_grace_catastrophic_sl_buffer_bps: float = 0.0
+    live_stop_grace_catastrophic_sl_max_bps: float = 0.0
     live_post_only_retry_on_upgrade: bool = False
     live_post_only_buffer_bps: float = 1.0
     routing_revoke_grace_minutes: int = 0
@@ -244,6 +247,34 @@ class PodAConfig:
     pattern_vetoes: list[PodAPatternVetoConfig] = field(default_factory=list)
     pattern_watchers: list[PodAPatternVetoConfig] = field(default_factory=list)
     symbol_modes: dict[str, PodASymbolModeConfig] = field(default_factory=dict)
+    stop_grace_strong_minutes: int = 0
+    stop_grace_strong_min_confidence: float = 1.01
+    stop_grace_strong_min_a_grade_score: int = 999
+    stop_grace_strong_require_no_watch_hits: bool = True
+    early_failure_exit_enabled: bool = False
+    early_failure_min_age_minutes: int = 10
+    early_failure_max_age_minutes: int = 90
+    early_failure_adverse_stop_fraction: float = 0.55
+    early_failure_min_adverse_bps: float = 25.0
+    early_failure_max_structure_score: float = 0.20
+    early_failure_max_vwap_distance_bps: float = -8.0
+    live_quality_sizing_enabled: bool = False
+    live_quality_min_multiplier: float = 0.50
+    live_quality_low_confidence_threshold: float = 0.62
+    live_quality_low_confidence_multiplier: float = 0.55
+    live_quality_mid_confidence_threshold: float = 0.70
+    live_quality_mid_confidence_multiplier: float = 0.75
+    live_quality_no_a_grade_multiplier: float = 0.70
+    live_quality_standard_a_grade_multiplier: float = 0.85
+    live_quality_watch_hit_multiplier: float = 0.85
+    live_loss_tax_enabled: bool = False
+    live_loss_tax_cooldown_minutes: int = 720
+    live_loss_tax_multiplier: float = 0.50
+    live_loss_tax_stop_reasons: list[str] = field(
+        default_factory=lambda: ["stop_hit", "exchange_closed_stop_loss"]
+    )
+    live_correlation_full_size_slots: int = 3
+    live_correlation_extra_multiplier: float = 0.50
 
 
 @dataclass(slots=True)
@@ -1365,6 +1396,24 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 live_stop_grace_catastrophic_sl_bps=float(
                     execution_data.get("live_stop_grace_catastrophic_sl_bps", 300.0)
                 ),
+                live_stop_grace_catastrophic_sl_multiplier=float(
+                    execution_data.get(
+                        "live_stop_grace_catastrophic_sl_multiplier",
+                        0.0,
+                    )
+                ),
+                live_stop_grace_catastrophic_sl_buffer_bps=float(
+                    execution_data.get(
+                        "live_stop_grace_catastrophic_sl_buffer_bps",
+                        0.0,
+                    )
+                ),
+                live_stop_grace_catastrophic_sl_max_bps=float(
+                    execution_data.get(
+                        "live_stop_grace_catastrophic_sl_max_bps",
+                        0.0,
+                    )
+                ),
                 live_post_only_retry_on_upgrade=bool(
                     execution_data.get("live_post_only_retry_on_upgrade", False)
                 ),
@@ -1535,6 +1584,87 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 pod_a_data.get("pattern_watchers", [])
             ),
             symbol_modes=_pod_a_symbol_modes(pod_a_data.get("symbol_modes", {})),
+            stop_grace_strong_minutes=int(
+                pod_a_data.get("stop_grace_strong_minutes", 0)
+            ),
+            stop_grace_strong_min_confidence=float(
+                pod_a_data.get("stop_grace_strong_min_confidence", 1.01)
+            ),
+            stop_grace_strong_min_a_grade_score=int(
+                pod_a_data.get("stop_grace_strong_min_a_grade_score", 999)
+            ),
+            stop_grace_strong_require_no_watch_hits=bool(
+                pod_a_data.get("stop_grace_strong_require_no_watch_hits", True)
+            ),
+            early_failure_exit_enabled=bool(
+                pod_a_data.get("early_failure_exit_enabled", False)
+            ),
+            early_failure_min_age_minutes=int(
+                pod_a_data.get("early_failure_min_age_minutes", 10)
+            ),
+            early_failure_max_age_minutes=int(
+                pod_a_data.get("early_failure_max_age_minutes", 90)
+            ),
+            early_failure_adverse_stop_fraction=float(
+                pod_a_data.get("early_failure_adverse_stop_fraction", 0.55)
+            ),
+            early_failure_min_adverse_bps=float(
+                pod_a_data.get("early_failure_min_adverse_bps", 25.0)
+            ),
+            early_failure_max_structure_score=float(
+                pod_a_data.get("early_failure_max_structure_score", 0.20)
+            ),
+            early_failure_max_vwap_distance_bps=float(
+                pod_a_data.get("early_failure_max_vwap_distance_bps", -8.0)
+            ),
+            live_quality_sizing_enabled=bool(
+                pod_a_data.get("live_quality_sizing_enabled", False)
+            ),
+            live_quality_min_multiplier=float(
+                pod_a_data.get("live_quality_min_multiplier", 0.50)
+            ),
+            live_quality_low_confidence_threshold=float(
+                pod_a_data.get("live_quality_low_confidence_threshold", 0.62)
+            ),
+            live_quality_low_confidence_multiplier=float(
+                pod_a_data.get("live_quality_low_confidence_multiplier", 0.55)
+            ),
+            live_quality_mid_confidence_threshold=float(
+                pod_a_data.get("live_quality_mid_confidence_threshold", 0.70)
+            ),
+            live_quality_mid_confidence_multiplier=float(
+                pod_a_data.get("live_quality_mid_confidence_multiplier", 0.75)
+            ),
+            live_quality_no_a_grade_multiplier=float(
+                pod_a_data.get("live_quality_no_a_grade_multiplier", 0.70)
+            ),
+            live_quality_standard_a_grade_multiplier=float(
+                pod_a_data.get("live_quality_standard_a_grade_multiplier", 0.85)
+            ),
+            live_quality_watch_hit_multiplier=float(
+                pod_a_data.get("live_quality_watch_hit_multiplier", 0.85)
+            ),
+            live_loss_tax_enabled=bool(
+                pod_a_data.get("live_loss_tax_enabled", False)
+            ),
+            live_loss_tax_cooldown_minutes=int(
+                pod_a_data.get("live_loss_tax_cooldown_minutes", 720)
+            ),
+            live_loss_tax_multiplier=float(
+                pod_a_data.get("live_loss_tax_multiplier", 0.50)
+            ),
+            live_loss_tax_stop_reasons=_str_list(
+                pod_a_data.get(
+                    "live_loss_tax_stop_reasons",
+                    ["stop_hit", "exchange_closed_stop_loss"],
+                )
+            ),
+            live_correlation_full_size_slots=int(
+                pod_a_data.get("live_correlation_full_size_slots", 3)
+            ),
+            live_correlation_extra_multiplier=float(
+                pod_a_data.get("live_correlation_extra_multiplier", 0.50)
+            ),
         ),
         pod_b=PodBConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_B", bool(pod_b_data.get("enabled", False))),

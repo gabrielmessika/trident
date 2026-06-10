@@ -38,6 +38,25 @@ class TridentAIConfigTests(unittest.TestCase):
         self.assertEqual(config.llm.verifier_provider, "openai")
         self.assertEqual(config.llm.verifier_model, "gpt-5.4")
         self.assertTrue(config.llm.cache_enabled)
+        self.assertEqual(config.paper.taker_fee_bps, 3.5)
+        self.assertEqual(config.paper.slippage_bps, 0.5)
+        self.assertEqual(config.paper.spread_multiplier, 0.5)
+        self.assertTrue(config.paper.force_close_at_end)
+        self.assertFalse(config.intel.enabled)
+        self.assertEqual(config.intel.provider, "xai")
+        self.assertEqual(config.intel.model, "grok-4.3")
+        self.assertEqual(config.intel.cache_dir, "./runtime/trident_ai/intel_cache")
+        self.assertEqual(config.intel.digest_ttl_seconds, 1800)
+        self.assertEqual(config.intel.max_live_calls_per_digest, 2)
+        self.assertEqual(config.intel.max_x_search_calls_per_day, 24)
+        self.assertEqual(config.intel.max_web_search_calls_per_day, 12)
+        self.assertEqual(config.intel.max_incremental_cost_usd, 0.02)
+        self.assertTrue(config.intel.x_search_enabled)
+        self.assertFalse(config.intel.web_search_enabled)
+        self.assertEqual(config.intel.x_search_cost_per_1000_calls_usd, 5.0)
+        self.assertEqual(config.intel.web_search_cost_per_1000_calls_usd, 5.0)
+        self.assertEqual(config.intel.allowed_x_handles, ())
+        self.assertEqual(config.intel.allowed_web_domains, ())
 
     def test_builds_proposal_validation_config_from_risk_caps(self) -> None:
         config = load_trident_ai_config("config/trident_ai.toml")
@@ -89,6 +108,18 @@ class TridentAIConfigTests(unittest.TestCase):
 
         self.assertEqual(config.tradable_symbols, ("BTC", "ETH"))
         self.assertEqual(config.proposal_validation_config().allowed_symbols, ("BTC", "ETH"))
+
+    def test_rejects_more_than_twenty_x_handles(self) -> None:
+        handles = ", ".join(f'"handle{i}"' for i in range(21))
+        path = self._write_config(
+            f"""
+            [trident_ai.intel]
+            allowed_x_handles = [{handles}]
+            """
+        )
+
+        with self.assertRaises(TridentAIConfigError):
+            load_trident_ai_config(path)
 
     def _write_config(self, body: str) -> Path:
         directory = tempfile.TemporaryDirectory()

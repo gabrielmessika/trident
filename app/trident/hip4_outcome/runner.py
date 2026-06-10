@@ -1583,12 +1583,18 @@ class HIP4OutcomeEdgePod:
                 if full_cost_basis > 0
                 else 0.0
             )
-            if full_exit_roi >= float(self.config.early_exit_full_take_profit_roi):
+            active_policy = _active_early_exit_policy(self.config)
+            prob_stop_only = active_policy == "prob_stop_full"
+            if (
+                not prob_stop_only
+                and full_exit_roi >= float(self.config.early_exit_full_take_profit_roi)
+            ):
                 action = "full_exit"
                 reason = "full_take_profit"
                 exit_fraction = 1.0
             elif (
-                hold_ev_usdc > 0
+                not prob_stop_only
+                and hold_ev_usdc > 0
                 and net_full >= hold_ev_usdc * (1.0 + float(self.config.early_exit_min_ev_premium))
                 and full_exit_roi >= float(self.config.early_exit_min_ev_exit_roi)
             ):
@@ -1615,19 +1621,27 @@ class HIP4OutcomeEdgePod:
                 reason = "probability_stop"
                 exit_fraction = 1.0
             elif (
-                market.expiry_ts - now_ts <= int(self.config.early_exit_free_short_window_seconds)
+                not prob_stop_only
+                and (
+                    market.expiry_ts - now_ts
+                    <= int(self.config.early_exit_free_short_window_seconds)
+                )
                 and full_exit_roi >= float(self.config.early_exit_free_short_window_min_roi)
             ):
                 action = "full_exit"
                 reason = "free_short_expiry_window"
                 exit_fraction = 1.0
             elif (
-                full_exit_roi >= float(self.config.early_exit_take_profit_roi)
+                not prob_stop_only
+                and full_exit_roi >= float(self.config.early_exit_take_profit_roi)
                 and not _has_partial_take_profit_exit(position)
             ):
                 action = "partial_exit"
                 reason = "partial_take_profit"
-                exit_fraction = max(min(float(self.config.early_exit_take_profit_fraction), 1.0), 0.0)
+                exit_fraction = max(
+                    min(float(self.config.early_exit_take_profit_fraction), 1.0),
+                    0.0,
+                )
             else:
                 exit_fraction = 0.0
 
@@ -2935,6 +2949,13 @@ def _has_early_exit_reason(position: OutcomePosition, reason: str) -> bool:
     return any(str(item.get("reason")) == reason for item in _early_exit_entries(position))
 
 
+def _active_early_exit_policy(config: Hip4OutcomeConfig) -> str:
+    policy = str(getattr(config, "early_exit_policy", "default") or "default").strip().lower()
+    if policy in {"default", "prob_stop_full"}:
+        return policy
+    return "default"
+
+
 def _shadow_exit_policy_specs(config: Hip4OutcomeConfig) -> list[dict[str, Any]]:
     policies: list[dict[str, Any]] = [{"policy": "hold_to_settlement", "kind": "hold"}]
     seen: set[str] = {"hold_to_settlement"}
@@ -2975,11 +2996,14 @@ def _shock_thresholds_by_window(config: Hip4OutcomeConfig) -> list[tuple[int, fl
 
 
 def _pnl_levers_payload(config: Hip4OutcomeConfig) -> dict[str, Any]:
+    active_policy = _active_early_exit_policy(config)
+    active_ev_enabled = bool(config.enable_early_exit and active_policy != "prob_stop_full")
     return {
+        "active_policy": active_policy,
         "active_dry_run": [
             {
                 "name": "bid_over_conservative_hold_ev",
-                "enabled": bool(config.enable_early_exit),
+                "enabled": active_ev_enabled,
                 "min_ev_premium": float(config.early_exit_min_ev_premium),
                 "min_exit_roi": float(config.early_exit_min_ev_exit_roi),
                 "exit_fraction": float(config.early_exit_ev_exit_fraction),
@@ -2989,8 +3013,14 @@ def _pnl_levers_payload(config: Hip4OutcomeConfig) -> dict[str, Any]:
                 "log": "early_exits.csv",
             },
             {
-                "name": "probability_stop_intermediate",
-                "enabled": bool(config.enable_early_exit and config.enable_early_exit_probability_stop),
+                "name": (
+                    "prob_stop_full"
+                    if active_policy == "prob_stop_full"
+                    else "probability_stop_intermediate"
+                ),
+                "enabled": bool(
+                    config.enable_early_exit and config.enable_early_exit_probability_stop
+                ),
                 "conservative_probability_lte": float(config.early_exit_stop_probability),
                 "exit_roi_gte": -float(config.early_exit_stop_max_loss_roi),
                 "log": "early_exits.csv",

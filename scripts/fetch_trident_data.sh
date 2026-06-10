@@ -519,9 +519,9 @@ for name in ("pod_a_live", "pod_c_live", "trident-api"):
     if decimal_errors:
         failures.append(f"Erreur Decimal JSON récente dans {name}.log")
 
-if as_float(operator_context["live_max_order_notional_usd"], 999999.0) > 250.0:
+if as_float(operator_context["live_max_order_notional_usd"], 999999.0) > 200.0:
     warnings.append(
-        "Cap live A/C superieur a 250 apres le rollback demande; verifier le deploiement"
+        "Cap live A/C superieur a 200 apres l'ajustement Pod A du 2026-06-09; verifier le deploiement"
     )
 if operator_context["live_block_stop_grace_setups"] is not False:
     warnings.append(
@@ -586,8 +586,8 @@ lines.extend(
     [
         "",
         "## Next Review Focus",
-        "- Verifier que le serveur expose bien `live_max_order_notional_usd=250` et `live_block_stop_grace_setups=false`.",
-        "- Pod A: surveiller les nouveaux `exchange_closed_stop_loss`; comparer perte reelle vs stop planifie, surtout TON/NEAR/ONDO/VVV.",
+        "- Verifier que le serveur expose bien `live_max_order_notional_usd=200`, `pod_a.stop_grace_minutes=60` et `live_block_stop_grace_setups=false`.",
+        "- Pod A: surveiller les nouveaux `exchange_closed_stop_loss` et `early_failure_exit`; comparer perte reelle vs stop planifie.",
         "- Pod C: verifier qu'aucun nouveau trade `XYZ:SILVER` ne s'ouvre et que les signaux silver sont rejetes `symbol_blocked` si presents.",
         "",
         "## Checks",

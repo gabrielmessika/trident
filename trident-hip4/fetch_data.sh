@@ -23,6 +23,7 @@ Rapatrie les données TRIDENT-HIP4 depuis le serveur:
 - runtime states HIP-4
 - configs HIP-4
 - logs Docker HIP-4
+- audit local exit-policy / marchés non-BTC priceBinary
 - review `hip4_outcome_run_review` locale si les logs sont disponibles
 EOF
 }
@@ -237,23 +238,26 @@ write_next_review_focus() {
     cat > "$focus_path" <<'EOF'
 # HIP-4 next review focus
 
-Priorite apres le redeploiement du `2026-05-25`: verifier que le changement
-early-exit reduit le churn et ne contourne pas les minimums Hyperliquid.
+Priorite apres le redeploiement du `2026-06-10`: verifier que la promotion
+paper `early_exit_policy = "prob_stop_full"` garde la convexite, limite les
+full exits aux stops defensifs et n'ouvre pas de surface non-BTC implicite.
 
 ## Checks obligatoires
 
 - Config/status:
-  - `early_exit_ev_exit_fraction = 0.5` actif en mainnet paper.
+  - `early_exit_policy = "prob_stop_full"` actif en mainnet paper.
+  - `early_exit_ev_exit_fraction = 0.5` conserve pour la policy `default` et
+    l'observabilite, mais non actif sous `prob_stop_full`.
   - `early_exit_reentry_lock_until_settlement = true` actif.
-  - `summary.pnl_levers.active_dry_run` expose `exit_fraction=0.5` et
-    `reentry_lock_until_settlement=true`.
+  - `summary.pnl_levers.active_policy` expose `prob_stop_full`.
+  - `summary.pnl_levers.active_dry_run` expose `prob_stop_full` actif et
+    `bid_over_conservative_hold_ev` inactif.
 - `early_exits.csv`:
-  - `bid_over_conservative_hold_ev` doit produire des `partial_exit`, pas des
-    `full_exit`, sauf config explicite.
-  - une meme position ne doit pas avoir plusieurs sorties EV partielles
-    `bid_over_conservative_hold_ev`.
-  - les full exits attendus restent defensifs ou exceptionnels:
-    `probability_stop`, `full_take_profit`, `free_short_expiry_window`.
+  - sous `prob_stop_full`, les sorties actives attendues sont uniquement
+    `probability_stop`.
+  - pas de `bid_over_conservative_hold_ev`, `partial_take_profit`,
+    `full_take_profit` ou `free_short_expiry_window` actifs sauf rollback
+    explicite vers la policy `default`.
 - `decisions.jsonl` / review:
   - verifier la presence de `early_exit_reentry_lock` apres un full exit, ou
     `market_already_open` quand le runner reste ouvert.
@@ -261,9 +265,13 @@ early-exit reduit le churn et ne contourne pas les minimums Hyperliquid.
     avant settlement.
 - `shadow_exit_policies.csv`:
   - comparer `hold_to_settlement`, `ev_plus_2pct_full` et
-    `ev_plus_2pct_partial_runner`.
+    `ev_plus_2pct_partial_runner` contre `prob_stop_full`.
   - mesurer PnL, PF, max drawdown et worst loss par politique, pas seulement le
     win rate.
+- `hip4_policy_market_audit_latest.md`:
+  - verifier les cutoffs post `2026-06-02` et `2026-06-05`;
+  - confirmer que `mainnet_paper` et `mainnet_observer` restent BTC-only en
+    `priceBinary`, ou lister les underlyings non-BTC tradables apparus.
 - `shadow_sizing.csv`:
   - garder le sizing actif inchangé tant que le shadow Kelly est sous le
     minimum executable.
@@ -276,6 +284,46 @@ early-exit reduit le churn et ne contourne pas les minimums Hyperliquid.
 EOF
     cp "$focus_path" "${REPLAY_REPORT_DIR}/hip4_next_review_focus_latest.md"
     ok "Checklist prochaine review HIP-4 écrite: ${focus_path}"
+}
+
+run_policy_market_audit() {
+    local ts output_json output_md latest_json latest_md audit_stdout audit_stderr
+    if [ -n "$SKIP_REVIEW" ]; then
+        warn "Audit policy/market HIP-4 skippé"
+        return 0
+    fi
+    ts="$(timestamp)"
+    mkdir -p "$REPLAY_REPORT_DIR"
+    output_json="${REPLAY_REPORT_DIR}/hip4_policy_market_audit_${ts}.json"
+    output_md="${REPLAY_REPORT_DIR}/hip4_policy_market_audit_${ts}.md"
+    latest_json="${REPLAY_REPORT_DIR}/hip4_policy_market_audit_latest.json"
+    latest_md="${REPLAY_REPORT_DIR}/hip4_policy_market_audit_latest.md"
+    audit_stdout="${REPLAY_REPORT_DIR}/hip4_policy_market_audit_${ts}.stdout.json"
+    audit_stderr="${REPLAY_REPORT_DIR}/hip4_policy_market_audit_${ts}.stderr.txt"
+
+    info "Generation de l'audit HIP-4 exit-policy / marches non-BTC..."
+    local audit_cmd=()
+    if command -v uv >/dev/null 2>&1; then
+        audit_cmd=(uv run python -m app.backtest.hip4_outcome_policy_market_audit)
+    else
+        audit_cmd=(python3 -m app.backtest.hip4_outcome_policy_market_audit)
+    fi
+    if ! "${audit_cmd[@]}" \
+        --paper-logs-dir "${LOG_DIR}/hip4_outcome_mainnet_paper" \
+        --observer-logs-dir "${LOG_DIR}/hip4_outcome_mainnet" \
+        --output-json "$output_json" \
+        --output-md "$output_md" \
+        >"$audit_stdout" \
+        2>"$audit_stderr"; then
+        warn "Audit policy/market HIP-4 échoué; fetch/review poursuivis:"
+        warn "  stdout: ${audit_stdout}"
+        warn "  stderr: ${audit_stderr}"
+        return 0
+    fi
+    cp "$output_json" "$latest_json"
+    cp "$output_md" "$latest_md"
+    ok "Audit policy/market HIP-4 écrit: ${output_md}"
+    [ -s "$audit_stderr" ] && warn "Stderr audit capturé: ${audit_stderr}"
 }
 
 run_review() {
@@ -344,6 +392,7 @@ if [ -z "$REVIEW_ONLY" ]; then
     fetch_logs_runtime
 fi
 
+run_policy_market_audit
 run_review
 
 echo ""

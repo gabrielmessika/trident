@@ -1,0 +1,35 @@
+{
+  "intel_digest": {
+    "schema_version": "trident_ai_intel_digest_v1",
+    "digest_id": "intel_digest_20260607T120000Z",
+    "as_of": "2026-06-07T12:00:00Z",
+    "global_market_impact": "neutral",
+    "source": "fixture",
+    "items": [
+      {
+        "source_id": "fixture_btc_001",
+        "source_type": "fixture",
+        "symbol": "BTC",
+        "impact": "neutral",
+        "confidence": 0.7,
+        "reliability": "established_media",
+        "published_at": "2026-06-07T11:50:00Z",
+        "summary": "No confirmed market-moving BTC news in the fixture window.",
+        "veto_entry": false,
+        "close_only_mode": false
+      },
+      {
+        "source_id": "fixture_hype_001",
+        "source_type": "fixture",
+        "symbol": "HYPE",
+        "impact": "negative",
+        "confidence": 0.82,
+        "reliability": "official",
+        "published_at": "2026-06-07T11:55:00Z",
+        "summary": "Fixture operational warning: treat HYPE entries as vetoed for this shadow cycle.",
+        "veto_entry": true,
+        "close_only_mode": false
+      }
+    ]
+  }
+}

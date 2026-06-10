@@ -19,13 +19,18 @@ from app.trident_ai import (
     TridentAILLMReplayRunner,
     build_trade_proposal_request,
     llm_request_cache_key,
+    load_fixture_intel_digest,
     load_trident_ai_config,
 )
-from app.trident_ai.replay import TRIDENT_AI_REPLAY_PROMPT_VERSION
+from app.trident_ai.replay import (
+    COMPACT_MARKET_CONTEXT_FEATURES,
+    TRIDENT_AI_REPLAY_PROMPT_VERSION,
+)
 
 
 MARKET_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "trident_ai" / "market_snapshots.json"
 PROPOSAL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "trident_ai" / "initial_proposals.json"
+INTEL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "trident_ai" / "intel_digest.json"
 
 
 class NoLiveLLMClient:
@@ -158,23 +163,95 @@ def _prime_cache(cache: JSONFileLLMCache, config) -> None:
 
 
 class TridentAILLMReplayRunnerTests(unittest.TestCase):
-    def test_trade_proposal_request_includes_hold_contract_v2(self) -> None:
+    def test_trade_proposal_request_uses_compact_prompt_v8_with_intel_and_pass_flags(self) -> None:
         config = load_trident_ai_config("config/trident_ai.toml")
         context = _contexts(config)[0]
+        intel_digest = load_fixture_intel_digest(INTEL_FIXTURE_PATH, symbols=("BTC", "HYPE"))
+        candidate_hint = {
+            "schema_version": "trident_ai_candidate_hint_v1",
+            "context_id": context.context_id,
+            "timestamp": context.as_of,
+            "symbol": context.symbol,
+            "side": "long",
+            "score": 1.654321,
+            "raw_score": 2.123456,
+            "directional_score": 1.91,
+            "liquidity_score": 0.88,
+            "activity_score": 0.99,
+            "cost_score": 0.78,
+            "estimated_edge_bps": 10.5,
+            "round_trip_cost_bps": 13.25,
+            "estimated_net_edge_bps": -2.75,
+            "edge_to_cost_ratio": 0.79245,
+            "reasons": ["long_directional_score", "ema_bullish", "spread_ok"],
+        }
         request = build_trade_proposal_request(
             context=context,
             config=config,
             now=datetime(2026, 6, 7, 12, 0, 0, tzinfo=timezone.utc),
+            candidate_hint=candidate_hint,
+            intel_digest=intel_digest,
         )
 
         payload = json.loads(request.user_prompt)
-        hold_contract = payload["output_contract"]["hold"]
+        compact_context = payload["ctx"]
+        compact_features = compact_context["f"]
+        compact_candidate = compact_context["candidate"]
+        compact_intel = compact_context["intel"]
+        full_context_payload = json.dumps(
+            {
+                "market_context": context.to_dict(),
+                "candidate_hint": candidate_hint,
+                "intel_digest": intel_digest.to_dict(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        compact_context_payload = json.dumps(
+            {"ctx": compact_context},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         self.assertEqual(request.metadata["prompt_version"], TRIDENT_AI_REPLAY_PROMPT_VERSION)
-        self.assertEqual(TRIDENT_AI_REPLAY_PROMPT_VERSION, "trident_ai_replay_v2")
-        self.assertEqual(hold_contract["max_notional_usd"], 0.0)
-        self.assertEqual(hold_contract["max_leverage"], 0.0)
-        self.assertEqual(hold_contract["entry_style"], "none")
-        self.assertIn("subnormal", request.system_prompt)
+        self.assertEqual(TRIDENT_AI_REPLAY_PROMPT_VERSION, "trident_ai_replay_v9")
+        self.assertNotIn("market_context", payload)
+        self.assertEqual(payload["rules"]["actions"], ["hold", "open"])
+        self.assertIn("intel_digest", payload["rules"])
+        self.assertEqual(compact_context["id"], context.context_id)
+        self.assertEqual(compact_context["s"], context.symbol)
+        self.assertEqual(compact_intel["digest_id"], "intel_digest_20260607T120000Z")
+        self.assertEqual(compact_intel["global_market_impact"], "neutral")
+        self.assertEqual(len(compact_intel["items"]), 1)
+        self.assertEqual(compact_intel["items"][0]["symbol"], "BTC")
+        self.assertFalse(compact_intel["items"][0]["veto_entry"])
+        self.assertEqual(compact_candidate["side"], "long")
+        self.assertEqual(compact_candidate["score"], 1.6543)
+        self.assertEqual(compact_candidate["raw_score"], 2.1235)
+        self.assertEqual(compact_candidate["directional"], 1.91)
+        self.assertEqual(compact_candidate["cost_score"], 0.78)
+        self.assertEqual(compact_candidate["edge_bps"], 10.5)
+        self.assertEqual(compact_candidate["round_trip_cost_bps"], 13.25)
+        self.assertEqual(compact_candidate["net_edge_bps"], -2.75)
+        self.assertEqual(compact_candidate["edge_to_cost"], 0.79245)
+        self.assertEqual(
+            compact_candidate["passes"],
+            {
+                "edge_to_cost": False,
+                "net_edge": False,
+                "microprice": True,
+                "local_gate": False,
+                "research_edge_to_cost": False,
+                "research_net_edge": False,
+                "research_cost": False,
+                "research_gate": False,
+            },
+        )
+        self.assertEqual(compact_candidate["reasons"], candidate_hint["reasons"])
+        self.assertEqual(set(compact_features), set(COMPACT_MARKET_CONTEXT_FEATURES))
+        self.assertNotIn("best_bid", compact_features)
+        self.assertNotIn("bid_depth_10bps", compact_features)
+        self.assertLess(len(compact_context_payload), len(full_context_payload) * 0.65)
+        self.assertIn("scientific notation", request.system_prompt)
 
     def test_llm_replay_uses_cache_only_and_writes_reports(self) -> None:
         config = load_trident_ai_config("config/trident_ai.toml")
@@ -292,6 +369,43 @@ class TridentAILLMReplayRunnerTests(unittest.TestCase):
                 )
             )
             self.assertTrue(all(record["proposal"] is None for record in decisions))
+
+    def test_llm_replay_applies_intel_veto_before_cache_or_live_call(self) -> None:
+        config = load_trident_ai_config("config/trident_ai.toml")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            journal_path = directory / "llm.jsonl"
+            report_json_path = directory / "llm.json"
+            report_md_path = directory / "llm.md"
+            input_path = directory / "snapshots.jsonl"
+            _write_snapshot(input_path)
+            runner = TridentAILLMReplayRunner(
+                config=config,
+                client=NoLiveLLMClient(),
+                cache=JSONFileLLMCache(directory / "empty_cache"),
+            )
+
+            result = runner.run(
+                input_path,
+                journal_path=journal_path,
+                report_json_path=report_json_path,
+                report_md_path=report_md_path,
+                max_contexts=1,
+                symbols=("HYPE",),
+                intel_digest_path=INTEL_FIXTURE_PATH,
+            )
+
+            self.assertEqual(result.contexts_built, 1)
+            self.assertEqual(result.context_rejections, 1)
+            self.assertEqual(result.llm_requests, 0)
+            self.assertEqual(result.llm_failures, 0)
+            self.assertEqual(result.intel_digest_id, "intel_digest_20260607T120000Z")
+            self.assertEqual(result.rejection_reasons["intel_veto"], 1)
+
+            records = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(records[0]["event_type"], LLM_REPLAY_CONTEXT_REJECTED_EVENT)
+            self.assertEqual(records[0]["reason"], "intel_veto")
+            self.assertEqual(records[0]["details"]["intel_veto_reasons"], ["fixture_hype_001"])
 
     def test_llm_replay_respects_smoke_limits(self) -> None:
         config = load_trident_ai_config("config/trident_ai.toml")

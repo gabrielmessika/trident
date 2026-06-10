@@ -259,6 +259,7 @@ deploy_code() {
         --exclude='runtime' \
         --exclude='.env.trident' \
         --exclude='.env.trident-hip4' \
+        --exclude='.env.tridentai' \
         -e "ssh -i ${IDENTITY_FILE}" \
         "${SCRIPT_DIR}/" "${SSH_USER}@${HOST}:${DEPLOY_DIR}/"
 

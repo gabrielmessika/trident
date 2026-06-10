@@ -38,3 +38,26 @@ temperature = 0.1
 timeout_seconds = 20.0
 max_retries = 1
 cache_enabled = true
+
+[trident_ai.paper]
+taker_fee_bps = 3.5
+slippage_bps = 0.5
+spread_multiplier = 0.5
+force_close_at_end = true
+
+[trident_ai.intel]
+enabled = false
+provider = "xai"
+model = "grok-4.3"
+cache_dir = "./runtime/trident_ai/intel_cache"
+digest_ttl_seconds = 1800
+max_live_calls_per_digest = 2
+max_x_search_calls_per_day = 24
+max_web_search_calls_per_day = 12
+max_incremental_cost_usd = 0.02
+x_search_enabled = true
+web_search_enabled = false
+x_search_cost_per_1000_calls_usd = 5.0
+web_search_cost_per_1000_calls_usd = 5.0
+allowed_x_handles = []
+allowed_web_domains = []

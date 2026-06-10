@@ -113,6 +113,15 @@ Source de verite operationnelle depuis le `2026-05-24`:
   `pod_a.blocked_symbols`; continuer a les observer, mais ne pas les
   reautoriser sans review/replay dedie du chemin `trend_pullback_long` et de la
   perte reelle vs stop planifie.
+- Ajustement Pod A live `2026-06-09`: objectif explicite = remonter le PnL sans
+  arreter tous les trades. Pod A garde `live_block_stop_grace_setups=false`, mais
+  le chemin live `trend_pullback_long` reduit le risque de queue: grace standard
+  ramenee a `60m`, extension a `120m` seulement pour A-grade fort
+  (`score>=9`, confidence `>=0.72`, sans watcher), stop catastrophe dynamique
+  plafonne via multiplicateur/buffer/max bps, sortie locale `early_failure_exit`
+  pendant la grace si le trade part rapidement contre le plan, sizing live
+  qualite/correlation/loss-tax au lieu d'un blocage dur. Le cap live A/C reste
+  `200` notionnel max et Silver reste bloque cote Pod C.
 - Incident live `2026-06-07`: Pod A a ouvert une position ARB mainnet
   (`oid=461196360588`, long `2446.4`, entry `0.0817`, cap live ~`200 USDC`)
   mais le state/journal n'a pas garde la position avant crash/restart. Pod A
@@ -138,6 +147,16 @@ Source de verite operationnelle depuis le `2026-05-24`:
   de ne plus transformer un signal Kelly faible en position paper fixe de
   `50 USDC`. Validation counterfactual locale:
   `server-data/hip4/replay_reports/hip4_kelly_gate_counterfactual_20260602.md`.
+- Ajustement HIP-4 mainnet paper `2026-06-10`: apres replay
+  `server-data/hip4/replay_reports/hip4_policy_market_audit_20260609T074732Z.md`,
+  la policy active paper passe a `early_exit_policy = "prob_stop_full"`:
+  tenir les positions jusqu'au settlement sauf stop defensif de probabilite.
+  Les sorties EV/TP actives sont coupees sous cette policy; elles restent
+  comparees en shadow via `ev_plus_2pct_partial_runner`,
+  `ev_plus_2pct_full`, `hold_to_settlement` et `prob_stop_full`. L'audit marche
+  devient recurrent dans `./trident-hip4/fetch_data.sh` et doit confirmer les
+  `priceBinary` BTC-only ou lister tout nouvel underlying non-BTC tradable
+  avant toute decision. Aucune execution mainnet HIP-4 n'est activee.
 - Incident live `2026-05-27`: les runners `pod-a-live` et `pod-c-live` ont ete
   stoppes manuellement sur le serveur a `17:01Z` apres une serie de closes Pod A
   `exchange_closed` perdants et une reconciliation Pod C KO sur `XYZ:GOLD`

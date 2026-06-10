@@ -27,6 +27,10 @@ from app.live.errors import (
     is_rate_limit_message,
 )
 from app.settings import AppConfig
+from app.trident.pod_a.live_risk import (
+    catastrophic_stop_bps_for_plan,
+    stop_grace_minutes_for_setup,
+)
 from app.trident.types import TradePlan
 
 logger = logging.getLogger(__name__)
@@ -695,10 +699,13 @@ class LiveExecutionVenue:
         if str(plan.setup or "") != "trend_pullback_long":
             return 0
         details = dict(plan.setup_details or {})
-        market_cluster = str(details.get("market_cluster", "") or "").strip().lower()
-        if market_cluster != "crypto":
-            return 0
-        return stop_grace_minutes
+        return stop_grace_minutes_for_setup(
+            self.config.pod_a,
+            setup=plan.setup,
+            confidence=float(plan.confidence or 0.0),
+            details=details,
+            fallback_minutes=stop_grace_minutes,
+        )
 
     def _catastrophic_stop_price(
         self,
@@ -706,7 +713,10 @@ class LiveExecutionVenue:
         entry_price: float,
         normal_stop_price: float,
     ) -> float:
-        bps = max(float(plan.stop_bps or 0.0), self.stop_grace_catastrophic_sl_bps)
+        bps = catastrophic_stop_bps_for_plan(
+            self.config.trident.execution,
+            stop_bps=float(plan.stop_bps or 0.0),
+        )
         if bps <= 0 or entry_price <= 0:
             return normal_stop_price
         if plan.side == "long":

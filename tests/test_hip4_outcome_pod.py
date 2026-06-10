@@ -1424,6 +1424,7 @@ BTC = 0.5
                 """
 [hip4_outcome]
 blocked_opportunity_slices = ["hype/late_expiry/buy_yes", "BTC:MODEL:BUY_NO", "bad"]
+early_exit_policy = "prob_stop_full"
 enable_early_exit_probability_stop = false
 short_expiry_observe_only = true
 enable_shock_guard = false
@@ -1446,6 +1447,7 @@ reference_divergence_edge_types = ["model"]
                 config.blocked_opportunity_slices,
                 ["HYPE:LATE_EXPIRY:BUY_YES", "BTC:MODEL:BUY_NO"],
             )
+            self.assertEqual(config.early_exit_policy, "prob_stop_full")
             self.assertFalse(config.enable_early_exit_probability_stop)
             self.assertTrue(config.short_expiry_observe_only)
             self.assertFalse(config.enable_shock_guard)
@@ -1470,6 +1472,7 @@ reference_divergence_edge_types = ["model"]
                     "HIP4_OUTCOME_REFERENCE_DIVERGENCE_SIDES": "BUY_NO",
                     "HIP4_OUTCOME_REFERENCE_DIVERGENCE_EDGE_TYPES": "SHORT_EXPIRY",
                     "HIP4_OUTCOME_ENABLE_EARLY_EXIT_PROBABILITY_STOP": "true",
+                    "HIP4_OUTCOME_EARLY_EXIT_POLICY": "default",
                     "HIP4_OUTCOME_SHORT_EXPIRY_OBSERVE_ONLY": "false",
                     "HIP4_OUTCOME_ENABLE_SHOCK_GUARD": "true",
                     "HIP4_OUTCOME_SHOCK_GUARD_WINDOWS_SECONDS": "600,1800",
@@ -1490,6 +1493,7 @@ reference_divergence_edge_types = ["model"]
             self.assertEqual(overridden.reference_divergence_sides, ["BUY_NO"])
             self.assertEqual(overridden.reference_divergence_edge_types, ["SHORT_EXPIRY"])
             self.assertTrue(overridden.enable_early_exit_probability_stop)
+            self.assertEqual(overridden.early_exit_policy, "default")
             self.assertFalse(overridden.short_expiry_observe_only)
             self.assertTrue(overridden.enable_shock_guard)
             self.assertEqual(overridden.shock_guard_windows_seconds, [600, 1800])
@@ -1507,6 +1511,7 @@ reference_divergence_edge_types = ["model"]
         self.assertTrue(config.enable_early_exit_probability_stop)
         self.assertEqual(config.early_exit_stop_probability, 0.35)
         self.assertEqual(config.early_exit_stop_max_loss_roi, 0.20)
+        self.assertEqual(config.early_exit_policy, "prob_stop_full")
         self.assertEqual(config.early_exit_ev_exit_fraction, 0.5)
         self.assertTrue(config.early_exit_reentry_lock_until_settlement)
         self.assertEqual(config.min_shadow_kelly_size_usdc, 2.0)
@@ -2075,7 +2080,16 @@ reference_divergence_edge_types = ["model"]
                 max_loss_usdc=40.0,
                 net_edge=0.1,
                 confidence=0.9,
-                fills=[OutcomeFill(market.no_coin, "NO", Decimal("100"), 0.4, 40.0, "paper_filled")],
+                fills=[
+                    OutcomeFill(
+                        market.no_coin,
+                        "NO",
+                        Decimal("100"),
+                        0.4,
+                        40.0,
+                        "paper_filled",
+                    )
+                ],
                 metadata={
                     "decision": {"execution_mode": "PAPER"},
                     "signal": {"metadata": {"strike": market.strike}},
@@ -2107,6 +2121,171 @@ reference_divergence_edge_types = ["model"]
             self.assertAlmostEqual(position.estimated_fee_usdc, 0.15)
             self.assertAlmostEqual(position.estimated_pnl_usdc, 34.85)
             self.assertTrue((root / "logs" / "early_exits.csv").exists())
+
+    def test_prob_stop_full_policy_holds_take_profit_and_ev_exits(self) -> None:
+        market = self._market()
+        book = build_order_book(
+            market_id=market.market_id,
+            yes_payload={
+                "coin": market.yes_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.21", "sz": "100", "n": 1}],
+                    [{"px": "0.23", "sz": "100", "n": 1}],
+                ],
+            },
+            no_payload={
+                "coin": market.no_coin,
+                "time": 1,
+                "levels": [
+                    [{"px": "0.75", "sz": "100", "n": 1}],
+                    [{"px": "0.77", "sz": "100", "n": 1}],
+                ],
+            },
+            max_slippage=0.03,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                enable_early_exit=True,
+                early_exit_policy="prob_stop_full",
+                enable_early_exit_probability_stop=True,
+                early_exit_full_take_profit_roi=0.5,
+                early_exit_min_ev_exit_roi=0.05,
+                early_exit_take_profit_roi=0.35,
+                min_order_value_usdc=0.0,
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            position = OutcomePosition(
+                position_id="paper-prob-stop-full-hold-winner",
+                market_id=market.market_id,
+                outcome=market.outcome,
+                underlying=market.underlying,
+                edge_type="MODEL",
+                side="BUY_NO",
+                opened_at="2026-05-01T00:00:00Z",
+                expiry_ts=market.expiry_ts,
+                cost_usdc=40.0,
+                max_loss_usdc=40.0,
+                net_edge=0.1,
+                confidence=0.9,
+                fills=[
+                    OutcomeFill(
+                        market.no_coin,
+                        "NO",
+                        Decimal("100"),
+                        0.4,
+                        40.0,
+                        "paper_filled",
+                    )
+                ],
+                metadata={
+                    "decision": {"execution_mode": "PAPER"},
+                    "signal": {"metadata": {"strike": market.strike}},
+                },
+            )
+            pod.positions = [position]
+
+            summary: dict[str, object] = {}
+            closed = pod._manage_early_exits_for_market(  # noqa: SLF001
+                market=market,
+                order_book=book,
+                probability=ProbabilityEstimate(
+                    market_id=market.market_id,
+                    probability_yes=0.2,
+                    model_name="test",
+                    confidence=0.9,
+                    inputs={},
+                ),
+                short_assessment=None,
+                reference_price=76000.0,
+                now_ts=market.expiry_ts - 3600,
+                summary=summary,
+            )
+
+            self.assertFalse(closed)
+            self.assertEqual(position.status, "open")
+            self.assertNotIn("early_exits", summary)
+
+    def test_prob_stop_full_policy_still_allows_defensive_probability_stop(self) -> None:
+        market = self._market()
+        book = self._book()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Hip4OutcomeConfig(
+                mode="paper",
+                logs_dir=str(root / "logs"),
+                state_path=str(root / "state.json"),
+                status_path=str(root / "status.json"),
+                write_pod_b_alias_status=False,
+                enable_early_exit=True,
+                early_exit_policy="prob_stop_full",
+                enable_early_exit_probability_stop=True,
+                early_exit_stop_probability=0.25,
+                early_exit_stop_max_loss_roi=1.0,
+                early_exit_min_ev_exit_roi=0.01,
+                early_exit_full_take_profit_roi=0.01,
+                min_order_value_usdc=0.0,
+            )
+            pod = HIP4OutcomeEdgePod(config)
+            position = OutcomePosition(
+                position_id="paper-prob-stop-full-defensive",
+                market_id=market.market_id,
+                outcome=market.outcome,
+                underlying=market.underlying,
+                edge_type="MODEL",
+                side="BUY_YES",
+                opened_at="2026-05-01T00:00:00Z",
+                expiry_ts=market.expiry_ts,
+                cost_usdc=40.0,
+                max_loss_usdc=40.0,
+                net_edge=0.1,
+                confidence=0.9,
+                fills=[
+                    OutcomeFill(
+                        market.yes_coin,
+                        "YES",
+                        Decimal("100"),
+                        0.4,
+                        40.0,
+                        "paper_filled",
+                    )
+                ],
+                metadata={
+                    "decision": {"execution_mode": "PAPER"},
+                    "signal": {"metadata": {"strike": market.strike}},
+                },
+            )
+            pod.positions = [position]
+
+            summary: dict[str, object] = {}
+            closed = pod._manage_early_exits_for_market(  # noqa: SLF001
+                market=market,
+                order_book=book,
+                probability=ProbabilityEstimate(
+                    market_id=market.market_id,
+                    probability_yes=0.10,
+                    model_name="test",
+                    confidence=0.9,
+                    inputs={},
+                ),
+                short_assessment=None,
+                reference_price=76000.0,
+                now_ts=market.expiry_ts - 3600,
+                summary=summary,
+            )
+
+            self.assertTrue(closed)
+            self.assertEqual(position.status, "early_exited")
+            self.assertEqual(summary["early_exits"], 1)
+            exit_row = position.metadata["early_exits"][0]
+            self.assertEqual(exit_row["action"], "full_exit")
+            self.assertEqual(exit_row["reason"], "probability_stop")
 
     def test_full_early_exit_can_lock_reentry_until_settlement(self) -> None:
         market = self._market()

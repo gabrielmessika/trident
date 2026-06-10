@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.backtest.pod_a_executor import PodAExecutor
@@ -42,10 +42,16 @@ from app.persistence.journal import (
     build_signal_review_journal_record,
     build_trade_journal_record,
 )
+from app.portfolio.directional_state import OpenPosition
 from app.risk.pod_a_gate import PodARiskGate
 from app.settings import AppConfig, load_config
 from app.trident.market_clusters import cluster_for_symbol
 from app.trident.pod_a.leverage import LeveragePolicy
+from app.trident.pod_a.live_risk import (
+    apply_pod_a_live_quality_sizing,
+    is_crypto_trend_pullback,
+    pod_a_live_quality_score,
+)
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
@@ -142,6 +148,8 @@ class PodALiveRunner:
         self._info_client = HyperliquidInfoClient(self.config.hyperliquid)
         self._last_record_monotonic = time.monotonic()
         self._last_market_data_refresh_monotonic = 0.0
+        self._loss_tax_until_by_symbol: dict[str, datetime] = {}
+
     async def run(
         self,
         *,
@@ -435,6 +443,10 @@ class PodALiveRunner:
                 )
                 for plan in trade_plans
             ]
+            trade_plans = self._shape_live_trade_plans(
+                trade_plans,
+                timestamp=timestamp,
+            )
         risk_decisions = self.risk_gate.evaluate_many(trade_plans)
         if self.mode == "live" and not self._live_ready_for_entries():
             risk_decisions = []
@@ -835,6 +847,88 @@ class PodALiveRunner:
             opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
             closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
             setup_details=getattr(trade, "setup_details", None),
+        )
+        self._record_live_loss_tax(trade)
+
+    def _shape_live_trade_plans(
+        self,
+        trade_plans: list[object],
+        *,
+        timestamp: str | None,
+    ) -> list[object]:
+        if not trade_plans:
+            return []
+        sorted_plans = sorted(
+            trade_plans,
+            key=lambda plan: pod_a_live_quality_score(plan),
+            reverse=True,
+        )
+        correlated_open_counts = self._correlated_open_counts()
+        shaped: list[object] = []
+        for plan in sorted_plans:
+            details = dict(getattr(plan, "setup_details", {}) or {})
+            side = str(getattr(plan, "side", ""))
+            count_key = f"{side}:crypto:trend_pullback_long"
+            correlated_count = correlated_open_counts.get(count_key, 0)
+            shaped_plan = apply_pod_a_live_quality_sizing(
+                plan,
+                self.config.pod_a,
+                timestamp=timestamp,
+                loss_tax_until_by_symbol=self._loss_tax_until_by_symbol,
+                correlated_open_count=correlated_count,
+            )
+            if is_crypto_trend_pullback(
+                setup=str(getattr(plan, "setup", "")),
+                details=details,
+            ):
+                correlated_open_counts[count_key] = correlated_count + 1
+            shaped.append(shaped_plan)
+        return shaped
+
+    def _correlated_open_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for position in self.executor.portfolio.open_positions.values():
+            if not isinstance(position, OpenPosition):
+                continue
+            details = dict(position.setup_details or {})
+            if not is_crypto_trend_pullback(setup=position.setup, details=details):
+                continue
+            key = f"{position.side}:crypto:trend_pullback_long"
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _record_live_loss_tax(self, trade: object) -> None:
+        if self.mode != "live":
+            return
+        config = self.config.pod_a
+        if not bool(getattr(config, "live_loss_tax_enabled", False)):
+            return
+        try:
+            pnl_usd = float(getattr(trade, "pnl_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return
+        if pnl_usd >= 0:
+            return
+        close_reason = str(getattr(trade, "close_reason", "") or "")
+        stop_reasons = {
+            str(item).strip()
+            for item in getattr(config, "live_loss_tax_stop_reasons", [])
+            if str(item).strip()
+        }
+        if stop_reasons and close_reason not in stop_reasons:
+            return
+        symbol = str(getattr(trade, "symbol", "") or "").upper()
+        if not symbol:
+            return
+        minutes = max(int(getattr(config, "live_loss_tax_cooldown_minutes", 0) or 0), 0)
+        if minutes <= 0:
+            return
+        closed_at = getattr(trade, "closed_at", None)
+        start = closed_at if isinstance(closed_at, datetime) else datetime.now(timezone.utc)
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        self._loss_tax_until_by_symbol[symbol] = start.astimezone(timezone.utc) + timedelta(
+            minutes=minutes
         )
 
     async def _maintenance_loop(

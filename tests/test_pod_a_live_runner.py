@@ -186,6 +186,36 @@ class PodALiveRunnerTests(unittest.TestCase):
             self.assertIn("trailing_distance_bps", eth_position)
             self.assertIn("best_price_seen", eth_position)
 
+    def test_live_quality_sizing_reduces_weak_plan_without_blocking_it(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = PodALiveRunner(config, coins=["BTC"])
+        plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.55,
+            target_notional_usd=200.0,
+            stop_bps=45.0,
+            time_stop_hours=24,
+            margin_usd=100.0,
+            risk_budget_usd=2.0,
+            expected_loss_usd=0.9,
+            setup_details={"market_cluster": "crypto"},
+        )
+
+        shaped = runner._shape_live_trade_plans(
+            [plan],
+            timestamp="2026-06-09T00:00:00Z",
+        )
+
+        self.assertEqual(len(shaped), 1)
+        shaped_plan = shaped[0]
+        self.assertEqual(shaped_plan.target_notional_usd, 100.0)
+        self.assertEqual(shaped_plan.margin_usd, 50.0)
+        self.assertTrue(bool(shaped_plan.setup_details["live_quality_sizing_active"]))
+        self.assertEqual(shaped_plan.setup_details["live_quality_sizing_multiplier"], 0.5)
+        self.assertIn("low_confidence", shaped_plan.setup_details["live_quality_sizing_reasons"])
+
     def test_maintenance_refresh_updates_open_position_market_data_without_new_records(self) -> None:
         config = load_config("config/trident.toml")
         with tempfile.TemporaryDirectory() as tmpdir:

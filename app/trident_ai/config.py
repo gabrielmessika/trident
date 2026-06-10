@@ -76,6 +76,33 @@ class TridentAILLMConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TridentAIPaperConfig:
+    taker_fee_bps: float = 3.5
+    slippage_bps: float = 0.5
+    spread_multiplier: float = 0.5
+    force_close_at_end: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class TridentAIIntelConfig:
+    enabled: bool = False
+    provider: str = "xai"
+    model: str = "grok-4.3"
+    cache_dir: str = "./runtime/trident_ai/intel_cache"
+    digest_ttl_seconds: int = 1800
+    max_live_calls_per_digest: int = 2
+    max_x_search_calls_per_day: int = 24
+    max_web_search_calls_per_day: int = 12
+    max_incremental_cost_usd: float = 0.02
+    x_search_enabled: bool = True
+    web_search_enabled: bool = False
+    x_search_cost_per_1000_calls_usd: float = 5.0
+    web_search_cost_per_1000_calls_usd: float = 5.0
+    allowed_x_handles: tuple[str, ...] = ()
+    allowed_web_domains: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class TridentAIConfig:
     enabled: bool = False
     mode: str = "shadow"
@@ -87,6 +114,8 @@ class TridentAIConfig:
     paths: TridentAIPathsConfig = field(default_factory=TridentAIPathsConfig)
     risk: TridentAIRiskConfig = field(default_factory=TridentAIRiskConfig)
     llm: TridentAILLMConfig = field(default_factory=TridentAILLMConfig)
+    paper: TridentAIPaperConfig = field(default_factory=TridentAIPaperConfig)
+    intel: TridentAIIntelConfig = field(default_factory=TridentAIIntelConfig)
 
     def proposal_validation_config(self) -> AgentProposalValidationConfig:
         return self.risk.to_validation_config(allowed_symbols=self.tradable_symbols)
@@ -110,6 +139,8 @@ def _parse_config(data: dict[str, Any], *, source_path: Path) -> TridentAIConfig
     paths = _parse_paths(root.get("paths", {}), source_path=source_path)
     risk = _parse_risk(root.get("risk", {}), source_path=source_path)
     llm = _parse_llm(root.get("llm", {}), source_path=source_path)
+    paper = _parse_paper(root.get("paper", {}), source_path=source_path)
+    intel = _parse_intel(root.get("intel", {}), source_path=source_path)
     mode = _str(root, "mode", "shadow").lower()
     if mode not in _ALLOWED_MODES:
         raise TridentAIConfigError(f"{source_path}: invalid trident_ai.mode={mode!r}")
@@ -141,6 +172,8 @@ def _parse_config(data: dict[str, Any], *, source_path: Path) -> TridentAIConfig
         paths=paths,
         risk=risk,
         llm=llm,
+        paper=paper,
+        intel=intel,
     )
     _validate_config(config, source_path=source_path)
     return config
@@ -201,6 +234,50 @@ def _parse_llm(raw: object, *, source_path: Path) -> TridentAILLMConfig:
     )
 
 
+def _parse_paper(raw: object, *, source_path: Path) -> TridentAIPaperConfig:
+    if not isinstance(raw, dict):
+        raise TridentAIConfigError(f"{source_path}: [trident_ai.paper] must be a table")
+    return TridentAIPaperConfig(
+        taker_fee_bps=_float(raw, "taker_fee_bps", 3.5),
+        slippage_bps=_float(raw, "slippage_bps", 0.5),
+        spread_multiplier=_float(raw, "spread_multiplier", 0.5),
+        force_close_at_end=_bool(raw, "force_close_at_end", True),
+    )
+
+
+def _parse_intel(raw: object, *, source_path: Path) -> TridentAIIntelConfig:
+    if not isinstance(raw, dict):
+        raise TridentAIConfigError(f"{source_path}: [trident_ai.intel] must be a table")
+    provider = _str(raw, "provider", "xai").lower()
+    if provider not in _ALLOWED_PROVIDERS:
+        raise TridentAIConfigError(f"{source_path}: invalid trident_ai.intel.provider={provider!r}")
+    return TridentAIIntelConfig(
+        enabled=_bool(raw, "enabled", False),
+        provider=provider,
+        model=_str(raw, "model", "grok-4.3"),
+        cache_dir=_str(raw, "cache_dir", "./runtime/trident_ai/intel_cache"),
+        digest_ttl_seconds=_int(raw, "digest_ttl_seconds", 1800),
+        max_live_calls_per_digest=_int(raw, "max_live_calls_per_digest", 2),
+        max_x_search_calls_per_day=_int(raw, "max_x_search_calls_per_day", 24),
+        max_web_search_calls_per_day=_int(raw, "max_web_search_calls_per_day", 12),
+        max_incremental_cost_usd=_float(raw, "max_incremental_cost_usd", 0.02),
+        x_search_enabled=_bool(raw, "x_search_enabled", True),
+        web_search_enabled=_bool(raw, "web_search_enabled", False),
+        x_search_cost_per_1000_calls_usd=_float(
+            raw,
+            "x_search_cost_per_1000_calls_usd",
+            5.0,
+        ),
+        web_search_cost_per_1000_calls_usd=_float(
+            raw,
+            "web_search_cost_per_1000_calls_usd",
+            5.0,
+        ),
+        allowed_x_handles=_string_tuple(raw.get("allowed_x_handles", []), "allowed_x_handles"),
+        allowed_web_domains=_string_tuple(raw.get("allowed_web_domains", []), "allowed_web_domains"),
+    )
+
+
 def _validate_config(config: TridentAIConfig, *, source_path: Path) -> None:
     if config.max_monthly_ai_budget_usd < 0:
         raise TridentAIConfigError(f"{source_path}: max_monthly_ai_budget_usd must be >= 0")
@@ -222,6 +299,28 @@ def _validate_config(config: TridentAIConfig, *, source_path: Path) -> None:
         raise TridentAIConfigError(f"{source_path}: llm.timeout_seconds must be positive")
     if config.llm.max_retries < 0:
         raise TridentAIConfigError(f"{source_path}: llm.max_retries must be >= 0")
+    if config.paper.taker_fee_bps < 0:
+        raise TridentAIConfigError(f"{source_path}: paper.taker_fee_bps must be >= 0")
+    if config.paper.slippage_bps < 0:
+        raise TridentAIConfigError(f"{source_path}: paper.slippage_bps must be >= 0")
+    if config.paper.spread_multiplier < 0:
+        raise TridentAIConfigError(f"{source_path}: paper.spread_multiplier must be >= 0")
+    if config.intel.digest_ttl_seconds <= 0:
+        raise TridentAIConfigError(f"{source_path}: intel.digest_ttl_seconds must be positive")
+    if config.intel.max_live_calls_per_digest < 0:
+        raise TridentAIConfigError(f"{source_path}: intel.max_live_calls_per_digest must be >= 0")
+    if config.intel.max_x_search_calls_per_day < 0:
+        raise TridentAIConfigError(f"{source_path}: intel.max_x_search_calls_per_day must be >= 0")
+    if config.intel.max_web_search_calls_per_day < 0:
+        raise TridentAIConfigError(f"{source_path}: intel.max_web_search_calls_per_day must be >= 0")
+    if config.intel.max_incremental_cost_usd < 0:
+        raise TridentAIConfigError(f"{source_path}: intel.max_incremental_cost_usd must be >= 0")
+    if config.intel.x_search_cost_per_1000_calls_usd < 0:
+        raise TridentAIConfigError(f"{source_path}: intel.x_search_cost_per_1000_calls_usd must be >= 0")
+    if config.intel.web_search_cost_per_1000_calls_usd < 0:
+        raise TridentAIConfigError(f"{source_path}: intel.web_search_cost_per_1000_calls_usd must be >= 0")
+    if len(config.intel.allowed_x_handles) > 20:
+        raise TridentAIConfigError(f"{source_path}: intel.allowed_x_handles max is 20")
     if config.mode in {"testnet", "mainnet-paper", "live"} and not config.require_independent_hyperliquid_account:
         raise TridentAIConfigError(
             f"{source_path}: execution modes require an independent Hyperliquid account"
@@ -278,3 +377,16 @@ def _symbol_tuple(raw: object) -> tuple[str, ...]:
     if not symbols:
         raise TridentAIConfigError("tradable_symbols must not be empty")
     return tuple(symbols)
+
+
+def _string_tuple(raw: object, field_name: str) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        raise TridentAIConfigError(f"{field_name} must be a list")
+    values: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise TridentAIConfigError(f"{field_name} must contain non-empty strings")
+        value = item.strip()
+        if value not in values:
+            values.append(value)
+    return tuple(values)

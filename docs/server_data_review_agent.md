@@ -165,10 +165,19 @@ Checks status/config:
 - Le status expose les `pnl_levers`.
 - Les derniers fichiers API doivent aussi etre choisis par timestamp/mtime, pas
   seulement par tri lexical.
-- Apres le changement early-exit du `2026-05-25`, verifier si applicable:
-  - `early_exit_ev_exit_fraction=0.5`;
+- Apres le changement early-exit du `2026-06-10`, verifier si applicable:
+  - `early_exit_policy=prob_stop_full`;
+  - `summary.pnl_levers.active_policy=prob_stop_full`;
+  - `summary.pnl_levers.active_dry_run` expose `prob_stop_full` actif et
+    `bid_over_conservative_hold_ev` inactif;
+  - `early_exit_ev_exit_fraction=0.5` reste present pour rollback/default,
+    mais ne doit pas etre actif sous `prob_stop_full`;
   - `early_exit_reentry_lock_until_settlement=true`;
   - shadow policy `ev_plus_2pct_partial_runner` presente.
+- Lire aussi `server-data/hip4/replay_reports/hip4_policy_market_audit_latest.md`
+  quand il existe: il compare `prob_stop_full`,
+  `ev_plus_2pct_partial_runner`, `hold_to_settlement` et audite les
+  `priceBinary` non-BTC.
 
 Metrics paper a extraire depuis la review HIP-4:
 
@@ -436,19 +445,22 @@ PY
 
 ## Interpretation early-exit HIP-4
 
-Apres le changement du `2026-05-25`, l'attendu est:
+Apres le changement du `2026-06-10`, l'attendu est:
 
-- Les sorties EV `bid_over_conservative_hold_ev` doivent etre des
-  `partial_exit` a 50%, pas des full exits.
-- Le runner restant doit empecher une re-entry immediate via
-  `market_already_open`.
+- En policy active `prob_stop_full`, les sorties actives attendues sont
+  uniquement defensives: raison `probability_stop`.
+- Les sorties EV/TP/free-window actives ne doivent pas apparaitre sauf rollback
+  explicite vers `early_exit_policy=default`.
 - Si une sortie full defensive arrive, une re-entry sur le meme
   market/expiry doit etre bloquee par `early_exit_reentry_lock` jusqu'au
   settlement.
 - Les shadow policies doivent permettre de comparer:
   - `hold_to_settlement`;
   - `ev_plus_2pct_full`;
-  - `ev_plus_2pct_partial_runner`.
+  - `ev_plus_2pct_partial_runner`;
+  - `prob_stop_full`.
+- L'audit marche doit confirmer si les observations `priceBinary` restent
+  BTC-only ou lister les nouveaux underlyings non-BTC tradables.
 - Si les lignes post-changement ne contiennent aucun trade ou aucun early exit
   actif, conclure: instrumentation OK, pas encore de preuve de performance.
 
