@@ -397,6 +397,88 @@ Les snapshots minute 24-05 → 11-06 sont au schéma du `SnapshotBuilder` (même
 | Triage divergence live/replay | H1 régime / H2 coûts / H3 config | + **H4 : absence de référence externe en live (pod C)** ; H3 désormais documenté précisément (caps 100→250→500→250→200, grace 0→165→60/120) |
 | Données encore manquantes | — | close fills exchange, frais/funding réels, MFE/MAE, run review HIP4 fraîche (inchangé, confirmé par le README du pack) |
 
+## F. Plan de suivi priorisé — modifications et tests
+
+Objectif : transformer les recommandations en file d'exécution traçable. Chaque étape ci-dessous est soit autosuffisante, soit rattachée explicitement aux findings/recommandations du rapport. Ne pas changer de cap live, de sizing, de stops ou activer de nouveaux ordres tant que les tests listés pour l'étape concernée ne sont pas verts.
+
+### P0 — Sécurité et données bloquantes
+
+- [ ] **P0-01 — Secrets repo public : rotation, retrait et purge**
+  **Références** : F-01, R-01, S-07.
+  **Modifs à faire** : révoquer/rotater la clé `HIP4_OUTCOME_SECRET_KEY` et l'API wallet associée ; retirer `.env.trident` du tracking git (`git rm --cached`) ; ajouter `.env.trident`, `.env.trident-hip4` et `.env.*` au `.gitignore` en gardant seulement les `*.example` ; purger l'historique public ou recréer un repo public nettoyé ; vérifier que les scripts de déploiement continuent de charger uniquement les secrets serveur.
+  **Tests / preuves attendues** : `git ls-files` ne liste plus de fichier secret ; scan `gitleaks`/`trufflehog` sur tout l'historique ; redémarrage HIP4 paper/testnet avec secrets serveur uniquement ; aucun secret réel dans le nouveau pack d'audit.
+  **Terminé quand** : clé compromise inutilisable, repo public nettoyé, scan vert documenté dans un rapport de sécurité.
+
+- [ ] **P0-02 — API : bind local + authentification + firewall**
+  **Références** : F-02, R-02, S-02.
+  **Modifs à faire** : binder les ports TRIDENT/HIP4 sur `127.0.0.1` dans les compose ; ajouter une authentification par token au minimum sur tous les `POST`, idéalement sur toute l'API observabilité ; journaliser les refus d'accès ; confirmer la règle firewall serveur ; documenter l'accès via tunnel SSH.
+  **Tests / preuves attendues** : `curl` sans token retourne 401/403 ; `curl` avec token fonctionne via tunnel ; scan externe des ports 3000/3001 fermé ; `scripts/fetch_trident_data.sh` et `trident-hip4/fetch_data.sh` fonctionnent encore ; aucun endpoint mutant accessible sans auth.
+  **Terminé quand** : l'API live mainnet n'est plus exposée publiquement et le fetch/review reste opérationnel.
+
+- [ ] **P0-03 — PnL exact : close fills, fees, funding, historique append-only**
+  **Références** : F-03, F-07, R-03, §3.3, §10, addendum A/E.
+  **Modifs à faire** : persister chaque close fill exchange dans les `trade_close` append-only ; capturer `exchange_fee_usd`, `exchange_closed_pnl_usd`, `user_funding_history` et les paiements funding attribués par fenêtre `opened_at`/`closed_at` ; exporter ces champs dans `trident_ac_fill_events.csv` et `trident_ac_closed_trades.csv`; conserver l'historique complet des trades fermés au-delà du buffer runtime ; corriger le websocket `user_order_updates` qui se reconnecte quasi à chaque message.
+  **Tests / preuves attendues** : unit tests parser `userFills` + `user_funding_history`; test d'un cycle live tiny open → close : ordre exchange, fill user, journal JSONL, state store et CSV d'export concordent ; `close_fill_count_by_pod > 0` dans le prochain audit pack ; fees/funding non nuls quand Hyperliquid les expose ; fetch A/C inchangé car les journaux `logs/pod_a_live.jsonl` et `logs/pod_c_live.jsonl` sont déjà rapatriés.
+  **Terminé quand** : le prochain pack permet une reconciliation fill-by-fill du PnL net sans reconstruction au pas minute ; les anciens fills sont backfillés si l'API Hyperliquid le permet.
+
+### P1 — Replays et corrections PnL avant tout réglage live
+
+- [ ] **P1-01 — Replay full-bot fenêtre live récente avec config courante**
+  **Références** : R-04, addendum A/D/E, hypothèses H1/H2/H3/H4, §5.4.
+  **Modifs à faire** : ajouter ou stabiliser un runner de replay consommant les snapshots minute `2026-05-24 → 2026-06-11`; annoter explicitement la réserve `no_external_reference` tant que F-06 n'est pas corrigé ; produire un rapport dans `server-data/replay_reports/` sans écraser les baselines officielles.
+  **Tests / preuves attendues** : replay trade-by-trade comparé au live reconstruit ; matrices slippage 8 bps / 12 bps / slippage observé par symbole ; segmentation par ère de config de l'addendum A ; écart expliqué ou listé comme résiduel.
+  **Terminé quand** : on sait si l'edge courant survit à juin et quelles hypothèses expliquent l'écart live/replay. Aucun changement de sizing/stop ne doit précéder ce résultat.
+
+- [ ] **P1-02 — Queue des stops et `early_failure_exit` : replay de sensibilité**
+  **Références** : R-07, addendum A, levier PnL 1.
+  **Modifs à faire** : paramétrer en replay le stop catastrophe dynamique, son plafond, la durée de grace 60/120 min et `early_failure_exit` on/off ; inclure l'ère 2 (cap 500 + grace 165) et l'ère 3 (correctifs du 09-06).
+  **Tests / preuves attendues** : matrice replay `cat_stop_max_bps` × `EFE on/off` × `grace`; mesure excès perte réelle vs stop planifié ; comparaison contre baseline officielle et fenêtre récente ; aucun déploiement live sans preuve que la variante réduit la queue sans dégrader le PF.
+  **Terminé quand** : une variante est clairement meilleure sur la fenêtre récente et au moins neutre sur la baseline, ou le réglage actuel est conservé.
+
+- [ ] **P1-03 — Pod C : rétablir la référence externe live**
+  **Références** : F-06, R-09, addendum B/D, levier PnL 4.
+  **Modifs à faire** : restaurer l'alimentation `external_reference_*` dans les snapshots/runtime live Pod C ; exporter ces champs dans les décisions et closed trades ; ajouter un guardrail de stale/dislocation seulement après replay dédié, car il peut modifier les entrées.
+  **Tests / preuves attendues** : sur un run live/dry-run, `external_reference_available` n'est plus False sur 100 % des enregistrements ; replay Pod C avec et sans référence externe ; `XYZ:SILVER` reste bloqué ; aucun ordre nouveau n'est activé par cette correction seule.
+  **Terminé quand** : Pod C retrouve la parité data live/replay ou le rapport explique précisément l'écart restant.
+
+- [ ] **P1-04 — Exécution Pod A : slippage et websocket**
+  **Références** : R-06, F-07, addendum A, levier PnL 5.
+  **Modifs à faire** : corriger la stabilité du websocket `user_order_updates`; ajouter dans l'audit des métriques slippage par symbole/setup/ère ; tester une entrée plus spread-aware ou un skip si spread/slippage attendu dépasse un seuil, uniquement en replay/dry-run avant live.
+  **Tests / preuves attendues** : `reconnect_count` ne croît plus au rythme des messages ; fees réels capturés dans les fill events ; replay coûts 8/12/observé ; A/B dry-run sur taux de fill manqué vs PnL simulé.
+  **Terminé quand** : le modèle de coût du replay reflète le live et toute règle de skip/limit prouve qu'elle améliore le net PnL sans tuer le fill rate.
+
+- [ ] **P1-05 — A-grade / quality sizing : données d'abord, gel ensuite si confirmé**
+  **Références** : F-05, F-08, R-05, addendum A/E, levier PnL 6.
+  **Modifs à faire** : ajouter `a_grade_active`, `a_grade_level`, `a_grade_score`, `a_grade_size_scale` et les champs de quality sizing dans `export_trident_audit_pack.py`; rejouer les size scales `{1.0, 1.25, 1.40}` ; ne geler le boost strong à 1.0 en live que si le replay confirme la contre-performance.
+  **Tests / preuves attendues** : prochain pack avec champs A-grade non vides ; replay baseline officielle + fenêtre récente pour chaque scale ; comparaison PnL, drawdown, PF, WR et concentration des pertes.
+  **Terminé quand** : le boost est soit justifié par replay, soit gelé avec preuve et rollback documenté.
+
+### P2 — Hygiène, recherche et audit continu
+
+- [ ] **P2-01 — HIP4 : run review fraîche et cutoffs propres**
+  **Références** : F-04, R-08, S-06, addendum C.
+  **Modifs à faire** : régénérer automatiquement la run review HIP4 à chaque `trident-hip4/fetch_data.sh`; produire un replay cutoff au timestamp exact d'activation de `prob_stop_full`; garder HIP4 en mainnet paper.
+  **Tests / preuves attendues** : review datée du dernier fetch ; métriques PF/Brier/calibration sur les settlements entrés sous policy courante ; aucune promotion tant que PF ≥ 1.15 et Brier ≤ 0.23 ne sont pas atteints sur une tranche suffisante.
+  **Terminé quand** : le statut HIP4 est lisible sans ambiguïté à chaque audit pack.
+
+- [ ] **P2-02 — Pod C research : `gold_070` et silver**
+  **Références** : R-09, addendum A/B, action interdite n°5.
+  **Modifs à faire** : relancer les multipliers Pod C (`gold_070`, `global_070`, variantes silver) sur une fenêtre étendue incluant juin ; conserver `XYZ:SILVER` bloqué tant que le replay ne prouve pas un edge robuste.
+  **Tests / preuves attendues** : rapport comparé à la baseline officielle, activité équivalente, frais inclus, séparation par cluster ; aucune promotion si l'amélioration vient seulement d'un sur-apprentissage gold ou d'une hausse d'activité.
+  **Terminé quand** : chaque cluster Pod C a un statut clair : promouvable, à surveiller ou bloqué.
+
+- [ ] **P2-03 — MFE/MAE et intégrité d'audit**
+  **Références** : §10 données manquantes, S-09, R-10.
+  **Modifs à faire** : tracker MFE/MAE par trade dans le state/report ; ajouter des checksums SHA-256 par fichier dans `manifest.json`; inclure `docs/trident_active_plan.md` dans les packs d'audit par défaut ; aligner README et config réelle (`pod_c.blocked_symbols`).
+  **Tests / preuves attendues** : closed trades avec colonnes MFE/MAE ; manifest vérifiable ; pack d'audit reproductible ; README sans divergence avec `config/trident.toml` et le plan actif.
+  **Terminé quand** : les prochaines décisions EFE/time-stop/trailing reposent sur excursions observées, pas seulement sur PnL final.
+
+- [ ] **P2-04 — Scripts fetch/deploy : fausses alertes et non-régression**
+  **Références** : S-06, R-10, instructions repo sur scripts de déploiement/fetch.
+  **Modifs à faire** : corriger le faux `[ERROR] Fetch TRIDENT-HIP4 en erreur (code 0)` ; vérifier que tout changement de journal/export est bien couvert par fetch ; documenter les commandes de review locale.
+  **Tests / preuves attendues** : `./scripts/fetch_trident_data.sh --review-only` OK ; `./trident-hip4/fetch_data.sh` OK ; aucun nouveau fichier nécessaire à l'audit n'est absent de `server-data/`; tests shell ou smoke test documenté.
+  **Terminé quand** : les fetchs ne produisent plus d'erreur ambiguë et les packs contiennent tous les artefacts requis par ce plan.
+
 **Conclusion de l'addendum.** La perte live n'est pas un mystère statistique : c'est la combinaison documentée et désormais chiffrée (1) d'un bug de stop immédiat (ère 1, -20), (2) d'une fenêtre cap 500 + grace 165 min pendant un selloff de -20 % sur des longs alts (ère 2, -79, dont ~-103 d'excès de stops vs plan), et (3) d'un edge d'entrée réellement faible en régime DeadZone/Range (ère 3, WR 24 %). Les correctifs du 09-06 ont traité la queue (1)(2) ; le chantier restant est la qualité d'entrée et la parité live/replay (R-04 à lancer, F-06 à corriger), pas un nouveau réglage d'exits à chaud.
 
 *Limites de l'addendum : reconstruction au pas minute (pas de wicks intra-minute), frais/funding estimés et non observés, paramètres silver_mode pod C approximés, EFE non simulé avant le 09-06. Aucun chiffre reconstruit ne doit servir de base à un réglage sans le replay R-04.*

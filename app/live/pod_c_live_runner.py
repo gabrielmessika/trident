@@ -36,6 +36,12 @@ from app.live.replay_capture import (
 )
 from app.live.runtime_status import write_runtime_status
 from app.live.state_store import LiveStateStore, live_state_path_for_pod
+from app.live.trade_audit import (
+    close_fills_for_trade,
+    enrich_trade_record_for_audit,
+    exchange_fill_to_close_record,
+    funding_payments_for_symbol,
+)
 from app.live.user_stream import UserOrderUpdateMonitor, check_order_updates_subscription
 from app.persistence.journal import (
     JsonlJournal,
@@ -286,6 +292,7 @@ class PodCLiveRunner:
         try:
             account_state = self._live_private_client.fetch_account_state(
                 fills_lookback_hours=float(os.getenv("TRIDENT_LIVE_FILLS_LOOKBACK_HOURS", "24")),
+                funding_lookback_hours=float(os.getenv("TRIDENT_LIVE_FUNDING_LOOKBACK_HOURS", "72")),
                 include_account_mode=True,
             )
         except Exception as exc:
@@ -334,12 +341,22 @@ class PodCLiveRunner:
                 close_reason,
             )
             if trade is not None:
+                close_fill_record = exchange_fill_to_close_record(
+                    fill,
+                    timestamp=timestamp,
+                    close_reason=close_reason,
+                    funding_payments=funding_payments_for_symbol(
+                        account_state.recent_funding,
+                        symbol=symbol,
+                    ),
+                )
                 self._record_closed_trade(
                     trade,
                     current_regime=self.supervisor.state.regime.value,
                     date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else timestamp[:10]),
                     journal=journal,
                     timestamp=timestamp,
+                    close_fills=[close_fill_record],
                 )
                 changed = True
         changed = self._refresh_live_stop_grace_orders() or changed
@@ -574,6 +591,7 @@ class PodCLiveRunner:
                 date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else date_key),
                 journal=journal,
                 timestamp=trade.closed_at.isoformat() if trade.closed_at else timestamp,
+                close_fills=close_fills_for_trade(trade, execution.fills),
             )
         self._emit_review_summary(
             timestamp=timestamp,
@@ -621,6 +639,7 @@ class PodCLiveRunner:
                 date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else timestamp[:10]),
                 journal=journal,
                 timestamp=timestamp,
+                close_fills=close_fills_for_trade(trade, execution.fills),
             )
 
     def _hold_hours(self, trade: object) -> float | None:
@@ -672,8 +691,13 @@ class PodCLiveRunner:
             self.report.realized_pnl_usd,
         )
 
-    def _trade_to_record(self, trade: object) -> dict[str, object]:
-        return {
+    def _trade_to_record(
+        self,
+        trade: object,
+        *,
+        close_fills: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        return enrich_trade_record_for_audit({
             "symbol": getattr(trade, "symbol"),
             "side": getattr(trade, "side"),
             "setup": getattr(trade, "setup", None),
@@ -702,7 +726,7 @@ class PodCLiveRunner:
             "opened_at": getattr(trade, "opened_at").isoformat() if getattr(trade, "opened_at") else None,
             "closed_at": getattr(trade, "closed_at").isoformat() if getattr(trade, "closed_at") else None,
             "setup_details": dict(getattr(trade, "setup_details", {}) or {}),
-        }
+        }, close_fills=close_fills)
 
     def _record_closed_trade(
         self,
@@ -712,13 +736,14 @@ class PodCLiveRunner:
         date_key: str,
         journal: JsonlJournal | None,
         timestamp: str | None,
+        close_fills: list[dict[str, object]] | None = None,
     ) -> None:
         if journal is not None:
             journal.append(
                 build_trade_journal_record(
                     timestamp=timestamp,
                     record_index=self.report.records_processed,
-                    trade=self._trade_to_record(trade),
+                    trade=self._trade_to_record(trade, close_fills=close_fills),
                     source="pod_c_live_trade",
                 )
             )
@@ -870,6 +895,7 @@ class PodCLiveRunner:
                 date_key=(trade.closed_at.isoformat()[:10] if trade.closed_at else timestamp[:10]),
                 journal=journal,
                 timestamp=timestamp,
+                close_fills=close_fills_for_trade(trade, execution.fills),
             )
         logger.info(
             "Pod C maintenance refresh; idle_seconds=%.1f refreshed_symbols=%s closed=%s",

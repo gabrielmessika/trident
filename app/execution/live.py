@@ -11,6 +11,8 @@ from typing import Any, Callable
 from app.execution.dry_run import DryRunFill
 from app.hyperliquid.private_state import (
     ExchangeAccountState,
+    ExchangeFill,
+    ExchangeFundingPayment,
     HyperliquidCredentials,
     HyperliquidPrivateInfoClient,
     sdk_base_url_from_info_url,
@@ -61,6 +63,17 @@ class LiveExecutionFill(DryRunFill):
     complete: bool = True
     protective_oids: dict[str, int | None] = field(default_factory=dict)
     raw_response: object | None = None
+    exchange_fill_available: bool = False
+    exchange_fee_usd: float | None = None
+    exchange_closed_pnl_usd: float | None = None
+    exchange_direction: str | None = None
+    exchange_timestamp_ms: int | None = None
+    fee_source: str = "unavailable"
+    exchange_fill: dict[str, object] | None = None
+    funding_usd: float | None = None
+    funding_source: str = "not_collected"
+    funding_payment_count: int = 0
+    funding_payments: list[dict[str, object]] = field(default_factory=list)
 
 
 class LiveExecutionVenue:
@@ -128,6 +141,7 @@ class LiveExecutionVenue:
         self.post_only_buffer_bps = float(
             getattr(config.trident.execution, "live_post_only_buffer_bps", 1.0)
         )
+        self.funding_lookback_hours = self._funding_lookback_hours()
         self.orders_by_symbol: dict[str, dict[str, object]] = {}
         self.orders_changed_callback = orders_changed_callback
         self.last_block_reason_by_symbol: dict[str, str] = {}
@@ -154,6 +168,18 @@ class LiveExecutionVenue:
             sdk_base_url_from_info_url(self.config.hyperliquid.info_url),
             **kwargs,
         )
+
+    def _funding_lookback_hours(self) -> float:
+        candidates = [24.0]
+        for pod_name in ("pod_a", "pod_c"):
+            pod_config = getattr(self.config, pod_name, None)
+            if pod_config is None:
+                continue
+            try:
+                candidates.append(float(getattr(pod_config, "time_stop_hours", 0) or 0))
+            except (TypeError, ValueError):
+                continue
+        return min(max(candidates) + 6.0, 168.0)
 
     def open_fill(
         self,
@@ -268,13 +294,19 @@ class LiveExecutionVenue:
             return None
 
         actual_notional = float(result.filled_size) * result.avg_price
+        exchange_fill = self._recent_exchange_fill_for_order(
+            symbol=symbol,
+            oid=result.oid,
+            action="open",
+        )
+        exchange_metadata = self._exchange_fill_metadata(exchange_fill)
         fill = LiveExecutionFill(
             symbol=symbol,
             side=side,
             action="open",
             price=result.avg_price,
             notional_usd=round(actual_notional, 6),
-            fee_usd=0.0,
+            fee_usd=float(exchange_fill.fee_usd) if exchange_fill is not None else 0.0,
             slippage_bps=round(abs((result.avg_price - mid_price) / mid_price) * 10_000.0, 4),
             timestamp=timestamp,
             oid=result.oid,
@@ -282,6 +314,7 @@ class LiveExecutionVenue:
             filled_size=result.filled_size,
             complete=True,
             raw_response=result.raw,
+            **exchange_metadata,
         )
         initial_stop_grace_metadata = (
             self._stop_grace_metadata(plan, fill) if plan is not None else None
@@ -360,22 +393,41 @@ class LiveExecutionVenue:
         if not result.filled:
             self.last_block_reason_by_symbol[symbol] = result.error or result.status
             return None
-        actual_notional = float(result.filled_size) * result.avg_price
         self._cancel_known_protective_orders(symbol)
+        account_state = self._fetch_account_state_for_fill_match(include_funding=True)
+        exchange_fill = self._exchange_fill_for_order(
+            account_state,
+            symbol=symbol,
+            oid=result.oid,
+            action="close",
+        )
+        exchange_metadata = self._exchange_fill_metadata(exchange_fill)
+        funding_metadata = self._funding_metadata(account_state, symbol=symbol)
+        actual_notional = (
+            float(exchange_fill.size) * exchange_fill.price
+            if exchange_fill is not None and exchange_fill.size > 0 and exchange_fill.price > 0
+            else float(result.filled_size) * result.avg_price
+        )
+        remaining_size = self._remaining_position_size_from_state(
+            account_state,
+            symbol=symbol,
+        )
         return LiveExecutionFill(
             symbol=symbol,
             side=side,
             action="close",
-            price=result.avg_price,
+            price=exchange_fill.price if exchange_fill is not None else result.avg_price,
             notional_usd=round(actual_notional, 6),
-            fee_usd=0.0,
+            fee_usd=float(exchange_fill.fee_usd) if exchange_fill is not None else 0.0,
             slippage_bps=round(abs((result.avg_price - mid_price) / mid_price) * 10_000.0, 4),
             timestamp=timestamp,
             oid=result.oid,
             cloid=result.cloid,
             filled_size=result.filled_size,
-            complete=self._remaining_position_size(symbol) == Decimal("0"),
+            complete=remaining_size == Decimal("0"),
             raw_response=result.raw,
+            **exchange_metadata,
+            **funding_metadata,
         )
 
     def _close_size(self, symbol: str) -> float | None:
@@ -851,10 +903,159 @@ class LiveExecutionVenue:
             state = self.private_info_client.fetch_account_state(fills_lookback_hours=1.0)
         except HyperliquidAPIError:
             return Decimal("1")
+        return self._remaining_position_size_from_state(state, symbol=symbol)
+
+    def _remaining_position_size_from_state(
+        self,
+        state: ExchangeAccountState | None,
+        *,
+        symbol: str,
+    ) -> Decimal:
+        if state is None:
+            return Decimal("1")
         position = state.positions.get(symbol)
         if position is None:
             return Decimal("0")
         return abs(position.size)
+
+    def _fetch_account_state_for_fill_match(
+        self,
+        *,
+        include_funding: bool = False,
+    ) -> ExchangeAccountState | None:
+        try:
+            return self.private_info_client.fetch_account_state(
+                fills_lookback_hours=1.0,
+                funding_lookback_hours=(
+                    self.funding_lookback_hours if include_funding else None
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Live fill enrichment unavailable: %s", exc)
+            return None
+
+    def _recent_exchange_fill_for_order(
+        self,
+        *,
+        symbol: str,
+        oid: int | None,
+        action: str,
+    ) -> ExchangeFill | None:
+        state = self._fetch_account_state_for_fill_match()
+        return self._exchange_fill_for_order(state, symbol=symbol, oid=oid, action=action)
+
+    def _exchange_fill_for_order(
+        self,
+        state: ExchangeAccountState | None,
+        *,
+        symbol: str,
+        oid: int | None,
+        action: str | None = None,
+    ) -> ExchangeFill | None:
+        if state is None or oid is None:
+            return None
+        normalized = normalize_hl_symbol(symbol)
+        matches = [
+            fill
+            for fill in state.recent_fills
+            if normalize_hl_symbol(fill.symbol) == normalized and fill.oid == oid
+        ]
+        if action == "close":
+            matches = [
+                fill
+                for fill in matches
+                if "close" in str(fill.direction).lower()
+                or abs(float(fill.closed_pnl_usd)) > 0
+            ] or matches
+        if action == "open":
+            matches = [
+                fill
+                for fill in matches
+                if "open" in str(fill.direction).lower()
+                or not ("close" in str(fill.direction).lower())
+            ] or matches
+        if not matches:
+            return None
+        return max(matches, key=lambda fill: int(fill.timestamp_ms or 0))
+
+    def _exchange_fill_metadata(self, fill: ExchangeFill | None) -> dict[str, object]:
+        if fill is None:
+            return {
+                "exchange_fill_available": False,
+                "exchange_fee_usd": None,
+                "exchange_closed_pnl_usd": None,
+                "exchange_direction": None,
+                "exchange_timestamp_ms": None,
+                "fee_source": "unavailable",
+                "exchange_fill": None,
+            }
+        return {
+            "exchange_fill_available": True,
+            "exchange_fee_usd": float(fill.fee_usd),
+            "exchange_closed_pnl_usd": float(fill.closed_pnl_usd),
+            "exchange_direction": fill.direction,
+            "exchange_timestamp_ms": fill.timestamp_ms,
+            "fee_source": "exchange_user_fills",
+            "exchange_fill": {
+                "symbol": fill.symbol,
+                "oid": fill.oid,
+                "side": fill.side,
+                "direction": fill.direction,
+                "size": fill.size,
+                "price": fill.price,
+                "closed_pnl_usd": fill.closed_pnl_usd,
+                "fee_usd": fill.fee_usd,
+                "timestamp_ms": fill.timestamp_ms,
+                "raw": fill.raw,
+            },
+        }
+
+    def _funding_metadata(
+        self,
+        state: ExchangeAccountState | None,
+        *,
+        symbol: str,
+    ) -> dict[str, object]:
+        payments = self._funding_payments_for_symbol(state, symbol=symbol)
+        return {
+            "funding_usd": None,
+            "funding_source": (
+                "exchange_user_funding_history_unattributed"
+                if payments
+                else "not_collected"
+            ),
+            "funding_payment_count": len(payments),
+            "funding_payments": [self._funding_payment_record(payment) for payment in payments],
+        }
+
+    def _funding_payments_for_symbol(
+        self,
+        state: ExchangeAccountState | None,
+        *,
+        symbol: str,
+    ) -> list[ExchangeFundingPayment]:
+        if state is None:
+            return []
+        normalized = normalize_hl_symbol(symbol)
+        return [
+            payment
+            for payment in state.recent_funding
+            if normalize_hl_symbol(payment.symbol) == normalized
+        ]
+
+    def _funding_payment_record(
+        self,
+        payment: ExchangeFundingPayment,
+    ) -> dict[str, object]:
+        return {
+            "symbol": payment.symbol,
+            "amount_usd": payment.amount_usd,
+            "funding_rate": payment.funding_rate,
+            "size": payment.size,
+            "timestamp_ms": payment.timestamp_ms,
+            "hash": payment.hash,
+            "raw": payment.raw,
+        }
 
     def _has_exchange_exposure(self, state: ExchangeAccountState, symbol: str) -> bool:
         if symbol in state.positions:

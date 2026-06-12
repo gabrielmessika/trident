@@ -166,6 +166,17 @@ class ExchangeFill:
 
 
 @dataclass(slots=True)
+class ExchangeFundingPayment:
+    symbol: str
+    amount_usd: float
+    funding_rate: float | None
+    size: Decimal
+    timestamp_ms: int
+    hash: str | None = None
+    raw: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class ExchangeAccountState:
     account_address: str
     fetched_at: str
@@ -179,6 +190,7 @@ class ExchangeAccountState:
     open_orders: list[ExchangeOrder] = field(default_factory=list)
     frontend_open_orders: list[ExchangeOrder] = field(default_factory=list)
     recent_fills: list[ExchangeFill] = field(default_factory=list)
+    recent_funding: list[ExchangeFundingPayment] = field(default_factory=list)
     raw_user_state: object | None = None
     raw_spot_state: object | None = None
 
@@ -286,6 +298,7 @@ class HyperliquidPrivateInfoClient:
         self,
         *,
         fills_lookback_hours: float = 24.0,
+        funding_lookback_hours: float | None = None,
         aggregate_fills_by_time: bool = False,
         include_account_mode: bool = False,
     ) -> ExchangeAccountState:
@@ -319,6 +332,18 @@ class HyperliquidPrivateInfoClient:
                 start_ms,
                 aggregate_by_time=aggregate_fills_by_time,
             )
+            funding = []
+            if funding_lookback_hours is not None:
+                funding_fn = getattr(self.info_client, "user_funding_history", None)
+                if callable(funding_fn):
+                    funding_start_ms = self._now_ms_fn() - int(
+                        max(funding_lookback_hours, 0.0) * 3600_000
+                    )
+                    funding = self._call_private_info(
+                        funding_fn,
+                        address,
+                        funding_start_ms,
+                    )
         except HyperliquidAPIError:
             raise
         except Exception as exc:
@@ -332,6 +357,7 @@ class HyperliquidPrivateInfoClient:
             open_orders=open_orders,
             frontend_open_orders=frontend_orders,
             recent_fills=fills,
+            recent_funding=funding,
         )
 
     def _fetch_perp_private_items(
@@ -505,6 +531,7 @@ def parse_account_state(
     open_orders: object,
     frontend_open_orders: object,
     recent_fills: object,
+    recent_funding: object | None = None,
 ) -> ExchangeAccountState:
     user_state_dict = user_state if isinstance(user_state, dict) else {}
     margin_summary = user_state_dict.get("marginSummary", {})
@@ -533,6 +560,7 @@ def parse_account_state(
         open_orders=_parse_orders(open_orders),
         frontend_open_orders=_parse_orders(frontend_open_orders),
         recent_fills=_parse_fills(recent_fills),
+        recent_funding=_parse_funding_payments(recent_funding),
         raw_user_state=user_state,
         raw_spot_state=spot_state,
     )
@@ -625,6 +653,43 @@ def _parse_fills(payload: object) -> list[ExchangeFill]:
                 closed_pnl_usd=_float(item.get("closedPnl")),
                 fee_usd=abs(_float(item.get("fee"))),
                 timestamp_ms=_int(item.get("time")),
+                raw=dict(item),
+            )
+        )
+    return parsed
+
+
+def _parse_funding_payments(payload: object) -> list[ExchangeFundingPayment]:
+    if not isinstance(payload, list):
+        return []
+    parsed: list[ExchangeFundingPayment] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        delta = item.get("delta")
+        details = delta if isinstance(delta, dict) else item
+        symbol = normalize_hl_symbol(str(details.get("coin", item.get("coin", ""))))
+        if not symbol:
+            continue
+        amount_raw = (
+            details.get("usdc")
+            if details.get("usdc") not in (None, "")
+            else details.get("amount", details.get("funding"))
+        )
+        funding_rate_raw = details.get("fundingRate", details.get("funding_rate"))
+        funding_rate = (
+            _float(funding_rate_raw)
+            if funding_rate_raw not in (None, "")
+            else None
+        )
+        parsed.append(
+            ExchangeFundingPayment(
+                symbol=symbol,
+                amount_usd=_float(amount_raw),
+                funding_rate=funding_rate,
+                size=_decimal(details.get("szi", details.get("sz"))),
+                timestamp_ms=_int(item.get("time", details.get("time"))),
+                hash=str(item.get("hash")) if item.get("hash") not in (None, "") else None,
                 raw=dict(item),
             )
         )

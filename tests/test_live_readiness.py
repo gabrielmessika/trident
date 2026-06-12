@@ -77,6 +77,7 @@ class _FakePrivateInfoSdk:
         open_orders_by_dex: dict[str, list[object]] | None = None,
         frontend_open_orders_by_dex: dict[str, list[object]] | None = None,
         recent_fills: list[object] | None = None,
+        recent_funding: list[object] | None = None,
     ) -> None:
         self.user_states_by_dex = user_states_by_dex or {
             "": {"marginSummary": {"accountValue": "1000", "totalMarginUsed": "0"}}
@@ -84,9 +85,11 @@ class _FakePrivateInfoSdk:
         self.open_orders_by_dex = open_orders_by_dex or {}
         self.frontend_open_orders_by_dex = frontend_open_orders_by_dex or {}
         self.recent_fills = recent_fills or []
+        self.recent_funding = recent_funding or []
         self.user_state_calls: list[str] = []
         self.open_order_calls: list[str] = []
         self.frontend_open_order_calls: list[str] = []
+        self.user_funding_calls: list[tuple[str, int, object]] = []
 
     def query_user_abstraction_state(self, address: str) -> str:
         return "unifiedAccount"
@@ -118,6 +121,15 @@ class _FakePrivateInfoSdk:
     ) -> list[object]:
         return self.recent_fills
 
+    def user_funding_history(
+        self,
+        address: str,
+        startTime: int,
+        endTime: object | None = None,
+    ) -> list[object]:
+        self.user_funding_calls.append((address, startTime, endTime))
+        return self.recent_funding
+
 
 class _FakePrivateAccountClient:
     def __init__(
@@ -125,6 +137,8 @@ class _FakePrivateAccountClient:
         *,
         meta: dict[str, object] | None = None,
         user_state: dict[str, object] | None = None,
+        recent_fills: list[object] | None = None,
+        recent_funding: list[object] | None = None,
     ) -> None:
         self.info_client = _FakeMetaInfoClient(meta or {"universe": []})
         self.user_state = user_state or {
@@ -133,6 +147,8 @@ class _FakePrivateAccountClient:
                 "totalMarginUsed": "0",
             }
         }
+        self.recent_fills = recent_fills or []
+        self.recent_funding = recent_funding or []
 
     def fetch_account_state(self, *, fills_lookback_hours: float = 24.0, **_: object):
         return parse_account_state(
@@ -141,7 +157,8 @@ class _FakePrivateAccountClient:
             spot_state={"balances": []},
             open_orders=[],
             frontend_open_orders=[],
-            recent_fills=[],
+            recent_fills=self.recent_fills,
+            recent_funding=self.recent_funding,
         )
 
 
@@ -324,6 +341,19 @@ class LiveReadinessTests(unittest.TestCase):
                     "time": 1,
                 }
             ],
+            recent_funding=[
+                {
+                    "time": 2,
+                    "hash": "0xfunding",
+                    "delta": {
+                        "type": "funding",
+                        "coin": "ETH",
+                        "usdc": "-0.03",
+                        "szi": "0.2",
+                        "fundingRate": "0.0001",
+                    },
+                }
+            ],
         )
 
         self.assertEqual(state.account_value_usd, 1000.5)
@@ -334,6 +364,9 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertEqual(len(state.all_orders), 2)
         self.assertTrue(any(order.is_trigger for order in state.all_orders))
         self.assertEqual(state.recent_fills[0].price, 3000.0)
+        self.assertEqual(state.recent_funding[0].symbol, "ETH")
+        self.assertEqual(state.recent_funding[0].amount_usd, -0.03)
+        self.assertEqual(state.recent_funding[0].funding_rate, 0.0001)
 
     def test_unified_account_uses_spot_usdc_as_available_hl_capital(self) -> None:
         state = parse_account_state(
@@ -647,6 +680,43 @@ class LiveReadinessTests(unittest.TestCase):
             all(call["key"] == "http_private_info" for call in limiter.acquires)
         )
         self.assertTrue(all(call["capacity"] == 5 for call in limiter.acquires))
+
+    def test_private_info_client_can_fetch_user_funding_history(self) -> None:
+        config = load_config("config/trident.toml").hyperliquid
+        limiter = _FakeRateLimiter()
+        sdk = _FakePrivateInfoSdk(
+            recent_funding=[
+                {
+                    "time": 1_000_000,
+                    "hash": "0xfunding",
+                    "delta": {
+                        "type": "funding",
+                        "coin": "ETH",
+                        "usdc": "-0.03",
+                        "szi": "0.2",
+                        "fundingRate": "0.0001",
+                    },
+                }
+            ]
+        )
+        client = HyperliquidPrivateInfoClient(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+            ),
+            info_client=sdk,
+            now_ms_fn=lambda: 2_000_000,
+            sleep_fn=lambda _: None,
+            rate_limiter=limiter,
+        )
+
+        state = client.fetch_account_state(funding_lookback_hours=1.0)
+
+        self.assertEqual(len(state.recent_funding), 1)
+        self.assertEqual(state.recent_funding[0].symbol, "ETH")
+        self.assertEqual(state.recent_funding[0].amount_usd, -0.03)
+        self.assertEqual(sdk.user_funding_calls[0][1], 2_000_000 - 3_600_000)
+        self.assertEqual(len(limiter.acquires), 9)
 
     def test_private_info_client_merges_builder_dex_account_state(self) -> None:
         config = load_config("config/trident.toml").hyperliquid
@@ -1177,6 +1247,77 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertIsNotNone(fill)
         self.assertEqual(exchange.orders[0]["size"], 0.12345)
         self.assertTrue(exchange.orders[0]["reduce_only"])
+
+    def test_live_close_fill_persists_exchange_fee_metadata(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 200.0
+        exchange = _FakeExchange()
+        venue = LiveExecutionVenue(
+            config,
+            HyperliquidCredentials(
+                account_address="0x0000000000000000000000000000000000000000",
+                secret_key="0x" + "1" * 64,
+                live_confirm="I_UNDERSTAND_REAL_ORDERS",
+            ),
+            exchange_client=exchange,
+            private_info_client=_FakePrivateAccountClient(
+                meta={"universe": [{"name": "ETH", "szDecimals": 4}]},
+                recent_fills=[
+                    {
+                        "coin": "ETH",
+                        "oid": 7,
+                        "side": "A",
+                        "dir": "Close Long",
+                        "sz": "0.5",
+                        "px": "99.5",
+                        "closedPnl": "1.23",
+                        "fee": "0.04",
+                        "time": 1780619400000,
+                    }
+                ],
+                recent_funding=[
+                    {
+                        "time": 1780617600000,
+                        "hash": "0xfunding",
+                        "delta": {
+                            "type": "funding",
+                            "coin": "ETH",
+                            "usdc": "-0.03",
+                            "szi": "0.5",
+                            "fundingRate": "0.0001",
+                        },
+                    }
+                ],
+            ),  # type: ignore[arg-type]
+            order_rate_limiter=_FakeRateLimiter(),
+            sleep_fn=lambda _: None,
+        )
+
+        fill = venue.close_fill(
+            symbol="ETH",
+            side="long",
+            mid_price=100.0,
+            spread_bps=1.0,
+            notional_usd=50.0,
+            timestamp="2026-06-05T00:30:00Z",
+        )
+
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.action, "close")
+        self.assertEqual(fill.oid, 7)
+        self.assertEqual(fill.price, 99.5)
+        self.assertEqual(fill.notional_usd, 49.75)
+        self.assertEqual(fill.fee_usd, 0.04)
+        self.assertTrue(fill.exchange_fill_available)
+        self.assertEqual(fill.exchange_fee_usd, 0.04)
+        self.assertEqual(fill.exchange_closed_pnl_usd, 1.23)
+        self.assertEqual(fill.exchange_direction, "Close Long")
+        self.assertEqual(fill.exchange_timestamp_ms, 1780619400000)
+        self.assertEqual(fill.fee_source, "exchange_user_fills")
+        self.assertEqual(fill.exchange_fill["oid"], 7)  # type: ignore[index]
+        self.assertEqual(fill.funding_source, "exchange_user_funding_history_unattributed")
+        self.assertEqual(fill.funding_payment_count, 1)
+        self.assertEqual(fill.funding_payments[0]["amount_usd"], -0.03)
 
     def test_live_protective_triggers_use_hyperliquid_price_precision(self) -> None:
         config = load_config("config/trident.toml")

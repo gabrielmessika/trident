@@ -181,6 +181,17 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
         "filled_size",
         "oid",
         "cloid",
+        "complete",
+        "exchange_fill_available",
+        "exchange_fee_usd",
+        "exchange_closed_pnl_usd",
+        "exchange_direction",
+        "exchange_timestamp_ms",
+        "fee_source",
+        "close_reason",
+        "funding_usd",
+        "funding_source",
+        "funding_payment_count",
         "risk_accepted",
         "risk_reason",
         "confidence",
@@ -287,6 +298,17 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
                             "filled_size": fill.get("filled_size"),
                             "oid": fill.get("oid"),
                             "cloid": fill.get("cloid"),
+                            "complete": fill.get("complete"),
+                            "exchange_fill_available": fill.get("exchange_fill_available"),
+                            "exchange_fee_usd": fill.get("exchange_fee_usd"),
+                            "exchange_closed_pnl_usd": fill.get("exchange_closed_pnl_usd"),
+                            "exchange_direction": fill.get("exchange_direction"),
+                            "exchange_timestamp_ms": fill.get("exchange_timestamp_ms"),
+                            "fee_source": fill.get("fee_source"),
+                            "close_reason": fill.get("close_reason"),
+                            "funding_usd": fill.get("funding_usd"),
+                            "funding_source": fill.get("funding_source"),
+                            "funding_payment_count": fill.get("funding_payment_count"),
                             "risk_accepted": risk.get("accepted"),
                             "risk_reason": risk.get("reason"),
                             "confidence": signal.get("confidence"),
@@ -304,6 +326,65 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
                         fill_count += 1
                         if fill.get("action") == "close":
                             close_fill_count[pod] += 1
+                elif event_type == "trade_close":
+                    trade = record.get("trade") or {}
+                    if not isinstance(trade, dict):
+                        continue
+                    close_fills = trade.get("close_fills") or record.get("close_fills") or []
+                    if not isinstance(close_fills, list):
+                        close_fills = []
+                    for fill in close_fills:
+                        if not isinstance(fill, dict):
+                            continue
+                        row = {
+                            "event_ts": record.get("timestamp"),
+                            "pod": pod,
+                            "symbol": trade.get("symbol") or fill.get("symbol"),
+                            "side": trade.get("side") or fill.get("side"),
+                            "setup": trade.get("setup") or trade.get("open_reason"),
+                            "action": fill.get("action") or "close",
+                            "fill_ts": fill.get("timestamp") or record.get("timestamp"),
+                            "price": fill.get("price"),
+                            "notional_usd": fill.get("notional_usd"),
+                            "fee_usd": fill.get("fee_usd"),
+                            "slippage_bps": fill.get("slippage_bps"),
+                            "filled_size": fill.get("filled_size"),
+                            "oid": fill.get("oid"),
+                            "cloid": fill.get("cloid"),
+                            "complete": fill.get("complete"),
+                            "exchange_fill_available": fill.get("exchange_fill_available"),
+                            "exchange_fee_usd": fill.get("exchange_fee_usd"),
+                            "exchange_closed_pnl_usd": fill.get("exchange_closed_pnl_usd"),
+                            "exchange_direction": fill.get("exchange_direction"),
+                            "exchange_timestamp_ms": fill.get("exchange_timestamp_ms"),
+                            "fee_source": fill.get("fee_source") or trade.get("fee_source"),
+                            "close_reason": fill.get("close_reason") or trade.get("close_reason"),
+                            "funding_usd": fill.get("funding_usd") or trade.get("funding_usd"),
+                            "funding_source": fill.get("funding_source") or trade.get("funding_source"),
+                            "funding_payment_count": (
+                                fill.get("funding_payment_count")
+                                or trade.get("funding_payment_count")
+                            ),
+                            "risk_accepted": None,
+                            "risk_reason": None,
+                            "confidence": trade.get("confidence"),
+                            "regime": record.get("regime"),
+                            "market_cluster": (trade.get("setup_details") or {}).get("market_cluster")
+                            if isinstance(trade.get("setup_details"), dict)
+                            else trade.get("market_cluster"),
+                            "cluster_regime": (trade.get("setup_details") or {}).get("cluster_regime")
+                            if isinstance(trade.get("setup_details"), dict)
+                            else None,
+                            "target_notional_usd": trade.get("target_notional_usd"),
+                            "margin_usd": trade.get("margin_usd"),
+                            "effective_leverage": trade.get("effective_leverage") or trade.get("leverage"),
+                            "stop_bps": trade.get("stop_bps"),
+                            "expected_loss_usd": trade.get("expected_loss_usd"),
+                            "risk_budget_usd": trade.get("risk_budget_usd"),
+                        }
+                        fills.writerow(row)
+                        fill_count += 1
+                        close_fill_count[pod] += 1
                 elif event_type == "signal_review":
                     review = record.get("review") or {}
                     setup_details = review.get("setup_details") or {}
@@ -355,7 +436,16 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
         "is_win",
         "gross_pnl_usd",
         "fees_usd",
+        "exchange_fee_usd",
+        "exchange_closed_pnl_usd",
+        "fee_source",
+        "funding_usd",
+        "funding_source",
+        "funding_payment_count",
         "close_reason",
+        "close_fill_count",
+        "exchange_close_fill_count",
+        "close_fill_oids",
         "hold_hours",
         "opened_at",
         "closed_at",
@@ -380,10 +470,110 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
         "external_reference_source_count",
         "external_reference_age_seconds",
     ]
+
+    def closed_trade_identity(pod: str, trade: dict[str, Any], record: dict[str, Any] | None = None) -> tuple[str, ...]:
+        return (
+            pod,
+            str(trade.get("symbol") or ""),
+            str(trade.get("side") or ""),
+            str(trade.get("opened_at") or ""),
+            str(trade.get("closed_at") or ""),
+            str(trade.get("close_reason") or ""),
+            str(trade.get("pnl_usd") or ""),
+        )
+
+    def close_fill_oids(trade: dict[str, Any]) -> str:
+        fills = trade.get("close_fills") or []
+        if not isinstance(fills, list):
+            return ""
+        oids: list[str] = []
+        for fill in fills:
+            if not isinstance(fill, dict):
+                continue
+            oid = fill.get("oid")
+            if oid not in (None, ""):
+                oids.append(str(oid))
+        return ",".join(oids)
+
+    def write_closed_trade_row(
+        writer: csv.DictWriter,
+        *,
+        pod: str,
+        trade: dict[str, Any],
+        record: dict[str, Any] | None = None,
+    ) -> None:
+        details = trade.get("setup_details") or {}
+        if not isinstance(details, dict):
+            details = {}
+        row = {key: trade.get(key) for key in closed_fields}
+        row["pod"] = pod
+        row["date"] = (
+            trade.get("date")
+            or str(trade.get("closed_at") or (record or {}).get("timestamp") or "")[:10]
+        )
+        row["leverage"] = trade.get("leverage") or trade.get("effective_leverage")
+        row["is_win"] = trade.get("is_win")
+        if row["is_win"] is None:
+            try:
+                row["is_win"] = float(trade.get("pnl_usd") or 0.0) >= 0
+            except (TypeError, ValueError):
+                row["is_win"] = None
+        row["close_fill_oids"] = close_fill_oids(trade)
+        for key in [
+            "a_grade_active",
+            "a_grade_score",
+            "a_grade_level",
+            "live_cap_active",
+            "live_cap_effective_target_notional_usd",
+            "live_quality_sizing_multiplier",
+            "live_quality_sizing_reasons",
+            "pattern_watch_hits",
+            "pattern_watch_count",
+            "cluster_strategy",
+            "cluster_regime",
+            "trend_bps",
+            "trend_1h_bps",
+            "trend_4h_bps",
+            "structure_score",
+            "vwap_distance_bps",
+            "vwap_reclaim_score",
+            "external_reference_available",
+            "external_reference_source_count",
+            "external_reference_age_seconds",
+        ]:
+            row[key] = details.get(key)
+        writer.writerow(row)
+
     with closed_trades_path.open("w", encoding="utf-8", newline="") as closed_file:
         closed_writer = csv.DictWriter(closed_file, fieldnames=closed_fields)
         closed_writer.writeheader()
+        seen_closed: set[tuple[str, ...]] = set()
         for pod in ["pod_a", "pod_c"]:
+            log_path = sources[pod]
+            if log_path.exists():
+                for _, record in jsonl_records(log_path):
+                    if record.get("event_type") != "trade_close":
+                        continue
+                    trade = record.get("trade") or {}
+                    if not isinstance(trade, dict):
+                        continue
+                    identity = closed_trade_identity(pod, trade, record)
+                    if identity in seen_closed:
+                        continue
+                    seen_closed.add(identity)
+                    write_closed_trade_row(
+                        closed_writer,
+                        pod=pod,
+                        trade=trade,
+                        record=record,
+                    )
+                    closed_counts[pod] += 1
+                    try:
+                        closed_pnl[pod] += float(trade.get("pnl_usd") or 0.0)
+                    except (TypeError, ValueError):
+                        pass
+                    if trade.get("close_reason"):
+                        close_reasons[f"{pod}:{trade.get('close_reason')}"] += 1
             status_path = source_root / "runtime" / f"{pod}_live_status.json"
             if not status_path.exists():
                 continue
@@ -391,33 +581,18 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
             report = status.get("report") or {}
             closed_log = report.get("closed_trade_log") or status.get("closed_trade_log") or []
             for trade in closed_log:
-                details = trade.get("setup_details") or {}
-                row = {key: trade.get(key) for key in closed_fields}
-                row["pod"] = pod
-                for key in [
-                    "a_grade_active",
-                    "a_grade_score",
-                    "a_grade_level",
-                    "live_cap_active",
-                    "live_cap_effective_target_notional_usd",
-                    "live_quality_sizing_multiplier",
-                    "live_quality_sizing_reasons",
-                    "pattern_watch_hits",
-                    "pattern_watch_count",
-                    "cluster_strategy",
-                    "cluster_regime",
-                    "trend_bps",
-                    "trend_1h_bps",
-                    "trend_4h_bps",
-                    "structure_score",
-                    "vwap_distance_bps",
-                    "vwap_reclaim_score",
-                    "external_reference_available",
-                    "external_reference_source_count",
-                    "external_reference_age_seconds",
-                ]:
-                    row[key] = details.get(key)
-                closed_writer.writerow(row)
+                if not isinstance(trade, dict):
+                    continue
+                identity = closed_trade_identity(pod, trade)
+                if identity in seen_closed:
+                    continue
+                seen_closed.add(identity)
+                write_closed_trade_row(
+                    closed_writer,
+                    pod=pod,
+                    trade=trade,
+                    record=None,
+                )
                 closed_counts[pod] += 1
                 try:
                     closed_pnl[pod] += float(trade.get("pnl_usd") or 0.0)
@@ -457,18 +632,20 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
     closed_total = sum(closed_counts.values())
     if closed_total:
         limitation = (
-            "Closed-trade PnL is exported from runtime closed_trade_log. "
-            "The JSONL signal logs still do not contain close_fills, so exact "
-            "fill-level close reconciliation requires exchange fills or richer "
-            "execution logs."
+            "Closed-trade PnL is exported from append-only live trade_close "
+            "journal records when present, with runtime closed_trade_log used "
+            "only as fallback. Close fills are exported from enriched trade_close "
+            "records and signal execution records; exchange fee/funding fields "
+            "remain null when the live runner could not match a userFills record "
+            "or no funding-payment stream was available."
         )
     else:
         limitation = (
             "Directional logs contain open fills and signal decisions, but the "
-            "current fetched runtime status has empty closed_trade_log and the "
-            "available JSONL has no close_fills. Closed-trade PnL attribution "
-            "still requires historical closed trade logs, exchange fills, or a "
-            "full API report containing closed trade details."
+            "current fetched runtime status has empty closed_trade_log and no "
+            "append-only trade_close records were found. Closed-trade PnL "
+            "attribution still requires historical closed trade logs, exchange "
+            "fills, or a full API report containing closed trade details."
         )
 
     return {
@@ -764,9 +941,10 @@ def write_readme(output_dir: Path, manifest: dict[str, Any]) -> None:
         "",
         "- A/C closed-trade PnL attribution is available when",
         "  `trident_ac_closed_trades.csv` has rows.",
-        "- A/C exact close-fill reconciliation still requires exchange fills or",
-        "  richer execution logs because current JSONL signal logs do not carry",
-        "  `close_fills`.",
+        "- A/C close-fill reconciliation uses enriched live `trade_close`",
+        "  journal records when present; exchange fee/funding fields stay empty",
+        "  when the live runner could not match userFills or no realized funding",
+        "  stream was available.",
         "- HIP4 decisions are compacted and do not include raw reference-source",
         "  payloads, to avoid unnecessary data bloat.",
         "- No secrets are intentionally exported.",

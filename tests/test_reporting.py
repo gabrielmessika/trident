@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import unittest
@@ -14,6 +15,7 @@ from app.settings import load_config
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import RegimeSnapshot
 from app.trident.types import SymbolMarketSnapshot
+from scripts.export_trident_audit_pack import export_directional_logs
 
 
 class ReportingTests(unittest.TestCase):
@@ -57,6 +59,104 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(first["closed_trade_count"], 1)
         self.assertEqual(second["closed_trade_count"], 2)
         self.assertAlmostEqual(second["realized_pnl_usd"], 1.0)
+
+    def test_audit_export_uses_append_only_trade_close_with_close_fills(self) -> None:
+        trade_close = {
+            "event_type": "trade_close",
+            "source": "pod_a_live_trade",
+            "record_index": 7,
+            "timestamp": "2026-06-05T00:30:00Z",
+            "trade": {
+                "symbol": "ETH",
+                "side": "long",
+                "setup": "trend_pullback_long",
+                "entry_price": 2132.51,
+                "exit_price": 2120.0,
+                "target_notional_usd": 100.0,
+                "pnl_usd": -0.59,
+                "gross_pnl_usd": -0.58,
+                "fees_usd": 0.01,
+                "exchange_fee_usd": 0.01,
+                "exchange_closed_pnl_usd": -0.58,
+                "fee_source": "exchange_user_fills",
+                "funding_usd": -0.03,
+                "funding_source": "exchange_user_funding_history",
+                "funding_payment_count": 1,
+                "close_reason": "exchange_closed",
+                "close_fill_count": 1,
+                "exchange_close_fill_count": 1,
+                "opened_at": "2026-06-05T00:00:00+00:00",
+                "closed_at": "2026-06-05T00:30:00+00:00",
+                "close_fills": [
+                    {
+                        "symbol": "ETH",
+                        "side": "A",
+                        "action": "close",
+                        "price": 2120.0,
+                        "notional_usd": 86.708,
+                        "fee_usd": 0.01,
+                        "filled_size": "0.0409",
+                        "oid": 42,
+                        "complete": True,
+                        "exchange_fill_available": True,
+                        "exchange_fee_usd": 0.01,
+                        "exchange_closed_pnl_usd": -0.58,
+                        "exchange_direction": "Close Long",
+                        "exchange_timestamp_ms": 1780619400000,
+                        "fee_source": "exchange_user_fills",
+                        "close_reason": "exchange_closed",
+                        "funding_usd": -0.03,
+                        "funding_source": "exchange_user_funding_history",
+                        "funding_payment_count": 1,
+                    }
+                ],
+            },
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            source_root = Path(tmpdir) / "server-data"
+            output_dir = Path(tmpdir) / "audit"
+            (source_root / "logs").mkdir(parents=True)
+            output_dir.mkdir()
+            (source_root / "logs" / "pod_a_live.jsonl").write_text(
+                json.dumps(trade_close) + "\n",
+                encoding="utf-8",
+            )
+
+            summary = export_directional_logs(source_root, output_dir)
+
+            self.assertEqual(summary["closed_trade_rows"], 1)
+            self.assertEqual(summary["close_fill_count_by_pod"], {"pod_a": 1})
+            closed_rows = list(
+                csv.DictReader(
+                    (output_dir / "trident_ac_closed_trades.csv").open(
+                        encoding="utf-8",
+                        newline="",
+                    )
+                )
+            )
+            fill_rows = list(
+                csv.DictReader(
+                    (output_dir / "trident_ac_fill_events.csv").open(
+                        encoding="utf-8",
+                        newline="",
+                    )
+                )
+            )
+
+        self.assertEqual(len(closed_rows), 1)
+        self.assertEqual(closed_rows[0]["symbol"], "ETH")
+        self.assertEqual(closed_rows[0]["exchange_fee_usd"], "0.01")
+        self.assertEqual(closed_rows[0]["exchange_closed_pnl_usd"], "-0.58")
+        self.assertEqual(closed_rows[0]["funding_usd"], "-0.03")
+        self.assertEqual(closed_rows[0]["funding_source"], "exchange_user_funding_history")
+        self.assertEqual(closed_rows[0]["funding_payment_count"], "1")
+        self.assertEqual(closed_rows[0]["close_fill_oids"], "42")
+        self.assertEqual(len(fill_rows), 1)
+        self.assertEqual(fill_rows[0]["action"], "close")
+        self.assertEqual(fill_rows[0]["exchange_fee_usd"], "0.01")
+        self.assertEqual(fill_rows[0]["funding_usd"], "-0.03")
+        self.assertEqual(fill_rows[0]["exchange_direction"], "Close Long")
 
     def test_build_runtime_report_includes_pod_sections(self) -> None:
         config = load_config("config/trident.toml")

@@ -9,6 +9,7 @@ from pathlib import Path
 from app.hyperliquid.private_state import parse_account_state
 from app.live.pod_a_live_runner import PodALiveRunner
 from app.live.state_store import LiveStateStore
+from app.persistence.journal import JsonlJournal
 from app.settings import load_config
 from app.trident.types import TradePlan
 
@@ -75,7 +76,11 @@ def _timestamp_ms(value: str) -> int:
     return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
 
 
-def _account_state_with_recent_fills(fills: list[dict[str, object]]) -> object:
+def _account_state_with_recent_fills(
+    fills: list[dict[str, object]],
+    *,
+    recent_funding: list[dict[str, object]] | None = None,
+) -> object:
     return parse_account_state(
         account_address="0x0000000000000000000000000000000000000000",
         user_state={
@@ -86,6 +91,7 @@ def _account_state_with_recent_fills(fills: list[dict[str, object]]) -> object:
         open_orders=[],
         frontend_open_orders=[],
         recent_fills=fills,
+        recent_funding=recent_funding,
     )
 
 
@@ -428,11 +434,25 @@ class PodALiveRunnerTests(unittest.TestCase):
                             "fee": "0.01",
                             "time": _timestamp_ms("2026-05-19T13:45:00Z"),
                         },
-                    ]
+                    ],
+                    recent_funding=[
+                        {
+                            "time": _timestamp_ms("2026-05-19T13:40:00Z"),
+                            "hash": "0xfunding",
+                            "delta": {
+                                "type": "funding",
+                                "coin": "ETH",
+                                "usdc": "-0.03",
+                                "szi": "0.0409",
+                                "fundingRate": "0.0001",
+                            },
+                        }
+                    ],
                 )
             )
 
-            changed = runner._sync_live_exchange_state(journal=None)
+            journal_path = Path(tmpdir) / "pod_a_live.jsonl"
+            changed = runner._sync_live_exchange_state(journal=JsonlJournal(journal_path))
 
             self.assertTrue(changed)
             self.assertNotIn("ETH", runner.executor.portfolio.open_positions)
@@ -440,6 +460,23 @@ class PodALiveRunnerTests(unittest.TestCase):
             self.assertEqual(trade.close_reason, "exchange_closed")
             self.assertEqual(trade.closed_at, datetime.fromisoformat("2026-05-19T13:45:00+00:00"))
             self.assertGreaterEqual(trade.closed_at, trade.opened_at)
+            records = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["event_type"], "trade_close")
+            journal_trade = records[0]["trade"]
+            self.assertEqual(journal_trade["close_fill_count"], 1)
+            self.assertEqual(journal_trade["exchange_close_fill_count"], 1)
+            self.assertEqual(journal_trade["exchange_fee_usd"], 0.01)
+            self.assertEqual(journal_trade["exchange_closed_pnl_usd"], -0.58)
+            self.assertEqual(journal_trade["funding_usd"], -0.03)
+            self.assertEqual(journal_trade["funding_source"], "exchange_user_funding_history")
+            self.assertEqual(journal_trade["funding_payment_count"], 1)
+            self.assertEqual(journal_trade["close_fills"][0]["oid"], 2)
+            self.assertEqual(journal_trade["close_fills"][0]["fee_source"], "exchange_user_fills")
 
     def test_live_sync_labels_exchange_closed_stop_loss_from_protective_oid(self) -> None:
         config = load_config("config/trident.toml")
