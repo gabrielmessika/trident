@@ -270,13 +270,13 @@ TRIDENT-HIP4 (/opt/trident-hip4, port 3001, mainnet PAPER + observer)
 - **Test requis** : replay avec modèle de coût recalibré ; A/B dry-run sur le taux de fill.
 - **Rollback** : seuils de slippage relâchés si fill rate < 80 % des signaux acceptés.
 
-### R-07 — `early_failure_exit` : replay avec/sans avant tout réglage — **P1, `needs_replay`**
+### R-07 — `early_failure_exit` : replay avec/sans avant tout réglage — **P1, exécuté P1-02**
 - **Périmètre** : Pod A live (EFE pendant la stop grace).
-- **Preuve** : 10/25 trades, -5.87, coupe à ~70 % du stop planifié ; impossible de savoir combien auraient récupéré.
-- **Impact PnL** : borne haute si EFE ne coupait que des trades qui touchent le stop : +0.25 USD/trade EFE économisé (différence -0.59 vs -0.84) ; borne basse négative si beaucoup récupéraient.
-- **Données manquantes** : MFE/MAE post-exit (P1 du registre des gaps).
-- **Test requis** : replay full-bot avec EFE on/off sur la baseline officielle ET la fenêtre récente.
-- **Rollback** : conserver EFE (réglage actuel) par défaut — c'est l'option défensive.
+- **Preuve P1-02 2026-06-12** : matrices récentes et baseline dans `server-data/replay_reports/p102_exit_sensitivity_recent_20260612T172220Z/` et `server-data/replay_reports/p102_exit_sensitivity_baseline_20260612T172334Z/`.
+- **Résultat récent** : variante proche courante `grace60_cat160_efe_on` = `-12.51 USD`, soit `+1.60` vs replay original Pod A `-14.11`; EFE off à paramètres identiques tombe à `-32.88`.
+- **Résultat baseline officielle** : le même `grace60_cat160_efe_on` tombe à `463.14 USD`, soit `-317.58` vs baseline Pod A `780.72`; EFE off préserve mieux la baseline (`553.62`) mais dégrade juin (`-32.88`).
+- **Décision** : aucune modification live mécanique. EFE aide dans le régime récent adverse mais détruit trop d'upside sur la baseline trend. Prochaine étape : conditionner EFE/stop grace par régime/qualité d'entrée plutôt que changer les paramètres globaux.
+- **Rollback** : n/a, aucun changement live appliqué.
 
 ### R-08 — HIP4 : pas de promotion ; jalon de collecte formalisé — **P1, `needs_data`**
 - **Périmètre** : HIP4 mainnet paper.
@@ -319,7 +319,7 @@ Corriger en lot : code retour `fetch_all_data.sh` (faux `[ERROR] code 0`) ; rég
 | Funding réel + fees réels par trade | colonnes closed trades / fill events | **Résolu P0-03 pour A/C** : `223` paiements funding importés ; fees/closedPnl exchange exportés par trade. | clos | Surveiller que les prochains `trade_close` gardent `exchange_fee_usd`, `exchange_closed_pnl_usd` et funding attribué. |
 | Références externes Pod C à l'entrée | `external_reference_*` peuplés | Tous à False/0 dans l'export : qualité du signal TradFi invérifiable. | P1 | Corriger la jointure dans `export_trident_audit_pack.py` ou vérifier la collecte. |
 | Décisions brutes A/C et HIP4 | `*_signal_decisions.jsonl`, `hip4_decisions.jsonl` | Analyse fine des rejets (shock guard net effect, market_already_open opposite-side, pattern EFE-watchers) — exclus du pack léger. | P1 | Fournir dans un pack complet ; conclusions concernées marquées `needs_raw_decisions`. |
-| Input replay fenêtre récente | `external_reference_multisource_20260524_20260611.jsonl` | Sans lui, R-04/R-05/R-07 impossibles. | P1 | Assembler depuis les snapshots live fetchés. |
+| Input replay fenêtre récente | snapshots live + rapports P1 | **Couvert P1-01/P1-02** : `server-data/live_snapshots/` consommé par les replays récents ; reste seulement la réserve `external_reference_*` Pod C. | clos | Regénérer via `scripts/run_p101_recent_replay.py` puis `scripts/run_p102_exit_sensitivity.py` après nouveaux fetchs. |
 | Run review HIP4 fraîche | régénérée post-fetch | La review structurée date du 06-05 alors que les données vont au 06-11. | P2 | Hook de régénération dans `fetch_data.sh`. |
 | Checksums export | dans `manifest.json` | Intégrité du pack non vérifiable. | P2 | sha256 par fichier dans l'exporteur. |
 
@@ -438,16 +438,17 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
 
 - [x] **P1-01 — Replay full-bot fenêtre live récente avec config courante**
   **Références** : R-04, addendum A/D/E, hypothèses H1/H2/H3/H4, §5.4.
-  **Statut** : exécuté le 2026-06-12 (`OK_P101_RECENT_REPLAY_LIVECAP`).
+  **Statut** : exécuté le 2026-06-12 (`OK_P101_RECENT_REPLAY_LIVECAP`) ; étape clôturée car le livrable demandé était uniquement le replay, pas une modification prod.
   **Preuves conservées** : `scripts/run_p101_recent_replay.py`; `app.backtest.full_bot_replay --apply-live-notional-caps`; rapport principal `server-data/replay_reports/p101_recent_full_bot_livecap_20260612T170415Z/p101_recent_replay_report.md`; alignement trade-by-trade `trade_alignment.csv`; tests `tests/test_p101_recent_replay.py` et cap live dans `tests/test_full_bot_replay.py`.
   **Résultat** : live exchange P0-03 `-157.88 USD` / `142` trades ; replay config courante cap live `-20.27 USD` / `66` trades ; overlay slippage observé `-29.69`, overlay 8/12 bps `-46.67`. L'edge courant sur juin reste négatif mais bien moins que le live historique ; les coûts ne suffisent pas à expliquer la perte.
-  **Suivi résiduel** : écart trade-count important (`142` live vs `66` replay) et match trade-by-trade faible (`16` matches) → traiter via P1-02/P1-03/P1-04 avant tout réglage live.
+  **Suivi ouvert hors P1-01** : écart trade-count important (`142` live vs `66` replay) et match trade-by-trade faible (`16` matches) → traiter via P1-03/P1-04/P1-06 avant tout réglage live.
 
-- [ ] **P1-02 — Queue des stops et `early_failure_exit` : replay de sensibilité**
+- [x] **P1-02 — Replay de sensibilité queue des stops et `early_failure_exit`**
   **Références** : R-07, addendum A, levier PnL 1.
-  **Modifs à faire** : paramétrer en replay le stop catastrophe dynamique, son plafond, la durée de grace 60/120 min et `early_failure_exit` on/off ; inclure l'ère 2 (cap 500 + grace 165) et l'ère 3 (correctifs du 09-06).
-  **Tests / preuves attendues** : matrice replay `cat_stop_max_bps` × `EFE on/off` × `grace`; mesure excès perte réelle vs stop planifié ; comparaison contre baseline officielle et fenêtre récente ; aucun déploiement live sans preuve que la variante réduit la queue sans dégrader le PF.
-  **Terminé quand** : une variante est clairement meilleure sur la fenêtre récente et au moins neutre sur la baseline, ou le réglage actuel est conservé.
+  **Statut** : exécuté le 2026-06-12 (`OK_P102_EXIT_SENSITIVITY_NO_LIVE_CHANGE`) ; étape clôturée car le livrable demandé était le replay de sensibilité. Aucun changement prod n'a été appliqué et l'idée n'est pas abandonnée.
+  **Preuves conservées** : `scripts/run_p102_exit_sensitivity.py`; rapport récent `server-data/replay_reports/p102_exit_sensitivity_recent_20260612T172220Z/p102_exit_sensitivity_report.md`; rapport baseline `server-data/replay_reports/p102_exit_sensitivity_baseline_20260612T172334Z/p102_exit_sensitivity_report.md`; tests `tests/test_p102_exit_sensitivity.py`.
+  **Résultat** : EFE + cat stop plafonné aide la fenêtre récente (`grace60_cat160_efe_on` = `-12.51`, +`1.60` vs original ; `grace120/165_cat160_efe_on` = `-10.91`, +`3.20`) mais dégrade fortement la baseline (`grace60_cat160_efe_on` = `463.14`, -`317.58` vs `780.72`). EFE off protège mieux la baseline mais détériore juin.
+  **Suivi ouvert hors P1-02** : le réglage actuel est conservé faute de variante globale robuste ; la piste restante est le gate régime/qualité en P1-06 pour activer le mode défensif seulement dans les régimes défavorables.
 
 - [ ] **P1-03 — Pod C : rétablir la référence externe live**
   **Références** : F-06, R-09, addendum B/D, levier PnL 4.
@@ -466,6 +467,23 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
   **Modifs à faire** : ajouter `a_grade_active`, `a_grade_level`, `a_grade_score`, `a_grade_size_scale` et les champs de quality sizing dans `export_trident_audit_pack.py`; rejouer les size scales `{1.0, 1.25, 1.40}` ; ne geler le boost strong à 1.0 en live que si le replay confirme la contre-performance.
   **Tests / preuves attendues** : prochain pack avec champs A-grade non vides ; replay baseline officielle + fenêtre récente pour chaque scale ; comparaison PnL, drawdown, PF, WR et concentration des pertes.
   **Terminé quand** : le boost est soit justifié par replay, soit gelé avec preuve et rollback documenté.
+
+- [ ] **P1-06 — Régime haussier/baissier Pod A : gate long/short avant entrée**
+  **Références** : §5.4, F-05, R-04/R-07, leviers PnL 2/3, `config/trident.toml` (`trend_pullback_long` seul autorisé, shorts désactivés).
+  **Objectif** : définir une règle pré-entry qui identifie un régime haussier pour autoriser/renforcer les longs, un régime baissier pour bloquer/réduire les longs et tester les shorts en shadow, sans activer de nouveaux ordres ni modifier la config live tant que la validation n'est pas terminée.
+  **Étape 1 — Constat initial réalisé** : scan opportunité pré-entry sur `BTC/ETH/SOL/HYPE` (`scripts/run_p106_bear_regime_research.py`) ; score bear basé uniquement sur informations disponibles au timestamp candidat (retours BTC 1h/4h, BTC vs EMA, breadth/structure/leader trend crypto, faiblesse locale 1h/4h) ; simulation long/short horizon 180m avec coût round-trip 16 bps ; replay Pod A seul avec `trend_pullback_short` réactivé puis short-only expérimental (`scripts/run_p106_pod_a_short_replay.py`) sur avril/mai et mai/juin.
+  **Preuves conservées** : rapport principal `server-data/replay_reports/p106_bear_regime_short_research_20260612T183822Z/p106_bear_regime_report.md`; replay Pod A récent `server-data/replay_reports/p106_bear_regime_short_research_20260612T183822Z/pod_a_short_replay_recent/pod_a_short_replay.md`; replay Pod A baseline `server-data/replay_reports/p106_bear_regime_short_research_20260612T183822Z/pod_a_short_replay_baseline/pod_a_short_replay.md`; test `tests/test_p106_bear_regime_research.py`.
+  **Résultat short** : sur mai/juin, le runner Pod A seul confirme que `trend_pullback_short` aurait aidé : config long-only `-94.27 USD` / `62` trades ; `trend_pullback_short_on` `-74.85` / `265` trades (`trend_pullback_short=+19.42`) ; short-only `+19.42` / `203` trades. Sur avril/mai, activation globale rejetée : long-only `+265.47` / `106` trades ; `trend_pullback_short_on` `-14.32` / `271` trades ; short-only `-279.79` / `165` trades.
+  **Résultat régime initial** : mai/juin contient beaucoup plus de futures baisses BTC 6h (`371/1679`, 22.1 %) qu'avril/mai (`173/2505`, 6.9 %). Un score bear faible (`>=2`) capte une partie des phases adverses récentes mais reste peu précis ; un score strict (`>=4/5`) arrive trop souvent après le choc et ne doit pas déclencher un short mécanique. Le bon signal à tester est donc un gate régime pré-entry multi-conditions, pas un simple seuil unique.
+  **Étape 2 — Dataset labellisé régime** : produire `regime_labels.csv` avec labels forward 3h/6h/24h : `bullish` si BTC et breadth crypto confirment une dérive positive nette, `bearish` si BTC et breadth/leader trend confirment une dérive négative nette, `neutral/transition` sinon. Les labels doivent être calculés hors features d'entrée pour éviter le lookahead.
+  **Étape 3 — Features pré-entry à figer** : tester uniquement des variables disponibles avant décision : retours BTC 1h/4h/24h, prix BTC vs EMA fast/slow, pente EMA, breadth/alt participation, leader_trend_score, coherence/dispersion, structure_score, volatilité/compression, funding/OI si disponible, spread/liquidité et faiblesse/force locale du symbole.
+  **Étape 4 — Règle candidate long/short** : calibrer une matrice simple `bull_gate`, `bear_gate`, `neutral_gate`. Exemple à valider, pas à déployer : longs autorisés seulement si `bull_score` élevé et `bear_score` faible ; shorts shadow seulement si `bear_score` élevé, `bull_score` faible, BTC sous EMA + retour 4h négatif + breadth dégradée ; neutral/transition = pas de nouveau directionnel ou taille réduite.
+  **Étape 5 — Replay full-bot gated** : intégrer le gate en mode replay/shadow, avec colonnes `bull_regime_score`, `bear_regime_score`, `regime_gate_decision`, `would_allow_long`, `would_allow_short`. Comparer au minimum : config actuelle, longs filtrés par gate, longs filtrés + shorts shadow, sur baseline avril/mai et récent mai/juin, avec caps live et coûts observés.
+  **Étape 6 — Validation out-of-sample** : faire des folds temporels rolling pour éviter de calibrer sur seulement deux régimes visibles. Critères minimaux : préserver l'essentiel de l'upside avril/mai, améliorer mai/juin net de coûts, réduire drawdown/queue de stops, et ne pas multiplier l'activité au-delà d'un seuil explicite.
+  **Étape 7 — Shadow live sans ordre** : si le replay est positif, déployer uniquement la journalisation shadow du gate : chaque décision doit dire `live_action_unchanged`, `regime_gate_decision`, `would_block_long`, `would_open_short_shadow`, et mesurer pendant plusieurs jours/trades ce qui aurait été changé.
+  **Étape 8 — Critères de promotion** : aucune activation short live sans confirmation explicite. Candidat promouvable seulement si le full-bot gated bat la config actuelle sur mai/juin, ne détruit pas avril/mai, garde un PF net > 1 sur les shorts shadow, limite le trade-count, et passe une review manuelle PnL/risque/corrélation.
+  **Décision actuelle** : ne pas activer les shorts globalement en live. P1-06 reste ouvert jusqu'à obtention d'un gate régime long/short validé par replay full-bot, puis shadow live.
+  **Terminé quand** : le rapport contient la règle pré-entry finale, ses seuils, ses résultats par régime, ses critères de promotion/rollback et la preuve shadow ; sinon le résultat reste `research_only`.
 
 ### P2 — Hygiène, recherche et audit continu
 
@@ -493,7 +511,7 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
   **Tests / preuves attendues** : `./scripts/fetch_trident_data.sh --review-only` OK ; `./trident-hip4/fetch_data.sh` OK ; aucun nouveau fichier nécessaire à l'audit n'est absent de `server-data/`; tests shell ou smoke test documenté.
   **Terminé quand** : les fetchs ne produisent plus d'erreur ambiguë et les packs contiennent tous les artefacts requis par ce plan.
 
-**Conclusion de l'addendum.** La perte live n'est pas un mystère statistique : c'est la combinaison documentée et désormais chiffrée (1) d'un bug de stop immédiat (ère 1, -20), (2) d'une fenêtre cap 500 + grace 165 min pendant un selloff de -20 % sur des longs alts (ère 2, -79, dont ~-103 d'excès de stops vs plan), et (3) d'un edge d'entrée réellement faible en régime DeadZone/Range (ère 3, WR 24 %). Les correctifs du 09-06 ont traité la queue (1)(2) ; P1-01 confirme que la config courante cap live perd beaucoup moins (`-20.27`) que le live historique (`-157.88`), mais reste négative sur juin. Le chantier restant est la qualité d'entrée, les exits de sensibilité et la parité live/replay (P1-02/P1-03/P1-04), pas un nouveau réglage d'exits à chaud.
+**Conclusion de l'addendum.** La perte live n'est pas un mystère statistique : c'est la combinaison documentée et désormais chiffrée (1) d'un bug de stop immédiat (ère 1, -20), (2) d'une fenêtre cap 500 + grace 165 min pendant un selloff de -20 % sur des longs alts (ère 2, -79, dont ~-103 d'excès de stops vs plan), et (3) d'un edge d'entrée réellement faible en régime DeadZone/Range (ère 3, WR 24 %). Les correctifs du 09-06 ont traité la queue (1)(2) ; P1-01 confirme que la config courante cap live perd beaucoup moins (`-20.27`) que le live historique (`-157.88`), mais reste négative sur juin. P1-02 est clôturé comme replay de sensibilité, pas comme changement prod ; les chantiers ouverts sont maintenant le gate régime/entrée (P1-06), la parité Pod C (P1-03) et le modèle coût/slippage (P1-04).
 
 *Limites de l'addendum : reconstruction au pas minute (pas de wicks intra-minute), frais/funding estimés et non observés, paramètres silver_mode pod C approximés, EFE non simulé avant le 09-06. Aucun chiffre reconstruit ne doit servir de base à un réglage sans le replay R-04.*
 
@@ -504,13 +522,13 @@ Avant les leviers, un cadrage honnête, parce qu'il conditionne tout le reste : 
 - Lecture optimiste : le système a un edge (baseline +860 sur avril-mai), et c'est la queue des stops + un régime adverse qui ont mangé le live. On corrige → ça repasse positif.
 - Lecture prudente : le baseline +860 est mesuré sur une période *trending*. En juin, marché baissier (-20 % sur BTC), un système **long-only** n'a peut-être structurellement pas d'edge, quels que soient les réglages d'exit.
 
-P1-01 tranche une partie du sujet : la config courante cap live n'est pas catastrophique comme le live historique, mais elle reste négative sur juin (`-20.27`, ou `-29.69` avec slippage observé). Le prochain préalable n'est plus R-04 brut : c'est P1-02/P1-03/P1-04 pour savoir si on peut récupérer l'edge sans pari live.
+P1-01 tranche une partie du sujet : la config courante cap live n'est pas catastrophique comme le live historique, mais elle reste négative sur juin (`-20.27`, ou `-29.69` avec slippage observé). P1-02 a ensuite testé les exits sans trouver de variante globale promouvable. Le prochain préalable n'est plus un replay brut : c'est P1-06/P1-03/P1-04 pour savoir si on peut récupérer l'edge sans pari live.
 
 Cela dit, voici les leviers par impact estimé sur la fenêtre que j'ai reconstruite.
 
 **1. La queue des stops — le poste le plus chiffré (~-103 USD d'excès)**
 
-C'est de loin le plus gros trou : 15 stops catastrophe ont coûté -120 à eux seuls, avec une perte moyenne de 2.4× le stop planifié. Les correctifs du 09-06 (grace ramenée à 60/120 min, cat stop dynamique plafonné, `early_failure_exit`) ont déjà divisé la perte/trade par ~4. La recommandation n'est pas d'inventer un nouveau réglage mais de **valider que ces correctifs tiennent sur l'ère 2 rejouée** (R-07 : EFE on/off), et probablement de **resserrer encore le cat stop** : sur des alts à 160 bps de stop, un stop catastrophe à 300 bps autorise une perte 2× le risque budgété. Réduire ce plafond est le geste à plus fort effet de levier mécanique.
+C'est de loin le plus gros trou : 15 stops catastrophe ont coûté -120 à eux seuls, avec une perte moyenne de 2.4× le stop planifié. P1-02 montre toutefois que le remède global est piégeux : EFE + cat stop plafonné améliore juin mais détruit beaucoup d'upside sur la baseline trend. La recommandation devient donc : **ne pas toucher les paramètres globaux**, mais tester un gate régime/qualité qui active le mode défensif seulement quand le leader/régime se dégrade.
 
 **2. La discipline cap × régime — la leçon la plus claire de la fenêtre**
 
@@ -518,7 +536,7 @@ L'ère 2 raconte tout : cap monté à 500 le 02-06, puis selloff → -79, dont -
 
 **3. La qualité d'entrée en régime dégradé — le vrai sujet de fond**
 
-C'est le point le plus profond et le plus inconfortable. Le WR de l'ère 3 est de 24 %, et 18 closes sur 25 se font en DeadZone/RangeAuction alors que les entrées sont prises en TrendExpansion. Autrement dit : **le système entre sur un signal de tendance, puis le régime se dégrade sous lui.** Aucun réglage d'exit ne corrige un edge d'entrée faible. Les pistes à tester (par replay, pas en live) : un filtre qui invalide l'entrée si le régime du leader se dégrade dans les N minutes, ou un gate sur l'alignement BTC plus strict. C'est là que se trouve le « drastique » réel, mais c'est aussi le plus risqué à toucher.
+C'est le point le plus profond et le plus inconfortable. Le WR de l'ère 3 est de 24 %, et 18 closes sur 25 se font en DeadZone/RangeAuction alors que les entrées sont prises en TrendExpansion. Autrement dit : **le système entre sur un signal de tendance, puis le régime se dégrade sous lui.** Aucun réglage d'exit ne corrige un edge d'entrée faible. P1-06 confirme que `trend_pullback_short` aurait aidé mai/juin (`+19.42 USD` en short-only Pod A), mais aurait détruit avril/mai (`-279.79 USD`) : le levier n'est donc pas "activer les shorts", c'est **détecter le régime baissier avant l'entrée** puis bloquer/réduire les longs et tester les shorts uniquement en shadow. C'est là que se trouve le « drastique » réel, mais c'est aussi le plus risqué à toucher.
 
 **4. Pod C : ressusciter la référence externe + maintenir le blocage silver**
 
@@ -534,6 +552,6 @@ Contre-performant sur les 25 trades attribuables (le boost ×1.4 amplifie les tr
 
 ---
 
-Si je devais ne retenir qu'une chose : **le levier le plus drastique n'est pas un meilleur exit, c'est de ne pas être long-only crypto dans un marché baissier.** La capacité short ou un hedge directionnel changerait l'ordre de grandeur — mais c'est précisément dans la liste des actions interdites sans validation, et pour de bonnes raisons. À court terme, la séquence rationnelle est : R-04 d'abord (l'edge existe-t-il encore ?), puis resserrer le cat stop et lier le cap au régime, puis attaquer le filtre d'entrée. Rien de tout ça ne se déploie sans le replay.
+Si je devais ne retenir qu'une chose : **le levier le plus drastique n'est pas un meilleur exit, c'est de ne pas être long-only crypto dans un marché baissier.** P1-06 valide l'intuition sur juin mais rejette l'activation globale des shorts. À court terme, la séquence rationnelle est : garder le live inchangé, construire un gate `bear_regime_pre_entry` en shadow/dry-run, puis seulement après out-of-sample décider s'il bloque les longs, réduit le cap, ou autorise un short contrôlé.
 
 Je ne suis pas conseiller financier, et tous les chiffres ci-dessus reposent sur une reconstruction au pas minute, pas sur les fills exchange réels — donc à traiter comme des ordres de grandeur pour prioriser, pas comme des vérités à câbler en dur.
