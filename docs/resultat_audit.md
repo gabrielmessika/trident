@@ -403,15 +403,15 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
 
 ### P0 — Sécurité et données bloquantes
 
-- [x] **P0-01 — Secrets repo public : rotation, retrait et purge — statut 2026-06-12 : `OK_GIT_LOCAL_SCAN_VERT`**
+- [x] **P0-01 — Secrets repo public : rotation, retrait et purge — statut 2026-06-12 : `OK_GIT_REMOTE_PUSHED_SCAN_VERT`**
   **Références** : F-01, R-01, S-07.
   **Modifs à faire** : révoquer/rotater la clé `HIP4_OUTCOME_SECRET_KEY` et l'API wallet associée ; retirer `.env.trident` du tracking git (`git rm --cached`) ; ajouter `.env.trident`, `.env.trident-hip4` et `.env.*` au `.gitignore` en gardant seulement les `*.example` ; purger l'historique public ou recréer un repo public nettoyé ; vérifier que les scripts de déploiement continuent de charger uniquement les secrets serveur.
   **Tests / preuves attendues** : `git ls-files` ne liste plus de fichier secret ; scan `gitleaks`/`trufflehog` sur tout l'historique ; redémarrage HIP4 paper/testnet avec secrets serveur uniquement ; aucun secret réel dans le nouveau pack d'audit.
   **Vérification locale 2026-06-12** : `git ls-files -- .env.trident .env.trident-hip4 '.env.*'` ne liste plus `.env.trident` ni `.env.trident-hip4` ; seuls `.env.trident.example` et `.env.tridentai.example` restent trackés. `.gitignore` ignore maintenant `.env`, `.env.trident`, `.env.trident-hip4`, `.env.tridentai` et `.env.*`, avec exception pour les `*.example`. `git grep -n -E '0x[0-9a-fA-F]{64}' -- ':!*.example' ':!docs/resultat_audit.md'` ne retourne rien.
-  **Purge historique 2026-06-12** : historique local réécrit avec `git-filter-repo --path .env.trident --invert-paths`; `git log --all -- .env.trident` ne retourne plus rien après purge. Remote `origin` restauré après la réécriture automatique par `git-filter-repo`.
-  **Scan secrets 2026-06-12** : `gitleaks 8.30.1` lancé sur 129 commits / 25.72 MB : `no leaks found`. Six faux positifs `generic-api-key` sur des identifiants de patterns de recherche (`app/research/pod_a_day_by_day_patterns.py`) sont ignorés via `.gitleaksignore` avec fingerprints exacts. `trufflehog 3.95.5` lancé sur le repo Git local : `verified_secrets=0`, `unverified_secrets=0`.
+  **Purge historique 2026-06-12** : historique local réécrit avec `git-filter-repo --path .env.trident --invert-paths`; `git log --all -- .env.trident` ne retourne plus rien après purge. Remote `origin` restauré après la réécriture automatique par `git-filter-repo`, puis `main` force-pushé vers GitHub avec `--force-with-lease` (`6fb22fc...` → `ef19355...`). Vérification post-push : `origin/main` pointe sur l'historique réécrit et `git log --all -- .env.trident` reste vide.
+  **Scan secrets 2026-06-12** : `gitleaks 8.30.1` lancé sur 130 commits / 25.73 MB : `no leaks found`. Six faux positifs `generic-api-key` sur des identifiants de patterns de recherche (`app/research/pod_a_day_by_day_patterns.py`) sont ignorés via `.gitleaksignore` avec fingerprints exacts. `trufflehog 3.95.5` lancé sur le repo Git local : `verified_secrets=0`, `unverified_secrets=0`.
   **Preuve opérateur 2026-06-12** : clé compromise déclarée révoquée/rotatée par l'opérateur. Le redémarrage HIP4 avec secrets serveur uniquement reste à vérifier dans le flux de déploiement/review, mais ne bloque plus le volet Git/secrets du P0-01.
-  **Terminé quand** : repo public nettoyé par force-push de l'historique réécrit, scan vert documenté, et prochaine review serveur confirmant le chargement des secrets serveur uniquement.
+  **Terminé côté Git/secrets** : repo public nettoyé par force-push de l'historique réécrit et scans verts documentés. Suivi opérationnel hors purge Git : prochaine review serveur à utiliser pour confirmer le chargement des secrets serveur uniquement.
 
 - [ ] **P0-02 — API : bind local + authentification + firewall**
   **Références** : F-02, R-02, S-02.
