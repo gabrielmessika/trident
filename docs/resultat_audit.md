@@ -14,11 +14,11 @@ Fichiers exclus du pack (assumé) : `trident_ac_signal_decisions.jsonl`, `hip4_d
 | **TRIDENT A/C — PnL** | **WARN / partiellement `insufficient_data`** | Fenêtre attribuable (31 trades fermés, 06-09 → 06-11) : Pod A **-5.90 USD** (PF 0.60, WR 24 %), Pod C **+0.46 USD**. Mais le PnL live cumulé runtime est **Pod A -134.27 USD / Pod C -14.21 USD** et seule la queue récente est attribuable : ~90 fermetures antérieures ne sont dans aucun export (`closed_trade_log` = buffer). Divergence majeure vs baseline replay (+780.72 / +79.11) **non expliquée à ce stade**. |
 | **TRIDENT-HIP4 — mainnet paper** | **KO pour promotion, OK pour collecte** | 27 trades / 25 settlements, PnL **-47.84 USDC**, PF 0.71, Brier 0.2611 (> seuil 0.23 et > 0.25 d'un prédicteur naïf). Run review : `collect_more_data`. Les cutoffs récents (≥ 06-02) sont négatifs **pour toutes les policies**, y compris `prob_stop_full` shadow. |
 | **TRIDENT-HIP4 — mainnet observer** | OK (signal-only) | 0 ordre, `observer_mode_signal_only` confirmé dans runtime statuses. |
-| **Sécurité** | **KO — 2 findings critiques** | (1) Clé privée `HIP4_OUTCOME_SECRET_KEY` committée dans `.env.trident` du **repo public** (fichier git-tracked, vérifié sur le clone). (2) API HTTP sans authentification avec endpoint mutant `POST /api/routing/override`, publiée `3000:3000` sur toutes les interfaces, pilotant un bot **live mainnet**. |
-| **Readiness opérationnelle** | WARN | Guardrails live bien conçus (live confirm, cap, protective orders, reconciliation stricte, `pending_position` durable post-incident ARB). Mais : exposition réseau de l'API, script fetch avec erreur ambiguë `code 0`, `reference_equity_usd=0.0` dans le report runtime, run review HIP4 non régénérée après fetch. |
+| **Sécurité** | **Remédiation P0 clôturée le 2026-06-12** | Constats initiaux : clé privée committée et API HTTP non authentifiée avec endpoint mutant. Suivi : R-01 clôturé (`OK_GIT_REMOTE_PUSHED_SCAN_VERT`) ; R-02 clôturé (`OK_DEPLOY_AUTH_3000_3001`) avec Basic Auth sur `3000`/`3001` et `POST /api/routing/override` désactivé. Risque résiduel : HTTP public sans TLS par choix opérateur. |
+| **Readiness opérationnelle** | WARN | Guardrails live bien conçus (live confirm, cap, protective orders, reconciliation stricte, `pending_position` durable post-incident ARB). Restent : risque résiduel HTTP public sans TLS, script fetch avec erreur ambiguë `code 0`, `reference_equity_usd=0.0` dans le report runtime, run review HIP4 non régénérée après fetch. |
 | **Qualité des données** | WARN | Exploitable pour first-pass : closed trades A/C, trades/settlements/replays HIP4, baselines. Manquant : close fills exchange (0 ligne), historique complet des trades fermés, MFE/MAE, funding réel par trade, fees dans `fill_events` (≈0 après 05-24), `external_reference_*` vides côté Pod C. |
 
-**Verdict en une phrase** : le système est techniquement sain et bien instrumenté pour un projet de cette maturité, mais (a) la sécurité du repo public doit être corrigée **avant toute autre action**, (b) le PnL live A/C cumulé (-148 USD vs +860 en replay) n'est attribuable que sur sa queue récente, ce qui interdit toute conclusion de promotion/augmentation de capital, et (c) HIP4 n'est pas promouvable.
+**Verdict en une phrase** : le système est techniquement sain et bien instrumenté pour un projet de cette maturité ; la remédiation sécurité P0 est clôturée au 2026-06-12, mais (a) le PnL live A/C cumulé (-148 USD vs +860 en replay) n'est attribuable que sur sa queue récente, ce qui interdit toute conclusion de promotion/augmentation de capital, et (b) HIP4 n'est pas promouvable.
 
 ---
 
@@ -34,7 +34,7 @@ Fichiers exclus du pack (assumé) : `trident_ac_signal_decisions.jsonl`, `hip4_d
 - **Fait observé** : `app/observability/api.py` (HTTP stdlib) n'a **aucune authentification**. `do_POST` expose `/api/routing/override` qui permet à n'importe quel appelant de forcer/effacer l'ownership d'un symbole (`supervisor.set_runtime_symbol_override`). `docker-compose.trident.yml` lance l'API avec `--host 0.0.0.0` et publie `"3000:3000"` (toutes interfaces de l'hôte) ; idem HIP4 sur 3001.
 - **Impact** : sur un bot **live mainnet**, un attaquant joignant le port 3000 peut (i) lire positions, PnL, équity, adresses de capital, (ii) modifier le routing — ce qui peut déclencher des `routing_revoked` et forcer des fermetures de positions réelles. La note `config/trident.toml` (`host=127.0.0.1`) est neutralisée par le compose.
 - **Hypothèse** : un firewall Hetzner peut bloquer le port — non vérifiable depuis le pack. La défense en profondeur est absente dans tous les cas.
-- **Action** : publier `127.0.0.1:3000:3000` dans les compose (accès via tunnel SSH), et/ou ajouter un token d'auth sur tous les endpoints (au minimum sur le POST), et confirmer la règle firewall. Tester ensuite que `fetch_*_data.sh` fonctionne toujours.
+- **Action appliquée le 2026-06-12** : Basic Auth obligatoire sur UI/API `3000` et `3001` sauf `/health`, même login/password sur TRIDENT A/C et TRIDENT-HIP4, `POST /api/routing/override` désactivé par défaut. Les ports restent publics par choix opérateur (accès téléphone sans domaine), avec risque résiduel HTTP sans TLS accepté.
 
 ### F-03 — PnL live cumulé A/C non attribuable (sévérité : **HAUTE / P0 data**)
 - **Fait observé** : runtime Pod A `realized_pnl_usd=-134.27` (115 fills, WR 0.356), Pod C `-14.21` (23 fills, WR 0.261), alors que l'export ne contient que 31 trades fermés (-5.90 / +0.46) couvrant 06-09 → 06-11. `close_fills=0` partout. Les ~90 fermetures précédentes (depuis ~05-24) n'existent dans aucun fichier fourni.
@@ -187,7 +187,7 @@ TRIDENT-HIP4 (/opt/trident-hip4, port 3001, mainnet PAPER + observer)
 - **Séparation A/C vs HIP4** : effective. Compose A/C force `TRIDENT_ENABLE_POD_B="false"` et `TRIDENT_ENABLE_HIP4_OUTCOME="false"` en dur ✓. Pod B legacy disabled ✓. L'alias `pod_b_live_status.json` pour HIP4 reste une source de confusion documentée mais maîtrisée.
 - **Patterns de trading** : Pod A = pullback de continuation long crypto, multi-timeframe, gouverné en live par A-grade/quality sizing/loss tax/stop grace ; Pod C = continuation TradFi long cluster-aware ; HIP4 = arbitrage probabiliste sur tokens binaires (modèle lognormal vs prix YES/NO, net d'environ 3.7 % de coûts+marge).
 - **Points forts** : pods producteurs de plans sans accès aux ordres ; venue unique pour l'exécution ; reconciliation qui refuse l'état ready sur positions inconnues ; `pending_position` durable écrit immédiatement après fill (correctif incident ARB 06-07) ; rounding `6 - szDecimals` corrigé ; séparation opening vs managed symbols qui évite les `routing_revoked` brutaux ; baselines versionnées avec statut explicite.
-- **Points faibles** : API stdlib monolithique (~8 000+ lignes dans `api.py`) sans auth (F-02) ; dérive doc (README vs config réelle, ex. blocked_symbols Pod C) ; `closed_trade_log` non persistant au-delà du buffer runtime (F-03) ; le régime v2 existe mais inactif — la détection legacy (ADX 22 / structure 0.30) est l'unique gate de régime alors que la fenêtre récente montre des entrées TrendExpansion qui meurent en DeadZone.
+- **Points faibles** : API stdlib monolithique (~8 000+ lignes dans `api.py`, auth ajoutée après audit via R-02) ; dérive doc (README vs config réelle, ex. blocked_symbols Pod C) ; `closed_trade_log` non persistant au-delà du buffer runtime (F-03) ; le régime v2 existe mais inactif — la détection legacy (ADX 22 / structure 0.30) est l'unique gate de régime alors que la fenêtre récente montre des entrées TrendExpansion qui meurent en DeadZone.
 
 ---
 
@@ -196,7 +196,7 @@ TRIDENT-HIP4 (/opt/trident-hip4, port 3001, mainnet PAPER + observer)
 | # | Domaine | Constat | Sévérité |
 | --- | --- | --- | --- |
 | S-01 | Secrets | **Clé privée committée dans le repo public** (`.env.trident`, git-tracked) + `.gitignore` n'ignorant pas `.env.trident` (cf. F-01). Aucune trace de secret dans les logs/exports du pack (`contains_secrets=false`, vérifié par grep) ; le code ne logge pas les clés (lecture env uniquement, `private_state.py`). | **Critique** |
-| S-02 | API/dashboard | Pas d'authentification, endpoint mutant `POST /api/routing/override`, publication `3000:3000`/`3001` toutes interfaces (cf. F-02). `log_message` désactivé → pas de trace d'accès non plus. | **Critique** |
+| S-02 | API/dashboard | Constat initial : pas d'authentification, endpoint mutant `POST /api/routing/override`, publication `3000:3000`/`3001` toutes interfaces (cf. F-02). Statut 2026-06-12 : corrigé par R-02 (`OK_DEPLOY_AUTH_3000_3001`) ; risque résiduel HTTP public sans TLS accepté. | **Critique clôturé / résiduel HTTP** |
 | S-03 | Chemins vers ordres réels | Bien gardés : `live` exige `TRIDENT_LIVE_CONFIRM=I_UNDERSTAND_REAL_ORDERS` + clé 0x valide (`private_state.validate`) ; cap `live_max_order_notional_usd=200` appliqué dans la venue (`notional_above_live_cap`) ; protective orders requis avec emergency close si SL impossible ; HIP4 paper : `allow_testnet_orders=false`, executor testnet exige URL/secret/flag explicites ; observer signal-only confirmé runtime. Réserve : le `.env.trident` committé active l'envoi d'ordres testnet par défaut sur tout clone naïf (cf. F-01). | OK avec réserve |
 | S-04 | Reconciliation / unknown positions | Conception saine : refuse ready si positions exchange inconnues, side mismatches, ordres inconnus ; récupération via metadata/`pending_position` ; état actuel ready=true des deux pods. L'override `TRIDENT_LIVE_ALLOW_UNKNOWN_POSITIONS` existe (vide actuellement) — à n'utiliser que sous intervention auditée, comme documenté. | OK |
 | S-05 | State persistence / crash-restart | State stores JSON + `restart: unless-stopped` sur tous les services ; `pending_position` durable post-fill ; events/orders persistés. Non testé dans le pack : un kill -9 entre fill et écriture protective order (fenêtre courte mais réelle) — couvert en partie par la reconciliation au redémarrage. | OK |
@@ -219,13 +219,14 @@ TRIDENT-HIP4 (/opt/trident-hip4, port 3001, mainnet PAPER + observer)
 - **Test requis** : après rotation, redémarrage HIP4 testnet OK ; scan gitleaks vert.
 - **Rollback** : n/a.
 
-### R-02 — Verrouiller l'API (bind 127.0.0.1 + auth + firewall) — **P0, `ready`**
+### R-02 — Verrouiller l'API (auth UI/API + endpoint mutant désactivé) — **P0, `done`**
 - **Périmètre** : `docker-compose.trident.yml` / `docker-compose.hip4.yml` / `app/observability/api.py`.
 - **Preuve** : F-02 (POST routing override non authentifié, publication toutes interfaces, bot live mainnet).
 - **Impact PnL** : élimine un vecteur de fermetures forcées / manipulation de routing par un tiers.
-- **Risque introduit** : casser `fetch_*_data.sh` si ces scripts interrogent l'API à distance → tester ; tunnel SSH à documenter.
-- **Test requis** : fetch complet OK après changement ; scan externe du port 3000/3001 fermé.
-- **Rollback** : revert compose (mais ne pas le faire sans auth).
+- **Statut** : clôturé le 2026-06-12. Choix opérateur retenu : ports publics `3000` (TRIDENT A/C) et `3001` (TRIDENT-HIP4) avec Basic Auth obligatoire sur UI/API sauf `/health`, même login/password sur les deux apps, et `POST /api/routing/override` désactivé par défaut.
+- **Preuves conservées** : services redéployés et healthy ; `/health` retourne `200`; `/api/state` sans auth retourne `401`; `/api/state` avec auth retourne `200`; `POST /api/routing/override` avec auth retourne `403 routing_override_disabled`; scripts fetch/review adaptés pour sourcer les identifiants depuis `.env.trident` / `.env.trident-hip4`.
+- **Risque résiduel** : accès en HTTP par IP publique, donc mot de passe non chiffré sur le réseau ; utiliser un mot de passe long, unique, et préférer ultérieurement un reverse proxy HTTPS ou VPN si l'ergonomie le permet.
+- **Rollback** : remettre `TRIDENT_API_BIND=127.0.0.1` / `HIP4_OUTCOME_API_BIND=127.0.0.1` et recréer les conteneurs API si l'exposition publique doit être coupée.
 
 ### R-03 — Persistance des close fills exchange + historique complet des trades fermés — **P0, `needs_data` (c'est la donnée elle-même)**
 - **Périmètre** : `app/execution/live.py` (journaliser les fills de fermeture comme les ouvertures), `export_trident_audit_pack.py`, fetch.
@@ -294,7 +295,7 @@ Corriger en lot : code retour `fetch_all_data.sh` (faux `[ERROR] code 0`) ; rég
 4. **Replay cutoff HIP4 au timestamp exact d'activation de `prob_stop_full`** (≈ 2026-06-10 d'après l'annexe 03) + run review régénérée (R-08).
 5. **Reconciliation exchange fill-by-fill** d'au moins un cycle live récent dès que R-03 est instrumenté ; backfill des user fills historiques pour expliquer le -134.27.
 6. **Re-run multipliers Pod C** (dont `gold_070`) sur une fenêtre étendue incluant juin (R-09).
-7. Tests d'exploitation : scan externe ports 3000/3001 après R-02 ; gitleaks sur l'historique complet après R-01 ; test crash/restart (kill du runner entre fill et protective order, vérifier la récupération via `pending_position`).
+7. Tests d'exploitation : après R-02, vérifier `3000`/`3001` en `401` sans auth, `200` avec auth, `/health` en `200`, et `POST /api/routing/override` en `403 routing_override_disabled`; gitleaks sur l'historique complet après R-01 ; test crash/restart (kill du runner entre fill et protective order, vérifier la récupération via `pending_position`).
 
 ---
 
@@ -324,7 +325,7 @@ Corriger en lot : code retour `fetch_all_data.sh` (faux `[ERROR] code 0`) ; rég
 5. **Déblocage de `XYZ:SILVER`** ou de symboles de la blocklist Pod A.
 6. **Promotion de `gold_070` ou `global_070`** sans nouveau replay full-bot incluant juin.
 7. **Modification des protective orders / stop grace / catastrophic stop** sans tests de state, reconciliation et dry-run préalables.
-8. Les actions R-01 et R-02 (rotation de clé, verrouillage API) sont les seules recommandées **immédiatement**, et elles n'envoient aucun ordre.
+8. Les actions R-01 et R-02 (rotation de clé, verrouillage API) étaient les seules recommandées **immédiatement** ; elles sont clôturées au 2026-06-12 et elles n'envoient aucun ordre.
 
 ---
 
@@ -403,21 +404,17 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
 
 ### P0 — Sécurité et données bloquantes
 
-- [x] **P0-01 — Secrets repo public : rotation, retrait et purge — statut 2026-06-12 : `OK_GIT_REMOTE_PUSHED_SCAN_VERT`**
+- [x] **P0-01 — Secrets repo public : rotation, retrait et purge**
   **Références** : F-01, R-01, S-07.
-  **Modifs à faire** : révoquer/rotater la clé `HIP4_OUTCOME_SECRET_KEY` et l'API wallet associée ; retirer `.env.trident` du tracking git (`git rm --cached`) ; ajouter `.env.trident`, `.env.trident-hip4` et `.env.*` au `.gitignore` en gardant seulement les `*.example` ; purger l'historique public ou recréer un repo public nettoyé ; vérifier que les scripts de déploiement continuent de charger uniquement les secrets serveur.
-  **Tests / preuves attendues** : `git ls-files` ne liste plus de fichier secret ; scan `gitleaks`/`trufflehog` sur tout l'historique ; redémarrage HIP4 paper/testnet avec secrets serveur uniquement ; aucun secret réel dans le nouveau pack d'audit.
-  **Vérification locale 2026-06-12** : `git ls-files -- .env.trident .env.trident-hip4 '.env.*'` ne liste plus `.env.trident` ni `.env.trident-hip4` ; seuls `.env.trident.example` et `.env.tridentai.example` restent trackés. `.gitignore` ignore maintenant `.env`, `.env.trident`, `.env.trident-hip4`, `.env.tridentai` et `.env.*`, avec exception pour les `*.example`. `git grep -n -E '0x[0-9a-fA-F]{64}' -- ':!*.example' ':!docs/resultat_audit.md'` ne retourne rien.
-  **Purge historique 2026-06-12** : historique local réécrit avec `git-filter-repo --path .env.trident --invert-paths`; `git log --all -- .env.trident` ne retourne plus rien après purge. Remote `origin` restauré après la réécriture automatique par `git-filter-repo`, puis `main` force-pushé vers GitHub avec `--force-with-lease` avant le push final du rapport. Vérification post-push : `origin/main` pointe sur l'historique réécrit et `git log --all -- .env.trident` reste vide.
-  **Scan secrets 2026-06-12** : `gitleaks 8.30.1` lancé sur l'historique Git réécrit : `no leaks found`. Six faux positifs `generic-api-key` sur des identifiants de patterns de recherche (`app/research/pod_a_day_by_day_patterns.py`) sont ignorés via `.gitleaksignore` avec fingerprints exacts. `trufflehog 3.95.5` lancé sur le repo Git local : `verified_secrets=0`, `unverified_secrets=0`.
-  **Preuve opérateur 2026-06-12** : clé compromise déclarée révoquée/rotatée par l'opérateur. Le redémarrage HIP4 avec secrets serveur uniquement reste à vérifier dans le flux de déploiement/review, mais ne bloque plus le volet Git/secrets du P0-01.
-  **Terminé côté Git/secrets** : repo public nettoyé par force-push de l'historique réécrit et scans verts documentés. Suivi opérationnel hors purge Git : prochaine review serveur à utiliser pour confirmer le chargement des secrets serveur uniquement.
+  **Statut** : clôturé côté Git/secrets le 2026-06-12 (`OK_GIT_REMOTE_PUSHED_SCAN_VERT`).
+  **Preuves conservées** : `.env.trident` / `.env.trident-hip4` ne sont plus trackés ; `.gitignore` couvre les `.env*` réels en gardant les `*.example`; historique public réécrit et force-pushé ; `gitleaks` et `trufflehog` verts ; clé compromise déclarée révoquée/rotatée par l'opérateur.
+  **Suivi résiduel** : confirmer lors de la prochaine review serveur que HIP4 charge bien les secrets serveur uniquement.
 
-- [ ] **P0-02 — API : bind local + authentification + firewall**
+- [x] **P0-02 — API : authentification UI/API et endpoint mutant verrouillé**
   **Références** : F-02, R-02, S-02.
-  **Modifs à faire** : binder les ports TRIDENT/HIP4 sur `127.0.0.1` dans les compose ; ajouter une authentification par token au minimum sur tous les `POST`, idéalement sur toute l'API observabilité ; journaliser les refus d'accès ; confirmer la règle firewall serveur ; documenter l'accès via tunnel SSH.
-  **Tests / preuves attendues** : `curl` sans token retourne 401/403 ; `curl` avec token fonctionne via tunnel ; scan externe des ports 3000/3001 fermé ; `scripts/fetch_trident_data.sh` et `trident-hip4/fetch_data.sh` fonctionnent encore ; aucun endpoint mutant accessible sans auth.
-  **Terminé quand** : l'API live mainnet n'est plus exposée publiquement et le fetch/review reste opérationnel.
+  **Statut** : clôturé le 2026-06-12 (`OK_DEPLOY_AUTH_3000_3001`).
+  **Preuves conservées** : TRIDENT A/C reste sur `3000`, TRIDENT-HIP4 reste sur `3001`; même Basic Auth sur les deux apps ; `/health` public en `200`; `/api/state` sans auth en `401`; `/api/state` avec auth en `200`; `POST /api/routing/override` avec auth en `403 routing_override_disabled`; services Docker healthy après redéploiement ; scripts fetch/review compatibles auth.
+  **Risque résiduel accepté** : option opérateur = accès par IP publique en HTTP + login/password, sans domaine ni HTTPS ; mot de passe à garder long, unique, et à recréer les conteneurs API après toute modification de `.env.trident` / `.env.trident-hip4`.
 
 - [ ] **P0-03 — PnL exact : close fills, fees, funding, historique append-only**
   **Références** : F-03, F-07, R-03, §3.3, §10, addendum A/E.

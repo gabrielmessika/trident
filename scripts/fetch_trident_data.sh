@@ -141,6 +141,11 @@ remote_quote() {
     printf "%q" "$1"
 }
 
+remote_api_get_command() {
+    local url="$1"
+    printf '{ set -a; [ -f .env.trident ] && . ./.env.trident; set +a; auth_args=(); if [ -n "${TRIDENT_UI_AUTH_USERNAME:-}" ] && [ -n "${TRIDENT_UI_AUTH_PASSWORD:-}" ]; then auth_args=(-u "${TRIDENT_UI_AUTH_USERNAME}:${TRIDENT_UI_AUTH_PASSWORD}"); fi; curl -fsS "${auth_args[@]}" %q; }' "$url"
+}
+
 capture_remote() {
     local local_path="$1"
     local command="$2"
@@ -190,17 +195,17 @@ active_snapshot_dir() {
         printf '%s\n' "$fallback"
         return
     fi
-    ssh_remote "bash -lc $(remote_quote "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); raw=str((d.get(\"exchange\",{}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots")"
+    ssh_remote "bash -lc $(remote_quote "cd '${REMOTE_DIR}' && $(remote_api_get_command "http://127.0.0.1:3000/api/state") 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); raw=str((d.get(\"exchange\",{}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots")"
 }
 
 fetch_api() {
     local ts
     ts="$(date -u +"%Y-%m-%d_%H%M%S")"
     info "Rapatriement API TRIDENT A/C..."
-    capture_remote "${API_DIR}/health-${ts}.json" "curl -fsS http://127.0.0.1:3000/health"
-    capture_remote "${API_DIR}/state-${ts}.json" "curl -fsS http://127.0.0.1:3000/api/state"
-    capture_remote "${API_DIR}/metrics-${ts}.json" "curl -fsS http://127.0.0.1:3000/api/metrics"
-    capture_remote "${API_DIR}/report-${ts}.json" "curl -fsS http://127.0.0.1:3000/api/report"
+    capture_remote "${API_DIR}/health-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:3000/health")"
+    capture_remote "${API_DIR}/state-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:3000/api/state")"
+    capture_remote "${API_DIR}/metrics-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:3000/api/metrics")"
+    capture_remote "${API_DIR}/report-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:3000/api/report")"
     ok "API TRIDENT sauvegardée dans ${API_DIR}/"
 }
 

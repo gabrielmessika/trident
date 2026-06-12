@@ -12,8 +12,8 @@ Déployer `trident` sur un serveur Hetzner Cloud sans surcouches inutiles :
 Le workflow est inspiré de `gbot`, mais adapté à l'architecture actuelle de `trident` :
 
 - `docker-compose.trident.yml`
-- API exposée publiquement sur `0.0.0.0:3000`
-- dashboard accessible directement via l'IP ou le DNS du serveur
+- API publiée sur `127.0.0.1:3000` côté serveur par défaut
+- dashboard accessible via tunnel SSH local ou reverse proxy HTTP(S)
 
 Par défaut, `deploy.sh` utilise l'alias SSH :
 
@@ -80,7 +80,7 @@ Le script :
 - prépare `/opt/trident`
 - désactive l'authentification SSH par mot de passe
 - augmente les limites `nofile`
-- ouvre `3000/tcp` dans `ufw`
+- garde l'API TRIDENT fermée au réseau public par défaut
 
 Répertoire cible sur le serveur :
 
@@ -413,25 +413,47 @@ Scripts raccourcis également disponibles :
 
 ## 5. Accéder à l'UI
 
-L'API est exposée publiquement sur le port `3000`.
+L'API n'est plus exposée publiquement par défaut : Docker publie le port sur
+`127.0.0.1:3000` côté serveur. L'UI reste donc facile à consulter, mais le port
+brut n'est pas ouvert à Internet.
 
-Depuis n'importe quelle machine, ouvrir :
+Depuis ta machine locale, ouvre un tunnel SSH :
 
-```text
-http://46.224.43.198:3000
+```bash
+ssh -L 3000:127.0.0.1:3000 trident-hetzner
 ```
 
-Ou, si tu as un DNS devant le serveur :
+Puis ouvre :
 
 ```text
-http://ton-domaine:3000
+http://127.0.0.1:3000
 ```
 
-Si le serveur a ete prepare avant cette modification, ouvre aussi le firewall une fois :
+Option login/password simple, sans token applicatif ni certificat client :
 
 ```bash
 ssh trident-hetzner
-sudo ufw allow 3000/tcp
+cd /opt/trident
+printf '%s\n' 'TRIDENT_UI_AUTH_USERNAME=viewer' >> .env.trident
+printf '%s\n' 'TRIDENT_UI_AUTH_PASSWORD=change-me' >> .env.trident
+docker compose --env-file .env.trident -f docker-compose.trident.yml \
+  --profile pod_c --profile funding up -d --force-recreate trident-api
+```
+
+Avec ces variables, toutes les routes UI/API sauf `/health` demandent une Basic
+Auth. Les scripts de fetch/review sourcent `.env.trident` côté serveur et
+continuent de fonctionner.
+
+Les actions qui modifient l'état runtime depuis l'UI sont désactivées par
+défaut. Ne définir `TRIDENT_ROUTING_OVERRIDE_ENABLED=true` que pour une
+opération de maintenance explicite.
+
+Si le serveur a été préparé avec une ancienne version qui ouvrait `3000/tcp`,
+ferme la règle firewall :
+
+```bash
+ssh trident-hetzner
+sudo ufw delete allow 3000/tcp
 sudo ufw status
 ```
 
@@ -450,7 +472,8 @@ Routes utiles :
 Important :
 
 - l'alias SSH `trident-hetzner` est pratique pour `ssh` et `deploy.sh`
-- dans le navigateur, utilise l'IP publique ou un vrai DNS, pas forcément l'alias SSH local
+- dans le navigateur, utilise `127.0.0.1:3000` pendant que le tunnel SSH est ouvert
+- si tu préfères un DNS, mets un reverse proxy HTTP(S) devant `127.0.0.1:3000`
 
 ---
 

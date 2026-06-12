@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import copy
 import csv
@@ -7,6 +8,7 @@ import io
 import json
 import math
 import os
+import secrets
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -44,6 +46,7 @@ from app.trident.types import PodName, RegimeSnapshot, SymbolMarketSnapshot, sym
 
 TRIDENT_UI_PODS = ("pod_a", "pod_c")
 HIP4_APP_KINDS = {"trident-hip4", "hip4", "hip4-outcome"}
+TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 
 def _app_kind() -> str:
@@ -54,14 +57,61 @@ def _is_hip4_app() -> bool:
     return _app_kind() in HIP4_APP_KINDS
 
 
+def _env_truthy(name: str) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None or raw_value == "":
+        return False
+    return raw_value.strip().lower() in TRUTHY_ENV_VALUES
+
+
 def _hip4_routes_enabled() -> bool:
     if _is_hip4_app():
         return True
-    raw_value = os.getenv("TRIDENT_ENABLE_HIP4_OUTCOME")
-    if raw_value is None or raw_value == "":
+    return _env_truthy("TRIDENT_ENABLE_HIP4_OUTCOME")
+
+
+def _routing_override_enabled() -> bool:
+    return _env_truthy("TRIDENT_ROUTING_OVERRIDE_ENABLED")
+
+
+def _ui_basic_auth_credentials() -> tuple[str, str] | None:
+    username = os.getenv("TRIDENT_UI_AUTH_USERNAME", "").strip()
+    password = os.getenv("TRIDENT_UI_AUTH_PASSWORD", "")
+    if not username or not password:
+        return None
+    return username, password
+
+
+def _parse_basic_auth_header(header_value: str) -> tuple[str, str] | None:
+    scheme, separator, token = header_value.partition(" ")
+    if separator != " " or scheme.lower() != "basic" or not token.strip():
+        return None
+    try:
+        decoded = base64.b64decode(token.strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    username, separator, password = decoded.partition(":")
+    if separator != ":":
+        return None
+    return username, password
+
+
+def _basic_auth_matches(
+    header_value: str,
+    expected_credentials: tuple[str, str],
+) -> bool:
+    parsed = _parse_basic_auth_header(header_value)
+    if parsed is None:
         return False
-    raw = raw_value.strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    expected_username, expected_password = expected_credentials
+    username, password = parsed
+    username_ok = secrets.compare_digest(username, expected_username)
+    password_ok = secrets.compare_digest(password, expected_password)
+    return username_ok and password_ok
+
+
+def _request_path(path: str) -> str:
+    return path.split("?", 1)[0]
 
 
 def _exchange_network_from_url(info_url: object) -> str:
@@ -4024,6 +4074,42 @@ def _control_center_html(
     routing_override_runtime_path = escape(
         str(routing_override_meta.get("runtime_path") or "-")
     )
+    routing_override_mutation_enabled = _routing_override_enabled()
+    routing_override_auth_configured = _ui_basic_auth_credentials() is not None
+    if routing_override_mutation_enabled and routing_override_auth_configured:
+        routing_override_controls = """
+            <form class="inline-form" data-routing-override-form>
+              <div class="field-stack">
+                <label for="routing-override-symbol">Symbol</label>
+                <input id="routing-override-symbol" name="symbol" type="text" placeholder="SOL" autocomplete="off">
+              </div>
+              <div class="field-stack">
+                <label for="routing-override-owner">Owner</label>
+                <select id="routing-override-owner" name="owner">
+                  <option value="pod_a">pod_a</option>
+                  <option value="pod_b">pod_b</option>
+                  <option value="pod_c">pod_c</option>
+                </select>
+              </div>
+              <button class="action-button" type="submit">Set runtime pin</button>
+              <button class="action-button secondary" type="button" data-routing-override-clear>Clear pin</button>
+            </form>
+            <div class="inline-status" data-routing-override-status>
+              Utilisez ce panneau pour forcer un symbole en live sans redémarrer le supervisor.
+            </div>
+        """
+    elif routing_override_mutation_enabled:
+        routing_override_controls = """
+            <div class="inline-status">
+              Les modifications runtime exigent TRIDENT_UI_AUTH_USERNAME et TRIDENT_UI_AUTH_PASSWORD avant d'afficher le panneau d'action.
+            </div>
+        """
+    else:
+        routing_override_controls = """
+            <div class="inline-status">
+              Les modifications runtime sont désactivées sur cette UI. Définir TRIDENT_ROUTING_OVERRIDE_ENABLED=true pour réactiver ce panneau.
+            </div>
+        """
     routing_decision_rows = "".join(
         (
             "<tr>"
@@ -5232,25 +5318,7 @@ def _control_center_html(
               <h3>Routing overrides</h3>
               <p>Overrides statiques et runtime actuellement pris en compte par le routeur. Runtime file: <code>{routing_override_runtime_path}</code>. Last runtime update: <code>{routing_override_runtime_updated_at}</code>.</p>
             </div>
-            <form class="inline-form" data-routing-override-form>
-              <div class="field-stack">
-                <label for="routing-override-symbol">Symbol</label>
-                <input id="routing-override-symbol" name="symbol" type="text" placeholder="SOL" autocomplete="off">
-              </div>
-              <div class="field-stack">
-                <label for="routing-override-owner">Owner</label>
-                <select id="routing-override-owner" name="owner">
-                  <option value="pod_a">pod_a</option>
-                  <option value="pod_b">pod_b</option>
-                  <option value="pod_c">pod_c</option>
-                </select>
-              </div>
-              <button class="action-button" type="submit">Set runtime pin</button>
-              <button class="action-button secondary" type="button" data-routing-override-clear>Clear pin</button>
-            </form>
-            <div class="inline-status" data-routing-override-status>
-              Utilisez ce panneau pour forcer un symbole en live sans redémarrer le supervisor.
-            </div>
+            {routing_override_controls}
             <div class="table-wrap">
               <table>
                 <thead><tr><th>Symbol</th><th>Owner</th><th>Source</th></tr></thead>
@@ -8260,8 +8328,12 @@ def build_handler(
     supervisor: TridentSupervisor,
     metrics: MetricsRegistry,
 ) -> type[BaseHTTPRequestHandler]:
+    auth_credentials = _ui_basic_auth_credentials()
+    routing_override_enabled = _routing_override_enabled()
+
     class TridentHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
+            path = _request_path(self.path)
             routes: dict[str, Callable[[], dict[str, object]]] = {
                 "/health": lambda: health_payload(supervisor),
                 "/api/state": lambda: state_payload(supervisor, metrics),
@@ -8298,17 +8370,25 @@ def build_handler(
                         supervisor,
                         metrics,
                     )
-            if self.path in html_routes:
-                self._send_html(HTTPStatus.OK, html_routes[self.path]())
+            if path != "/health" and not self._require_auth():
                 return
-            if self.path not in routes:
+            if path in html_routes:
+                self._send_html(HTTPStatus.OK, html_routes[path]())
+                return
+            if path not in routes:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 return
-            self._send_json(HTTPStatus.OK, routes[self.path]())
+            self._send_json(HTTPStatus.OK, routes[path]())
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/api/routing/override":
+            path = _request_path(self.path)
+            if path != "/api/routing/override":
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                return
+            if not routing_override_enabled:
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "routing_override_disabled"})
+                return
+            if not self._require_auth(require_configured=True):
                 return
             payload = self._read_json_body()
             if not isinstance(payload, dict):
@@ -8359,6 +8439,24 @@ def build_handler(
         def log_message(self, format: str, *args: object) -> None:
             return
 
+        def _require_auth(self, *, require_configured: bool = False) -> bool:
+            if auth_credentials is None:
+                if require_configured:
+                    self._send_json(
+                        HTTPStatus.FORBIDDEN,
+                        {"error": "authentication_not_configured"},
+                    )
+                    return False
+                return True
+            if _basic_auth_matches(self.headers.get("Authorization", ""), auth_credentials):
+                return True
+            self._send_json(
+                HTTPStatus.UNAUTHORIZED,
+                {"error": "authentication_required"},
+                headers={"WWW-Authenticate": 'Basic realm="TRIDENT UI", charset="UTF-8"'},
+            )
+            return False
+
         def _read_json_body(self) -> dict[str, object] | None:
             raw_length = self.headers.get("Content-Length", "0")
             try:
@@ -8374,12 +8472,19 @@ def build_handler(
                 return None
             return payload if isinstance(payload, dict) else None
 
-        def _send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+        def _send_json(
+            self,
+            status: HTTPStatus,
+            payload: dict[str, object],
+            *,
+            headers: dict[str, str] | None = None,
+        ) -> None:
             body = json.dumps(payload).encode("utf-8")
             self._write_response(
                 status,
                 body,
                 content_type="application/json",
+                headers=headers,
             )
 
         def _send_html(self, status: HTTPStatus, payload: str) -> None:
@@ -8390,10 +8495,19 @@ def build_handler(
                 content_type="text/html; charset=utf-8",
             )
 
-        def _write_response(self, status: HTTPStatus, body: bytes, *, content_type: str) -> None:
+        def _write_response(
+            self,
+            status: HTTPStatus,
+            body: bytes,
+            *,
+            content_type: str,
+            headers: dict[str, str] | None = None,
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            for header_name, header_value in (headers or {}).items():
+                self.send_header(header_name, header_value)
             self.end_headers()
             try:
                 self.wfile.write(body)

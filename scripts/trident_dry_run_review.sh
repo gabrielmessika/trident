@@ -119,6 +119,11 @@ ssh_remote() {
     ssh "${SSH_ARGS[@]}" "${SSH_TARGET}" "$@"
 }
 
+remote_api_get_command() {
+    local url="$1"
+    printf '{ set -a; [ -f .env.trident ] && . ./.env.trident; set +a; auth_args=(); if [ -n "${TRIDENT_UI_AUTH_USERNAME:-}" ] && [ -n "${TRIDENT_UI_AUTH_PASSWORD:-}" ]; then auth_args=(-u "${TRIDENT_UI_AUTH_USERNAME}:${TRIDENT_UI_AUTH_PASSWORD}"); fi; curl -fsS "${auth_args[@]}" %q; }' "$url"
+}
+
 latest_local_file() {
     local pattern="$1"
     python3 - "$pattern" <<'PY'
@@ -440,15 +445,15 @@ else
     capture_remote "server_meta.txt" "cd '${REMOTE_DIR}' && echo host=\$(hostname) && echo utc_now=\$(date -u +%Y-%m-%dT%H:%M:%SZ) && echo pwd=\$(pwd)"
     capture_remote "docker_ps.txt" "docker ps -a --format '{{.Names}}\t{{.Status}}'"
     capture_remote "compose_ps.txt" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.trident.yml ps"
-    capture_remote "health.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/health"
-    capture_remote "state.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state"
-    capture_remote "metrics.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/metrics"
-    capture_remote "report.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/report"
+    capture_remote "health.json" "cd '${REMOTE_DIR}' && $(remote_api_get_command "http://127.0.0.1:3000/health")"
+    capture_remote "state.json" "cd '${REMOTE_DIR}' && $(remote_api_get_command "http://127.0.0.1:3000/api/state")"
+    capture_remote "metrics.json" "cd '${REMOTE_DIR}' && $(remote_api_get_command "http://127.0.0.1:3000/api/metrics")"
+    capture_remote "report.json" "cd '${REMOTE_DIR}' && $(remote_api_get_command "http://127.0.0.1:3000/api/report")"
     capture_remote "deployment_profile.json" "cd '${REMOTE_DIR}' && cat logs/trident_deployment_profile.json 2>/dev/null || true"
-    capture_remote "hip4_outcome.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome"
-    capture_remote "hip4_outcome_mainnet.json" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/hip4-outcome-mainnet"
-    capture_remote "snapshot_source.txt" "cd '${REMOTE_DIR}' && curl -fsS http://127.0.0.1:3000/api/state | python3 -c 'import json, sys; raw=str((json.load(sys.stdin).get(\"exchange\", {}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots"
-    capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && snapshot_dir=\$(curl -fsS http://127.0.0.1:3000/api/state | python3 -c 'import json, sys; raw=str((json.load(sys.stdin).get(\"exchange\", {}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots); find \"\${snapshot_dir}\" -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
+    capture_remote "hip4_outcome.json" "cd '${REMOTE_DIR}' && $(remote_api_get_command "http://127.0.0.1:3000/api/hip4-outcome")"
+    capture_remote "hip4_outcome_mainnet.json" "cd '${REMOTE_DIR}' && $(remote_api_get_command "http://127.0.0.1:3000/api/hip4-outcome-mainnet")"
+    capture_remote "snapshot_source.txt" "cd '${REMOTE_DIR}' && $(remote_api_get_command "http://127.0.0.1:3000/api/state") | python3 -c 'import json, sys; raw=str((json.load(sys.stdin).get(\"exchange\", {}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots"
+    capture_remote "snapshot_files.txt" "cd '${REMOTE_DIR}' && snapshot_dir=\$($(remote_api_get_command "http://127.0.0.1:3000/api/state") | python3 -c 'import json, sys; raw=str((json.load(sys.stdin).get(\"exchange\", {}) or {}).get(\"snapshot_output_dir\", \"data/live_snapshots\")).strip(); raw=raw[2:] if raw.startswith(\"./\") else raw; print(raw if raw.startswith(\"data/\") and \"..\" not in raw.split(\"/\") else \"data/live_snapshots\")' 2>/dev/null || printf '%s\n' data/live_snapshots); find \"\${snapshot_dir}\" -maxdepth 1 -type f -name '*.jsonl' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%s|%p\n' 2>/dev/null | sort -nr"
     capture_remote "journal_files.txt" "cd '${REMOTE_DIR}' && for f in logs/pod_a_live.jsonl logs/pod_b_live.jsonl logs/pod_c_live.jsonl; do if [ -f \"\$f\" ]; then printf '%s|%s|%s\n' \"\$f\" \"\$(wc -l < \"\$f\" | tr -d ' ')\" \"\$(stat -c %Y \"\$f\")\"; fi; done"
     if [ "${SKIP_HIP4_REVIEW}" = "true" ]; then
         printf 'skipped\n' > "${RAW_DIR}/hip4_files.txt"

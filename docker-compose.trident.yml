@@ -34,6 +34,9 @@ services:
       TRIDENT_CRASH_ALERT_STATE_PATH: ${TRIDENT_CRASH_ALERT_STATE_PATH:-}
       TRIDENT_ENABLE_HIP4_OUTCOME: "false"
       TRIDENT_ENABLE_FUNDING: ${TRIDENT_ENABLE_FUNDING:-true}
+      TRIDENT_UI_AUTH_USERNAME: ${TRIDENT_UI_AUTH_USERNAME:-}
+      TRIDENT_UI_AUTH_PASSWORD: ${TRIDENT_UI_AUTH_PASSWORD:-}
+      TRIDENT_ROUTING_OVERRIDE_ENABLED: ${TRIDENT_ROUTING_OVERRIDE_ENABLED:-false}
     command:
       - python
       - -m
@@ -49,7 +52,7 @@ services:
       - --port
       - "3000"
     ports:
-      - "3000:3000"
+      - "${TRIDENT_API_BIND:-127.0.0.1}:3000:3000"
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs

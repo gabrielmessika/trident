@@ -774,7 +774,18 @@ predicat entry-time actionnable.
 Verification serveur apres deploiement:
 
 ```bash
-ssh trident-hetzner "cd /opt/trident && curl -fsS http://127.0.0.1:3000/api/hip4-outcome | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get(\"mode\"), d.get(\"blocked_opportunity_slices\"))'"
+ssh trident-hetzner <<'SH'
+cd /opt/trident
+set -a
+[ -f .env.trident ] && . ./.env.trident
+set +a
+auth_args=()
+if [ -n "${TRIDENT_UI_AUTH_USERNAME:-}" ] && [ -n "${TRIDENT_UI_AUTH_PASSWORD:-}" ]; then
+  auth_args=(-u "${TRIDENT_UI_AUTH_USERNAME}:${TRIDENT_UI_AUTH_PASSWORD}")
+fi
+curl -fsS "${auth_args[@]}" http://127.0.0.1:3000/api/hip4-outcome \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("mode"), d.get("blocked_opportunity_slices"))'
+SH
 ```
 
 Attendu:

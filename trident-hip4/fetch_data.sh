@@ -143,6 +143,11 @@ remote_quote() {
     printf "%q" "$1"
 }
 
+remote_api_get_command() {
+    local url="$1"
+    printf '{ set -a; [ -f .env.trident-hip4 ] && . ./.env.trident-hip4; set +a; auth_args=(); if [ -n "${TRIDENT_UI_AUTH_USERNAME:-}" ] && [ -n "${TRIDENT_UI_AUTH_PASSWORD:-}" ]; then auth_args=(-u "${TRIDENT_UI_AUTH_USERNAME}:${TRIDENT_UI_AUTH_PASSWORD}"); fi; curl -fsS "${auth_args[@]}" %q; }' "$url"
+}
+
 capture_remote() {
     local local_path="$1"
     local command="$2"
@@ -189,12 +194,12 @@ fetch_api() {
     local ts
     ts="$(date -u +"%Y-%m-%d_%H%M%S")"
     info "Rapatriement API TRIDENT-HIP4..."
-    capture_remote "${API_DIR}/health-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/health"
-    capture_remote "${API_DIR}/hip4-outcome-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/hip4-outcome"
-    capture_remote "${API_DIR}/hip4-outcome-mainnet-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/hip4-outcome-mainnet"
-    capture_remote "${API_DIR}/hip4-nautilus-shadow-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/hip4-nautilus-shadow"
-    capture_remote "${API_DIR}/state-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/state"
-    capture_remote "${API_DIR}/report-${ts}.json" "curl -fsS http://127.0.0.1:${API_PORT}/api/report"
+    capture_remote "${API_DIR}/health-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:${API_PORT}/health")"
+    capture_remote "${API_DIR}/hip4-outcome-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:${API_PORT}/api/hip4-outcome")"
+    capture_remote "${API_DIR}/hip4-outcome-mainnet-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:${API_PORT}/api/hip4-outcome-mainnet")"
+    capture_remote "${API_DIR}/hip4-nautilus-shadow-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:${API_PORT}/api/hip4-nautilus-shadow")"
+    capture_remote "${API_DIR}/state-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:${API_PORT}/api/state")"
+    capture_remote "${API_DIR}/report-${ts}.json" "$(remote_api_get_command "http://127.0.0.1:${API_PORT}/api/report")"
     ok "API TRIDENT-HIP4 sauvegardée dans ${API_DIR}/"
 }
 

@@ -1,7 +1,11 @@
+import base64
+import http.client
 import json
 import os
+import threading
 import unittest
 from dataclasses import replace
+from http.server import HTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -20,6 +24,7 @@ from app.observability.api import (
     _opportunity_reason_tooltip,
     _tail_csv_records,
     _tail_jsonl_records,
+    build_handler,
     dashboard_html,
     health_payload,
     hip4_outcome_html,
@@ -47,11 +52,137 @@ class HealthApiTests(unittest.TestCase):
         )
         self.metrics = MetricsRegistry()
 
+    def _api_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        env: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        with patch.dict("os.environ", env or {}, clear=False):
+            server = HTTPServer(
+                ("127.0.0.1", 0),
+                build_handler(self.supervisor, self.metrics),
+            )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connection = http.client.HTTPConnection(
+            "127.0.0.1",
+            server.server_address[1],
+            timeout=5,
+        )
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            response = connection.getresponse()
+            response_body = response.read()
+            return response.status, dict(response.getheaders()), response_body
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    @staticmethod
+    def _basic_auth_header(username: str, password: str) -> dict[str, str]:
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        return {"Authorization": f"Basic {token}"}
+
     def test_health_payload(self) -> None:
         payload = health_payload(self.supervisor)
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["profile"], "trident")
         self.assertEqual(payload["exchange_network"], "mainnet")
+
+    def test_http_basic_auth_protects_ui_and_keeps_health_public(self) -> None:
+        env = {
+            "TRIDENT_UI_AUTH_USERNAME": "viewer",
+            "TRIDENT_UI_AUTH_PASSWORD": "secret",
+        }
+
+        status, headers, body = self._api_request("GET", "/api/state", env=env)
+
+        self.assertEqual(status, 401)
+        self.assertIn("Basic", headers["WWW-Authenticate"])
+        self.assertEqual(json.loads(body), {"error": "authentication_required"})
+
+        health_status, _health_headers, health_body = self._api_request(
+            "GET",
+            "/health",
+            env=env,
+        )
+        self.assertEqual(health_status, 200)
+        self.assertEqual(json.loads(health_body)["status"], "ok")
+
+        authed_status, _authed_headers, authed_body = self._api_request(
+            "GET",
+            "/api/state",
+            env=env,
+            headers=self._basic_auth_header("viewer", "secret"),
+        )
+        self.assertEqual(authed_status, 200)
+        self.assertEqual(json.loads(authed_body)["profile"], "trident")
+
+    def test_routing_override_post_is_disabled_by_default(self) -> None:
+        body = json.dumps({"symbol": "SOL", "owner": "pod_a"}).encode("utf-8")
+
+        status, _headers, response_body = self._api_request(
+            "POST",
+            "/api/routing/override",
+            env={"TRIDENT_ROUTING_OVERRIDE_ENABLED": ""},
+            headers={"Content-Type": "application/json"},
+            body=body,
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(response_body), {"error": "routing_override_disabled"})
+
+    def test_routing_override_post_requires_configured_auth_when_enabled(self) -> None:
+        body = json.dumps({"symbol": "SOL", "owner": "pod_a"}).encode("utf-8")
+
+        status, _headers, response_body = self._api_request(
+            "POST",
+            "/api/routing/override",
+            env={"TRIDENT_ROUTING_OVERRIDE_ENABLED": "true"},
+            headers={"Content-Type": "application/json"},
+            body=body,
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(response_body), {"error": "authentication_not_configured"})
+
+    def test_routing_override_post_requires_auth_when_enabled_and_credentials_exist(self) -> None:
+        env = {
+            "TRIDENT_ROUTING_OVERRIDE_ENABLED": "true",
+            "TRIDENT_UI_AUTH_USERNAME": "operator",
+            "TRIDENT_UI_AUTH_PASSWORD": "secret",
+        }
+        body = json.dumps({"symbol": "SOL", "owner": "pod_a"}).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+
+        status, _headers, response_body = self._api_request(
+            "POST",
+            "/api/routing/override",
+            env=env,
+            headers=headers,
+            body=body,
+        )
+
+        self.assertEqual(status, 401)
+        self.assertEqual(json.loads(response_body), {"error": "authentication_required"})
+
+        authed_status, _authed_headers, authed_body = self._api_request(
+            "POST",
+            "/api/routing/override",
+            env=env,
+            headers={**headers, **self._basic_auth_header("operator", "secret")},
+            body=body,
+        )
+        payload = json.loads(authed_body)
+        self.assertEqual(authed_status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["owner"], "pod_a")
 
     def test_tail_jsonl_records_reads_recent_window(self) -> None:
         with TemporaryDirectory() as tmpdir:

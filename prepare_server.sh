@@ -109,7 +109,8 @@ echo ">>> Configuration du firewall..."
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow ssh
-ufw allow 3000/tcp
+# L'API TRIDENT est publiée sur 127.0.0.1 par défaut. Ouvrir 80/443
+# seulement si un reverse proxy HTTP(S) est configuré explicitement.
 ufw --force enable
 
 echo ">>> Activation de fail2ban..."
