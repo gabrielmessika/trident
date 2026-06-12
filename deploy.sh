@@ -249,6 +249,8 @@ deploy_code() {
         --exclude='data/live_features_testnet' \
         --exclude='data/funding_history' \
         --exclude='data/research' \
+        --exclude='audit_backfills' \
+        --exclude='audit_exports' \
         --exclude='server-data' \
         --exclude='tmp' \
         --exclude='docs/pod_funding_research_latest.json' \

@@ -35,6 +35,9 @@ class UserOrderUpdateStats:
     messages_received: int = 0
     order_update_count: int = 0
     reconnect_count: int = 0
+    timeout_count: int = 0
+    heartbeat_count: int = 0
+    pong_count: int = 0
     last_error: str | None = None
     last_message_at: float | None = None
 
@@ -45,6 +48,9 @@ class UserOrderUpdateStats:
             "messages_received": self.messages_received,
             "order_update_count": self.order_update_count,
             "reconnect_count": self.reconnect_count,
+            "timeout_count": self.timeout_count,
+            "heartbeat_count": self.heartbeat_count,
+            "pong_count": self.pong_count,
             "last_error": self.last_error,
             "last_message_at": self.last_message_at,
         }
@@ -84,9 +90,9 @@ class UserOrderUpdateMonitor:
     def healthy(self, *, max_stale_seconds: float = 90.0) -> bool:
         if not self.stats.connected or not self.stats.subscription_ack:
             return False
-        if self.stats.last_message_at is None:
-            return True
-        return (time.monotonic() - self.stats.last_message_at) <= max_stale_seconds
+        if self.stats.last_error:
+            return False
+        return True
 
     async def _run(self) -> None:
         while not self._stop.is_set():
@@ -105,7 +111,7 @@ class UserOrderUpdateMonitor:
         async with websockets.connect(
             self.config.ws_url,
             open_timeout=self.config.connect_timeout_seconds,
-            ping_interval=self.config.heartbeat_interval_seconds,
+            ping_interval=None,
         ) as ws:
             self.stats.connected = True
             self.stats.last_error = None
@@ -121,10 +127,16 @@ class UserOrderUpdateMonitor:
                 )
             )
             while not self._stop.is_set():
-                raw = await asyncio.wait_for(
-                    ws.recv(),
-                    timeout=self.config.message_timeout_seconds,
-                )
+                try:
+                    raw = await asyncio.wait_for(
+                        ws.recv(),
+                        timeout=self.config.message_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    self.stats.timeout_count += 1
+                    await ws.send(json.dumps({"method": "ping"}))
+                    self.stats.heartbeat_count += 1
+                    continue
                 self.stats.messages_received += 1
                 self.stats.last_message_at = time.monotonic()
                 payload = json.loads(raw)
@@ -135,6 +147,9 @@ class UserOrderUpdateMonitor:
                     raise classified
                 if _is_order_updates_ack(payload, self.account_address):
                     self.stats.subscription_ack = True
+                    continue
+                if payload.get("channel") == "pong":
+                    self.stats.pong_count += 1
                     continue
                 if payload.get("channel") == "orderUpdates":
                     self.stats.order_update_count += 1
@@ -153,7 +168,7 @@ async def check_order_updates_subscription(
         async with websockets.connect(
             config.ws_url,
             open_timeout=config.connect_timeout_seconds,
-            ping_interval=config.heartbeat_interval_seconds,
+            ping_interval=None,
         ) as ws:
             await ws.send(
                 json.dumps(

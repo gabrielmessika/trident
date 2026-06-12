@@ -2,7 +2,7 @@
 
 Auditeur : revue externe trading/quant, architecture et sécurité opérationnelle.
 Sources : `trident_audit_pack_light_20260611.zip` (état runtime/fetch du 2026-06-11, prioritaire) + repo public `github.com/gabrielmessika/trident` (clone `main`, commit `1d8ba57`).
-Fichiers exclus du pack (assumé) : `trident_ac_signal_decisions.jsonl`, `hip4_decisions.jsonl`, `trident_ac_live_state_pod_a/c.json`. Toute conclusion dépendant des décisions brutes est marquée `needs_raw_decisions` ; toute conclusion dépendant des fills de sortie exchange est marquée `needs_exchange_reconciliation`.
+Fichiers exclus du pack initial (assumé) : `trident_ac_signal_decisions.jsonl`, `hip4_decisions.jsonl`, `trident_ac_live_state_pod_a/c.json`. Toute conclusion dépendant des décisions brutes reste marquée `needs_raw_decisions`. Les fills de sortie exchange A/C ont été ajoutés par la remédiation P0-03 du 2026-06-12.
 
 ---
 
@@ -16,9 +16,9 @@ Fichiers exclus du pack (assumé) : `trident_ac_signal_decisions.jsonl`, `hip4_d
 | **TRIDENT-HIP4 — mainnet observer** | OK (signal-only) | 0 ordre, `observer_mode_signal_only` confirmé dans runtime statuses. |
 | **Sécurité** | **Remédiation P0 clôturée le 2026-06-12** | Constats initiaux : clé privée committée et API HTTP non authentifiée avec endpoint mutant. Suivi : R-01 clôturé (`OK_GIT_REMOTE_PUSHED_SCAN_VERT`) ; R-02 clôturé (`OK_DEPLOY_AUTH_3000_3001`) avec Basic Auth sur `3000`/`3001` et `POST /api/routing/override` désactivé. Risque résiduel : HTTP public sans TLS par choix opérateur. |
 | **Readiness opérationnelle** | WARN | Guardrails live bien conçus (live confirm, cap, protective orders, reconciliation stricte, `pending_position` durable post-incident ARB). Restent : risque résiduel HTTP public sans TLS, script fetch avec erreur ambiguë `code 0`, `reference_equity_usd=0.0` dans le report runtime, run review HIP4 non régénérée après fetch. |
-| **Qualité des données** | WARN | Exploitable pour first-pass : closed trades A/C, trades/settlements/replays HIP4, baselines. Manquant : close fills exchange (0 ligne), historique complet des trades fermés, MFE/MAE, funding réel par trade, fees dans `fill_events` (≈0 après 05-24), `external_reference_*` vides côté Pod C. |
+| **Qualité des données** | WARN résiduel | Remédiation P0-03 clôturée le 2026-06-12 : close fills exchange, fees, funding et historique complet A/C sont backfillés et exportables. Restent hors P0-03 : MFE/MAE, checksums du pack, `external_reference_*` vides côté Pod C, et replay R-04. |
 
-**Verdict en une phrase** : le système est techniquement sain et bien instrumenté pour un projet de cette maturité ; la remédiation sécurité P0 est clôturée au 2026-06-12, mais (a) le PnL live A/C cumulé (-148 USD vs +860 en replay) n'est attribuable que sur sa queue récente, ce qui interdit toute conclusion de promotion/augmentation de capital, et (b) HIP4 n'est pas promouvable.
+**Verdict en une phrase** : le système est techniquement sain et bien instrumenté pour un projet de cette maturité ; les remédiations P0 sécurité et données PnL sont clôturées au 2026-06-12, mais le replay R-04 reste nécessaire avant toute conclusion de promotion/augmentation de capital, et HIP4 n'est pas promouvable.
 
 ---
 
@@ -36,9 +36,9 @@ Fichiers exclus du pack (assumé) : `trident_ac_signal_decisions.jsonl`, `hip4_d
 - **Hypothèse** : un firewall Hetzner peut bloquer le port — non vérifiable depuis le pack. La défense en profondeur est absente dans tous les cas.
 - **Action appliquée le 2026-06-12** : Basic Auth obligatoire sur UI/API `3000` et `3001` sauf `/health`, même login/password sur TRIDENT A/C et TRIDENT-HIP4, `POST /api/routing/override` désactivé par défaut. Les ports restent publics par choix opérateur (accès téléphone sans domaine), avec risque résiduel HTTP sans TLS accepté.
 
-### F-03 — PnL live cumulé A/C non attribuable (sévérité : **HAUTE / P0 data**)
+### F-03 — PnL live cumulé A/C non attribuable (sévérité initiale : **HAUTE / P0 data**, clôturé par P0-03)
 - **Fait observé** : runtime Pod A `realized_pnl_usd=-134.27` (115 fills, WR 0.356), Pod C `-14.21` (23 fills, WR 0.261), alors que l'export ne contient que 31 trades fermés (-5.90 / +0.46) couvrant 06-09 → 06-11. `close_fills=0` partout. Les ~90 fermetures précédentes (depuis ~05-24) n'existent dans aucun fichier fourni.
-- **Conséquence** : la divergence live (-148 USD cumulé) vs baseline replay (+859.83) est **le** sujet PnL n°1 du projet et il est aujourd'hui impossible de dire si elle vient du régime de marché, du modèle, du sizing, de l'exécution (slippage observé > hypothèse, cf. §3) ou des changements de config successifs (cap 933→500→250→200, blocklist élargie en cours de route — visibles dans `fill_events`). Statut : `needs_exchange_reconciliation` + `needs_data` (historique closed trades complet).
+- **Mise à jour 2026-06-12** : le trou de données est clôturé par P0-03 (`155/155` trades matchés aux fills exchange). La divergence live vs baseline reste **le** sujet PnL n°1, mais elle dépend désormais du replay R-04 et de la segmentation par régime/config, plus d'un manque de close fills.
 
 ### F-04 — HIP4 : le delta shadow `prob_stop_full` (+237 USDC) ne survit pas aux cutoffs récents (sévérité : MOYENNE)
 - **Fait observé** : sur la fenêtre complète, `prob_stop_full` shadow = +189.58 vs active -47.84 (delta +237.41). Mais cutoff ≥ 2026-06-02 : active -29.75, `prob_stop_full` -27.92, `hold_to_settlement` -71.72 — **toutes négatives**. Le runtime confirme que `active_policy=prob_stop_full` est déjà en place ; le -47.84 « active_paper » reflète largement l'ère de l'ancienne policy `bid_over_conservative_hold_ev` (14 exits, +40.90) qui coupait les gagnants. La perte récente est donc un problème de **modèle/edge**, pas seulement d'exit.
@@ -50,7 +50,7 @@ Fichiers exclus du pack (assumé) : `trident_ac_signal_decisions.jsonl`, `hip4_d
 
 ## 3. Audit PnL TRIDENT A/C
 
-Source : `trident_ac_closed_trades.csv` (31 trades, 06-09 → 06-11), `trident_ac_fill_events.csv` (141 open fills, 05-24 → 06-11), `trident_ac_runtime_summary.json`, review du 2026-06-11. Attribution **applicative first-pass** ; tout ce qui dépend des prix exacts de sortie est `needs_exchange_reconciliation`.
+Source initiale : `trident_ac_closed_trades.csv` (31 trades, 06-09 → 06-11), `trident_ac_fill_events.csv` (141 open fills, 05-24 → 06-11), `trident_ac_runtime_summary.json`, review du 2026-06-11. Cette section conserve l'attribution **applicative first-pass** du rapport initial ; la section 3.3 et P0-03 remplacent cette limite par le backfill exchange du 2026-06-12.
 
 ### 3.1 Pod A (25 trades, -5.90 USD, WR 24 %, PF 0.60)
 
@@ -69,7 +69,7 @@ Source : `trident_ac_closed_trades.csv` (31 trades, 06-09 → 06-11), `trident_a
 
 **`early_failure_exit` (10/25 trades, 100 % perdants, -5.87)** : perte moyenne réalisée -0.59 vs perte planifiée moyenne -0.84, soit ~70 % du stop planifié. La règle coupe donc bien avant le stop. Question ouverte non tranchée par le pack : combien de ces 10 trades auraient récupéré (BE/trailing) sans EFE ? Sans MFE/MAE post-exit et sans replay full-bot avec/sans EFE, impossible de dire si la règle est nette positive. Notons que les 10 EFE sont presque tous des entrées sizées à 0.50–0.64 (quality sizing déjà défensif), souvent avec watchers `vwap_weak`/`trend4h_flat` : la combinaison « entrée acceptée mais immédiatement annotée faible » est un pattern de sélection à creuser (`needs_raw_decisions`).
 
-**Stops planned vs actual** : sur les 5 `exchange_closed_stop_loss`, ratio perte réelle / perte planifiée entre 0.82 et 0.97 → **`within_plan`**, cohérent avec la review (actual -7.10 vs planned -8.06, excess +0.96 en faveur). Le slippage de sortie n'est donc pas le problème sur ces 5 trades. Une seule anomalie : le `stop_hit` BTC du 06-09 (-1.16 réel vs -0.90 planifié, ratio **1.29 = `mild_excess`**) — à reconcilier fill-by-fill (`needs_exchange_reconciliation`).
+**Stops planned vs actual** : sur les 5 `exchange_closed_stop_loss`, ratio perte réelle / perte planifiée entre 0.82 et 0.97 → **`within_plan`**, cohérent avec la review (actual -7.10 vs planned -8.06, excess +0.96 en faveur). Le slippage de sortie n'est donc pas le problème sur ces 5 trades. Une seule anomalie : le `stop_hit` BTC du 06-09 (-1.16 réel vs -0.90 planifié, ratio **1.29 = `mild_excess`**) — réconciliable dans le backfill P0-03.
 
 **Par confidence / A-grade / régime** :
 
@@ -84,9 +84,9 @@ La haute confiance (≥0.70 : 7 trades, -9.18, 0 % WR) est strictement perdante 
 
 Côté régime, 18/25 fermetures se font en `DeadZone` et 5 en `RangeAuction` : les entrées (faites en TrendExpansion d'après les `fill_events`) survivent rarement à la dégradation du régime — cohérent avec un marché récent sans suivi de tendance, et avec la performance négative de toutes les périodes courtes (PnL négatif sur <15m, 15-60m et 1-6h ; seul le trade >6h est gagnant).
 
-**Coûts d'exécution (fait observé, `fill_events`)** : slippage d'ouverture Pod A moyenne **11.7 bps**, médiane 7.3, max **60.5 bps** — au-dessus de l'hypothèse de 8 bps open utilisée pour le live et les replays. Pod C : 3.25 bps en moyenne. Sur des entrées IOC taker sur alts peu liquides (PENGU, BIO, ZRO, STRK…), le coût d'entrée seul peut absorber une fraction significative de l'expectancy d'un setup à stop 45–130 bps. Par ailleurs `fee_usd≈0` dans les fill events après le 05-24 : la capture des fees dans l'export est défaillante (`needs_data`).
+**Coûts d'exécution (fait observé, `fill_events`)** : slippage d'ouverture Pod A moyenne **11.7 bps**, médiane 7.3, max **60.5 bps** — au-dessus de l'hypothèse de 8 bps open utilisée pour le live et les replays. Pod C : 3.25 bps en moyenne. Sur des entrées IOC taker sur alts peu liquides (PENGU, BIO, ZRO, STRK…), le coût d'entrée seul peut absorber une fraction significative de l'expectancy d'un setup à stop 45–130 bps. Le constat initial `fee_usd≈0` après le 05-24 est couvert par P0-03 ; le sujet restant est la modélisation coût/slippage dans R-06/R-04.
 
-**Incohérences de config dans le temps (fait observé)** : les fill events montrent des notionals à 933/500/250 USD avant le 06-06 et des fills sur AVAX, AAVE, ONDO, HYPE, ICP (aujourd'hui bloqués). Le cap 200 et la blocklist actuelle ne s'appliquent que sur la fin de la fenêtre. Toute analyse du PnL cumulé -134.27 devra segmenter par époque de config — un changelog horodaté des changements de config est nécessaire (`needs_data`).
+**Incohérences de config dans le temps (fait observé)** : les fill events montrent des notionals à 933/500/250 USD avant le 06-06 et des fills sur AVAX, AAVE, ONDO, HYPE, ICP (aujourd'hui bloqués). Le cap 200 et la blocklist actuelle ne s'appliquent que sur la fin de la fenêtre. Toute analyse du PnL cumulé devra segmenter par époque de config ; le changelog opérateur existe dans `docs/trident_active_plan.md`, et doit être utilisé par R-04.
 
 ### 3.2 Pod C (6 trades, +0.46 USD, WR 50 %)
 
@@ -102,11 +102,16 @@ Côté régime, 18/25 fermetures se font en `DeadZone` et 5 en `RangeAuction` : 
 - **Anomalie data** : `external_reference_available=False` et `external_reference_age_seconds=0` sur les 6 trades. Soit les références externes ne sont pas jointes à l'export, soit elles étaient réellement absentes au moment des entrées — dans ce second cas c'est un problème de qualité de signal TradFi. À trancher (`needs_raw_decisions`).
 - **Divergence doc** : le README du repo indique `pod_c.blocked_symbols=["XYZ:GOLD"]` alors que le pack (autoritaire) indique `['XYZ:SILVER']` et que GOLD a tradé le 06-11. README obsolète — hygiène documentaire à corriger.
 
-### 3.3 Ce qui reste bloqué sans close fills exchange
-- Slippage et fees réels de sortie (l'attribution actuelle utilise les prix applicatifs).
-- Confirmation du `mild_excess` BTC stop_hit.
-- Décomposition gross/fees/funding du -134.27 cumulé.
-- Vérification qu'aucune fermeture exchange n'a divergé du state store (post-incident ARB).
+### 3.3 Mise à jour P0-03 — close fills exchange disponibles
+Au 2026-06-12, le blocage initial "sans close fills exchange" est levé par le backfill `server-data/audit_backfills/20260612T161017Z_exchange_backfill/` et l'export compact `server-data/audit_exports/20260612T163311Z_p003_final/`.
+
+- `155/155` trades fermés A/C matchés à des close fills exchange (`pod_a=128`, `pod_c=27`).
+- `419` user fills exchange et `223` paiements funding importés en read-only depuis Hyperliquid.
+- Close fills exchange matchés : `pod_a=152`, `pod_c=28`.
+- PnL net exchange backfillé : Pod A `-142.557837`, Pod C `-15.145243` ; PnL journal applicatif : Pod A `-136.7`, Pod C `-15.05`.
+- Validation fill-by-fill conservée : `server-data/audit_backfills/20260612T161017Z_exchange_backfill/fill_by_fill_validation.md` (cas BTC Pod A, open oid `466849105885`, close oid `466889637443`, JSONL `pod_a_live.jsonl:119237`, state store sans position BTC après close, CSV cohérents).
+
+Reste hors P0-03 : MFE/MAE par trade, parité `external_reference_*` Pod C, et replay R-04 pour trancher l'edge live/régime.
 
 ---
 
@@ -228,13 +233,15 @@ TRIDENT-HIP4 (/opt/trident-hip4, port 3001, mainnet PAPER + observer)
 - **Risque résiduel** : accès en HTTP par IP publique, donc mot de passe non chiffré sur le réseau ; utiliser un mot de passe long, unique, et préférer ultérieurement un reverse proxy HTTPS ou VPN si l'ergonomie le permet.
 - **Rollback** : remettre `TRIDENT_API_BIND=127.0.0.1` / `HIP4_OUTCOME_API_BIND=127.0.0.1` et recréer les conteneurs API si l'exposition publique doit être coupée.
 
-### R-03 — Persistance des close fills exchange + historique complet des trades fermés — **P0, `needs_data` (c'est la donnée elle-même)**
-- **Périmètre** : `app/execution/live.py` (journaliser les fills de fermeture comme les ouvertures), `export_trident_audit_pack.py`, fetch.
-- **Preuve** : F-03 (`close_fills=0`, -134.27 cumulé inattribuable, `closed_trade_log` = buffer).
-- **Impact PnL** : indirect mais maximal — c'est le prérequis pour expliquer la divergence live/replay (-148 vs +860) et toutes les décisions de sizing futures.
-- **Risque introduit** : néant (instrumentation).
-- **Test requis** : un cycle open/close live tiny vérifié fill-by-fill exchange vs state store vs closed trade ; backfill des fills historiques via l'API user fills HL si possible.
-- **Rollback** : n/a.
+### R-03 — Persistance des close fills exchange + historique complet des trades fermés — **P0, `done`**
+- **Périmètre** : `app/execution/live.py`, `app/live/trade_audit.py`, `scripts/export_trident_audit_pack.py`, `scripts/backfill_trident_exchange_audit.py`, `app/live/user_stream.py`.
+- **Preuve initiale** : F-03 (`close_fills=0`, -134.27 cumulé inattribuable, `closed_trade_log` = buffer) + F-07 (`user_order_updates` reconnect quasi permanent).
+- **Statut** : clôturé le 2026-06-12 (`OK_P003_EXCHANGE_BACKFILL_AND_WS_DEPLOYED`).
+- **Preuves conservées** : backfill `server-data/audit_backfills/20260612T161017Z_exchange_backfill/summary.json` (`155/155` trades matchés, `419` user fills, `223` funding payments, `exchange_close_fill_count_by_pod={"pod_a":152,"pod_c":28}`) ; validation fill-by-fill `fill_by_fill_validation.md` ; export compact final `server-data/audit_exports/20260612T163311Z_p003_final/` ; review serveur post-déploiement `server-data/reviews/20260612T163252Z/review_summary.md`.
+- **Websocket** : `user_order_updates` ne reconnecte plus à chaque timeout/message. Preuve post-déploiement : Pod A `connected=true`, `timeout_count=5`, `pong_count=3`, `reconnect_count=1`; Pod C `connected=true`, `timeout_count=4`, `pong_count=3`, `reconnect_count=1`. À surveiller, mais la boucle F-07 est cassée.
+- **Impact PnL** : le PnL net peut maintenant être audité fill-by-fill ; les décisions de sizing/replay peuvent utiliser fees/funding/closedPnl exchange au lieu d'une approximation minute.
+- **Risque introduit** : néant sur les trades ; backfill et export sont read-only, la correction websocket ne modifie pas la logique d'entrée/sortie.
+- **Rollback** : n/a pour les artefacts ; pour le websocket, revenir à la version précédente de `app/live/user_stream.py` si le flux Hyperliquid se comporte mal, en gardant la reconciliation REST comme garde-fou.
 
 ### R-04 — Replay full-bot de la fenêtre live récente (24-05 → 11-06) avec la config courante — **P1, `needs_replay`**
 - **Périmètre** : Pod A + Pod C, baseline comparée : live réel de la même fenêtre (et non +859.83, qui couvre une autre période).
@@ -253,7 +260,7 @@ TRIDENT-HIP4 (/opt/trident-hip4, port 3001, mainnet PAPER + observer)
 - **Test requis** : replay full-bot fenêtre récente avec scale {1.0, 1.25, 1.40} comparé à la baseline officielle **et** à la fenêtre récente ; critère : le boost doit être ≥ neutre sur les deux.
 - **Rollback** : restaurer 1.25/1.40 si le replay récent contredit le live (échantillon trop faible).
 
-### R-06 — Réduire le coût d'entrée Pod A (slippage 11.7 bps observé vs 8 supposés) — **P1, `needs_replay` + `needs_exchange_reconciliation`**
+### R-06 — Réduire le coût d'entrée Pod A (slippage 11.7 bps observé vs 8 supposés) — **P1, `needs_replay`**
 - **Périmètre** : `LiveExecutionVenue` entrées IOC ; option : prix limite à mid+X bps borné, ou skip si spread > seuil au moment du fill, ou exclusion des alts à slippage récurrent > 20 bps (PENGU/BIO/STRK…).
 - **Preuve** : `fill_events` — moyenne 11.7 bps, p75 15.2, max 60.5 sur 118 ouvertures Pod A ; stops 45–130 bps → 10–25 % du risque consommé à l'entrée.
 - **Impact PnL attendu** : ~3–4 bps de coût moyen économisés ≈ 0.4–0.8 USD par tranche de 20 trades au sizing actuel ; surtout structurel à plus gros sizing.
@@ -293,7 +300,7 @@ Corriger en lot : code retour `fetch_all_data.sh` (faux `[ERROR] code 0`) ; rég
 2. **Replay A-grade size scale {1.0, 1.25, 1.40}** sur (a) la baseline officielle (+859.83 attendu pour 1.25/1.40) et (b) la fenêtre récente (R-05).
 3. **Replay EFE on/off** sur les deux mêmes fenêtres (R-07).
 4. **Replay cutoff HIP4 au timestamp exact d'activation de `prob_stop_full`** (≈ 2026-06-10 d'après l'annexe 03) + run review régénérée (R-08).
-5. **Reconciliation exchange fill-by-fill** d'au moins un cycle live récent dès que R-03 est instrumenté ; backfill des user fills historiques pour expliquer le -134.27.
+5. **Reconciliation exchange fill-by-fill** — **fait le 2026-06-12** via `server-data/audit_backfills/20260612T161017Z_exchange_backfill/` et `fill_by_fill_validation.md`. À relancer seulement après nouveaux incidents de fills ou changement de format exchange.
 6. **Re-run multipliers Pod C** (dont `gold_070`) sur une fenêtre étendue incluant juin (R-09).
 7. Tests d'exploitation : après R-02, vérifier `3000`/`3001` en `401` sans auth, `200` avec auth, `/health` en `200`, et `POST /api/routing/override` en `403 routing_override_disabled`; gitleaks sur l'historique complet après R-01 ; test crash/restart (kill du runner entre fill et protective order, vérifier la récupération via `pending_position`).
 
@@ -303,11 +310,11 @@ Corriger en lot : code retour `fetch_all_data.sh` (faux `[ERROR] code 0`) ; rég
 
 | Donnée | Fichier attendu | Pourquoi bloquant | Sévérité | Comment la produire |
 | --- | --- | --- | --- | --- |
-| Fills exchange de fermeture A/C | `trident_ac_exchange_fills.csv` | Reconciliation fill-by-fill des sorties ; tout `needs_exchange_reconciliation` en dépend (mild_excess BTC, fees/slippage réels de sortie). | **P0** | Journaliser les close fills dans `LiveExecutionVenue` + backfill via endpoint user fills Hyperliquid. |
-| Historique complet des trades fermés depuis le début du live | `trident_ac_closed_trades_full.csv` | -134.27 / -14.21 cumulés inattribuables ; `closed_trade_log` n'est qu'un buffer. | **P0** | Persister chaque trade fermé en append-only (JSONL/CSV) côté serveur ; reconstruire le passé depuis les user fills exchange. |
+| Fills exchange de fermeture A/C | `trident_ac_exchange_fills.csv` | **Résolu P0-03** : `server-data/audit_backfills/20260612T161017Z_exchange_backfill/trident_ac_exchange_fills.csv` contient `419` user fills, dont close fills matchés `pod_a=152`, `pod_c=28`. | clos | Regénérer avec `scripts/backfill_trident_exchange_audit.py` si besoin. |
+| Historique complet des trades fermés depuis le début du live | `trident_ac_closed_trades_full.csv` | **Résolu P0-03** : `155/155` trades fermés A/C backfillés et matchés dans `server-data/audit_backfills/20260612T161017Z_exchange_backfill/trident_ac_closed_trades_full.csv`. | clos | Regénérer après fetch A/C si de nouveaux trades fermés doivent être audités. |
 | Changelog horodaté des configs live | `config_changelog.md` | Le cap (933→500→250→200) et la blocklist ont changé pendant la fenêtre ; impossible de segmenter le PnL par époque. | P1 | Versionner chaque changement avec timestamp (git tag ou journal dédié). |
 | MFE/MAE par trade | colonne dans closed trades | Indispensable pour juger EFE, time stops, trailing. | P1 | Tracker high/low depuis l'entrée dans le portfolio state. |
-| Funding réel + fees réels par trade | colonnes closed trades / fill events | `fee_usd≈0` après 05-24 ; net PnL approximatif. | P1 | Corriger la capture des fees dans le journal de fills ; joindre funding payments exchange. |
+| Funding réel + fees réels par trade | colonnes closed trades / fill events | **Résolu P0-03 pour A/C** : `223` paiements funding importés ; fees/closedPnl exchange exportés par trade. | clos | Surveiller que les prochains `trade_close` gardent `exchange_fee_usd`, `exchange_closed_pnl_usd` et funding attribué. |
 | Références externes Pod C à l'entrée | `external_reference_*` peuplés | Tous à False/0 dans l'export : qualité du signal TradFi invérifiable. | P1 | Corriger la jointure dans `export_trident_audit_pack.py` ou vérifier la collecte. |
 | Décisions brutes A/C et HIP4 | `*_signal_decisions.jsonl`, `hip4_decisions.jsonl` | Analyse fine des rejets (shock guard net effect, market_already_open opposite-side, pattern EFE-watchers) — exclus du pack léger. | P1 | Fournir dans un pack complet ; conclusions concernées marquées `needs_raw_decisions`. |
 | Input replay fenêtre récente | `external_reference_multisource_20260524_20260611.jsonl` | Sans lui, R-04/R-05/R-07 impossibles. | P1 | Assembler depuis les snapshots live fetchés. |
@@ -329,20 +336,20 @@ Corriger en lot : code retour `fetch_all_data.sh` (faux `[ERROR] code 0`) ; rég
 
 ---
 
-*Limites de cet audit : attribution PnL A/C applicative first-pass (close fills exchange absents) ; décisions brutes exclues du pack léger ; échantillons live faibles (25 trades Pod A, 6 Pod C, 25 settlements HIP4) — aucun chiffre de cette fenêtre ne doit être extrapolé sans replay. Baseline de comparaison utilisée partout : +859.83 USD (officielle 2026-05-13), le replay +872.74 du 2026-05-19 n'étant cité que pour la nuance HYPE.*
+*Limites de cet audit : le rapport initial était en attribution PnL applicative first-pass ; la remédiation P0-03 du 2026-06-12 fournit désormais les fills/fees/funding exchange A/C, mais les décisions brutes et replays restent nécessaires pour trancher l'edge. Échantillons live faibles (25 trades Pod A, 6 Pod C, 25 settlements HIP4) — aucun chiffre de cette fenêtre ne doit être extrapolé sans replay. Baseline de comparaison utilisée partout : +859.83 USD (officielle 2026-05-13), le replay +872.74 du 2026-05-19 n'étant cité que pour la nuance HYPE.*
 
 ---
 ---
 
 # ADDENDUM — 2026-06-11 (pack `trident_missing_pnl_data_20260611.zip`)
 
-Cet addendum intègre les données complémentaires : décisions brutes A/C (193 697 lignes, 24-05 → 11-06), décisions HIP4 (93 610 lignes), live states A/C, statuts runtime, snapshots minute 24-05 → 11-06 (~2 Go), et `docs/trident_active_plan.md` (chronologie opérateur). Les sections ci-dessous **révisent** le rapport principal ; en cas de conflit, l'addendum prévaut.
+Cet addendum intègre les données complémentaires : décisions brutes A/C (193 697 lignes, 24-05 → 11-06), décisions HIP4 (93 610 lignes), live states A/C, statuts runtime, snapshots minute 24-05 → 11-06 (~2 Go), et `docs/trident_active_plan.md` (chronologie opérateur). Les sections ci-dessous **révisent** le rapport principal au 2026-06-11 ; la mise à jour P0-03 du 2026-06-12 prévaut pour les close fills/fees/funding.
 
 ## A. Le PnL cumulé -134.27 / -14.21 est maintenant expliqué à ~85 % — F-03 largement résolu
 
 **Fait établi n°1 : le live mainnet A/C démarre le 2026-05-24.** Les décisions brutes commencent au `2026-05-24T16:05Z` (ligne 1 du journal pod A), les fill events comptent 118 ouvertures pod A + 23 pod C, et la review serveur affiche `total_fill_count` 115/23. Le cumul -134.27 / -14.21 USD couvre donc **exactement la fenêtre 24-05 → 11-06** dont nous avons désormais les entrées, les décisions et les prix minute. Il n'y a pas d'historique antérieur caché.
 
-**Méthode de reconstruction.** Les close fills exchange restent absents (R-03 inchangé). J'ai donc reconstruit les sorties des 110 trades manquants en rejouant chaque position (long-only) contre les snapshots minute (prix + best bid), avec les règles de sortie **de l'époque de chaque trade** (voir ères ci-dessous), sortie au bid en cas de gap sous le stop. Calibration sur les 31 trades dont la vérité terrain existe : pod A réel -5.90 vs simulé -9.88 ; les raisons de sortie simulées correspondent trade par trade (trailing/BE/stop). La reconstruction est une **estimation**, pas une réconciliation : pod A estimé **-104.6** vs réel -134.27 (79 % de la perte expliquée trade par trade ; l'écart résiduel ≈ -30 USD est compatible avec les frais non capturés [~15-25 USD pour ~230 fills taker], le funding, le slippage intra-minute et l'absence d'EFE dans la simulation pré-09-06).
+**Méthode de reconstruction au 2026-06-11.** Les close fills exchange étaient encore absents dans ce pack, donc les sorties des 110 trades manquants ont été reconstruites en rejouant chaque position (long-only) contre les snapshots minute (prix + best bid), avec les règles de sortie **de l'époque de chaque trade** (voir ères ci-dessous), sortie au bid en cas de gap sous le stop. Calibration sur les 31 trades dont la vérité terrain existait : pod A réel -5.90 vs simulé -9.88 ; les raisons de sortie simulées correspondaient trade par trade (trailing/BE/stop). Cette reconstruction reste utile pour lire les ères de config, mais elle est remplacée pour le PnL net par le backfill exchange du 2026-06-12.
 
 **Fait établi n°2 : la chronologie de configuration existe** (`trident_active_plan.md` — le « config changelog » réclamé en R-10 existait, il n'était pas dans le pack léger). Elle définit trois ères de gestion du stop, que la reconstruction confirme quantitativement :
 
@@ -366,7 +373,7 @@ Par symbole, les pertes estimées se concentrent sur TON (-24.5, 2 trades), ZEC 
 **Pod C : la perte vient quasi intégralement du silver.** 10 trades XYZ:SILVER (28-05 → 04-06, notional 249 puis **499**), 0 gagnant, ≈ **-24 estimés** sur un cumul réel de -14.21 (la simulation surestime un peu, paramètres silver_mode incertains) ; le reste du book pod C est ~flat à légèrement positif. Le blocage `XYZ:SILVER` du 04-06 est rétrospectivement la meilleure décision Pod C de la fenêtre. Ne pas réautoriser (action interdite n°5 inchangée).
 
 **Conséquences sur les findings :**
-- **F-03 rétrogradé de P0-data à P1** : l'attribution est faite à ~85 % en estimation. R-03 (backfill des user fills Hyperliquid + journal append-only) reste nécessaire pour passer de l'estimation à la réconciliation exacte, mais ce n'est plus un trou noir.
+- **F-03 au 2026-06-11** : l'attribution était faite à ~85 % en estimation. **Mise à jour 2026-06-12** : R-03 est clôturé par le backfill Hyperliquid (`155/155` trades matchés) ; l'estimation minute reste un contexte d'analyse des ères, pas la source de PnL net.
 - **F-05 (boost strong A-grade) : statut inchangé, vérification élargie impossible** — l'export de décisions ne contient pas les champs `a_grade_*` (nouveau gap, voir F-08). Le paradoxe A-grade reste établi uniquement sur les 25 trades de l'ère 3. En revanche, l'analyse par ère **renforce R-05/R-07 indirectement** : les correctifs du 09-06 (grace courte, cat stop plafonné, EFE) ont déjà réduit la perte moyenne par trade de ~-1.0 à -0.24 USD ; le problème résiduel de l'ère 3 est le WR (24 %) et la qualité d'entrée, plus la queue des stops.
 - **R-06 (slippage)** : slippage d'entrée moyen par ère : 4.2 bps (ère 1) → **13.4 bps (ère 2)** → 9.8 bps (ère 3). La dégradation coïncide avec les caps plus hauts et le selloff ; l'hypothèse 8 bps du replay reste trop optimiste.
 
@@ -377,6 +384,8 @@ Par symbole, les pertes estimées se concentrent sur TON (-24.5, 2 trades), ZEC 
 
 ### F-07 — Le websocket `user_order_updates` se reconnecte à quasi chaque message (sévérité : MOYENNE)
 Pod A : 2 816 reconnexions pour 2 819 messages ; Pod C : 2 809 / 2 829. Le flux de confirmations d'ordres est donc en pratique en mode reconnexion permanente. C'est un suspect direct pour la **non-capture des frais** dans les fill events (constat du rapport principal) et un risque de fills manqués au moment précis d'un stop — cohérent avec l'incident ARB du 07-06 (position fillée non persistée avant crash). À corriger avec R-03.
+
+**Mise à jour 2026-06-12** : corrigé et redéployé avec R-03. `user_order_updates` désactive le ping protocole websocket et envoie le ping JSON Hyperliquid sur idle, comme le collector principal. Preuve post-déploiement : Pod A `timeout_count=5`, `pong_count=3`, `reconnect_count=1`; Pod C `timeout_count=4`, `pong_count=3`, `reconnect_count=1`. La reconnexion résiduelle isolée reste à surveiller, mais la croissance quasi 1:1 est supprimée.
 
 ### F-08 — L'export de décisions n'emporte pas les champs A-grade/sizing (sévérité : BASSE, bloque l'analyse)
 `setup_details` y est tronqué à un sous-ensemble de features ; `a_grade_active/level/score/size_scale` et le sizing qualité sont absents. Ajouter ces champs à `export_trident_audit_pack.py` (fusionner dans R-10) pour permettre l'analyse A-grade plein échantillon réclamée par R-05.
@@ -391,12 +400,12 @@ Les snapshots minute 24-05 → 11-06 sont au schéma du `SnapshotBuilder` (même
 
 | Item | Avant | Après |
 |---|---|---|
-| F-03 attribution PnL cumulé | P0 `needs_data` | **P1** — expliqué ~85 % par reconstruction ; réconciliation exacte toujours via R-03 |
-| R-03 close fills + historique complet | P0 | **P0 inchangé** (estimation ≠ réconciliation ; ajouter le fix websocket F-07 au même chantier) |
+| F-03 attribution PnL cumulé | P0 `needs_data` | **Clôturé P0-03** — réconciliation exchange backfillée (`155/155` trades matchés), estimation minute conservée seulement comme contexte historique |
+| R-03 close fills + historique complet | P0 | **`done`** — close fills/fees/funding/historique complet exportés, validation fill-by-fill conservée, websocket F-07 corrigé et redéployé |
 | R-04 replay fenêtre récente | `needs_replay`, input à construire | **`ready`** — snapshots fournis et consommables (réserve F-06) |
 | R-10 config changelog | « absent » | **existe** (`trident_active_plan.md`) ; reste à le verser au pack d'audit par défaut + ajouter champs A-grade à l'export (F-08) |
 | Triage divergence live/replay | H1 régime / H2 coûts / H3 config | + **H4 : absence de référence externe en live (pod C)** ; H3 désormais documenté précisément (caps 100→250→500→250→200, grace 0→165→60/120) |
-| Données encore manquantes | — | close fills exchange, frais/funding réels, MFE/MAE, run review HIP4 fraîche (inchangé, confirmé par le README du pack) |
+| Données encore manquantes | — | MFE/MAE, `external_reference_*` Pod C, checksums pack, run review HIP4 fraîche ; close fills/fees/funding ne sont plus bloquants |
 
 ## F. Plan de suivi priorisé — modifications et tests
 
@@ -416,11 +425,12 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
   **Preuves conservées** : TRIDENT A/C reste sur `3000`, TRIDENT-HIP4 reste sur `3001`; même Basic Auth sur les deux apps ; `/health` public en `200`; `/api/state` sans auth en `401`; `/api/state` avec auth en `200`; `POST /api/routing/override` avec auth en `403 routing_override_disabled`; services Docker healthy après redéploiement ; scripts fetch/review compatibles auth.
   **Risque résiduel accepté** : option opérateur = accès par IP publique en HTTP + login/password, sans domaine ni HTTPS ; mot de passe à garder long, unique, et à recréer les conteneurs API après toute modification de `.env.trident` / `.env.trident-hip4`.
 
-- [ ] **P0-03 — PnL exact : close fills, fees, funding, historique append-only**
+- [x] **P0-03 — PnL exact : close fills, fees, funding, historique append-only**
   **Références** : F-03, F-07, R-03, §3.3, §10, addendum A/E.
-  **Modifs à faire** : persister chaque close fill exchange dans les `trade_close` append-only ; capturer `exchange_fee_usd`, `exchange_closed_pnl_usd`, `user_funding_history` et les paiements funding attribués par fenêtre `opened_at`/`closed_at` ; exporter ces champs dans `trident_ac_fill_events.csv` et `trident_ac_closed_trades.csv`; conserver l'historique complet des trades fermés au-delà du buffer runtime ; corriger le websocket `user_order_updates` qui se reconnecte quasi à chaque message.
-  **Tests / preuves attendues** : unit tests parser `userFills` + `user_funding_history`; test d'un cycle live tiny open → close : ordre exchange, fill user, journal JSONL, state store et CSV d'export concordent ; `close_fill_count_by_pod > 0` dans le prochain audit pack ; fees/funding non nuls quand Hyperliquid les expose ; fetch A/C inchangé car les journaux `logs/pod_a_live.jsonl` et `logs/pod_c_live.jsonl` sont déjà rapatriés.
-  **Terminé quand** : le prochain pack permet une reconciliation fill-by-fill du PnL net sans reconstruction au pas minute ; les anciens fills sont backfillés si l'API Hyperliquid le permet.
+  **Statut** : clôturé le 2026-06-12 (`OK_P003_EXCHANGE_BACKFILL_AND_WS_DEPLOYED`).
+  **Preuves conservées** : `scripts/backfill_trident_exchange_audit.py` ; backfill `server-data/audit_backfills/20260612T161017Z_exchange_backfill/summary.json` (`155/155` trades matchés, `419` user fills, `223` funding payments, close fills exchange `pod_a=152` / `pod_c=28`) ; validation `fill_by_fill_validation.md` ; export compact `server-data/audit_exports/20260612T163311Z_p003_final/` ; review post-déploiement `server-data/reviews/20260612T163252Z/review_summary.md`.
+  **Websocket** : F-07 corrigé dans `app/live/user_stream.py` et redéployé ; compteurs post-déploiement `reconnect_count=1` pour `timeout_count>=4`, plus de reconnexion quasi à chaque message/timeout.
+  **Suivi résiduel** : continuer à surveiller `user_order_updates.reconnect_count` dans les prochaines reviews ; MFE/MAE et checksums restent en P2-03, pas bloquants P0-03.
 
 ### P1 — Replays et corrections PnL avant tout réglage live
 
@@ -442,10 +452,10 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
   **Tests / preuves attendues** : sur un run live/dry-run, `external_reference_available` n'est plus False sur 100 % des enregistrements ; replay Pod C avec et sans référence externe ; `XYZ:SILVER` reste bloqué ; aucun ordre nouveau n'est activé par cette correction seule.
   **Terminé quand** : Pod C retrouve la parité data live/replay ou le rapport explique précisément l'écart restant.
 
-- [ ] **P1-04 — Exécution Pod A : slippage et websocket**
+- [ ] **P1-04 — Exécution Pod A : slippage et coûts**
   **Références** : R-06, F-07, addendum A, levier PnL 5.
-  **Modifs à faire** : corriger la stabilité du websocket `user_order_updates`; ajouter dans l'audit des métriques slippage par symbole/setup/ère ; tester une entrée plus spread-aware ou un skip si spread/slippage attendu dépasse un seuil, uniquement en replay/dry-run avant live.
-  **Tests / preuves attendues** : `reconnect_count` ne croît plus au rythme des messages ; fees réels capturés dans les fill events ; replay coûts 8/12/observé ; A/B dry-run sur taux de fill manqué vs PnL simulé.
+  **Modifs à faire** : ajouter dans l'audit des métriques slippage par symbole/setup/ère ; tester une entrée plus spread-aware ou un skip si spread/slippage attendu dépasse un seuil, uniquement en replay/dry-run avant live.
+  **Tests / preuves attendues** : fees réels capturés dans les fill events ; replay coûts 8/12/observé ; A/B dry-run sur taux de fill manqué vs PnL simulé ; surveillance continue du websocket corrigé en P0-03.
   **Terminé quand** : le modèle de coût du replay reflète le live et toute règle de skip/limit prouve qu'elle améliore le net PnL sans tuer le fill rate.
 
 - [ ] **P1-05 — A-grade / quality sizing : données d'abord, gel ensuite si confirmé**
@@ -513,7 +523,7 @@ F-06 est à la fois un trou de PnL et de sécurité : la référence externe est
 
 **5. Exécution / slippage**
 
-13.4 bps observés en ère 2 vs 8 supposés. Sur ~140 entrées, l'écart se chiffre en dizaines de dollars. Entrée *spread-aware* (R-06) et résolution du websocket qui se reconnecte en boucle (F-07, qui fait aussi perdre la capture des frais).
+13.4 bps observés en ère 2 vs 8 supposés. Sur ~140 entrées, l'écart se chiffre en dizaines de dollars. Entrée *spread-aware* (R-06), avec websocket F-07 déjà corrigé par P0-03 et fees/funding désormais backfillés.
 
 **6. Le boost « strong A-grade » — à geler, échantillon faible**
 
