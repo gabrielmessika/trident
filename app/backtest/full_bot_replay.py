@@ -12,11 +12,13 @@ from app.backtest.pod_a_executor import PodAExecutor
 from app.backtest.pod_report import PodABacktestReport
 from app.backtest.routing_replay import RoutingReplayRunner
 from app.backtest.snapshot_loader import SnapshotLoader
+from app.execution.live_cap import apply_live_notional_cap
 from app.execution.directional_executor import DirectionalExecutor
 from app.risk.pod_a_gate import PodARiskGate
 from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import AppConfig, load_config
 from app.trident.market_clusters import cluster_for_symbol
+from app.trident.pod_a.leverage import LeveragePolicy
 from app.trident.pod_b import (
     BreakoutContext,
     BreakoutPlanner,
@@ -70,9 +72,11 @@ class FullBotBacktestRunner:
         *,
         force_enable_all_pods: bool = True,
         external_reference_policy: ExternalReferenceDecisionPolicy | None = None,
+        apply_live_notional_caps: bool = False,
     ) -> None:
         self.config = self._runtime_config(config, force_enable_all_pods=force_enable_all_pods)
         self.external_reference_policy = external_reference_policy
+        self.apply_live_notional_caps = bool(apply_live_notional_caps)
         self.loader = SnapshotLoader()
         self.pod_a_risk_gate = PodARiskGate(self.config)
         self.pod_c_risk_gate = PodCRiskGate(self.config)
@@ -309,6 +313,7 @@ class FullBotBacktestRunner:
                 **dict(plan.setup_details or {}),
                 "current_date_key": date_key,
             }
+        trade_plans = self._apply_live_notional_caps(PodName.POD_A, trade_plans)
         if self.external_reference_policy is not None:
             self.external_reference_policy.adjust_plans(PodName.POD_A, trade_plans)
         risk_decisions = self.pod_a_risk_gate.evaluate_many(trade_plans)
@@ -369,6 +374,7 @@ class FullBotBacktestRunner:
                 **dict(plan.setup_details or {}),
                 "current_date_key": date_key,
             }
+        trade_plans = self._apply_live_notional_caps(PodName.POD_C, trade_plans)
         if self.external_reference_policy is not None:
             self.external_reference_policy.adjust_plans(PodName.POD_C, trade_plans)
         risk_decisions = self.pod_c_risk_gate.evaluate_many(trade_plans)
@@ -401,6 +407,28 @@ class FullBotBacktestRunner:
             execution=execution,
             executor=self.pod_c_executor,
         )
+
+    def _apply_live_notional_caps(
+        self,
+        pod_name: PodName,
+        trade_plans: list[object],
+    ) -> list[object]:
+        if not self.apply_live_notional_caps:
+            return trade_plans
+        if pod_name == PodName.POD_A:
+            leverage_policy = LeveragePolicy(self.config.pod_a)
+        elif pod_name == PodName.POD_C:
+            leverage_policy = LeveragePolicy(self.config.pod_c)
+        else:
+            return trade_plans
+        return [
+            apply_live_notional_cap(
+                plan,  # type: ignore[arg-type]
+                self.config.trident.execution.live_max_order_notional_usd,
+                max_leverage=leverage_policy.max_allowed(getattr(plan, "symbol", None)),
+            )
+            for plan in trade_plans
+        ]
 
     def _process_pod_b(
         self,
@@ -924,6 +952,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not force-enable Pod A / Pod C for this backtest.",
     )
+    parser.add_argument(
+        "--apply-live-notional-caps",
+        action="store_true",
+        help="Apply the A/C live notional cap before dry-run replay execution.",
+    )
     return parser
 
 
@@ -932,6 +965,7 @@ def main() -> None:
     result = FullBotBacktestRunner(
         load_config(args.config),
         force_enable_all_pods=not args.respect_config_enabled,
+        apply_live_notional_caps=args.apply_live_notional_caps,
     ).run_jsonl(
         input_path=args.input,
         dedupe_by_timestamp=not args.no_dedupe_timestamps,

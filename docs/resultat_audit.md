@@ -165,6 +165,8 @@ Le rejeu du **même input** avec le repo/config courants du 19-05 donne +872.74 
 ### 5.4 Constat central
 Le contraste **replay +859.83 (avril–mai) vs live cumulé ≈ -148 (fin mai–juin)** est la question prioritaire. Trois hypothèses non départagées par le pack : (H1) régime de marché différent (avril–mai trendait, juin est DeadZone/Range — cohérent avec 18/25 fermetures en DeadZone) ; (H2) coûts d'exécution réels > hypothèses de replay (slippage 11.7 bps observé vs 8 supposés, fees non capturées) ; (H3) dérive de config live (cap, blocklist, sizing) non répliquée dans la baseline. **Replays à relancer en priorité (§9)** : rejouer la config courante sur un input couvrant 2026-05-24 → 2026-06-11 et comparer trade par trade au live.
 
+**Mise à jour P1-01 du 2026-06-12** : le replay full-bot récent est exécuté sur 53 557 snapshots (`2026-05-24 → 2026-06-11`) avec cap live A/C appliqué. Résultat : replay config courante `-20.27 USD` sur 66 trades (`pod_a=-14.11`, `pod_c=-6.16`) vs live exchange P0-03 `-157.88 USD` sur 142 trades. Overlay coûts : `-29.69 USD` avec slippage observé par symbole, `-46.67 USD` avec coût live config 8/12 bps. Conclusion : les coûts seuls n'expliquent pas le live ; la divergence résiduelle vient surtout des ères de config/historique live (142 trades live vs 66 replay) et de la parité Pod C `external_reference_*` absente. Artefacts : `server-data/replay_reports/p101_recent_full_bot_livecap_20260612T170415Z/`.
+
 ---
 
 ## 6. Audit architecture
@@ -243,12 +245,12 @@ TRIDENT-HIP4 (/opt/trident-hip4, port 3001, mainnet PAPER + observer)
 - **Risque introduit** : néant sur les trades ; backfill et export sont read-only, la correction websocket ne modifie pas la logique d'entrée/sortie.
 - **Rollback** : n/a pour les artefacts ; pour le websocket, revenir à la version précédente de `app/live/user_stream.py` si le flux Hyperliquid se comporte mal, en gardant la reconciliation REST comme garde-fou.
 
-### R-04 — Replay full-bot de la fenêtre live récente (24-05 → 11-06) avec la config courante — **P1, `needs_replay`**
+### R-04 — Replay full-bot de la fenêtre live récente (24-05 → 11-06) avec la config courante — **P1, exécuté P1-01**
 - **Périmètre** : Pod A + Pod C, baseline comparée : live réel de la même fenêtre (et non +859.83, qui couvre une autre période).
-- **Preuve** : §5.4 — trois hypothèses (régime, coûts, dérive config) non départagées.
-- **Impact PnL** : si H2 (coûts) explique l'écart, l'action corrective (R-06) vaut plusieurs dizaines d'USD/mois au sizing actuel ; si H1 (régime), la bonne action est un gate de régime plus strict, pas un changement de setup.
-- **Données manquantes** : input JSONL multisource couvrant la fenêtre (à collecter/assembler), changelog horodaté des changements de config live.
-- **Test requis** : replay avec slippage 8 bps vs 12 bps vs slippage observé par symbole ; écart replay vs live < tolérance définie.
+- **Preuve** : P1-01 exécuté le 2026-06-12 : `server-data/replay_reports/p101_recent_full_bot_livecap_20260612T170415Z/p101_recent_replay_report.md`.
+- **Résultat** : config courante + cap live A/C = `-20.27 USD` (`66` trades) vs live exchange `-157.88 USD` (`142` trades). Le replay standard sans cap live existe seulement comme contrôle (`server-data/replay_reports/p101_recent_full_bot_20260612T170300Z/`) et ne doit pas servir de comparaison principale.
+- **Lecture PnL** : H2 coûts ne suffit pas (`-29.69` avec slippage observé, `-46.67` avec 8/12 bps) ; H3 ères de config/historique live reste dominante ; H4 Pod C `external_reference_*` reste une réserve de parité.
+- **Suivi** : P1-02 pour rejouer les exits/stop grace/EFE, P1-03 pour rétablir la référence externe Pod C, P1-04 pour transformer l'overlay coût en règle d'exécution testée.
 - **Rollback** : n/a (diagnostic).
 
 ### R-05 — Geler le boost de taille « strong A-grade » à 1.0 en live, conserver le label — **P1, `needs_replay`** (ne pas appliquer avant le replay)
@@ -394,7 +396,7 @@ Pod A : 2 816 reconnexions pour 2 819 messages ; Pod C : 2 809 / 2 829. Le flux 
 Les 93 610 décisions (34 030 paper / 59 580 observer) recoupent exactement les 27 trades paper : 27 approbations (15 BUY_NO / 12 BUY_YES), dont 7 le seul 24-05 (l'épisode de churn BTC_GT_76772 documenté), puis **cadence ~1/jour** après les garde-fous anti-churn. Modèle unique `lognormal_static_vol_v1` partout → confirme que R-08 vise le bon objet (le modèle de probabilité, pas les exits). Sizing 50 → 12 USDC visible au niveau décision à partir du 02-06 (gate Kelly `min_shadow_kelly_size_usdc=2`). `daily_summary` recoupe le -47.84 USDC au centime. Note de contexte : les strikes BTC passent de ~76.7k (24-05) à ~61.3k (11-06) — le selloff de ~20 % est le fond de tableau commun au bleed pod A (long-only) et à la dégradation du Brier HIP4. Verdict promotion : **inchangé (non)**.
 
 ## D. Snapshots et replay R-04 : consommables, avec une réserve
-Les snapshots minute 24-05 → 11-06 sont au schéma du `SnapshotBuilder` (mêmes champs que ce que consomment les pods : prix, book, flux, régimes par cluster) → le replay full-bot de la fenêtre récente est **techniquement possible dès maintenant**. Réserve : ils ne contiennent pas les champs `external_reference_*` multisource du format baseline (cf. F-06) ; un replay « format identique au baseline » n'est pas possible pour la fenêtre récente. Recommandation pratique : lancer R-04 sur ces snapshots avec la config courante en acceptant cette limite, et l'annoter `no_external_reference` ; le différentiel attendu vs live est maintenant largement pré-expliqué par les ères (section A).
+Les snapshots minute 24-05 → 11-06 sont au schéma du `SnapshotBuilder` (mêmes champs que ce que consomment les pods : prix, book, flux, régimes par cluster) et P1-01 les a consommés le 2026-06-12. Réserve maintenue : ils ne contiennent pas les champs `external_reference_*` multisource du format baseline (cf. F-06) ; un replay « format identique au baseline » n'est pas possible pour la fenêtre récente. Le replay P1-01 est donc annoté `no_external_reference` et cap live A/C appliqué.
 
 ## E. Statuts mis à jour
 
@@ -402,7 +404,7 @@ Les snapshots minute 24-05 → 11-06 sont au schéma du `SnapshotBuilder` (même
 |---|---|---|
 | F-03 attribution PnL cumulé | P0 `needs_data` | **Clôturé P0-03** — réconciliation exchange backfillée (`155/155` trades matchés), estimation minute conservée seulement comme contexte historique |
 | R-03 close fills + historique complet | P0 | **`done`** — close fills/fees/funding/historique complet exportés, validation fill-by-fill conservée, websocket F-07 corrigé et redéployé |
-| R-04 replay fenêtre récente | `needs_replay`, input à construire | **`ready`** — snapshots fournis et consommables (réserve F-06) |
+| R-04 replay fenêtre récente | `needs_replay`, input à construire | **`done P1-01`** — replay récent exécuté avec cap live ; réserve F-06 maintenue |
 | R-10 config changelog | « absent » | **existe** (`trident_active_plan.md`) ; reste à le verser au pack d'audit par défaut + ajouter champs A-grade à l'export (F-08) |
 | Triage divergence live/replay | H1 régime / H2 coûts / H3 config | + **H4 : absence de référence externe en live (pod C)** ; H3 désormais documenté précisément (caps 100→250→500→250→200, grace 0→165→60/120) |
 | Données encore manquantes | — | MFE/MAE, `external_reference_*` Pod C, checksums pack, run review HIP4 fraîche ; close fills/fees/funding ne sont plus bloquants |
@@ -434,11 +436,12 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
 
 ### P1 — Replays et corrections PnL avant tout réglage live
 
-- [ ] **P1-01 — Replay full-bot fenêtre live récente avec config courante**
+- [x] **P1-01 — Replay full-bot fenêtre live récente avec config courante**
   **Références** : R-04, addendum A/D/E, hypothèses H1/H2/H3/H4, §5.4.
-  **Modifs à faire** : ajouter ou stabiliser un runner de replay consommant les snapshots minute `2026-05-24 → 2026-06-11`; annoter explicitement la réserve `no_external_reference` tant que F-06 n'est pas corrigé ; produire un rapport dans `server-data/replay_reports/` sans écraser les baselines officielles.
-  **Tests / preuves attendues** : replay trade-by-trade comparé au live reconstruit ; matrices slippage 8 bps / 12 bps / slippage observé par symbole ; segmentation par ère de config de l'addendum A ; écart expliqué ou listé comme résiduel.
-  **Terminé quand** : on sait si l'edge courant survit à juin et quelles hypothèses expliquent l'écart live/replay. Aucun changement de sizing/stop ne doit précéder ce résultat.
+  **Statut** : exécuté le 2026-06-12 (`OK_P101_RECENT_REPLAY_LIVECAP`).
+  **Preuves conservées** : `scripts/run_p101_recent_replay.py`; `app.backtest.full_bot_replay --apply-live-notional-caps`; rapport principal `server-data/replay_reports/p101_recent_full_bot_livecap_20260612T170415Z/p101_recent_replay_report.md`; alignement trade-by-trade `trade_alignment.csv`; tests `tests/test_p101_recent_replay.py` et cap live dans `tests/test_full_bot_replay.py`.
+  **Résultat** : live exchange P0-03 `-157.88 USD` / `142` trades ; replay config courante cap live `-20.27 USD` / `66` trades ; overlay slippage observé `-29.69`, overlay 8/12 bps `-46.67`. L'edge courant sur juin reste négatif mais bien moins que le live historique ; les coûts ne suffisent pas à expliquer la perte.
+  **Suivi résiduel** : écart trade-count important (`142` live vs `66` replay) et match trade-by-trade faible (`16` matches) → traiter via P1-02/P1-03/P1-04 avant tout réglage live.
 
 - [ ] **P1-02 — Queue des stops et `early_failure_exit` : replay de sensibilité**
   **Références** : R-07, addendum A, levier PnL 1.
@@ -490,18 +493,18 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
   **Tests / preuves attendues** : `./scripts/fetch_trident_data.sh --review-only` OK ; `./trident-hip4/fetch_data.sh` OK ; aucun nouveau fichier nécessaire à l'audit n'est absent de `server-data/`; tests shell ou smoke test documenté.
   **Terminé quand** : les fetchs ne produisent plus d'erreur ambiguë et les packs contiennent tous les artefacts requis par ce plan.
 
-**Conclusion de l'addendum.** La perte live n'est pas un mystère statistique : c'est la combinaison documentée et désormais chiffrée (1) d'un bug de stop immédiat (ère 1, -20), (2) d'une fenêtre cap 500 + grace 165 min pendant un selloff de -20 % sur des longs alts (ère 2, -79, dont ~-103 d'excès de stops vs plan), et (3) d'un edge d'entrée réellement faible en régime DeadZone/Range (ère 3, WR 24 %). Les correctifs du 09-06 ont traité la queue (1)(2) ; le chantier restant est la qualité d'entrée et la parité live/replay (R-04 à lancer, F-06 à corriger), pas un nouveau réglage d'exits à chaud.
+**Conclusion de l'addendum.** La perte live n'est pas un mystère statistique : c'est la combinaison documentée et désormais chiffrée (1) d'un bug de stop immédiat (ère 1, -20), (2) d'une fenêtre cap 500 + grace 165 min pendant un selloff de -20 % sur des longs alts (ère 2, -79, dont ~-103 d'excès de stops vs plan), et (3) d'un edge d'entrée réellement faible en régime DeadZone/Range (ère 3, WR 24 %). Les correctifs du 09-06 ont traité la queue (1)(2) ; P1-01 confirme que la config courante cap live perd beaucoup moins (`-20.27`) que le live historique (`-157.88`), mais reste négative sur juin. Le chantier restant est la qualité d'entrée, les exits de sensibilité et la parité live/replay (P1-02/P1-03/P1-04), pas un nouveau réglage d'exits à chaud.
 
 *Limites de l'addendum : reconstruction au pas minute (pas de wicks intra-minute), frais/funding estimés et non observés, paramètres silver_mode pod C approximés, EFE non simulé avant le 09-06. Aucun chiffre reconstruit ne doit servir de base à un réglage sans le replay R-04.*
 
 ---
 
-Avant les leviers, un cadrage honnête, parce qu'il conditionne tout le reste : la question « comment améliorer drastiquement le PnL » suppose qu'il existe un edge à débloquer. L'audit laisse deux lectures possibles, et **rien dans les données ne les départage encore** :
+Avant les leviers, un cadrage honnête, parce qu'il conditionne tout le reste : la question « comment améliorer drastiquement le PnL » suppose qu'il existe un edge à débloquer. Après P1-01, l'audit laisse deux lectures possibles, avec une première préférence prudente :
 
 - Lecture optimiste : le système a un edge (baseline +860 sur avril-mai), et c'est la queue des stops + un régime adverse qui ont mangé le live. On corrige → ça repasse positif.
 - Lecture prudente : le baseline +860 est mesuré sur une période *trending*. En juin, marché baissier (-20 % sur BTC), un système **long-only** n'a peut-être structurellement pas d'edge, quels que soient les réglages d'exit.
 
-Ce qui tranche entre les deux, c'est le replay R-04 (désormais `ready`). **C'est le plus gros levier, et ce n'est pas un réglage** : tant qu'il n'est pas lancé, tout réglage à chaud est un pari. Je le mets en préalable absolu.
+P1-01 tranche une partie du sujet : la config courante cap live n'est pas catastrophique comme le live historique, mais elle reste négative sur juin (`-20.27`, ou `-29.69` avec slippage observé). Le prochain préalable n'est plus R-04 brut : c'est P1-02/P1-03/P1-04 pour savoir si on peut récupérer l'edge sans pari live.
 
 Cela dit, voici les leviers par impact estimé sur la fenêtre que j'ai reconstruite.
 

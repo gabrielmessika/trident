@@ -146,6 +146,33 @@ class FullBotReplayTests(unittest.TestCase):
         self.assertFalse(runner.config.pod_b.enabled)
         self.assertTrue(runner.config.pod_c.enabled)
 
+    def test_full_bot_replay_can_apply_live_notional_caps(self) -> None:
+        config = load_config("config/trident.toml")
+        config.trident.execution.live_max_order_notional_usd = 125.0
+        runner = FullBotBacktestRunner(config, apply_live_notional_caps=True)
+
+        [capped] = runner._apply_live_notional_caps(
+            PodName.POD_A,
+            [
+                TradePlan(
+                    symbol="BTC",
+                    side="long",
+                    setup="trend_pullback_long",
+                    confidence=0.7,
+                    target_notional_usd=500.0,
+                    stop_bps=100.0,
+                    time_stop_hours=4,
+                    take_profit_bps=100.0,
+                    margin_usd=50.0,
+                    effective_leverage=10.0,
+                )
+            ],
+        )
+
+        self.assertEqual(capped.target_notional_usd, 125.0)
+        self.assertEqual(capped.expected_loss_usd, 1.25)
+        self.assertTrue(capped.setup_details["live_cap_active"])
+
     def test_full_bot_replay_merges_same_timestamp_snapshot_lines(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_a.enabled = True
