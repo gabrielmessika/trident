@@ -26,6 +26,7 @@ from app.trident_ai.replay import (
     COMPACT_MARKET_CONTEXT_FEATURES,
     TRIDENT_AI_REPLAY_PROMPT_VERSION,
 )
+from app.trident_ai.candidate_scan import CANDIDATE_HINT_FIELD
 
 
 MARKET_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "trident_ai" / "market_snapshots.json"
@@ -369,6 +370,60 @@ class TridentAILLMReplayRunnerTests(unittest.TestCase):
                 )
             )
             self.assertTrue(all(record["proposal"] is None for record in decisions))
+
+    def test_llm_replay_journals_candidate_hint_when_present(self) -> None:
+        config = load_trident_ai_config("config/trident_ai.toml")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            input_path = directory / "snapshots.jsonl"
+            journal_path = directory / "journal.jsonl"
+            report_json_path = directory / "report.json"
+            report_md_path = directory / "report.md"
+            snapshot = _snapshot_record()
+            symbol_payload = snapshot["symbols"][0]
+            symbol = symbol_payload["symbol"]
+            symbol_payload[CANDIDATE_HINT_FIELD] = {
+                "schema_version": "trident_ai_candidate_hint_v6",
+                "context_id": f"market_{symbol}_20260607T120000Z",
+                "timestamp": snapshot["timestamp"],
+                "symbol": symbol,
+                "side": "long",
+                "score": 4.0,
+                "estimated_edge_bps": 35.0,
+                "round_trip_cost_bps": 9.0,
+                "estimated_net_edge_bps": 26.0,
+                "edge_to_cost_ratio": 3.9,
+            }
+            snapshot["symbols"] = [symbol_payload]
+            input_path.write_text(json.dumps(snapshot) + "\n", encoding="utf-8")
+
+            runner = TridentAILLMReplayRunner(
+                config=config,
+                client=FakeLiveLLMClient(estimated_cost_usd=0.001),
+                cache=JSONFileLLMCache(directory / "cache"),
+                allow_live_llm_calls=True,
+            )
+            result = runner.run(
+                input_path,
+                journal_path=journal_path,
+                report_json_path=report_json_path,
+                report_md_path=report_md_path,
+                max_contexts=1,
+                max_live_calls=1,
+                max_incremental_cost_usd=0.01,
+            )
+
+            self.assertEqual(result.live_llm_calls, 1)
+            decisions = [
+                record
+                for record in _read_jsonl(journal_path)
+                if record["event_type"] == LLM_REPLAY_DECISION_EVENT
+            ]
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(
+                decisions[0]["context"][CANDIDATE_HINT_FIELD]["edge_to_cost_ratio"],
+                3.9,
+            )
 
     def test_llm_replay_applies_intel_veto_before_cache_or_live_call(self) -> None:
         config = load_trident_ai_config("config/trident_ai.toml")

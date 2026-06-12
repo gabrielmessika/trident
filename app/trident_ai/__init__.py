@@ -20,6 +20,11 @@ from app.trident_ai.edge_calibration import (
     build_edge_calibration_report_payload,
     run_trident_ai_edge_calibration_report,
 )
+from app.trident_ai.edge_path_calibration import (
+    TridentAIEdgePathCalibrationResult,
+    build_edge_path_calibration_report_payload,
+    run_trident_ai_edge_path_calibration_report,
+)
 from app.trident_ai.entry_veto import (
     DEFAULT_ENTRY_VETO_MIN_DELTA_BPS,
     TridentAIEntryVetoReplayResult,
@@ -288,6 +293,7 @@ __all__ = [
     "TridentAICandidateScore",
     "TridentAIDecisionAuditResult",
     "TridentAIEdgeCalibrationResult",
+    "TridentAIEdgePathCalibrationResult",
     "TridentAIEntryVetoReplayResult",
     "TridentAIEntryVetoSweepResult",
     "TridentAIExitFollowThroughAuditResult",
@@ -325,6 +331,7 @@ __all__ = [
     "build_candidate_outcome_audit_report_payload",
     "build_calibration_report_payload",
     "build_edge_calibration_report_payload",
+    "build_edge_path_calibration_report_payload",
     "build_entry_veto_replay_report_payload",
     "build_entry_veto_sweep_report_payload",
     "build_exit_follow_through_audit_report_payload",
@@ -358,6 +365,7 @@ __all__ = [
     "run_trident_ai_calibration_report",
     "run_trident_ai_candidate_outcome_audit",
     "run_trident_ai_edge_calibration_report",
+    "run_trident_ai_edge_path_calibration_report",
     "run_trident_ai_entry_veto_replay",
     "run_trident_ai_entry_veto_sweep",
     "run_trident_ai_exit_follow_through_audit",

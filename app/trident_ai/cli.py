@@ -39,6 +39,10 @@ from app.trident_ai.candidate_gate_sweep import (
 from app.trident_ai.config import load_trident_ai_config
 from app.trident_ai.decision_audit import run_trident_ai_llm_decision_audit
 from app.trident_ai.edge_calibration import run_trident_ai_edge_calibration_report
+from app.trident_ai.edge_path_calibration import (
+    DEFAULT_FAST_INVALIDATION_MINUTES,
+    run_trident_ai_edge_path_calibration_report,
+)
 from app.trident_ai.entry_veto import (
     DEFAULT_ENTRY_VETO_MIN_DELTA_BPS,
     run_trident_ai_entry_veto_replay,
@@ -54,8 +58,11 @@ from app.trident_ai.exit_audit import (
 from app.trident_ai.exit_overlay import (
     DEFAULT_OVERLAY_EARLY_ADVERSE_BPS_VALUES,
     DEFAULT_OVERLAY_EARLY_WINDOW_MINUTES_VALUES,
+    DEFAULT_OVERLAY_FOLLOW_THROUGH_WINDOW_MINUTES_VALUES,
+    DEFAULT_OVERLAY_MAX_FOLLOW_THROUGH_GROSS_BPS_VALUES,
     DEFAULT_OVERLAY_MFE_ACTIVATION_BPS_VALUES,
     DEFAULT_OVERLAY_MFE_GIVEBACK_BPS_VALUES,
+    DEFAULT_OVERLAY_MIN_FOLLOW_THROUGH_BPS_VALUES,
     run_trident_ai_exit_overlay_sweep,
 )
 from app.trident_ai.failure_pattern import (
@@ -212,6 +219,74 @@ def build_parser() -> argparse.ArgumentParser:
     edge_calibration.add_argument("--paper-journal", required=True)
     edge_calibration.add_argument("--report-json-path", default=None)
     edge_calibration.add_argument("--report-md-path", default=None)
+
+    edge_path_calibration = subparsers.add_parser(
+        "edge-path-calibration",
+        help="Join candidate edge, LLM decisions, paper trades and MFE/MAE path diagnostics",
+    )
+    _add_config_env_args(edge_path_calibration)
+    edge_path_calibration.add_argument(
+        "--candidate-input",
+        action="append",
+        required=True,
+        help="Candidate-selected snapshot JSONL. Repeat once per fold.",
+    )
+    edge_path_calibration.add_argument(
+        "--llm-journal",
+        action="append",
+        required=True,
+        help="LLM replay journal. Repeat once per candidate input.",
+    )
+    edge_path_calibration.add_argument(
+        "--paper-journal",
+        action="append",
+        required=True,
+        help="Paper replay journal. Repeat once per candidate input.",
+    )
+    edge_path_calibration.add_argument(
+        "--market-input",
+        action="append",
+        required=True,
+        help="Market snapshot JSONL matching the paper journal. Repeat once per fold.",
+    )
+    edge_path_calibration.add_argument(
+        "--fold-label",
+        action="append",
+        default=None,
+        help="Optional fold label. Repeat once per input group.",
+    )
+    edge_path_calibration.add_argument("--report-json-path", default=None)
+    edge_path_calibration.add_argument("--report-md-path", default=None)
+    edge_path_calibration.add_argument(
+        "--symbols",
+        default=",".join(DEFAULT_SMOKE_SYMBOLS),
+        help="Comma-separated symbol filter. Default: BTC,ETH,SOL,HYPE",
+    )
+    edge_path_calibration.add_argument(
+        "--windows-minutes",
+        default=",".join(str(value) for value in DEFAULT_EXIT_AUDIT_WINDOWS_MINUTES),
+        help="Comma-separated positive integer path windows. Default: 15,30,60",
+    )
+    edge_path_calibration.add_argument(
+        "--early-adverse-bps",
+        type=float,
+        default=DEFAULT_EARLY_ADVERSE_BPS,
+    )
+    edge_path_calibration.add_argument(
+        "--min-follow-through-bps",
+        type=float,
+        default=DEFAULT_MIN_FOLLOW_THROUGH_BPS,
+    )
+    edge_path_calibration.add_argument(
+        "--giveback-bps",
+        type=float,
+        default=DEFAULT_GIVEBACK_BPS,
+    )
+    edge_path_calibration.add_argument(
+        "--fast-invalidation-minutes",
+        type=int,
+        default=DEFAULT_FAST_INVALIDATION_MINUTES,
+    )
 
     pattern_calibration = subparsers.add_parser(
         "pattern-calibration",
@@ -446,6 +521,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--mfe-giveback-bps-values",
         default=",".join(str(value) for value in DEFAULT_OVERLAY_MFE_GIVEBACK_BPS_VALUES),
         help="Comma-separated MFE giveback thresholds; include 0 to disable. Default: 0,20,30,45",
+    )
+    exit_overlay.add_argument(
+        "--follow-through-window-minutes-values",
+        default=",".join(str(value) for value in DEFAULT_OVERLAY_FOLLOW_THROUGH_WINDOW_MINUTES_VALUES),
+        help="Comma-separated no-follow-through windows; include 0 to disable. Default: 0",
+    )
+    exit_overlay.add_argument(
+        "--min-follow-through-bps-values",
+        default=",".join(str(value) for value in DEFAULT_OVERLAY_MIN_FOLLOW_THROUGH_BPS_VALUES),
+        help="Comma-separated MFE thresholds required by the follow-through window. Default: 0",
+    )
+    exit_overlay.add_argument(
+        "--max-follow-through-gross-bps-values",
+        default=",".join(str(value) for value in DEFAULT_OVERLAY_MAX_FOLLOW_THROUGH_GROSS_BPS_VALUES),
+        help="Comma-separated current gross bps ceilings for no-follow-through exits. Default: 0",
     )
 
     failure_pattern = subparsers.add_parser(
@@ -881,6 +971,24 @@ def main(argv: list[str] | None = None) -> int:
             report_json_path=args.report_json_path,
             report_md_path=args.report_md_path,
         )
+    elif args.command == "edge-path-calibration":
+        symbols = tuple(args.symbols.split(",")) if args.symbols else DEFAULT_SMOKE_SYMBOLS
+        result = run_trident_ai_edge_path_calibration_report(
+            candidate_input_paths=tuple(args.candidate_input),
+            llm_journal_paths=tuple(args.llm_journal),
+            paper_journal_paths=tuple(args.paper_journal),
+            market_input_paths=tuple(args.market_input),
+            fold_labels=tuple(args.fold_label) if args.fold_label else None,
+            config=config,
+            report_json_path=args.report_json_path,
+            report_md_path=args.report_md_path,
+            symbols=symbols,
+            windows_minutes=_parse_int_tuple(args.windows_minutes),
+            early_adverse_bps=args.early_adverse_bps,
+            min_follow_through_bps=args.min_follow_through_bps,
+            giveback_bps=args.giveback_bps,
+            fast_invalidation_minutes=args.fast_invalidation_minutes,
+        )
     elif args.command == "pattern-calibration":
         result = run_trident_ai_pattern_calibration_report(
             decision_journal_paths=tuple(args.decision_journal),
@@ -964,6 +1072,9 @@ def main(argv: list[str] | None = None) -> int:
             early_window_minutes_values=_parse_int_tuple(args.early_window_minutes_values),
             mfe_activation_bps_values=_parse_float_tuple(args.mfe_activation_bps_values),
             mfe_giveback_bps_values=_parse_float_tuple(args.mfe_giveback_bps_values),
+            follow_through_window_minutes_values=_parse_int_tuple(args.follow_through_window_minutes_values),
+            min_follow_through_bps_values=_parse_float_tuple(args.min_follow_through_bps_values),
+            max_follow_through_gross_bps_values=_parse_float_tuple(args.max_follow_through_gross_bps_values),
         )
     elif args.command == "failure-pattern-audit":
         symbols = tuple(args.symbols.split(",")) if args.symbols else DEFAULT_SMOKE_SYMBOLS

@@ -28,6 +28,9 @@ DEFAULT_OVERLAY_EARLY_ADVERSE_BPS_VALUES: tuple[float, ...] = (0.0, 25.0, 35.0, 
 DEFAULT_OVERLAY_EARLY_WINDOW_MINUTES_VALUES: tuple[int, ...] = (15, 30, 60)
 DEFAULT_OVERLAY_MFE_ACTIVATION_BPS_VALUES: tuple[float, ...] = (0.0, 25.0, 40.0, 60.0)
 DEFAULT_OVERLAY_MFE_GIVEBACK_BPS_VALUES: tuple[float, ...] = (0.0, 20.0, 30.0, 45.0)
+DEFAULT_OVERLAY_FOLLOW_THROUGH_WINDOW_MINUTES_VALUES: tuple[int, ...] = (0,)
+DEFAULT_OVERLAY_MIN_FOLLOW_THROUGH_BPS_VALUES: tuple[float, ...] = (0.0,)
+DEFAULT_OVERLAY_MAX_FOLLOW_THROUGH_GROSS_BPS_VALUES: tuple[float, ...] = (0.0,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +87,9 @@ class _OverlayProfile:
     early_window_minutes: int
     mfe_activation_bps: float
     mfe_giveback_bps: float
+    follow_through_window_minutes: int
+    min_follow_through_bps: float
+    max_follow_through_gross_bps: float
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -92,6 +98,9 @@ class _OverlayProfile:
             "early_window_minutes": self.early_window_minutes,
             "mfe_activation_bps": round(self.mfe_activation_bps, 6),
             "mfe_giveback_bps": round(self.mfe_giveback_bps, 6),
+            "follow_through_window_minutes": self.follow_through_window_minutes,
+            "min_follow_through_bps": round(self.min_follow_through_bps, 6),
+            "max_follow_through_gross_bps": round(self.max_follow_through_gross_bps, 6),
         }
 
 
@@ -107,6 +116,9 @@ def run_trident_ai_exit_overlay_sweep(
     early_window_minutes_values: tuple[int, ...] = DEFAULT_OVERLAY_EARLY_WINDOW_MINUTES_VALUES,
     mfe_activation_bps_values: tuple[float, ...] = DEFAULT_OVERLAY_MFE_ACTIVATION_BPS_VALUES,
     mfe_giveback_bps_values: tuple[float, ...] = DEFAULT_OVERLAY_MFE_GIVEBACK_BPS_VALUES,
+    follow_through_window_minutes_values: tuple[int, ...] = DEFAULT_OVERLAY_FOLLOW_THROUGH_WINDOW_MINUTES_VALUES,
+    min_follow_through_bps_values: tuple[float, ...] = DEFAULT_OVERLAY_MIN_FOLLOW_THROUGH_BPS_VALUES,
+    max_follow_through_gross_bps_values: tuple[float, ...] = DEFAULT_OVERLAY_MAX_FOLLOW_THROUGH_GROSS_BPS_VALUES,
 ) -> TridentAIExitOverlaySweepResult:
     if not paper_journal_paths:
         raise ValueError("paper_journal_paths_required")
@@ -130,6 +142,9 @@ def run_trident_ai_exit_overlay_sweep(
         early_window_minutes_values=early_window_minutes_values,
         mfe_activation_bps_values=mfe_activation_bps_values,
         mfe_giveback_bps_values=mfe_giveback_bps_values,
+        follow_through_window_minutes_values=follow_through_window_minutes_values,
+        min_follow_through_bps_values=min_follow_through_bps_values,
+        max_follow_through_gross_bps_values=max_follow_through_gross_bps_values,
     )
     baseline = next(profile for profile in profiles if profile.profile_id == "baseline_original")
     baseline_summary, _baseline_trades = _simulate_profile(
@@ -256,13 +271,19 @@ def _overlay_profiles(
     early_window_minutes_values: tuple[int, ...],
     mfe_activation_bps_values: tuple[float, ...],
     mfe_giveback_bps_values: tuple[float, ...],
+    follow_through_window_minutes_values: tuple[int, ...],
+    min_follow_through_bps_values: tuple[float, ...],
+    max_follow_through_gross_bps_values: tuple[float, ...],
 ) -> list[_OverlayProfile]:
     early_thresholds = _normalize_non_negative_floats(early_adverse_bps_values)
     early_windows = _normalize_windows(early_window_minutes_values)
     mfe_activations = _normalize_non_negative_floats(mfe_activation_bps_values)
     mfe_givebacks = _normalize_non_negative_floats(mfe_giveback_bps_values)
+    follow_windows = _normalize_non_negative_ints(follow_through_window_minutes_values)
+    follow_thresholds = _normalize_non_negative_floats(min_follow_through_bps_values)
+    follow_current_max_values = _normalize_float_values(max_follow_through_gross_bps_values)
     profiles: list[_OverlayProfile] = []
-    seen: set[tuple[float, int, float, float]] = set()
+    seen: set[tuple[float, int, float, float, int, float, float]] = set()
     for early_threshold in early_thresholds:
         early_window_candidates = (0,) if early_threshold <= 0.0 else early_windows
         for early_window in early_window_candidates:
@@ -271,29 +292,49 @@ def _overlay_profiles(
                     value for value in mfe_givebacks if value > 0.0
                 )
                 for mfe_giveback in giveback_candidates:
-                    key = (
-                        round(early_threshold, 6),
-                        int(early_window),
-                        round(mfe_activation, 6),
-                        round(mfe_giveback, 6),
-                    )
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    profiles.append(
-                        _OverlayProfile(
-                            profile_id=_profile_id(
-                                early_adverse_bps=early_threshold,
-                                early_window_minutes=early_window,
-                                mfe_activation_bps=mfe_activation,
-                                mfe_giveback_bps=mfe_giveback,
-                            ),
-                            early_adverse_bps=early_threshold,
-                            early_window_minutes=int(early_window),
-                            mfe_activation_bps=mfe_activation,
-                            mfe_giveback_bps=mfe_giveback,
+                    for follow_threshold in follow_thresholds:
+                        follow_window_candidates = (
+                            (0,)
+                            if follow_threshold <= 0.0
+                            else tuple(value for value in follow_windows if value > 0)
                         )
-                    )
+                        follow_current_candidates = (
+                            (0.0,) if follow_threshold <= 0.0 else follow_current_max_values
+                        )
+                        for follow_window in follow_window_candidates:
+                            for follow_current_max in follow_current_candidates:
+                                key = (
+                                    round(early_threshold, 6),
+                                    int(early_window),
+                                    round(mfe_activation, 6),
+                                    round(mfe_giveback, 6),
+                                    int(follow_window),
+                                    round(follow_threshold, 6),
+                                    round(follow_current_max, 6),
+                                )
+                                if key in seen:
+                                    continue
+                                seen.add(key)
+                                profiles.append(
+                                    _OverlayProfile(
+                                        profile_id=_profile_id(
+                                            early_adverse_bps=early_threshold,
+                                            early_window_minutes=early_window,
+                                            mfe_activation_bps=mfe_activation,
+                                            mfe_giveback_bps=mfe_giveback,
+                                            follow_through_window_minutes=follow_window,
+                                            min_follow_through_bps=follow_threshold,
+                                            max_follow_through_gross_bps=follow_current_max,
+                                        ),
+                                        early_adverse_bps=early_threshold,
+                                        early_window_minutes=int(early_window),
+                                        mfe_activation_bps=mfe_activation,
+                                        mfe_giveback_bps=mfe_giveback,
+                                        follow_through_window_minutes=int(follow_window),
+                                        min_follow_through_bps=follow_threshold,
+                                        max_follow_through_gross_bps=follow_current_max,
+                                    )
+                                )
     return profiles
 
 
@@ -303,14 +344,22 @@ def _profile_id(
     early_window_minutes: int,
     mfe_activation_bps: float,
     mfe_giveback_bps: float,
+    follow_through_window_minutes: int,
+    min_follow_through_bps: float,
+    max_follow_through_gross_bps: float,
 ) -> str:
-    if early_adverse_bps <= 0.0 and mfe_activation_bps <= 0.0:
+    if early_adverse_bps <= 0.0 and mfe_activation_bps <= 0.0 and min_follow_through_bps <= 0.0:
         return "baseline_original"
     parts: list[str] = []
     if early_adverse_bps > 0.0:
         parts.append(f"ea{early_adverse_bps:g}@{early_window_minutes}m")
     if mfe_activation_bps > 0.0:
         parts.append(f"mfe{mfe_activation_bps:g}_gb{mfe_giveback_bps:g}")
+    if min_follow_through_bps > 0.0:
+        parts.append(
+            f"nft{min_follow_through_bps:g}@{follow_through_window_minutes}m"
+            f"_max{max_follow_through_gross_bps:g}"
+        )
     return "+".join(parts)
 
 
@@ -366,6 +415,18 @@ def _simulate_trade(profile: _OverlayProfile, trade_path: _TradePath) -> dict[st
                 entry_price=entry_price,
                 best_gross=best_gross,
             )
+        if _no_follow_through_trigger(profile, point, best_gross=best_gross):
+            return _simulated_trade_result(
+                profile,
+                trade_path,
+                point=point,
+                exit_reason="no_follow_through_exit",
+                notional=notional,
+                fees=fees,
+                side=side,
+                entry_price=entry_price,
+                best_gross=best_gross,
+            )
     return _original_trade_result(profile, trade_path, reason="original_" + str(trade.get("close_reason", "") or "close"))
 
 
@@ -389,6 +450,21 @@ def _mfe_giveback_trigger(
         and profile.mfe_giveback_bps > 0.0
         and best_gross >= profile.mfe_activation_bps
         and best_gross - point.gross_bps >= profile.mfe_giveback_bps
+    )
+
+
+def _no_follow_through_trigger(
+    profile: _OverlayProfile,
+    point: _PathPoint,
+    *,
+    best_gross: float,
+) -> bool:
+    return (
+        profile.follow_through_window_minutes > 0
+        and profile.min_follow_through_bps > 0.0
+        and point.minutes_from_open >= profile.follow_through_window_minutes
+        and best_gross < profile.min_follow_through_bps
+        and point.gross_bps <= profile.max_follow_through_gross_bps
     )
 
 
@@ -683,6 +759,22 @@ def _normalize_non_negative_floats(values: tuple[float, ...]) -> tuple[float, ..
         raise ValueError("sweep_values_must_include_non_negative_value")
     if 0.0 not in parsed:
         parsed.insert(0, 0.0)
+    return tuple(parsed)
+
+
+def _normalize_non_negative_ints(values: tuple[int, ...]) -> tuple[int, ...]:
+    parsed = sorted({int(value) for value in values if int(value) >= 0})
+    if not parsed:
+        raise ValueError("sweep_values_must_include_non_negative_value")
+    if 0 not in parsed:
+        parsed.insert(0, 0)
+    return tuple(parsed)
+
+
+def _normalize_float_values(values: tuple[float, ...]) -> tuple[float, ...]:
+    parsed = sorted({round(float(value), 6) for value in values})
+    if not parsed:
+        raise ValueError("sweep_values_must_include_value")
     return tuple(parsed)
 
 

@@ -26,12 +26,16 @@ Statut: `RESEARCH_SHADOW_FIRST`
 - [x] Etape 7k - Audit failure-pattern multi-fold symbol-agnostic.
 - [x] Etape 7l - Replay/sweep de veto entry-time zero-cout.
 - [x] Etape 7m - Mini replay LLM payant v8 sous cap strict.
-- [ ] Etape 7n - Validation payante prompt v9 plus selectif.
+- [x] Etape 7n - Validation payante prompt v9 plus selectif.
+- [x] Etape 7o - Premier fold out-of-sample payant v9 sous budget.
+- [x] Etape 7p - Recalibration locale edge/exit avant nouvel appel LLM.
+- [x] Etape 7q - Validation zero-cout d'un overlay exit robuste multi-fold.
+- [ ] Etape 7r - Micro-replay LLM payant v10 uniquement apres validation.
 - [ ] Etape 8 - Intel/news-social avec xAI en veto shadow uniquement.
 - [ ] Etape 9 - Testnet live sur compte Hyperliquid independant.
 - [ ] Etape 10 - Mainnet paper puis canary tiny apres confirmation manuelle.
 
-Derniere mise a jour implementation: `2026-06-10`.
+Derniere mise a jour implementation: `2026-06-11`.
 
 ## Decision courte
 
@@ -3900,13 +3904,451 @@ Implementation:
 - resultat probe: `cache_hits=0`, `live_llm_calls=0`,
   `rejection_reasons={"cache_miss_live_calls_disabled": 4}`.
 
-Blocage actuel:
+Next step execute: mini replay LLM payant v9 sous cap strict.
 
-- le prompt v9 est pret localement mais son cache est vide par design;
-- le prochain test utile est payant et doit etre valide explicitement:
-  relancer exactement le meme mini batch en v9 avec `max_live_calls=4` et
-  `max_incremental_cost_usd=0.02`, puis cache-only et paper replay;
-- ne pas lancer ce test sans validation operateur.
+Validation operateur recue. Test lance sur le meme mini-batch que v8 pour
+mesurer uniquement l'effet du prompt/gate v9.
+
+Commande bornee:
+
+- `max_records=4`;
+- `max_contexts=4`;
+- `max_live_calls=4`;
+- `max_incremental_cost_usd=0.02`;
+- univers `BTC,ETH,SOL,HYPE`;
+- aucun ordre exchange, replay LLM/paper uniquement.
+
+Artefacts:
+
+- replay LLM payant:
+  `server-data/replay_reports/trident_ai_prompt_recalibration_paid_v9_004_20260610.json`;
+- replay LLM cache-only de verification:
+  `server-data/replay_reports/trident_ai_prompt_recalibration_cache_replay_v9_004_20260610.json`;
+- paper replay:
+  `server-data/replay_reports/trident_ai_prompt_recalibration_paper_v9_004_20260610.json`;
+- calibration:
+  `server-data/replay_reports/trident_ai_prompt_recalibration_calibration_v9_004_20260610.json`;
+- edge calibration:
+  `server-data/replay_reports/trident_ai_prompt_recalibration_edge_calibration_v9_004_20260610.json`.
+
+Resultats LLM v9:
+
+- `live_llm_calls=4`;
+- `llm_failures=0`;
+- `proposals_generated=4`;
+- `proposals_accepted=4`;
+- `action_counts={"hold": 3, "open": 1}`;
+- cout incremental estime: `$0.00799875`;
+- cache-only immediat: `cache_hits=4`, `live_llm_calls=0`, cout incremental
+  `$0.0`.
+
+Decisions v9:
+
+| Candidat | Decision | Tags principaux |
+|---|---|---|
+| `HYPE 2026-04-13T22:06Z long` | `open` | `research_gate_pass`, `bullish_ema_flow`, `book_microprice_aligned` |
+| `BTC 2026-04-16T16:33Z short` | `hold` | `research_gate_failed`, `net_edge_below_threshold`, `edge_to_cost_below_threshold` |
+| `HYPE 2026-04-13T17:50Z short` | `hold` | `research_gate_failed`, `microprice_ok`, `bearish_bias` |
+| `BTC 2026-04-13T22:53Z long` | `hold` | `research_gate_failed`, `edge_to_cost_below_requirement`, `net_edge_below_requirement` |
+
+Resultats paper v9:
+
+| Trade | Side | Close | PnL |
+|---|---|---|---:|
+| `HYPE 2026-04-13T22:06Z` | long | `time_stop` | `$0.252190` |
+
+Synthese paper:
+
+- PnL brut: `$0.269690`;
+- fees: `$0.017500`;
+- PnL realise: `$0.252190`;
+- net apres cout IA: `$0.24419125`;
+- win rate: `1/1`;
+- close reasons: `time_stop=1`.
+
+Comparaison directe v8 -> v9 sur ce mini-batch:
+
+| Version | Opens | Holds | PnL realise | Net apres cout IA |
+|---|---:|---:|---:|---:|
+| `v8` | 4 | 0 | `$-0.013711` | `$-0.02141725` |
+| `v9` | 1 | 3 | `$0.252190` | `$0.24419125` |
+
+Diagnostic:
+
+- v9 corrige le probleme principal de v8: le LLM ne se contente plus de
+  confirmer tous les candidats du scanner local;
+- sur ce batch, v9 evite les deux pertes et le petit gagnant fragile de v8, et
+  conserve uniquement le HYPE long gagnant;
+- l'edge calibration v9 reste trop petite pour promouvoir quoi que ce soit:
+  `closed_trades=1`, `false_positive_trades=0`,
+  `avg_realized_net_bps=100.876`, `avg_estimated_net_edge_bps=26.88216`;
+- le seuil suggere par ce seul winner (`min_edge_to_cost=1.5`,
+  `min_net_edge_bps=5.0`) ne doit pas etre applique: sample trop petit et deja
+  influence par le tuning du batch.
+
+Verdict:
+
+- prompt v9 valide comme hypothese de recherche, pas comme policy promue;
+- conserver les gates stricts actuels pour eviter de reouvrir trop large;
+- ne pas lancer de batch plus grand sans validation budgetaire explicite, car
+  chaque nouveau contexte v9 vide le cache et consomme l'API OpenAI.
+
+Next step execute: premier fold out-of-sample v9 sous budget.
+
+Validation operateur recue via `continue`. Budget applique:
+
+- `max_live_calls=4`;
+- `max_incremental_cost_usd=0.02`;
+- aucun ordre exchange, replay LLM/paper uniquement.
+
+Micro-batch OOS diversifie construit depuis le fold liquide
+`2026-04-18 -> 2026-04-23` pour eviter un test trop mono-symbole:
+
+`server-data/replay_inputs/trident_ai_candidate_oos_liq_diverse_v9_004_20260610.jsonl`
+
+Composition:
+
+| Candidat | Side | Edge/cost | Net edge | Lecture v9 |
+|---|---|---:|---:|---|
+| `HYPE 2026-04-20T15:47Z` | short | `4.1121` | `28.6892` | passe gate v9 |
+| `HYPE 2026-04-21T17:40Z` | long | `3.9880` | `26.9044` | passe gate v9 |
+| `SOL 2026-04-20T07:22Z` | long | `3.8483` | `26.1206` | passe gate v9 |
+| `ETH 2026-04-20T17:02Z` | short | `2.7551` | `15.5652` | doit rester hold |
+
+Artefacts:
+
+- replay LLM payant:
+  `server-data/replay_reports/trident_ai_oos_liq_diverse_paid_v9_004_20260610.json`;
+- replay LLM cache-only:
+  `server-data/replay_reports/trident_ai_oos_liq_diverse_cache_replay_v9_004_20260610.json`;
+- paper replay:
+  `server-data/replay_reports/trident_ai_oos_liq_diverse_paper_v9_004_20260610.json`;
+- calibration:
+  `server-data/replay_reports/trident_ai_oos_liq_diverse_calibration_v9_004_20260610.json`;
+- edge calibration:
+  `server-data/replay_reports/trident_ai_oos_liq_diverse_edge_calibration_v9_004_20260610.json`.
+
+Resultats LLM:
+
+- `live_llm_calls=4`;
+- `llm_failures=0`;
+- `action_counts={"hold": 1, "open": 3}`;
+- cout incremental estime: `$0.007983`;
+- cache-only immediat: `cache_hits=4`, `live_llm_calls=0`, cout incremental
+  `$0.0`.
+
+Resultats paper OOS:
+
+| Trade | Side | Close | PnL |
+|---|---|---|---:|
+| `SOL 2026-04-20T07:22Z` | long | `invalidation_price_hit` | `$-0.195548` |
+| `HYPE 2026-04-20T15:47Z` | short | `time_stop` | `$-0.046206` |
+| `HYPE 2026-04-21T17:40Z` | long | `invalidation_price_hit` | `$-0.199432` |
+| `ETH 2026-04-20T17:02Z` | short | `hold/no_op` | `$0.0` |
+
+Synthese:
+
+- PnL brut: `$-0.388686`;
+- fees: `$0.052500`;
+- PnL realise: `$-0.441186`;
+- net apres cout IA: `$-0.449169`;
+- win rate: `0/3`;
+- close reasons: `invalidation_price_hit=2`, `time_stop=1`.
+
+Edge calibration OOS:
+
+- `closed_trades=3`;
+- `false_positive_trades=3`;
+- `avg_estimated_net_edge_bps=27.23806`;
+- `avg_realized_net_bps=-58.8248`;
+- `avg_abs_edge_error_bps=95.193927`;
+- `suggested_min_edge_to_cost=4.2121`;
+- `suggested_min_net_edge_bps=30.6892`;
+- warning: `sample_too_small_keep_conservative_gates`.
+
+Diagnostic:
+
+- le prompt v9 fait bien respecter le gate: l'ETH sous seuil reste `hold`;
+- le probleme n'est donc pas seulement le prompt, mais l'estimateur local
+  `estimated_edge_bps` / `estimated_net_edge_bps`, qui surestime fortement les
+  setups passants sur ce fold OOS;
+- les trois faux positifs avaient microprice aligne et edge local positif:
+  durcir aveuglement le prompt ne suffit pas;
+- le seuil suggere par ce seul OOS (`edge_to_cost>4.21`, `net_edge>30.69`)
+  bloquerait aussi le seul gagnant observe du mini-batch v9 precedent
+  (`HYPE 2026-04-13T22:06Z`, edge/cost `3.6142`, net edge `26.8822`), donc il
+  ne doit pas etre promu tel quel.
+
+Next step execute local: sweep zero-cout des gates stricts v9/OOS.
+
+Un sweep large multi-fold a ete lance puis interrompu car trop lent sur les
+gros fichiers; les artefacts partiels ont ete supprimes. Un sweep cible et
+complet a ensuite ete lance sur:
+
+- fold de recalibration v9 `2026-04-13 -> 2026-04-17`;
+- fold OOS liquide `2026-04-18 -> 2026-04-23`;
+- fold OOS guardrail `2026-05-12 -> 2026-05-13`.
+
+Artefacts:
+
+- rapport:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_v9_oos_focused_20260610.json`;
+- Markdown:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_v9_oos_focused_20260610.md`;
+- artefacts par profil:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_v9_oos_focused_20260610_artifacts/`.
+
+Grille:
+
+- `edge_to_cost`: `3.75`, `4.0`, `4.25`;
+- `estimated_net_edge_bps`: `25`, `30`;
+- `liquidity_score>=1.0`;
+- `round_trip_cost_bps<=12`;
+- `min_total_closed_trades=2`;
+- `min_symbols=2`;
+- penalites OOS/no-trade et folds negatifs conservees.
+
+Resultats sweep cible:
+
+- profils testes: `6`;
+- profil robuste: `0`;
+- classifications:
+  - `catastrophic_fold=1`;
+  - `fold_unstable=1`;
+  - `oos_no_trade=4`.
+
+Top profils:
+
+| Profile | Class | Trades | Symbols | PnL | Avg bps | Penalized bps | Neg folds |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `edge4_net25_liq1_cost12` | `fold_unstable` | 12 | 3 | `$-1.129354` | `-37.6451` | `-67.6451` | 3 |
+| `edge3p75_net30_liq1_cost12` | `oos_no_trade` | 10 | 3 | `$-1.071166` | `-42.8466` | `-87.8466` | 2 |
+| `edge4_net30_liq1_cost12` | `oos_no_trade` | 10 | 3 | `$-1.071166` | `-42.8466` | `-87.8466` | 2 |
+| `edge4p25_net25_liq1_cost12` | `oos_no_trade` | 10 | 3 | `$-1.071166` | `-42.8466` | `-87.8466` | 2 |
+| `edge3p75_net25_liq1_cost12` | `catastrophic_fold` | 14 | 3 | `$-1.873587` | `-53.5311` | `-133.5311` | 3 |
+
+Verdict:
+
+- ne pas faire de nouvel appel LLM payant maintenant;
+- ne pas promouvoir v9;
+- ne pas chercher a "sauver" la qualite des trades par prompt seul;
+- priorite: recalibrer localement l'estimateur d'edge et les sorties paper sur
+  les faux positifs OOS, puis seulement relancer un micro-batch LLM si un gate
+  local robuste apparait.
+
+Blocage actuel avant next step payant:
+
+- tout nouvel appel OpenAI doit attendre une nouvelle validation budgetaire;
+- le prochain travail utile est zero-cout: audit des faux positifs OOS par
+  trajectoire post-entree, MFE/MAE, vitesse d'invalidation, regime et
+  concentration HYPE/SOL, afin de corriger l'estimateur local avant un prompt
+  v10.
+
+Next step execute local: recalibration edge/path et instrumentation de replay.
+
+Objectif:
+
+- ne pas refaire d'appel OpenAI tant qu'un diagnostic local n'explique pas les
+  faux positifs v9;
+- verifier si le probleme vient du prompt, du score d'edge, ou de la trajectoire
+  post-entree;
+- garder une lecture symbol-agnostic: les patterns de chemin importent plus que
+  le coin isole.
+
+Modifications code:
+
+- les journaux `llm-replay` conservent maintenant le `trident_ai_candidate`
+  dans `context` quand un hint candidat est present. Cela evite de perdre les
+  features qui ont justifie l'appel LLM;
+- nouvelle commande CLI `edge-path-calibration`;
+- nouveau module `app/trident_ai/edge_path_calibration.py`;
+- le rapport joint quatre couches:
+  - input candidat local;
+  - decision LLM;
+  - replay paper;
+  - trajectoire marche apres entree avec MFE/MAE et windows `5/15/30/60m`;
+- tests ajoutes pour le rapport et pour l'enrichissement des journaux LLM.
+
+Artefacts generes:
+
+- audit trajectoire:
+  `server-data/replay_reports/trident_ai_v9_path_audit_is_oos_20260611.md`;
+- sweep overlay exit:
+  `server-data/replay_reports/trident_ai_v9_exit_overlay_is_oos_20260611.md`;
+- calibration edge/path jointe:
+  `server-data/replay_reports/trident_ai_v9_edge_path_calibration_is_oos_20260611.md`;
+- miroir exact du mini-batch IS v9:
+  `server-data/replay_inputs/trident_ai_candidate_recalibration_v9_is_004_20260611.jsonl`.
+
+Resultats audit trajectoire IS+OOS v9:
+
+- trades fermes: `4`;
+- PnL realise total: `$-0.188996`;
+- fold IS: `1` gagnant HYPE long, `$+0.252190`, `+100.88 bps`;
+- fold OOS: `3` perdants, `$-0.441186`, `-58.82 bps`;
+- faux positifs OOS: `3/3`;
+- pertes avec mouvement adverse rapide: `3/3`;
+- invalidations rapides: `2/3`, a environ `12m` et `14m`;
+- un short HYPE avait une MFE favorable puis a rendu le gain et fini perdant.
+
+Lecture:
+
+- l'unique gagnant a une trajectoire constructive malgre une MAE initiale;
+- les perdants OOS ne sont pas un probleme de coin unique: ils partagent surtout
+  un pattern `early_adverse_loss`, `no_follow_through_loss` ou
+  `gave_back_to_loss`;
+- HYPE est mixte dans l'echantillon: un gagnant IS, un short OOS qui donne puis
+  rend, un long OOS invalide. Il ne faut donc pas ajouter une regle
+  coin-specifique.
+
+Resultats sweep overlay exit:
+
+- baseline IS+OOS: `$-0.188996`;
+- meilleur profil brut: `ea35@10m+mfe75_gb20`, PnL `$+0.058391`, mais il degrade
+  le gagnant IS;
+- meilleur profil robuste sans degradation de fold: `ea35@10m`;
+- `ea35@10m` conserve le gagnant IS et ameliore l'OOS de `$-0.441186` a
+  `$-0.322820`, mais reste perdant.
+
+Verdict overlay:
+
+- l'exit overlay reduit une partie des pertes;
+- il ne suffit pas encore a rendre v9 promouvable;
+- il doit etre valide sur plus de folds et combine a une logique de
+  follow-through/giveback avant tout nouveau paiement LLM.
+
+Resultats `edge-path-calibration`:
+
+- candidats vus: `8`;
+- decisions LLM matchees: `8`;
+- opens/holds: `4/4`;
+- trades fermes: `4`;
+- faux positifs: `3`;
+- PnL realise: `$-0.188996`;
+- moyenne edge net estime: `27.15 bps`;
+- moyenne PnL net realise: `-18.90 bps`;
+- verdict: `edge_thresholds_do_not_separate_winners_from_false_positives`.
+
+Diagnostics de seuil:
+
+- max faux positif `estimated_net_edge_bps`: `28.6892`;
+- min winner `estimated_net_edge_bps`: `26.8822`;
+- max faux positif `edge_to_cost`: `4.1121`;
+- min winner `edge_to_cost`: `3.6142`;
+- seuil net suggere `30.6892 bps`: bloquerait aussi le winner;
+- seuil edge/cost suggere `4.2121`: bloquerait aussi le winner;
+- warning maintenu: `sample_too_small_keep_conservative_gates`.
+
+Conclusion:
+
+- le prompt v9 n'est pas le point faible principal sur ce batch: il respecte le
+  gate et garde les candidats sous seuil en `hold`;
+- l'estimateur local d'edge confond encore edge theorique et edge reellement
+  tradable apres frais, invalidation et giveback;
+- un nouveau prompt v10 sans meilleure policy locale aurait de bonnes chances
+  de consommer du budget pour confirmer le meme diagnostic;
+- aucun nouvel appel LLM payant n'est justifie avant validation zero-cout d'un
+  overlay robuste multi-fold.
+
+Next step zero-cout:
+
+- valider `ea35@10m` et des variantes follow-through/giveback sur plusieurs
+  folds, avec penalite si un fold gagnant est degrade;
+- si aucun profil ne reste robuste, revenir au scanner local au lieu de relancer
+  OpenAI;
+- si un profil robuste apparait, demander validation explicite avant un
+  micro-replay LLM payant sous cap strict.
+
+Impact deploy/fetch:
+
+- aucun impact `deploy.sh`, `docker-compose.trident.yml`,
+  `scripts/trident_server.sh` ou `scripts/fetch_trident_data.sh`;
+- changements limites a la recherche locale, aux rapports et aux tests;
+- aucun ordre exchange, aucun service live, aucun secret expose.
+
+Next step execute local: overlay `no-follow-through`.
+
+Motivation:
+
+- les overlays `early_adverse` coupent des faux positifs, mais ils coupent aussi
+  des winners qui commencent par respirer avant de suivre;
+- le pattern le plus exploitable est plutot l'absence de follow-through:
+  apres une fenetre donnee, si la position n'a jamais imprime une MFE minimale
+  et reste faible, elle peut etre coupee plus tot;
+- cette logique est testable sans LLM, car elle depend seulement du chemin
+  marche apres entree.
+
+Implementation:
+
+- `exit-overlay-sweep` accepte maintenant:
+  - `--follow-through-window-minutes-values`;
+  - `--min-follow-through-bps-values`;
+  - `--max-follow-through-gross-bps-values`;
+- le comportement historique reste inchange par defaut: le nouvel overlay est
+  desactive si ces valeurs restent a `0`;
+- nouveau motif de sortie simule: `no_follow_through_exit`;
+- test dedie ajoute: le no-follow coupe un perdant sans toucher un winner qui a
+  deja imprime assez de MFE.
+
+Artefacts:
+
+- overlay pattern_v1 multi-fold:
+  `server-data/replay_reports/trident_ai_pattern_v1_nofollow_overlay_multifold_20260611.md`;
+- overlay v9 IS/OOS:
+  `server-data/replay_reports/trident_ai_v9_nofollow_overlay_is_oos_20260611.md`;
+- failure-pattern multi-fold pattern_v1:
+  `server-data/replay_reports/trident_ai_pattern_v1_failure_pattern_multifold_20260611.md`.
+
+Resultats pattern_v1 multi-fold:
+
+- baseline: `26` trades, PnL `$-0.548618`, avg net `-8.44 bps`;
+- meilleur profil brut: `nft40@15m_max10`;
+- PnL meilleur brut: `$0.635667`, delta `$+1.184285`, avg net `9.78 bps`;
+- exits overlay: `17`;
+- profil robuste: `0`;
+- degradation observee: le fold `pattern_v1_is_20260424_20260427` passe de
+  `$0.808692` a `$0.703646`, soit `$-0.105046`.
+
+Resultats v9 IS/OOS:
+
+- baseline: `4` trades, PnL `$-0.188996`, avg net `-18.90 bps`;
+- meilleur profil brut: `nft15@5m_max10`;
+- PnL meilleur brut: `$-0.181415`, delta seulement `$+0.007581`;
+- fold OOS ameliore de `$+0.259689`;
+- fold IS degrade de `$-0.252108`, car le seul winner HYPE est ferme trop tot;
+- profil robuste: `0`.
+
+Failure-pattern pattern_v1:
+
+- trades: `26`;
+- wins/losses: `11/15`;
+- PnL: `$-0.548618`;
+- bucket `no_follow_through_loss`: `5` pertes sur `5`, `4` folds, PnL
+  `$-1.211575`;
+- mais les buckets pre-entry restent trop mixtes ou trop petits pour une regle
+  de veto agressive;
+- ne pas transformer ces observations en regle par coin: les patterns de chemin
+  expliquent mieux les resultats que `HYPE`, `SOL`, `ETH` ou `BTC` seuls.
+
+Verdict 7q:
+
+- le no-follow-through est une bonne brique d'analyse et doit rester dans le
+  tooling;
+- il n'est pas assez robuste pour etre promu en policy;
+- aucun nouvel appel OpenAI n'a ete fait pendant cette etape;
+- le prochain test utile cote LLM serait un micro-replay payant v10, limite par
+  budget, pour verifier si un prompt/critic plus selectif evite ces faux
+  positifs sans couper les winners;
+- ne pas lancer ce micro-replay sans validation operateur explicite.
+
+Blocage actuel avant next step payant:
+
+- le prochain step qui change l'information disponible est payant: nouveau
+  batch LLM hors cache;
+- recommandation de cap si validation: `max_live_calls<=4` et
+  `max_incremental_cost_usd<=0.02`;
+- tant que ce n'est pas valide, continuer uniquement les audits/reports locaux
+  et ne pas activer de live/testnet.
 
 ### Etape 9 - Testnet live
 

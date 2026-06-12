@@ -387,12 +387,13 @@ class TridentAILLMReplayRunner:
                 )
             )
             return
+        candidate_hint = _candidate_hint_for_context(record.symbols, context)
         request = build_trade_proposal_request(
             context=context,
             config=self.config,
             now=now,
             prompt_version=self.prompt_version,
-            candidate_hint=_candidate_hint_for_context(record.symbols, context),
+            candidate_hint=candidate_hint,
             intel_digest=intel_digest,
         )
         cache_key = llm_request_cache_key(provider=self.config.llm.provider, request=request)
@@ -450,6 +451,7 @@ class TridentAILLMReplayRunner:
                 accepted=accepted,
                 reason=reason,
                 mode=self.config.mode,
+                candidate_hint=candidate_hint,
             )
         )
 
@@ -918,7 +920,11 @@ def _decision_record(
     accepted: bool,
     reason: str,
     mode: str,
+    candidate_hint: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    context_payload = context.to_dict()
+    if candidate_hint:
+        context_payload[CANDIDATE_HINT_FIELD] = dict(candidate_hint)
     return {
         "event_type": LLM_REPLAY_DECISION_EVENT,
         "source": "trident_ai_llm_replay",
@@ -934,7 +940,7 @@ def _decision_record(
             "prompt_version": request.metadata.get("prompt_version", ""),
             "cache_key": cache_key,
         },
-        "context": context.to_dict(),
+        "context": context_payload,
         "llm_response": response.to_dict(),
         "proposal": proposal_payload,
         "validation": {

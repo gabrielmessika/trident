@@ -87,6 +87,67 @@ class TridentAIExitOverlaySweepTests(unittest.TestCase):
                 report_md_path.read_text(encoding="utf-8"),
             )
 
+    def test_exit_overlay_sweep_can_use_no_follow_through_without_cutting_winner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            paper_journal_path = directory / "paper.jsonl"
+            market_input_path = directory / "market.jsonl"
+            report_json_path = directory / "overlay.json"
+            report_md_path = directory / "overlay.md"
+
+            _write_jsonl(
+                paper_journal_path,
+                [
+                    _closed_trade(
+                        decision_id="btc_no_follow",
+                        symbol="BTC",
+                        side="long",
+                        entry_price=100.0,
+                        exit_price=99.0,
+                        gross_pnl=-0.25,
+                        pnl=-0.2675,
+                    ),
+                    _closed_trade(
+                        decision_id="eth_followed",
+                        symbol="ETH",
+                        side="long",
+                        entry_price=100.0,
+                        exit_price=101.0,
+                        gross_pnl=0.25,
+                        pnl=0.2325,
+                    ),
+                ],
+            )
+            _write_jsonl(
+                market_input_path,
+                [
+                    _market_record("2026-06-07T12:15:00Z", {"BTC": 99.9, "ETH": 100.2}),
+                    _market_record("2026-06-07T12:30:00Z", {"BTC": 99.6, "ETH": 100.6}),
+                    _market_record("2026-06-07T13:00:00Z", {"BTC": 99.0, "ETH": 101.0}),
+                ],
+            )
+
+            result = run_trident_ai_exit_overlay_sweep(
+                paper_journal_paths=(paper_journal_path,),
+                market_input_paths=(market_input_path,),
+                fold_labels=("fixture",),
+                report_json_path=report_json_path,
+                report_md_path=report_md_path,
+                early_adverse_bps_values=(0.0,),
+                early_window_minutes_values=(15,),
+                mfe_activation_bps_values=(0.0,),
+                mfe_giveback_bps_values=(0.0,),
+                follow_through_window_minutes_values=(15,),
+                min_follow_through_bps_values=(15.0,),
+                max_follow_through_gross_bps_values=(0.0,),
+            )
+
+            self.assertEqual(result.best_profile["profile_id"], "nft15@15m_max0")
+            self.assertGreater(result.best_profile["realized_pnl_usd"], 0.0)
+            self.assertEqual(result.best_profile["exit_reason_counts"]["no_follow_through_exit"], 1)
+            self.assertEqual(result.best_profile["exit_reason_counts"]["original_time_stop"], 1)
+            self.assertEqual(result.best_profile["worse_fold_count"], 0)
+
 
 def _closed_trade(
     *,

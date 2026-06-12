@@ -243,6 +243,8 @@ fetch_logs_runtime() {
     fetch_optional_remote_file "logs/pod_c_live_report.json" "${LOG_DIR}/pod_c_live_report.json" "Rapport Pod C"
     fetch_remote_file "logs/pod_a_live_status.json" "${RUNTIME_DIR}/pod_a_live_status.json" "Runtime status Pod A"
     fetch_remote_file "logs/pod_c_live_status.json" "${RUNTIME_DIR}/pod_c_live_status.json" "Runtime status Pod C"
+    fetch_optional_remote_file "runtime/trident/live_state_pod_a.json" "${RUNTIME_DIR}/live_state_pod_a.json" "Live state Pod A"
+    fetch_optional_remote_file "runtime/trident/live_state_pod_c.json" "${RUNTIME_DIR}/live_state_pod_c.json" "Live state Pod C"
     fetch_optional_remote_file "logs/trident_deployment_profile.json" "${RUNTIME_DIR}/trident_deployment_profile.json" "Profil de déploiement TRIDENT"
     fetch_optional_remote_file "logs/funding_collector_status.json" "${RUNTIME_DIR}/funding_collector_status.json" "Runtime status Funding Collector"
     fetch_optional_remote_file "logs/tradfi_funding_collector_status.json" "${RUNTIME_DIR}/tradfi_funding_collector_status.json" "Runtime status Tradfi Funding Collector"
