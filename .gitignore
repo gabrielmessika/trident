@@ -3,8 +3,14 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 *.pyc
+# Secrets stay local; keep example templates tracked.
 .env
+.env.trident
+.env.trident-hip4
 .env.tridentai
+.env.*
+!.env.example
+!.env.*.example
 data/
 logs/
 runtime/
