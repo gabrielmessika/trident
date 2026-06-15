@@ -546,6 +546,16 @@ def update_symbol_guard_stats(stats: dict, symbol: str, details: dict) -> None:
         4,
     )
 
+def combine_shadow_details(*sources: object) -> dict:
+    combined: dict = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key, value in source.items():
+            if key not in combined or combined[key] in (None, ""):
+                combined[key] = value
+    return combined
+
 def finalize_symbol_guard_stats(stats: dict) -> dict:
     compact = dict(stats)
     compact.pop("_score_sum", None)
@@ -565,15 +575,27 @@ def build_p108_symbol_guard_focus(*, log_dir: Path) -> dict:
         event_type = str(record.get("event_type") or "")
         if event_type == "signal":
             signal = record.get("signal") if isinstance(record.get("signal"), dict) else {}
-            details = signal.get("setup_details") if isinstance(signal.get("setup_details"), dict) else {}
+            details = combine_shadow_details(
+                signal.get("setup_details"),
+                signal.get("dynamic_symbol_guard"),
+                signal.get("symbol_guard_shadow"),
+            )
             update_symbol_guard_stats(stats, str(signal.get("symbol") or ""), details)
         elif event_type == "signal_review":
             review = record.get("review") if isinstance(record.get("review"), dict) else {}
-            details = review.get("setup_details") if isinstance(review.get("setup_details"), dict) else {}
+            details = combine_shadow_details(
+                review.get("setup_details"),
+                review.get("dynamic_symbol_guard"),
+                review.get("symbol_guard_shadow"),
+            )
             update_symbol_guard_stats(stats, str(review.get("symbol") or ""), details)
         elif event_type == "trade_close":
             trade = record.get("trade") if isinstance(record.get("trade"), dict) else {}
-            details = trade.get("setup_details") if isinstance(trade.get("setup_details"), dict) else {}
+            details = combine_shadow_details(
+                trade.get("setup_details"),
+                trade.get("dynamic_symbol_guard"),
+                trade.get("symbol_guard_shadow"),
+            )
             update_symbol_guard_stats(stats, str(trade.get("symbol") or ""), details)
     status = "WARN"
     reasons: list[str] = []
@@ -581,7 +603,7 @@ def build_p108_symbol_guard_focus(*, log_dir: Path) -> dict:
         status = "PASS"
         reasons.append("shadow P1-08 présent dans les journaux Pod A")
     else:
-        reasons.append("aucun champ symbol_guard_shadow observé dans le tail Pod A")
+        reasons.append("aucun champ dynamic_symbol_guard/symbol_guard_* observé dans le tail Pod A")
     if int(stats.get("live_action_unchanged_false") or 0) > 0:
         status = "FAIL"
         reasons.append("shadow P1-08 indique live_action_unchanged=false")
@@ -1152,6 +1174,7 @@ lines.extend(
         "## Next Review Focus",
         "- Verifier que le serveur expose bien `live_max_order_notional_usd=200`, `pod_a.stop_grace_minutes=60` et `live_block_stop_grace_setups=false`.",
         "- P1-03: verifier `external_reference.symbols_enriched>0`, la couverture par symbole et les revues `XYZ:SILVER` en `symbol_blocked` dans `p103_external_reference_audit.md`.",
+        "- P1-08: verifier `dynamic_symbol_guard` / `symbol_guard_*` dans `p108_dynamic_symbol_guard_audit.md`, avec `with_shadow>0` et `live_action_unchanged_false=0`.",
         "- Pod A: surveiller les nouveaux `exchange_closed_stop_loss` et `early_failure_exit`; comparer perte reelle vs stop planifie.",
         "- Pod C: verifier qu'aucun nouveau trade `XYZ:SILVER` ne s'ouvre et que les signaux silver sont rejetes `symbol_blocked` si presents.",
         "",

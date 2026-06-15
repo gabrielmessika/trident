@@ -27,6 +27,37 @@ P103_EXTERNAL_REFERENCE_SHADOW_FIELDS = [
     "external_reference_shadow_live_action_unchanged",
 ]
 
+P106_REGIME_SHADOW_FIELDS = [
+    "regime_shadow_mode",
+    "bull_regime_score",
+    "bear_regime_score",
+    "regime_gate_decision",
+    "would_block_long",
+    "would_open_defensive_short_shadow",
+    "live_action_unchanged",
+    "btc_ret_60m_bps",
+    "btc_ret_240m_bps",
+    "btc_ret_1440m_bps",
+    "symbol_ret_60m_bps",
+    "symbol_ret_240m_bps",
+    "btc_above_ema_slow",
+    "btc_fast_above_slow",
+    "symbol_above_ema_slow",
+    "symbol_fast_above_slow",
+    "breadth_pct",
+    "leader_trend_score",
+]
+
+P107_ORDER_BLOCK_SHADOW_FIELDS = [
+    "order_block_shadow_mode",
+    "bullish_order_blocks_1h4h",
+    "bearish_order_blocks_1h4h",
+    "has_bullish_order_block_1h4h",
+    "has_bearish_order_block_1h4h",
+    "would_block_long_order_block_shadow",
+    "would_open_defensive_short_order_block_shadow",
+]
+
 P108_DYNAMIC_SYMBOL_GUARD_FIELDS = [
     "symbol_guard_shadow_mode",
     "symbol_guard_state",
@@ -143,12 +174,36 @@ def compact_setup_details(details: dict[str, Any]) -> dict[str, Any]:
         "external_momentum_300s_bps",
         "external_alignment_score",
         *P103_EXTERNAL_REFERENCE_SHADOW_FIELDS,
+        *P106_REGIME_SHADOW_FIELDS,
+        *P107_ORDER_BLOCK_SHADOW_FIELDS,
         *P108_DYNAMIC_SYMBOL_GUARD_FIELDS,
+        "a_grade_active",
+        "a_grade_level",
         "a_grade_score",
+        "a_grade_size_scale",
+        "a_grade_reason",
         "a_grade_strong",
         "live_cap_active",
+        "live_quality_sizing_active",
+        "live_quality_sizing_multiplier",
+        "live_quality_sizing_reasons",
+        "live_quality_original_target_notional_usd",
+        "live_quality_original_margin_usd",
+        "live_quality_original_risk_budget_usd",
+        "live_quality_original_expected_loss_usd",
     ]
     return {key: details.get(key) for key in keys if key in details}
+
+
+def combine_setup_details(*sources: Any) -> dict[str, Any]:
+    combined: dict[str, Any] = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key, value in source.items():
+            if key not in combined or combined[key] in (None, ""):
+                combined[key] = value
+    return combined
 
 
 def compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -291,7 +346,13 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
                     risk = signal.get("risk") or {}
                     execution = signal.get("execution") or {}
                     allocation = signal.get("allocation") or {}
-                    setup_details = signal.get("setup_details") or {}
+                    setup_details = combine_setup_details(
+                        signal.get("setup_details"),
+                        signal.get("regime_shadow"),
+                        signal.get("order_block_shadow"),
+                        signal.get("dynamic_symbol_guard"),
+                        signal.get("symbol_guard_shadow"),
+                    )
                     compact = {
                         **base,
                         "symbol": signal.get("symbol"),
@@ -442,7 +503,13 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
                         close_fill_count[pod] += 1
                 elif event_type == "signal_review":
                     review = record.get("review") or {}
-                    setup_details = review.get("setup_details") or {}
+                    setup_details = combine_setup_details(
+                        review.get("setup_details"),
+                        review.get("regime_shadow"),
+                        review.get("order_block_shadow"),
+                        review.get("dynamic_symbol_guard"),
+                        review.get("symbol_guard_shadow"),
+                    )
                     compact = {
                         **base,
                         "symbol": review.get("symbol"),
@@ -504,13 +571,23 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
         "hold_hours",
         "opened_at",
         "closed_at",
+        *P106_REGIME_SHADOW_FIELDS,
+        *P107_ORDER_BLOCK_SHADOW_FIELDS,
+        *P108_DYNAMIC_SYMBOL_GUARD_FIELDS,
         "a_grade_active",
         "a_grade_score",
         "a_grade_level",
+        "a_grade_size_scale",
+        "a_grade_reason",
         "live_cap_active",
         "live_cap_effective_target_notional_usd",
+        "live_quality_sizing_active",
         "live_quality_sizing_multiplier",
         "live_quality_sizing_reasons",
+        "live_quality_original_target_notional_usd",
+        "live_quality_original_margin_usd",
+        "live_quality_original_risk_budget_usd",
+        "live_quality_original_expected_loss_usd",
         "pattern_watch_hits",
         "pattern_watch_count",
         "cluster_strategy",
@@ -585,13 +662,23 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
                 row["is_win"] = None
         row["close_fill_oids"] = close_fill_oids(trade)
         for key in [
+            *P106_REGIME_SHADOW_FIELDS,
+            *P107_ORDER_BLOCK_SHADOW_FIELDS,
+            *P108_DYNAMIC_SYMBOL_GUARD_FIELDS,
             "a_grade_active",
             "a_grade_score",
             "a_grade_level",
+            "a_grade_size_scale",
+            "a_grade_reason",
             "live_cap_active",
             "live_cap_effective_target_notional_usd",
+            "live_quality_sizing_active",
             "live_quality_sizing_multiplier",
             "live_quality_sizing_reasons",
+            "live_quality_original_target_notional_usd",
+            "live_quality_original_margin_usd",
+            "live_quality_original_risk_budget_usd",
+            "live_quality_original_expected_loss_usd",
             "pattern_watch_hits",
             "pattern_watch_count",
             "cluster_strategy",

@@ -569,14 +569,27 @@ def isoformat(value: datetime) -> str:
 
 
 def _win_rate(report: dict[str, object]) -> float | None:
+    reported = report.get("win_rate")
+    if reported is not None:
+        return round(float(reported), 4)
     trades = int(report.get("closed_trade_count", 0) or 0)
-    wins = int(report.get("winning_trade_count", 0) or 0)
+    wins = int(report.get("win_count", 0) or 0)
     return round(wins / trades, 4) if trades else None
 
 
 def _profit_factor(report: dict[str, object]) -> float | None:
     gross_profit = float(report.get("gross_profit_usd", 0.0) or 0.0)
     gross_loss = abs(float(report.get("gross_loss_usd", 0.0) or 0.0))
+    if gross_profit <= 0.0 and gross_loss <= 0.0:
+        closed = report.get("closed_trade_log") or []
+        if isinstance(closed, list):
+            pnls = [
+                float(item.get("pnl_usd") or 0.0)
+                for item in closed
+                if isinstance(item, dict)
+            ]
+            gross_profit = sum(value for value in pnls if value > 0.0)
+            gross_loss = abs(sum(value for value in pnls if value < 0.0))
     if gross_loss <= 0:
         return None
     return round(gross_profit / gross_loss, 4)
