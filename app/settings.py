@@ -309,6 +309,16 @@ class PodCClusterModeConfig:
 
 
 @dataclass(slots=True)
+class PodCExternalReferenceConfig:
+    enabled: bool = True
+    cache_ttl_seconds: float = 30.0
+    timeout_seconds: float = 2.5
+    min_sources: int = 1
+    max_source_deviation_bps: float = 150.0
+    symbols: dict[str, list[str]] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class PodACampaignConfig:
     enabled: bool = False
     setups: list[str] = field(default_factory=list)
@@ -562,6 +572,9 @@ class PodCConfig:
     pattern_vetoes: list[PodAPatternVetoConfig] = field(default_factory=list)
     pattern_watchers: list[PodAPatternVetoConfig] = field(default_factory=list)
     cluster_modes: dict[str, PodCClusterModeConfig] = field(default_factory=dict)
+    external_reference: PodCExternalReferenceConfig = field(
+        default_factory=PodCExternalReferenceConfig
+    )
 
 
 @dataclass(slots=True)
@@ -758,6 +771,34 @@ def _pod_c_cluster_modes(raw: object) -> dict[str, PodCClusterModeConfig]:
             ),
         )
     return parsed
+
+
+def _pod_c_external_reference(raw: object) -> PodCExternalReferenceConfig:
+    if not isinstance(raw, dict):
+        return PodCExternalReferenceConfig()
+    symbols_raw = raw.get("symbols", {})
+    symbols: dict[str, list[str]] = {}
+    if isinstance(symbols_raw, dict):
+        for symbol, values in symbols_raw.items():
+            normalized_symbol = str(symbol).strip().upper()
+            if not normalized_symbol:
+                continue
+            if isinstance(values, list):
+                specs = [str(item).strip() for item in values if str(item).strip()]
+            elif values is None:
+                specs = []
+            else:
+                specs = [str(values).strip()]
+            if specs:
+                symbols[normalized_symbol] = specs
+    return PodCExternalReferenceConfig(
+        enabled=bool(raw.get("enabled", True)),
+        cache_ttl_seconds=float(raw.get("cache_ttl_seconds", 30.0)),
+        timeout_seconds=float(raw.get("timeout_seconds", 2.5)),
+        min_sources=int(raw.get("min_sources", 1)),
+        max_source_deviation_bps=float(raw.get("max_source_deviation_bps", 150.0)),
+        symbols=symbols,
+    )
 
 
 def _pod_a_campaign(raw: object) -> PodACampaignConfig:
@@ -1817,6 +1858,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 pod_c_data.get("pattern_watchers", [])
             ),
             cluster_modes=_pod_c_cluster_modes(pod_c_data.get("cluster_modes", {})),
+            external_reference=_pod_c_external_reference(
+                pod_c_data.get("external_reference", {})
+            ),
         ),
     )
 

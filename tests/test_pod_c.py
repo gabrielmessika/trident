@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.backtest.pod_c_runner import PodCBacktestRunner
 from app.execution.directional_executor import DirectionalExecutor
@@ -118,6 +119,48 @@ class _FakeInfoClient:
             symbol: price
             for symbol, price in self._mids.items()
             if str(symbol).strip().upper() in requested
+        }
+
+
+class _FakeExternalReferenceEnricher:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.symbols_enriched = 0
+
+    def enrich_record(self, record: dict[str, object]) -> dict[str, object]:
+        self.calls += 1
+        payload = dict(record)
+        symbols: list[object] = []
+        for item in record.get("symbols", []):
+            if not isinstance(item, dict):
+                symbols.append(item)
+                continue
+            enriched = dict(item)
+            enriched.update(
+                {
+                    "external_reference_price": 5099.5,
+                    "external_reference_source_count": 1,
+                    "external_reference_sources": "fake",
+                    "external_reference_symbol": "fake:SPY",
+                    "external_reference_time": str(record.get("timestamp")),
+                    "external_reference_age_seconds": 0.0,
+                    "external_reference_max_deviation_bps": 0.0,
+                    "external_premium_bps": 0.9805,
+                    "external_momentum_60s_bps": 1.0,
+                    "external_momentum_300s_bps": 2.0,
+                    "external_alignment_score": 0.1,
+                }
+            )
+            self.symbols_enriched += 1
+            symbols.append(enriched)
+        payload["symbols"] = symbols
+        return payload
+
+    def stats_payload(self) -> dict[str, object]:
+        return {
+            "enabled": True,
+            "records_seen": self.calls,
+            "symbols_enriched": self.symbols_enriched,
         }
 
 
@@ -776,6 +819,7 @@ class PodCTests(unittest.TestCase):
                 for rule in config.pod_c.pattern_vetoes
             )
         )
+        config.pod_c = replace(config.pod_c, blocked_symbols=[])
         gate = PodCRiskGate(config)
         decision = gate.evaluate_many(
             [
@@ -1057,6 +1101,8 @@ class PodCTests(unittest.TestCase):
         config.pod_c.enabled = True
         runner = PodCLiveRunner(config, coins=["SPY", "PAXG"])
         runner.collector = _FakeCollector()  # type: ignore[assignment]
+        fake_external_reference = _FakeExternalReferenceEnricher()
+        runner.external_reference_enricher = fake_external_reference  # type: ignore[assignment]
         status_path = Path("logs/pod_c_live_status.json")
         original_status = status_path.read_text(encoding="utf-8") if status_path.exists() else None
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1064,7 +1110,12 @@ class PodCTests(unittest.TestCase):
             try:
                 result = asyncio.run(runner.run(max_runtime_seconds=0.1, journal_path=journal_path))
                 self.assertEqual(result["records_processed"], 1)
+                self.assertGreaterEqual(fake_external_reference.calls, 1)
                 runtime_status = json.loads(status_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    runtime_status["external_reference"]["symbols_enriched"],
+                    fake_external_reference.symbols_enriched,
+                )
                 open_positions = runtime_status["open_positions"]
                 self.assertIsInstance(open_positions, list)
                 if open_positions:
@@ -1079,6 +1130,57 @@ class PodCTests(unittest.TestCase):
                     status_path.unlink(missing_ok=True)
                 else:
                     status_path.write_text(original_status, encoding="utf-8")
+
+    def test_pod_c_live_runner_adds_external_reference_shadow_details(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = PodCLiveRunner(config, coins=["XYZ:GOLD"])
+        plan = TradePlan(
+            symbol="XYZ:GOLD",
+            side="long",
+            setup="tradfi_continuation_long",
+            confidence=0.78,
+            target_notional_usd=100.0,
+            stop_bps=40.0,
+            time_stop_hours=4.0,
+            setup_details={
+                "external_reference_source_count": 1,
+                "external_reference_age_seconds": 60.0,
+                "external_premium_bps": -75.0,
+                "external_momentum_300s_bps": 2.0,
+            },
+        )
+
+        runner._apply_external_reference_shadow_to_plans([plan])
+        preview_details = runner._preview_setup_details_with_external_reference_shadow(
+            [
+                SimpleNamespace(
+                    symbol="XYZ:GOLD",
+                    side="long",
+                    setup_details=plan.setup_details,
+                )
+            ]
+        )
+        runner.supervisor.state.pod_c_signal_review = [
+            {
+                "symbol": "XYZ:GOLD",
+                "preferred_side": "long",
+                "setup_details": plan.setup_details,
+            }
+        ]
+        runner._apply_external_reference_shadow_to_signal_reviews()
+
+        self.assertEqual(plan.setup_details["external_reference_shadow_mode"], "observation_only")
+        self.assertTrue(
+            plan.setup_details["would_block_external_reference_abs_premium_gt_50"]
+        )
+        self.assertTrue(
+            preview_details["XYZ:GOLD"]["external_reference_shadow_live_action_unchanged"]
+        )
+        self.assertTrue(
+            runner.supervisor.state.pod_c_signal_review[0]["setup_details"][
+                "external_reference_shadow_live_action_unchanged"
+            ]
+        )
 
     def test_pod_c_live_runner_defaults_to_observation_universe_filtered_by_cluster(self) -> None:
         config = load_config("config/trident.toml")

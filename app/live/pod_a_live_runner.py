@@ -58,6 +58,18 @@ from app.trident.pod_a.live_risk import (
     is_crypto_trend_pullback,
     pod_a_live_quality_score,
 )
+from app.trident.pod_a.order_block_shadow import (
+    PodAOrderBlockShadowTracker,
+    order_block_shadow_setup_details,
+    review_order_block_shadow_details,
+    signal_order_block_shadow_details,
+)
+from app.trident.pod_a.regime_shadow import (
+    PodARegimeShadowTracker,
+    regime_shadow_setup_details,
+    review_regime_shadow_details,
+    signal_regime_shadow_details,
+)
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
@@ -155,6 +167,8 @@ class PodALiveRunner:
         self._last_record_monotonic = time.monotonic()
         self._last_market_data_refresh_monotonic = 0.0
         self._loss_tax_until_by_symbol: dict[str, datetime] = {}
+        self._regime_shadow_tracker = PodARegimeShadowTracker()
+        self._order_block_shadow_tracker = PodAOrderBlockShadowTracker()
 
     async def run(
         self,
@@ -443,12 +457,34 @@ class PodALiveRunner:
         snapshots = [symbol_market_snapshot_from_mapping(item) for item in symbols if isinstance(item, dict)]
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
         snapshots = self._backfill_missing_position_snapshots(snapshots)
+        regime_shadow_features = self._regime_shadow_tracker.evaluate(
+            timestamp=timestamp,
+            snapshots=snapshots,
+            regime_snapshot=regime_snapshot,
+        )
+        order_block_shadow_features = self._order_block_shadow_tracker.observe(
+            timestamp=timestamp,
+            snapshots=snapshots,
+        )
         previews = self.supervisor.preview_pod_a_signals(snapshots, timestamp=timestamp)
         trade_plans = self.supervisor.build_pod_a_trade_plans(snapshots, timestamp=timestamp)
         for plan in trade_plans:
+            shadow_details = signal_regime_shadow_details(
+                regime_shadow_features.get(plan.symbol.upper()),
+                side=str(plan.side),
+                setup=str(plan.setup),
+            )
+            order_block_details = signal_order_block_shadow_details(
+                order_block_shadow_features.get(plan.symbol.upper()),
+                regime_shadow_features.get(plan.symbol.upper()),
+                side=str(plan.side),
+                setup=str(plan.setup),
+            )
             plan.setup_details = {
                 **dict(plan.setup_details or {}),
                 "current_date_key": date_key,
+                **regime_shadow_setup_details(shadow_details),
+                **order_block_shadow_setup_details(order_block_details),
             }
         if self.mode == "live":
             leverage_policy = LeveragePolicy(self.config.pod_a)
@@ -495,6 +531,22 @@ class PodALiveRunner:
             fills_by_symbol.setdefault(str(fill["symbol"]), []).append(fill)
 
         for preview in previews:
+            preview_shadow_details = signal_regime_shadow_details(
+                regime_shadow_features.get(preview.symbol.upper()),
+                side=preview.side,
+                setup=preview.setup,
+            )
+            preview_order_block_details = signal_order_block_shadow_details(
+                order_block_shadow_features.get(preview.symbol.upper()),
+                regime_shadow_features.get(preview.symbol.upper()),
+                side=preview.side,
+                setup=preview.setup,
+            )
+            preview_setup_details = {
+                **dict(preview.setup_details),
+                **regime_shadow_setup_details(preview_shadow_details),
+                **order_block_shadow_setup_details(preview_order_block_details),
+            }
             self.report.add_signal(
                 date_key=date_key,
                 symbol=preview.symbol,
@@ -519,7 +571,9 @@ class PodALiveRunner:
                             "setup": preview.setup,
                             "confidence": preview.confidence,
                             "reason_summary": preview.reason_summary,
-                            "setup_details": dict(preview.setup_details),
+                            "setup_details": preview_setup_details,
+                            "regime_shadow": preview_shadow_details,
+                            "order_block_shadow": preview_order_block_details,
                             "confidence_components": (
                                 decisions_by_symbol[preview.symbol].trade_plan.confidence_components
                                 if preview.symbol in decisions_by_symbol
@@ -640,6 +694,16 @@ class PodALiveRunner:
             for review in self.supervisor.state.pod_a_signal_review:
                 if str(review.get("status")) != "filtered":
                     continue
+                review_payload = dict(review)
+                review_payload["regime_shadow"] = review_regime_shadow_details(
+                    regime_shadow_features.get(str(review.get("symbol", "")).upper()),
+                    review,
+                )
+                review_payload["order_block_shadow"] = review_order_block_shadow_details(
+                    order_block_shadow_features.get(str(review.get("symbol", "")).upper()),
+                    regime_shadow_features.get(str(review.get("symbol", "")).upper()),
+                    review,
+                )
                 journal.append(
                     build_signal_review_journal_record(
                         timestamp=timestamp,
@@ -648,7 +712,7 @@ class PodALiveRunner:
                         regime_snapshot=regime_snapshot,
                         symbol_snapshot=snapshot_by_symbol.get(str(review.get("symbol", ""))),
                         source=self.filtered_source,
-                        review=review,
+                        review=review_payload,
                     )
                 )
 
@@ -688,6 +752,7 @@ class PodALiveRunner:
             risk_decisions=risk_decisions,
             execution=execution,
         )
+        self._regime_shadow_tracker.observe(timestamp=timestamp, snapshots=snapshots)
 
     def _process_maintenance_record(
         self,

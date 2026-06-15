@@ -29,6 +29,7 @@ from app.live.exchange_closed_fills import (
     select_exchange_closed_fill,
 )
 from app.live.exchange_position_metrics import exchange_current_price
+from app.live.pod_c_external_reference import PodCExternalReferenceEnricher
 from app.live.reconciliation import ReconciliationReport, reconcile_exchange_state
 from app.live.replay_capture import (
     annotate_snapshot_record,
@@ -57,6 +58,9 @@ from app.trident.market_clusters import (
     symbols_in_allowed_clusters,
 )
 from app.trident.pod_a.leverage import LeveragePolicy
+from app.trident.pod_c.external_reference_shadow import (
+    external_reference_shadow_setup_details,
+)
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
@@ -142,6 +146,11 @@ class PodCLiveRunner:
         self._latest_snapshots_by_symbol: dict[str, SymbolMarketSnapshot] = {}
         self._latest_exchange_positions_by_symbol: dict[str, ExchangePosition] = {}
         self._info_client = HyperliquidInfoClient(self.config.hyperliquid)
+        self.external_reference_enricher = (
+            PodCExternalReferenceEnricher(self.config)
+            if self.config.pod_c.external_reference.enabled
+            else None
+        )
         self._last_record_monotonic = time.monotonic()
         self._last_market_data_refresh_monotonic = 0.0
 
@@ -172,6 +181,7 @@ class PodCLiveRunner:
                 max_runtime_seconds=max_runtime_seconds,
                 max_messages=max_messages,
             ):
+                record = await self._enrich_external_reference_record(record)
                 record = self._annotate_snapshot_record(record)
                 self.collector.stats.snapshots_written += len(self.collector.writer.append_many([record]))
                 self._process_record(record, journal=journal)
@@ -186,10 +196,10 @@ class PodCLiveRunner:
             if self._live_user_stream is not None:
                 await self._live_user_stream.stop()
 
-        final_records = [
-            self._annotate_snapshot_record(record)
-            for record in self.collector.builder.finalize()
-        ]
+        final_records = []
+        for record in self.collector.builder.finalize():
+            enriched = await self._enrich_external_reference_record(record)
+            final_records.append(self._annotate_snapshot_record(enriched))
         self.collector.stats.snapshots_written += len(self.collector.writer.append_many(final_records))
         for record in final_records:
             self._process_record(record, journal=journal)
@@ -407,6 +417,7 @@ class PodCLiveRunner:
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
         previews = self.supervisor.preview_pod_c_signals(snapshots)
         trade_plans = self.supervisor.build_pod_c_trade_plans(snapshots)
+        trade_plans = self._apply_external_reference_shadow_to_plans(trade_plans)
         if self.mode == "live":
             leverage_policy = LeveragePolicy(self.config.pod_c)
             trade_plans = [
@@ -446,6 +457,10 @@ class PodCLiveRunner:
         fills_by_symbol: dict[str, list[dict[str, object]]] = {}
         for fill in execution.fills:
             fills_by_symbol.setdefault(str(fill["symbol"]), []).append(fill)
+        preview_setup_details_by_symbol = self._preview_setup_details_with_external_reference_shadow(
+            previews
+        )
+        self._apply_external_reference_shadow_to_signal_reviews()
 
         for preview in previews:
             self.report.add_signal(
@@ -472,7 +487,10 @@ class PodCLiveRunner:
                             "setup": preview.setup,
                             "confidence": preview.confidence,
                             "reason_summary": preview.reason_summary,
-                            "setup_details": dict(preview.setup_details),
+                            "setup_details": preview_setup_details_by_symbol.get(
+                                preview.symbol,
+                                dict(preview.setup_details),
+                            ),
                             "confidence_components": (
                                 decisions_by_symbol[preview.symbol].trade_plan.confidence_components
                                 if preview.symbol in decisions_by_symbol
@@ -549,6 +567,7 @@ class PodCLiveRunner:
                 )
 
         if journal is not None:
+            self._apply_external_reference_shadow_to_signal_reviews()
             for review in self.supervisor.state.pod_c_signal_review:
                 if str(review.get("status")) != "filtered":
                     continue
@@ -601,6 +620,45 @@ class PodCLiveRunner:
             risk_decisions=risk_decisions,
             execution=execution,
         )
+
+    def _apply_external_reference_shadow_to_plans(self, trade_plans: list[object]) -> list[object]:
+        for plan in trade_plans:
+            details = {
+                **dict(getattr(plan, "setup_details", {}) or {}),
+                **external_reference_shadow_setup_details(
+                    getattr(plan, "setup_details", {}) or {},
+                    side=str(getattr(plan, "side", "")),
+                ),
+            }
+            plan.setup_details = details
+        return trade_plans
+
+    def _preview_setup_details_with_external_reference_shadow(
+        self,
+        previews: list[object],
+    ) -> dict[str, dict[str, object]]:
+        by_symbol: dict[str, dict[str, object]] = {}
+        for preview in previews:
+            details = {
+                **dict(getattr(preview, "setup_details", {}) or {}),
+                **external_reference_shadow_setup_details(
+                    getattr(preview, "setup_details", {}) or {},
+                    side=str(getattr(preview, "side", "")),
+                ),
+            }
+            by_symbol[str(getattr(preview, "symbol", ""))] = details
+        return by_symbol
+
+    def _apply_external_reference_shadow_to_signal_reviews(self) -> None:
+        for review in self.supervisor.state.pod_c_signal_review:
+            details = dict(review.get("setup_details", {}) or {})
+            review["setup_details"] = {
+                **details,
+                **external_reference_shadow_setup_details(
+                    details,
+                    side=str(review.get("preferred_side", "")),
+                ),
+            }
 
     def _process_maintenance_record(
         self,
@@ -828,6 +886,11 @@ class PodCLiveRunner:
                     if self._live_user_stream is not None
                     else None
                 ),
+                "external_reference": (
+                    self.external_reference_enricher.stats_payload()
+                    if self.external_reference_enricher is not None
+                    else {"enabled": False}
+                ),
                 "report": self.report.to_dict(),
                 "open_positions": self._build_open_positions_payload(),
                 "supervisor": self.supervisor.snapshot(),
@@ -872,6 +935,10 @@ class PodCLiveRunner:
             cluster_regime_snapshots=self.supervisor.state.cluster_regime_snapshots,
             snapshots=snapshots,
         )
+        if self.external_reference_enricher is not None:
+            maintenance_record = self.external_reference_enricher.enrich_record(
+                maintenance_record
+            )
         self.collector.stats.snapshots_written += len(
             self.collector.writer.append_many([maintenance_record])
         )
@@ -911,6 +978,17 @@ class PodCLiveRunner:
             stream_source=self.snapshot_stream_source,
         )
 
+    async def _enrich_external_reference_record(
+        self,
+        record: dict[str, object],
+    ) -> dict[str, object]:
+        if self.external_reference_enricher is None:
+            return record
+        return await asyncio.to_thread(
+            self.external_reference_enricher.enrich_record,
+            record,
+        )
+
     def _rest_fallback_snapshot(
         self,
         symbol: str,
@@ -946,6 +1024,33 @@ class PodCLiveRunner:
             day_base_vlm=latest.day_base_vlm if latest is not None else None,
             asset_ctx_observation_age_seconds=(
                 latest.asset_ctx_observation_age_seconds if latest is not None else None
+            ),
+            external_reference_price=latest.external_reference_price if latest is not None else None,
+            external_reference_source_count=(
+                latest.external_reference_source_count if latest is not None else 0
+            ),
+            external_reference_sources=(
+                latest.external_reference_sources if latest is not None else ""
+            ),
+            external_reference_symbol=(
+                latest.external_reference_symbol if latest is not None else ""
+            ),
+            external_reference_time=latest.external_reference_time if latest is not None else "",
+            external_reference_age_seconds=(
+                latest.external_reference_age_seconds if latest is not None else None
+            ),
+            external_reference_max_deviation_bps=(
+                latest.external_reference_max_deviation_bps if latest is not None else 0.0
+            ),
+            external_premium_bps=latest.external_premium_bps if latest is not None else 0.0,
+            external_momentum_60s_bps=(
+                latest.external_momentum_60s_bps if latest is not None else 0.0
+            ),
+            external_momentum_300s_bps=(
+                latest.external_momentum_300s_bps if latest is not None else 0.0
+            ),
+            external_alignment_score=(
+                latest.external_alignment_score if latest is not None else 0.0
             ),
             source="rest_fallback",
         )

@@ -726,6 +726,27 @@ min_reclaim_distance_bps = 6.0
 min_activity_ratio = 0.75
 activity_lookback = 20
 
+[pod_c.external_reference]
+enabled = true
+cache_ttl_seconds = 30.0
+timeout_seconds = 2.5
+min_sources = 1
+max_source_deviation_bps = 150.0
+
+[pod_c.external_reference.symbols]
+# References externes read-only pour l'audit Pod C. Ces champs ne filtrent pas
+# les entrees live tant qu'un guardrail dedie n'a pas ete valide en replay.
+"XYZ:CL" = ["yahoo:CL=F"]
+"XYZ:BRENTOIL" = ["yahoo:BZ=F"]
+"XYZ:SP500" = ["yahoo:ES=F"]
+"XYZ:XYZ100" = ["yahoo:NQ=F"]
+"XYZ:SILVER" = ["yahoo:SI=F"]
+"XYZ:GOLD" = ["yahoo:GC=F"]
+"XYZ:JPY" = ["yahoo:JPY=X"]
+"XYZ:TSLA" = ["yahoo:TSLA"]
+"XYZ:NVDA" = ["yahoo:NVDA"]
+"XYZ:CRCL" = ["yahoo:CRCL"]
+
 [[pod_c.pattern_watchers]]
 name = "index_soft_trend_watch"
 enabled = true

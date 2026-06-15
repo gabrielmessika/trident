@@ -87,6 +87,25 @@ class ReportingTests(unittest.TestCase):
                 "exchange_close_fill_count": 1,
                 "opened_at": "2026-06-05T00:00:00+00:00",
                 "closed_at": "2026-06-05T00:30:00+00:00",
+                "setup_details": {
+                    "external_reference_available": True,
+                    "external_reference_price": 2130.0,
+                    "external_reference_source_count": 1,
+                    "external_reference_sources": "yahoo",
+                    "external_reference_symbol": "yahoo:GC=F",
+                    "external_reference_time": "2026-06-05T00:29:00Z",
+                    "external_reference_age_seconds": 60.0,
+                    "external_reference_max_deviation_bps": 0.0,
+                    "external_premium_bps": 11.7371,
+                    "external_momentum_60s_bps": 2.0,
+                    "external_momentum_300s_bps": 5.0,
+                    "external_alignment_score": 0.18,
+                    "external_reference_shadow_mode": "observation_only",
+                    "external_reference_shadow_available": True,
+                    "would_block_external_reference_abs_premium_gt_50": False,
+                    "would_block_external_reference_candidate_loose_5m": False,
+                    "external_reference_shadow_live_action_unchanged": True,
+                },
                 "close_fills": [
                     {
                         "symbol": "ETH",
@@ -152,6 +171,18 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(closed_rows[0]["funding_source"], "exchange_user_funding_history")
         self.assertEqual(closed_rows[0]["funding_payment_count"], "1")
         self.assertEqual(closed_rows[0]["close_fill_oids"], "42")
+        self.assertEqual(closed_rows[0]["external_reference_price"], "2130.0")
+        self.assertEqual(closed_rows[0]["external_reference_sources"], "yahoo")
+        self.assertEqual(closed_rows[0]["external_reference_symbol"], "yahoo:GC=F")
+        self.assertEqual(closed_rows[0]["external_reference_time"], "2026-06-05T00:29:00Z")
+        self.assertEqual(closed_rows[0]["external_momentum_60s_bps"], "2.0")
+        self.assertEqual(closed_rows[0]["external_momentum_300s_bps"], "5.0")
+        self.assertEqual(closed_rows[0]["external_reference_shadow_mode"], "observation_only")
+        self.assertEqual(closed_rows[0]["external_reference_shadow_available"], "True")
+        self.assertEqual(
+            closed_rows[0]["external_reference_shadow_live_action_unchanged"],
+            "True",
+        )
         self.assertEqual(len(fill_rows), 1)
         self.assertEqual(fill_rows[0]["action"], "close")
         self.assertEqual(fill_rows[0]["exchange_fee_usd"], "0.01")
@@ -194,7 +225,7 @@ class ReportingTests(unittest.TestCase):
                     bucket_range_bps=12.0,
                 ),
                 SymbolMarketSnapshot(
-                    symbol="XRP",
+                    symbol="LTC",
                     price=0.64,
                     ema_fast=0.6401,
                     ema_slow=0.64,
@@ -223,7 +254,7 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(len(report["pods"]), 3)
         pod_a = next(item for item in report["pods"] if item["pod"] == "pod_a")
         pod_b = next(item for item in report["pods"] if item["pod"] == "pod_b")
-        self.assertEqual(pod_a["owned_symbols"], ["DOGE", "XRP"])
+        self.assertEqual(pod_a["owned_symbols"], ["DOGE", "LTC"])
         self.assertEqual(pod_b["owned_symbols"], [])
         self.assertEqual(pod_b["position_count"], 0)
         self.assertEqual(report["active_open_order_count"], 0)

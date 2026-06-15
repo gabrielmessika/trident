@@ -15,6 +15,18 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
+P103_EXTERNAL_REFERENCE_SHADOW_FIELDS = [
+    "external_reference_shadow_mode",
+    "external_reference_shadow_available",
+    "would_block_external_reference_abs_premium_gt_50",
+    "would_block_external_reference_abs_premium_gt_100",
+    "would_block_external_reference_counter_momentum_5m_6bps",
+    "would_block_external_reference_candidate_loose_5m",
+    "would_block_external_reference_candidate_default_5m",
+    "external_reference_shadow_reason",
+    "external_reference_shadow_live_action_unchanged",
+]
+
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -97,11 +109,18 @@ def compact_setup_details(details: dict[str, Any]) -> dict[str, Any]:
         "trade_flow_bias",
         "btc_overextension_score",
         "external_reference_available",
+        "external_reference_price",
         "external_reference_source_count",
+        "external_reference_sources",
+        "external_reference_symbol",
+        "external_reference_time",
         "external_reference_age_seconds",
         "external_reference_max_deviation_bps",
         "external_premium_bps",
+        "external_momentum_60s_bps",
+        "external_momentum_300s_bps",
         "external_alignment_score",
+        *P103_EXTERNAL_REFERENCE_SHADOW_FIELDS,
         "a_grade_score",
         "a_grade_strong",
         "live_cap_active",
@@ -126,6 +145,18 @@ def compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "realized_vol_short_bps",
         "realized_vol_long_bps",
         "compression_score",
+        "external_reference_price",
+        "external_reference_source_count",
+        "external_reference_sources",
+        "external_reference_symbol",
+        "external_reference_time",
+        "external_reference_age_seconds",
+        "external_reference_max_deviation_bps",
+        "external_premium_bps",
+        "external_momentum_60s_bps",
+        "external_momentum_300s_bps",
+        "external_alignment_score",
+        *P103_EXTERNAL_REFERENCE_SHADOW_FIELDS,
         "source",
     ]
     return {key: snapshot.get(key) for key in keys if key in snapshot}
@@ -467,8 +498,18 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
         "vwap_distance_bps",
         "vwap_reclaim_score",
         "external_reference_available",
+        "external_reference_price",
         "external_reference_source_count",
+        "external_reference_sources",
+        "external_reference_symbol",
+        "external_reference_time",
         "external_reference_age_seconds",
+        "external_reference_max_deviation_bps",
+        "external_premium_bps",
+        "external_momentum_60s_bps",
+        "external_momentum_300s_bps",
+        "external_alignment_score",
+        *P103_EXTERNAL_REFERENCE_SHADOW_FIELDS,
     ]
 
     def closed_trade_identity(pod: str, trade: dict[str, Any], record: dict[str, Any] | None = None) -> tuple[str, ...]:
@@ -538,8 +579,18 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
             "vwap_distance_bps",
             "vwap_reclaim_score",
             "external_reference_available",
+            "external_reference_price",
             "external_reference_source_count",
+            "external_reference_sources",
+            "external_reference_symbol",
+            "external_reference_time",
             "external_reference_age_seconds",
+            "external_reference_max_deviation_bps",
+            "external_premium_bps",
+            "external_momentum_60s_bps",
+            "external_momentum_300s_bps",
+            "external_alignment_score",
+            *P103_EXTERNAL_REFERENCE_SHADOW_FIELDS,
         ]:
             row[key] = details.get(key)
         writer.writerow(row)

@@ -181,6 +181,27 @@ class PodALiveRunnerTests(unittest.TestCase):
             self.assertEqual(result["opened_count"], 2)
             self.assertEqual(result["collector"]["snapshots_written"], 1)
             self.assertTrue(journal_path.exists())
+            journal_records = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            signal_records = [
+                record for record in journal_records if record.get("event_type") == "signal"
+            ]
+            self.assertTrue(signal_records)
+            regime_shadow = signal_records[0]["signal"]["regime_shadow"]
+            self.assertEqual(regime_shadow["regime_shadow_mode"], "observation_only")
+            self.assertTrue(regime_shadow["live_action_unchanged"])
+            order_block_shadow = signal_records[0]["signal"]["order_block_shadow"]
+            self.assertEqual(order_block_shadow["order_block_shadow_mode"], "observation_only")
+            self.assertTrue(order_block_shadow["live_action_unchanged"])
+            self.assertIn("bull_regime_score", signal_records[0]["signal"]["setup_details"])
+            self.assertIn("would_block_long", signal_records[0]["signal"]["setup_details"])
+            self.assertIn(
+                "would_block_long_order_block_shadow",
+                signal_records[0]["signal"]["setup_details"],
+            )
             runtime_status = json.loads(Path("logs/pod_a_live_status.json").read_text(encoding="utf-8"))
             open_positions = runtime_status["open_positions"]
             self.assertEqual(len(open_positions), 2)
