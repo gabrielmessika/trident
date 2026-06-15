@@ -471,6 +471,10 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
 - [ ] **P1-04 — Exécution Pod A : slippage et coûts**
   **Références** : R-06, F-07, addendum A, levier PnL 5.
   **Modifs à faire** : ajouter dans l'audit des métriques slippage par symbole/setup/ère ; tester une entrée plus spread-aware ou un skip si spread/slippage attendu dépasse un seuil, uniquement en replay/dry-run avant live.
+  **Étape 1 — audit/replay P1-04 réalisé le 2026-06-15** : `scripts/run_p104_execution_cost_replay.py` produit un rapport research-only avec métriques slippage par pod/symbole/setup/ère depuis `trident_ac_fill_events.csv` et replay global A/C avec caps live. Artefacts : `server-data/replay_reports/p104_execution_cost_20260615T090601Z/p104_execution_cost_replay.md/json` et `slippage_by_pod_symbol_setup_era.csv`.
+  **Résultat replay** : baseline avril/mai courante `+77.08 USD` A/C (`Pod A +56.72`, `Pod C +20.36`, `133` trades) ; fenêtre live post-baseline `-23.18 USD` A/C (`Pod A -15.35`, `Pod C -7.83`, `103` trades). Le filtre naïf `spread_lte_6bps` est rejeté : baseline `70.25` (`-6.83`) et live `-37.36` (`-14.18`) malgré `21` skips live. Les seuils `spread_lte_8bps`, `expected_entry_cost_lte_8bps` et `expected_entry_cost_lte_10bps` ne changent aucun trade sur ces fenêtres. Conclusion : le spread snapshot seul n'explique pas le slippage réel, et un skip spread direct tue plus de bons trades qu'il n'évite de pertes.
+  **Métriques slippage utiles** : les pires buckets Pod A open restent concentrés sur l'ère 2/3 et les alts déjà identifiés (`AAVE` max `60.52bps`, `TON`, `ENA`, `ICP`, `PENDLE`, `PENGU`, `TIA`, etc.). Ces métriques doivent alimenter P1-08/P2-03 et un futur modèle par symbole/liquidité, pas une règle globale de spread.
+  **Décision actuelle** : aucune règle live de skip/limit n'est promouvable. Garder l'exécution live inchangée ; continuer à collecter fees/fills et tester seulement des modèles plus fins, par symbole et état de marché, avec fill-rate explicite.
   **Tests / preuves attendues** : fees réels capturés dans les fill events ; replay coûts 8/12/observé ; A/B dry-run sur taux de fill manqué vs PnL simulé ; surveillance continue du websocket corrigé en P0-03.
   **Terminé quand** : le modèle de coût du replay reflète le live et toute règle de skip/limit prouve qu'elle améliore le net PnL sans tuer le fill rate.
 
@@ -529,6 +533,16 @@ Objectif : transformer les recommandations en file d'exécution traçable. Chaqu
   **Rollback / sécurité** : garder un kill switch config pour désactiver le guard ; limiter l'effet prod initial à Pod A ; ne jamais fermer une position existante par ce guard, uniquement agir sur les nouvelles entrées ; journaliser toute divergence avec `live_action_unchanged=false` comme erreur tant que le mode est shadow.
   **Tests / preuves attendues** : tests unitaires du score et de l'état machine ; tests de non-régression prouvant que le live reste inchangé en shadow ; replay full-bot sur les deux régimes ; fetch/review avec couverture `symbol_guard_shadow>0`; rapport comparant pertes évitées vs gains manqués ; preuve que les blocklists statiques restantes sont justifiées séparément ou remplacées par le guard dynamique.
   **Terminé quand** : soit le guard dynamique est promu explicitement avec seuils, TTL, métriques de replay et shadow live, soit l'idée est abandonnée faute d'amélioration nette. La clôture ne doit pas se faire juste parce que la journalisation existe : il faut une décision sur `throttle`, `quarantine` et le statut des symboles bloqués après la chute.
+
+- [ ] **P1-09 — Recherche factorielle from scratch multi-coins/timeframes**
+  **Références** : addendum `2026-06-15` ci-dessous, demande opérateur d'ignorer les patterns existants et de repartir des données brutes, `server-data/live_snapshots/*.jsonl`, `server-data/logs/pod_a_live.jsonl`, `server-data/logs/pod_c_live.jsonl`, `server-data/hip4/logs/hip4_outcome_mainnet_paper`, `tmp/from_scratch_audit.py`, `tmp/from_scratch_audit_summary.json`, P1-03, P1-06, P1-07, P1-08, P2-01 et P2-02.
+  **Objectif** : transformer les edges bruts détectés par coin, timeframe, régime, heure et jour de semaine en replay factoriel reproductible, sans toucher au live et sans réutiliser les patterns déjà codés comme hypothèse de départ.
+  **Modifs à faire** : créer un script versionné, par exemple `scripts/run_p109_factor_research_replay.py`, qui consomme snapshots 5m, journaux décisions/trades A/C et settlements HIP-4 ; produire un rapport daté dans `server-data/replay_reports/p109_factor_research_<timestamp>/` avec PnL net, PF, WR, drawdown, frais/spread/slippage, trade-count, exposition max, corrélation portefeuille et résultat par mois/régime.
+  **Variantes à tester en priorité** : `oil_short_4h_time_gate` (`XYZ:CL/BRENTOIL`, short 240m, régime `chop/mixed/high_vol`, fenêtre `07:00-10:00 UTC`) ; `crypto_alt_short_4h_weak_basket` (short 240m sur `PENGU/TIA/VVV/STRK/ZRO/ICP`, puis `SAGA/DYM` seulement si coûts nets acceptables) ; `crypto_high_vol_rebound_60m` (long court high-vol, sortie rapide, pas de grace longue) ; `gold_short_filter_4h` (d'abord filtre anti-long, puis paper short tiny si edge net) ; `hip4_buy_no_guard` (`BUY_YES only`, `skip BUY_NO`, `skip BUY_NO 6-18h`, gate data quality `book_age_ms/reference_divergence_bps`).
+  **Contraintes méthodo** : features strictement pré-entry, séparation temporelle par sous-périodes, coûts réalistes, contrôle du lookahead, comparaison contre baseline full-bot A/C pertinente, limite d'exposition corrélée pour éviter 8 shorts alts dans le même mouvement, et rejet des règles positives uniquement sur une semaine ou sur 2-3 trades.
+  **Fetch / export à mettre à jour** : aucun changement immédiat tant que P1-09 reste replay research. Si une variante passe en shadow, ajouter ses champs `p109_*` dans `logs/*`, `scripts/fetch_trident_data.sh` et `scripts/export_trident_audit_pack.py`, avec compteur `live_action_unchanged_false=0` obligatoire.
+  **Tests / preuves attendues** : tests unitaires du calcul des features/labels sans lookahead ; replay reproductible depuis `server-data/` ; rapport markdown/json ; `uv run pytest` ciblé ; `bash -n scripts/fetch_trident_data.sh deploy.sh` seulement si fetch/export ou deploy sont modifiés.
+  **Terminé quand** : chaque piste est classée `promouvable_shadow`, `research_only` ou `rejetée`, avec seuils, coût net, sample, concentration, impact sur baseline A/C et décision explicite sur la suite. Aucune règle issue de P1-09 ne doit passer live sans étape shadow/dry-run séparée.
 
 ### P2 — Hygiène, recherche et audit continu
 
@@ -600,3 +614,292 @@ Contre-performant sur les 25 trades attribuables (le boost ×1.4 amplifie les tr
 Si je devais ne retenir qu'une chose : **le levier le plus drastique n'est pas un meilleur exit, c'est de ne pas être long-only crypto dans une transition défensive.** P1-06 valide l'intuition sur juin mais rejette l'activation globale des shorts et les shorts `bearish` purs. À court terme, la séquence rationnelle est : garder le live inchangé, journaliser un gate `defensive_short_shadow` + `long_not_bear` en shadow/dry-run, puis seulement après out-of-sample décider s'il bloque les longs, réduit le cap, ou autorise un short contrôlé.
 
 Je ne suis pas conseiller financier, et tous les chiffres ci-dessus reposent sur une reconstruction au pas minute, pas sur les fills exchange réels — donc à traiter comme des ordres de grandeur pour prioriser, pas comme des vérités à câbler en dur.
+
+---
+
+# ADDENDUM — 2026-06-15 — Recherche from scratch multi-coins/timeframes
+
+## Resultat audit from scratch
+
+Date: 2026-06-15
+
+## Synthese
+
+J'ai ignore les patterns deja documentes et repris l'analyse depuis les donnees
+de marche: snapshots 5 minutes, rendements futurs 15/60/240 minutes, trades A/C
+fermes et settlements HIP-4.
+
+Conclusion principale: les donnees ne soutiennent pas un simple renforcement du
+long crypto existant. Les edges les plus nets sont plutot:
+
+- short 4h sur une poche d'alts faibles;
+- short 4h sur oil, surtout en regime chop/mixed et fenetre 07:00-10:00 UTC;
+- short 4h gold en regime downtrend/mixed, edge plus petit mais propre;
+- long crypto seulement en rebond court 60m sous high-vol, pas en hold 4h
+  generalise;
+- HIP-4: BUY_YES tient mieux que BUY_NO; BUY_NO explique la fragilite PnL.
+
+Aucune recommandation ci-dessous ne doit passer live sans replay full-bot
+comparable, couts inclus, puis paper/dry-run.
+
+## Donnees et limites
+
+Sources utilisees:
+
+- `server-data/live_snapshots/*.jsonl`: 60 fichiers, du
+  `2026-04-05T19:45Z` au `2026-06-15T09:30Z`.
+- 543 676 buckets symbole en 5 minutes, collector-only, 50 symboles.
+- Horizons testes: 15m, 60m, 240m.
+- Clusters: crypto 408 126 buckets, equity 40 665, oil 27 110, index 27 110,
+  gold/silver/fx 13 555 chacun.
+- `server-data/logs/pod_a_live.jsonl` et `pod_c_live.jsonl`: 170 trades fermes.
+- `server-data/hip4/logs/hip4_outcome_mainnet_paper`: 38 trades, 36 settlements,
+  51 955 opportunities.
+
+Limites importantes:
+
+- La couverture n'est pas continue: trous notamment `2026-04-19`,
+  `2026-04-28 -> 2026-04-29`, `2026-05-09 -> 2026-05-11`,
+  `2026-05-17`, puis `2026-05-19 -> 2026-05-23`.
+- Les rendements sont bruts; j'affiche l'avg spread observe, mais pas un modele
+  complet de fees, slippage, liquidation path ou stop execution.
+- Les stats 240m sont autocorrelees par construction; le t-like aide au tri,
+  ce n'est pas une preuve IID.
+- Le fetch global a produit une review A/C fraiche, mais la partie HIP-4 a ete
+  interrompue apres plusieurs minutes sans progression visible. Les fichiers
+  HIP-4 locaux recents etaient presents et ont ete analyses directement.
+
+## Edges marche observes
+
+### Crypto
+
+Le signal crypto le plus stable est un biais short 4h sur une poche d'alts.
+Les coins stables par mois:
+
+| Coin | Side | Horizon | N | Moyenne brute | Hit | Avg spread | Periodes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| SAGA | short | 240m | 6 944 | +37.15 bps | 57.3% | 12.18 bps | mai +41.39, juin +33.93 |
+| DYM | short | 240m | 6 944 | +33.57 bps | 55.8% | 10.75 bps | mai +52.81, juin +18.98 |
+| PENGU | short | 240m | 6 944 | +24.04 bps | 58.8% | 3.43 bps | mai +31.34, juin +18.51 |
+| TIA | short | 240m | 6 944 | +20.10 bps | 54.3% | 3.67 bps | mai +29.32, juin +13.12 |
+| VVV | short | 240m | 6 944 | +18.03 bps | 53.5% | 3.84 bps | mai +18.56, juin +17.63 |
+| STRK | short | 240m | 6 944 | +12.26 bps | 55.0% | 5.76 bps | mai +20.58, juin +5.95 |
+| ZRO | short | 240m | 14 344 | +10.37 bps | 54.4% | 3.07 bps | avr +0.44, mai +24.71, juin +4.08 |
+| ICP | short | 240m | 6 944 | +8.34 bps | 53.3% | 4.83 bps | mai +8.14, juin +8.50 |
+
+Lecture: le short alt 4h est la meilleure piste crypto from scratch, mais SAGA
+et DYM ont un spread moyen eleve. Il faut les traiter en paper/replay net de
+couts avant toute conclusion.
+
+Regimes crypto:
+
+- High-vol crypto: long 60m +7.28 bps, stable avril/mai/juin. C'est un rebond
+  court, pas un argument pour tenir du long plusieurs heures.
+- Mixed crypto: short 240m +11.75 bps, stable avril/mai/juin.
+- Broad-up crypto: short 240m +7.97 bps, stable avril/mai/juin. Interpretation
+  probable: fade de breadth apres expansion, pas momentum long.
+
+Timing crypto:
+
+- Short 240m fort autour de 00:00-03:00 UTC et 22:00 UTC.
+- Long 240m ressort surtout vers 14:00 UTC.
+- Par jour UTC: short mercredi/vendredi, long dimanche. A utiliser seulement
+  comme variable de replay, pas comme regle autonome.
+
+### Oil
+
+Oil est le candidat le plus propre cote Pod C recherche:
+
+| Symbole | Side | Horizon | N | Moyenne brute | Hit | Avg spread | Periodes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| XYZ:CL | short | 240m | 13 070 | +11.01 bps | 52.5% | 0.82 bps | avr +9.51, mai +9.85, juin +13.87 |
+| XYZ:BRENTOIL | short | 240m | 13 070 | +8.82 bps | 52.2% | 1.12 bps | avr +0.67, mai +10.73, juin +13.73 |
+
+Regime/time:
+
+- Oil chop short 240m: +13.85 bps, stable sur les 3 mois.
+- Oil short 240m tres fort a 07:00-10:00 UTC.
+- Jeudi/vendredi UTC short oil ressortent nettement.
+- Oil 14:00 UTC long 60m existe, mais c'est moins stable que le short 4h.
+
+Recommandation: construire un replay Pod C short oil separe, avec gate
+`cluster in {chop,mixed,high_vol}`, fenetre 07:00-10:00 UTC d'abord, puis
+extension controlee. Ne pas extrapoler a gold/silver/equity.
+
+### Gold
+
+Gold donne un edge short 4h modeste mais regulier:
+
+- Gold downtrend short 240m: +5.54 bps, hit 54.8%, spread 0.24 bps.
+- Gold mixed short 240m: +5.07 bps, hit 54.3%, spread 0.24 bps.
+- Pattern generique flow/structure continuation short: +5.06 bps, stable
+  avril/mai/juin.
+
+Recommandation: utiliser d'abord comme filtre anti-long ou paper short tiny.
+L'edge brut est petit; il peut disparaitre apres fees si l'execution n'est pas
+propre.
+
+### Equity / index / silver
+
+Equity:
+
+- Un pattern d'absorption contre flow en short 240m sort a +12.00 bps, mais le
+  hit rate est seulement 49.9%. C'est probablement une distribution a queues,
+  pas un edge confortable.
+- Les horaires equity montrent long 04:00-07:00 UTC et short 10:00-12:00 UTC,
+  mais il faut verifier si cela vient de CRCL/NVDA/TSLA et des horaires de
+  reference externe.
+
+Index:
+
+- Index chop long 240m: +4.31 bps, hit 59.1%.
+- Index hot-vol long 240m: +14.34 bps mais N=721 seulement.
+
+Silver:
+
+- Quelques signaux short 240m ressortent, mais le live recent et la review A/C
+  gardent `XYZ:SILVER` bloque. Ne pas reouvrir silver sans replay dedie.
+
+## Trades A/C observes
+
+Depuis les journaux live:
+
+- 170 trades fermes.
+- PnL total: -150.09 USD.
+- Pod A: -135.09 USD, 141 trades, win rate runtime 34.75%.
+- Pod C: -15.00 USD, 29 trades, win rate runtime 27.59%.
+
+Lecture:
+
+- Pod A long crypto `trend_pullback_long`: moyenne -39.2 bps par notionnel.
+- Les winners existent mais sont concentres dans les `trailing_stop`
+  (+114.9 bps moyen, 49 trades, 93.9% hit).
+- Les stops exchange detruisent le profil: `exchange_closed_stop_loss`
+  Pod A = -192.1 bps moyen, 47 trades.
+- Les pires pertes recentes touchent NEAR, TON, ONDO, ZEC, PENGU, ADA, ENA,
+  PENDLE, TIA.
+
+Conclusion execution: le long crypto actuel ne doit pas etre augmente. Si on
+cherche de l'edge crypto, la donnees pointe plutot vers un sleeve short 4h sur
+alts faibles et un mode long 60m high-vol beaucoup plus selectif.
+
+## HIP-4
+
+Mainnet paper direct CSV:
+
+- 38 trades, 36 settlements.
+- PnL net: -26.8823 USDC.
+- Gains: +196.6478 USDC, pertes: -223.5301 USDC.
+- Worst loss: -49.7638 USDC sur BTC BUY_NO.
+- Best win: +31.3643 USDC sur BTC BUY_NO.
+
+Par side:
+
+- MODEL BUY_YES: 16 settlements, moyenne +4.066 USDC, hit 68.8%.
+- MODEL BUY_NO: 20 settlements, moyenne -4.597 USDC, hit 25.0%.
+- BUY_NO 6-18h avant expiry: moyenne -13.719 USDC, hit 16.7%.
+- BUY_YES >18h avant expiry: moyenne +6.029 USDC, hit 66.7%.
+- SOL BUY_YES: 3/3 wins, moyenne +14.833 USDC, echantillon trop petit.
+
+Nautilus/data quality:
+
+- `shadow_ready=true`.
+- `data_quality.csv`: 149 706 lignes.
+- Avg quality_score: 0.810.
+- Avg max_book_age_ms: 28 502 ms.
+- Raisons dominantes: `book_age_gt_1000ms`, puis divergence reference.
+
+Conclusion HIP-4:
+
+- Ne pas promouvoir mainnet.
+- Tester un guardrail `skip BUY_NO` ou au minimum `skip BUY_NO 6-18h`.
+- Le gros nombre d'opportunities a edge theorique ne se traduit pas en PnL:
+  priorite a calibration + data quality, pas a plus de volume.
+- BUY_YES peut rester en observation/paper, surtout pour verifier si SOL/HYPE
+  sont de vrais sous-jacents additifs ou juste un mini-sample chanceux.
+
+## Recommandations de recherche
+
+Priorite 1 - Replay short oil Pod C:
+
+- Candidat: `XYZ:CL`, puis `XYZ:BRENTOIL`.
+- Horizon cible: 240m.
+- Gate initial: oil `chop/mixed/high_vol`.
+- Fenetre initiale: 07:00-10:00 UTC.
+- Benchmark: baseline full-bot Pod A/C, pas replay isole seulement.
+- Decision attendue: si positif net de fees et drawdown acceptable, passer
+  paper/dry-run shadow. Pas live direct.
+
+Priorite 2 - Replay crypto alt short 4h:
+
+- Watchlist initiale: `PENGU`, `TIA`, `VVV`, `STRK`, `ZRO`, `ICP`, puis
+  `SAGA`/`DYM` seulement si couts reels restent acceptables.
+- Regimes candidats: crypto `mixed`, `broad_up` fade, high-vol continuation
+  short 240m.
+- Exclure les entrees si spread moyen ou instantane rend l'edge net negatif.
+- Tester aussi une version portefeuille qui limite la correlation: pas 8 alts
+  short ouvertes dans le meme move.
+
+Priorite 3 - Crypto long high-vol 60m:
+
+- Ce n'est pas le long actuel. C'est un mode rebond court.
+- Gate: high-vol crypto, horizon 60m, sortie rapide, pas grace longue.
+- Objectif: capter les rebounds sans accepter les stops catastrophe 4h.
+
+Priorite 4 - Gold short filter:
+
+- Utiliser comme filtre anti-long gold ou paper short micro.
+- Edge brut faible; ne pas live avant preuve nette fees incluses.
+
+Priorite 5 - HIP-4 side guard:
+
+- Backtester `BUY_YES only`, `skip BUY_NO`, `skip BUY_NO 6-18h`, et gate par
+  data quality (`book_age_ms`, `reference_divergence_bps`).
+- Garder `prob_stop_full` actif en paper; ne pas reactiver une politique qui
+  cree du churn/re-entry sans preuve.
+
+## Evos a faire/tester par priorite
+
+Correspondance plan priorise: **P1-09 — Recherche factorielle from scratch multi-coins/timeframes**.
+
+Step 1 - Construire un replay de recherche factoriel:
+
+- Objectif: transformer les pistes ci-dessus en hypotheses testables sans
+  toucher au live.
+- Input: snapshots 5m + journaux decisions/trades + settlements HIP-4.
+- Output attendu: un rapport date dans `server-data/replay_reports/` avec, pour
+  chaque variante, PnL net, PF, drawdown, fees, hit rate, nombre de trades,
+  exposition max, et resultat par mois.
+- Variantes a tester dans l'ordre:
+  - `oil_short_4h_time_gate`: `XYZ:CL/BRENTOIL`, short, 240m,
+    regime `chop/mixed/high_vol`, fenetre 07:00-10:00 UTC.
+  - `crypto_alt_short_4h_weak_basket`: short 240m sur
+    `PENGU/TIA/VVV/STRK/ZRO/ICP`, puis ajout conditionnel `SAGA/DYM` si le
+    cout net reste positif.
+  - `crypto_high_vol_rebound_60m`: long 60m uniquement en high-vol, sortie
+    rapide, aucun stop grace long.
+  - `gold_short_filter_4h`: d'abord filtre anti-long, puis paper short tiny si
+    le replay reste positif net.
+  - `hip4_buy_no_guard`: `BUY_YES only`, `skip BUY_NO`, `skip BUY_NO 6-18h`,
+    et gate data quality.
+- Critere de passage au step suivant: positif net de fees sur au moins deux
+  sous-periodes, drawdown acceptable, pas de degradation de la baseline full-bot
+  A/C, et sample suffisant pour eviter une decision sur 2-3 trades.
+- Critere de rejet rapide: edge positif uniquement sur une seule semaine, ou
+  profit absorbe par spread/fees, ou correlation trop forte entre positions.
+
+## A ne pas faire maintenant
+
+- Ne pas augmenter le sizing long crypto existant.
+- Ne pas reactiver des shorts globaux sans replay full-bot.
+- Ne pas rouvrir `XYZ:SILVER` live.
+- Ne pas transformer les horaires/jours en regles directes: ce sont des
+  variables de replay.
+- Ne pas conclure que HIP-4 a un edge exploitable tant que BUY_NO et la data
+  quality ne sont pas corriges.
+
+## Artefacts
+
+- Script d'audit temporaire: `tmp/from_scratch_audit.py`.
+- Resume machine-readable: `tmp/from_scratch_audit_summary.json`.
+- Review A/C fraiche consultee: `server-data/reviews/20260615T093431Z/review_summary.md`.

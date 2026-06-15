@@ -64,6 +64,11 @@ from app.trident.pod_a.order_block_shadow import (
     review_order_block_shadow_details,
     signal_order_block_shadow_details,
 )
+from app.trident.pod_a.dynamic_symbol_guard import (
+    PodADynamicSymbolGuard,
+    symbol_guard_details,
+    symbol_guard_setup_details,
+)
 from app.trident.pod_a.regime_shadow import (
     PodARegimeShadowTracker,
     regime_shadow_setup_details,
@@ -169,6 +174,9 @@ class PodALiveRunner:
         self._loss_tax_until_by_symbol: dict[str, datetime] = {}
         self._regime_shadow_tracker = PodARegimeShadowTracker()
         self._order_block_shadow_tracker = PodAOrderBlockShadowTracker()
+        self._dynamic_symbol_guard = PodADynamicSymbolGuard(
+            Path("runtime/trident/pod_a_dynamic_symbol_guard_state.json")
+        )
 
     async def run(
         self,
@@ -466,25 +474,35 @@ class PodALiveRunner:
             timestamp=timestamp,
             snapshots=snapshots,
         )
+        symbol_guard_features = self._dynamic_symbol_guard.evaluate(
+            timestamp=timestamp,
+            snapshots=snapshots,
+            regime_features=regime_shadow_features,
+            order_block_features=order_block_shadow_features,
+        )
+        self._dynamic_symbol_guard.save()
         previews = self.supervisor.preview_pod_a_signals(snapshots, timestamp=timestamp)
         trade_plans = self.supervisor.build_pod_a_trade_plans(snapshots, timestamp=timestamp)
         for plan in trade_plans:
+            symbol_key = plan.symbol.upper()
             shadow_details = signal_regime_shadow_details(
-                regime_shadow_features.get(plan.symbol.upper()),
+                regime_shadow_features.get(symbol_key),
                 side=str(plan.side),
                 setup=str(plan.setup),
             )
             order_block_details = signal_order_block_shadow_details(
-                order_block_shadow_features.get(plan.symbol.upper()),
-                regime_shadow_features.get(plan.symbol.upper()),
+                order_block_shadow_features.get(symbol_key),
+                regime_shadow_features.get(symbol_key),
                 side=str(plan.side),
                 setup=str(plan.setup),
             )
+            guard_details = symbol_guard_details(symbol_guard_features.get(symbol_key))
             plan.setup_details = {
                 **dict(plan.setup_details or {}),
                 "current_date_key": date_key,
                 **regime_shadow_setup_details(shadow_details),
                 **order_block_shadow_setup_details(order_block_details),
+                **symbol_guard_setup_details(guard_details),
             }
         if self.mode == "live":
             leverage_policy = LeveragePolicy(self.config.pod_a)
@@ -531,21 +549,26 @@ class PodALiveRunner:
             fills_by_symbol.setdefault(str(fill["symbol"]), []).append(fill)
 
         for preview in previews:
+            symbol_key = preview.symbol.upper()
             preview_shadow_details = signal_regime_shadow_details(
-                regime_shadow_features.get(preview.symbol.upper()),
+                regime_shadow_features.get(symbol_key),
                 side=preview.side,
                 setup=preview.setup,
             )
             preview_order_block_details = signal_order_block_shadow_details(
-                order_block_shadow_features.get(preview.symbol.upper()),
-                regime_shadow_features.get(preview.symbol.upper()),
+                order_block_shadow_features.get(symbol_key),
+                regime_shadow_features.get(symbol_key),
                 side=preview.side,
                 setup=preview.setup,
+            )
+            preview_symbol_guard_details = symbol_guard_details(
+                symbol_guard_features.get(symbol_key)
             )
             preview_setup_details = {
                 **dict(preview.setup_details),
                 **regime_shadow_setup_details(preview_shadow_details),
                 **order_block_shadow_setup_details(preview_order_block_details),
+                **symbol_guard_setup_details(preview_symbol_guard_details),
             }
             self.report.add_signal(
                 date_key=date_key,
@@ -574,6 +597,7 @@ class PodALiveRunner:
                             "setup_details": preview_setup_details,
                             "regime_shadow": preview_shadow_details,
                             "order_block_shadow": preview_order_block_details,
+                            "dynamic_symbol_guard": preview_symbol_guard_details,
                             "confidence_components": (
                                 decisions_by_symbol[preview.symbol].trade_plan.confidence_components
                                 if preview.symbol in decisions_by_symbol
@@ -704,6 +728,13 @@ class PodALiveRunner:
                     regime_shadow_features.get(str(review.get("symbol", "")).upper()),
                     review,
                 )
+                review_payload["dynamic_symbol_guard"] = symbol_guard_details(
+                    symbol_guard_features.get(str(review.get("symbol", "")).upper())
+                )
+                review_payload["setup_details"] = {
+                    **dict(review_payload.get("setup_details") or {}),
+                    **symbol_guard_setup_details(review_payload["dynamic_symbol_guard"]),
+                }
                 journal.append(
                     build_signal_review_journal_record(
                         timestamp=timestamp,

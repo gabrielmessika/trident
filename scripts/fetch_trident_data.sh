@@ -481,6 +481,13 @@ P103_SHADOW_FIELDS = (
     "would_block_external_reference_candidate_default_5m",
 )
 
+P108_SYMBOL_GUARD_FIELDS = (
+    "would_throttle_dynamic_symbol_guard",
+    "would_block_dynamic_symbol_guard",
+    "would_reduce_cap_dynamic_symbol_guard",
+    "structural_block_candidate",
+)
+
 def empty_shadow_stats() -> dict:
     return {
         "records": 0,
@@ -502,6 +509,88 @@ def update_shadow_stats(stats: dict, symbol: str, details: dict) -> None:
     for field in P103_SHADOW_FIELDS:
         if details.get(field) is True:
             stats["by_gate"][field] = int(stats["by_gate"].get(field) or 0) + 1
+
+def empty_symbol_guard_stats() -> dict:
+    return {
+        "records": 0,
+        "with_shadow": 0,
+        "live_action_unchanged_false": 0,
+        "by_state": {},
+        "by_gate": {field: 0 for field in P108_SYMBOL_GUARD_FIELDS},
+        "by_symbol": {},
+        "avg_score": 0.0,
+        "_score_sum": 0.0,
+    }
+
+def update_symbol_guard_stats(stats: dict, symbol: str, details: dict) -> None:
+    stats["records"] += 1
+    if details.get("symbol_guard_shadow_mode") != "observation_only":
+        return
+    stats["with_shadow"] += 1
+    if details.get("symbol_guard_live_action_unchanged") is not True:
+        stats["live_action_unchanged_false"] += 1
+    symbol_key = str(symbol or "").upper()
+    state = str(details.get("symbol_guard_state") or "unknown")
+    stats["by_state"][state] = int(stats["by_state"].get(state) or 0) + 1
+    if symbol_key:
+        stats["by_symbol"][symbol_key] = int(stats["by_symbol"].get(symbol_key) or 0) + 1
+    for field in P108_SYMBOL_GUARD_FIELDS:
+        if details.get(field) is True:
+            stats["by_gate"][field] = int(stats["by_gate"].get(field) or 0) + 1
+    try:
+        stats["_score_sum"] += float(details.get("falling_knife_score") or 0.0)
+    except (TypeError, ValueError):
+        pass
+    stats["avg_score"] = round(
+        float(stats["_score_sum"]) / max(int(stats["with_shadow"]), 1),
+        4,
+    )
+
+def finalize_symbol_guard_stats(stats: dict) -> dict:
+    compact = dict(stats)
+    compact.pop("_score_sum", None)
+    compact["by_symbol"] = dict(
+        sorted(compact.get("by_symbol", {}).items(), key=lambda item: (-int(item[1]), item[0]))[:20]
+    )
+    return compact
+
+def build_p108_symbol_guard_focus(*, log_dir: Path) -> dict:
+    stats = empty_symbol_guard_stats()
+    pod_a_log = log_dir / "pod_a_live.jsonl"
+    try:
+        journal_tail_lines = max(int(os.getenv("TRIDENT_FETCH_P108_JOURNAL_TAIL_LINES", "2000")), 1)
+    except ValueError:
+        journal_tail_lines = 2000
+    for record in iter_jsonl_tail(pod_a_log, journal_tail_lines) or []:
+        event_type = str(record.get("event_type") or "")
+        if event_type == "signal":
+            signal = record.get("signal") if isinstance(record.get("signal"), dict) else {}
+            details = signal.get("setup_details") if isinstance(signal.get("setup_details"), dict) else {}
+            update_symbol_guard_stats(stats, str(signal.get("symbol") or ""), details)
+        elif event_type == "signal_review":
+            review = record.get("review") if isinstance(record.get("review"), dict) else {}
+            details = review.get("setup_details") if isinstance(review.get("setup_details"), dict) else {}
+            update_symbol_guard_stats(stats, str(review.get("symbol") or ""), details)
+        elif event_type == "trade_close":
+            trade = record.get("trade") if isinstance(record.get("trade"), dict) else {}
+            details = trade.get("setup_details") if isinstance(trade.get("setup_details"), dict) else {}
+            update_symbol_guard_stats(stats, str(trade.get("symbol") or ""), details)
+    status = "WARN"
+    reasons: list[str] = []
+    if int(stats.get("with_shadow") or 0) > 0:
+        status = "PASS"
+        reasons.append("shadow P1-08 présent dans les journaux Pod A")
+    else:
+        reasons.append("aucun champ symbol_guard_shadow observé dans le tail Pod A")
+    if int(stats.get("live_action_unchanged_false") or 0) > 0:
+        status = "FAIL"
+        reasons.append("shadow P1-08 indique live_action_unchanged=false")
+    return {
+        "status": status,
+        "reasons": reasons,
+        "journal_tail_lines": journal_tail_lines,
+        "dynamic_symbol_guard": finalize_symbol_guard_stats(stats),
+    }
 
 def build_p103_external_reference_focus(
     *,
@@ -802,6 +891,7 @@ external_reference_focus = build_p103_external_reference_focus(
     log_dir=log_dir,
     snapshot_dir=snapshot_dir,
 )
+symbol_guard_focus = build_p108_symbol_guard_focus(log_dir=log_dir)
 
 checks: list[str] = []
 warnings: list[str] = []
@@ -875,6 +965,25 @@ else:
         + "; ".join(str(item) for item in external_reference_focus.get("reasons", []))
     )
 
+p108_status = str(symbol_guard_focus.get("status") or "WARN")
+if p108_status == "PASS":
+    guard = symbol_guard_focus.get("dynamic_symbol_guard", {})
+    checks.append(
+        "P1-08 dynamic symbol guard Pod A shadow collecté "
+        f"({guard.get('with_shadow')}/{guard.get('records')}, "
+        f"states={guard.get('by_state')})"
+    )
+elif p108_status == "FAIL":
+    failures.append(
+        "P1-08 dynamic symbol guard Pod A KO: "
+        + "; ".join(str(item) for item in symbol_guard_focus.get("reasons", []))
+    )
+else:
+    warnings.append(
+        "P1-08 dynamic symbol guard Pod A à confirmer: "
+        + "; ".join(str(item) for item in symbol_guard_focus.get("reasons", []))
+    )
+
 status = "PASS" if not failures else "FAIL"
 if warnings and status == "PASS":
     status = "WARN"
@@ -941,6 +1050,37 @@ for symbol, row in (external_reference_focus.get("snapshot_by_symbol") or {}).it
     encoding="utf-8",
 )
 
+p108_lines = [
+    "# P1-08 Pod A dynamic symbol guard audit",
+    "",
+    f"- generated_at: `{datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}`",
+    f"- status: `{symbol_guard_focus.get('status')}`",
+]
+for reason in symbol_guard_focus.get("reasons", []):
+    p108_lines.append(f"- reason: `{reason}`")
+guard = symbol_guard_focus.get("dynamic_symbol_guard", {})
+p108_lines.extend(
+    [
+        "",
+        "## Shadow P1-08",
+        f"- records: `{guard.get('records')}`",
+        f"- with_shadow: `{guard.get('with_shadow')}`",
+        f"- live_action_unchanged_false: `{guard.get('live_action_unchanged_false')}`",
+        f"- avg_score: `{guard.get('avg_score')}`",
+        f"- by_state: `{guard.get('by_state')}`",
+        f"- by_gate: `{guard.get('by_gate')}`",
+        f"- by_symbol: `{guard.get('by_symbol')}`",
+    ]
+)
+(output / "p108_dynamic_symbol_guard_audit.md").write_text(
+    "\n".join(p108_lines) + "\n",
+    encoding="utf-8",
+)
+(output / "p108_dynamic_symbol_guard_audit.json").write_text(
+    json.dumps(symbol_guard_focus, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+
 lines = [
     "# TRIDENT A/C server review",
     "",
@@ -1000,6 +1140,15 @@ lines.extend(
         f"- silver_blocked_by_config: `{external_reference_focus.get('silver_blocked_by_config')}`",
         f"- detail: `{output / 'p103_external_reference_audit.md'}`",
         "",
+        "## P1-08 Dynamic Symbol Guard Pod A",
+        f"- status: `{symbol_guard_focus.get('status')}`",
+        f"- shadow_coverage: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('with_shadow')}/{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('records')}`",
+        f"- shadow_live_action_unchanged_false: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('live_action_unchanged_false')}`",
+        f"- avg_score: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('avg_score')}`",
+        f"- by_state: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('by_state')}`",
+        f"- by_gate: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('by_gate')}`",
+        f"- detail: `{output / 'p108_dynamic_symbol_guard_audit.md'}`",
+        "",
         "## Next Review Focus",
         "- Verifier que le serveur expose bien `live_max_order_notional_usd=200`, `pod_a.stop_grace_minutes=60` et `live_block_stop_grace_setups=false`.",
         "- P1-03: verifier `external_reference.symbols_enriched>0`, la couverture par symbole et les revues `XYZ:SILVER` en `symbol_blocked` dans `p103_external_reference_audit.md`.",
@@ -1034,6 +1183,7 @@ for pod in ("pod_a", "pod_c"):
             "operator_context": operator_context,
             "performance_focus": performance_focus,
             "p103_external_reference_focus": external_reference_focus,
+            "p108_dynamic_symbol_guard_focus": symbol_guard_focus,
             "checks": checks,
             "warnings": warnings,
             "failures": failures,

@@ -196,10 +196,17 @@ class PodALiveRunnerTests(unittest.TestCase):
             order_block_shadow = signal_records[0]["signal"]["order_block_shadow"]
             self.assertEqual(order_block_shadow["order_block_shadow_mode"], "observation_only")
             self.assertTrue(order_block_shadow["live_action_unchanged"])
+            dynamic_symbol_guard = signal_records[0]["signal"]["dynamic_symbol_guard"]
+            self.assertEqual(dynamic_symbol_guard["symbol_guard_shadow_mode"], "observation_only")
+            self.assertTrue(dynamic_symbol_guard["symbol_guard_live_action_unchanged"])
             self.assertIn("bull_regime_score", signal_records[0]["signal"]["setup_details"])
             self.assertIn("would_block_long", signal_records[0]["signal"]["setup_details"])
             self.assertIn(
                 "would_block_long_order_block_shadow",
+                signal_records[0]["signal"]["setup_details"],
+            )
+            self.assertIn(
+                "would_block_dynamic_symbol_guard",
                 signal_records[0]["signal"]["setup_details"],
             )
             runtime_status = json.loads(Path("logs/pod_a_live_status.json").read_text(encoding="utf-8"))

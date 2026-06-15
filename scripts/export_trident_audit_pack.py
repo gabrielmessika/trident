@@ -27,6 +27,28 @@ P103_EXTERNAL_REFERENCE_SHADOW_FIELDS = [
     "external_reference_shadow_live_action_unchanged",
 ]
 
+P108_DYNAMIC_SYMBOL_GUARD_FIELDS = [
+    "symbol_guard_shadow_mode",
+    "symbol_guard_state",
+    "previous_symbol_guard_state",
+    "falling_knife_score",
+    "falling_knife_reason",
+    "would_throttle_dynamic_symbol_guard",
+    "would_block_dynamic_symbol_guard",
+    "would_reduce_cap_dynamic_symbol_guard",
+    "shadow_cap_multiplier",
+    "quarantine_until",
+    "quarantine_exit_reason",
+    "structural_block_candidate",
+    "symbol_guard_live_action_unchanged",
+    "falling_knife_regime_score",
+    "falling_knife_relative_weakness_score",
+    "falling_knife_structure_score",
+    "falling_knife_volatility_slippage_score",
+    "falling_knife_order_block_score",
+    "falling_knife_recent_stops_score",
+]
+
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -121,6 +143,7 @@ def compact_setup_details(details: dict[str, Any]) -> dict[str, Any]:
         "external_momentum_300s_bps",
         "external_alignment_score",
         *P103_EXTERNAL_REFERENCE_SHADOW_FIELDS,
+        *P108_DYNAMIC_SYMBOL_GUARD_FIELDS,
         "a_grade_score",
         "a_grade_strong",
         "live_cap_active",
@@ -157,6 +180,7 @@ def compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "external_momentum_300s_bps",
         "external_alignment_score",
         *P103_EXTERNAL_REFERENCE_SHADOW_FIELDS,
+        *P108_DYNAMIC_SYMBOL_GUARD_FIELDS,
         "source",
     ]
     return {key: snapshot.get(key) for key in keys if key in snapshot}
