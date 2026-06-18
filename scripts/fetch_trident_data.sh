@@ -488,6 +488,10 @@ P108_SYMBOL_GUARD_FIELDS = (
     "structural_block_candidate",
 )
 
+P109_OIL_SHADOW_FIELDS = (
+    "would_open_p109_oil_short_shadow",
+)
+
 def empty_shadow_stats() -> dict:
     return {
         "records": 0,
@@ -546,6 +550,45 @@ def update_symbol_guard_stats(stats: dict, symbol: str, details: dict) -> None:
         4,
     )
 
+def empty_p109_oil_stats() -> dict:
+    return {
+        "records": 0,
+        "with_shadow": 0,
+        "live_action_unchanged_false": 0,
+        "would_open": 0,
+        "by_symbol": {},
+        "by_research_regime": {},
+        "by_hour_utc": {},
+        "avg_score": 0.0,
+        "_score_sum": 0.0,
+    }
+
+def update_p109_oil_stats(stats: dict, symbol: str, details: dict) -> None:
+    stats["records"] += 1
+    if details.get("p109_oil_shadow_mode") != "observation_only":
+        return
+    stats["with_shadow"] += 1
+    if details.get("p109_oil_shadow_live_action_unchanged") is not True:
+        stats["live_action_unchanged_false"] += 1
+    if details.get("would_open_p109_oil_short_shadow") is True:
+        stats["would_open"] += 1
+    symbol_key = str(symbol or details.get("p109_oil_symbol") or "").upper()
+    if symbol_key:
+        stats["by_symbol"][symbol_key] = int(stats["by_symbol"].get(symbol_key) or 0) + 1
+    regime = str(details.get("p109_oil_shadow_research_regime") or "unknown")
+    stats["by_research_regime"][regime] = int(stats["by_research_regime"].get(regime) or 0) + 1
+    hour = details.get("p109_oil_shadow_hour_utc")
+    hour_key = "unknown" if hour in (None, "") else f"{int(float(hour)):02d}"
+    stats["by_hour_utc"][hour_key] = int(stats["by_hour_utc"].get(hour_key) or 0) + 1
+    try:
+        stats["_score_sum"] += float(details.get("p109_oil_shadow_score") or 0.0)
+    except (TypeError, ValueError):
+        pass
+    stats["avg_score"] = round(
+        float(stats["_score_sum"]) / max(int(stats["with_shadow"]), 1),
+        4,
+    )
+
 def combine_shadow_details(*sources: object) -> dict:
     combined: dict = {}
     for source in sources:
@@ -563,6 +606,61 @@ def finalize_symbol_guard_stats(stats: dict) -> dict:
         sorted(compact.get("by_symbol", {}).items(), key=lambda item: (-int(item[1]), item[0]))[:20]
     )
     return compact
+
+def finalize_p109_oil_stats(stats: dict) -> dict:
+    compact = dict(stats)
+    compact.pop("_score_sum", None)
+    compact["by_symbol"] = dict(
+        sorted(compact.get("by_symbol", {}).items(), key=lambda item: (-int(item[1]), item[0]))[:20]
+    )
+    return compact
+
+def build_p109_oil_shadow_focus(*, log_dir: Path) -> dict:
+    stats = empty_p109_oil_stats()
+    pod_c_log = log_dir / "pod_c_live.jsonl"
+    try:
+        journal_tail_lines = max(int(os.getenv("TRIDENT_FETCH_P109_OIL_JOURNAL_TAIL_LINES", "4000")), 1)
+    except ValueError:
+        journal_tail_lines = 4000
+    for record in iter_jsonl_tail(pod_c_log, journal_tail_lines) or []:
+        event_type = str(record.get("event_type") or "")
+        if event_type == "signal":
+            signal = record.get("signal") if isinstance(record.get("signal"), dict) else {}
+            details = combine_shadow_details(
+                signal.get("setup_details"),
+                signal.get("p109_oil_shadow"),
+            )
+            update_p109_oil_stats(stats, str(signal.get("symbol") or ""), details)
+        elif event_type == "signal_review":
+            review = record.get("review") if isinstance(record.get("review"), dict) else {}
+            details = combine_shadow_details(
+                review.get("setup_details"),
+                review.get("p109_oil_shadow"),
+            )
+            update_p109_oil_stats(stats, str(review.get("symbol") or ""), details)
+        elif event_type == "trade_close":
+            trade = record.get("trade") if isinstance(record.get("trade"), dict) else {}
+            details = combine_shadow_details(
+                trade.get("setup_details"),
+                trade.get("p109_oil_shadow"),
+            )
+            update_p109_oil_stats(stats, str(trade.get("symbol") or ""), details)
+    status = "WARN"
+    reasons: list[str] = []
+    if int(stats.get("with_shadow") or 0) > 0:
+        status = "PASS"
+        reasons.append("shadow P1-09 oil présent dans les journaux Pod C")
+    else:
+        reasons.append("aucun champ p109_oil_shadow_* observé dans le tail Pod C")
+    if int(stats.get("live_action_unchanged_false") or 0) > 0:
+        status = "FAIL"
+        reasons.append("shadow P1-09 oil indique live_action_unchanged=false")
+    return {
+        "status": status,
+        "reasons": reasons,
+        "journal_tail_lines": journal_tail_lines,
+        "p109_oil_shadow": finalize_p109_oil_stats(stats),
+    }
 
 def build_p108_symbol_guard_focus(*, log_dir: Path) -> dict:
     stats = empty_symbol_guard_stats()
@@ -914,6 +1012,7 @@ external_reference_focus = build_p103_external_reference_focus(
     snapshot_dir=snapshot_dir,
 )
 symbol_guard_focus = build_p108_symbol_guard_focus(log_dir=log_dir)
+p109_oil_focus = build_p109_oil_shadow_focus(log_dir=log_dir)
 
 checks: list[str] = []
 warnings: list[str] = []
@@ -1004,6 +1103,25 @@ else:
     warnings.append(
         "P1-08 dynamic symbol guard Pod A à confirmer: "
         + "; ".join(str(item) for item in symbol_guard_focus.get("reasons", []))
+    )
+
+p109_oil_status = str(p109_oil_focus.get("status") or "WARN")
+if p109_oil_status == "PASS":
+    oil = p109_oil_focus.get("p109_oil_shadow", {})
+    checks.append(
+        "P1-09 oil shadow Pod C collecté "
+        f"({oil.get('with_shadow')}/{oil.get('records')}, "
+        f"would_open={oil.get('would_open')})"
+    )
+elif p109_oil_status == "FAIL":
+    failures.append(
+        "P1-09 oil shadow Pod C KO: "
+        + "; ".join(str(item) for item in p109_oil_focus.get("reasons", []))
+    )
+else:
+    warnings.append(
+        "P1-09 oil shadow Pod C à confirmer: "
+        + "; ".join(str(item) for item in p109_oil_focus.get("reasons", []))
     )
 
 status = "PASS" if not failures else "FAIL"
@@ -1103,6 +1221,38 @@ p108_lines.extend(
     encoding="utf-8",
 )
 
+p109_oil = p109_oil_focus.get("p109_oil_shadow", {})
+p109_lines = [
+    "# P1-09 Pod C oil short shadow audit",
+    "",
+    f"- generated_at: `{datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}`",
+    f"- status: `{p109_oil_focus.get('status')}`",
+]
+for reason in p109_oil_focus.get("reasons", []):
+    p109_lines.append(f"- reason: `{reason}`")
+p109_lines.extend(
+    [
+        "",
+        "## Shadow P1-09 oil",
+        f"- records: `{p109_oil.get('records')}`",
+        f"- with_shadow: `{p109_oil.get('with_shadow')}`",
+        f"- live_action_unchanged_false: `{p109_oil.get('live_action_unchanged_false')}`",
+        f"- would_open: `{p109_oil.get('would_open')}`",
+        f"- avg_score: `{p109_oil.get('avg_score')}`",
+        f"- by_symbol: `{p109_oil.get('by_symbol')}`",
+        f"- by_research_regime: `{p109_oil.get('by_research_regime')}`",
+        f"- by_hour_utc: `{p109_oil.get('by_hour_utc')}`",
+    ]
+)
+(output / "p109_oil_shadow_audit.md").write_text(
+    "\n".join(p109_lines) + "\n",
+    encoding="utf-8",
+)
+(output / "p109_oil_shadow_audit.json").write_text(
+    json.dumps(p109_oil_focus, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+
 lines = [
     "# TRIDENT A/C server review",
     "",
@@ -1171,10 +1321,20 @@ lines.extend(
         f"- by_gate: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('by_gate')}`",
         f"- detail: `{output / 'p108_dynamic_symbol_guard_audit.md'}`",
         "",
+        "## P1-09 Oil Short Shadow Pod C",
+        f"- status: `{p109_oil_focus.get('status')}`",
+        f"- shadow_coverage: `{p109_oil_focus.get('p109_oil_shadow', {}).get('with_shadow')}/{p109_oil_focus.get('p109_oil_shadow', {}).get('records')}`",
+        f"- shadow_live_action_unchanged_false: `{p109_oil_focus.get('p109_oil_shadow', {}).get('live_action_unchanged_false')}`",
+        f"- would_open: `{p109_oil_focus.get('p109_oil_shadow', {}).get('would_open')}`",
+        f"- by_symbol: `{p109_oil_focus.get('p109_oil_shadow', {}).get('by_symbol')}`",
+        f"- by_research_regime: `{p109_oil_focus.get('p109_oil_shadow', {}).get('by_research_regime')}`",
+        f"- detail: `{output / 'p109_oil_shadow_audit.md'}`",
+        "",
         "## Next Review Focus",
         "- Verifier que le serveur expose bien `live_max_order_notional_usd=200`, `pod_a.stop_grace_minutes=60` et `live_block_stop_grace_setups=false`.",
         "- P1-03: verifier `external_reference.symbols_enriched>0`, la couverture par symbole et les revues `XYZ:SILVER` en `symbol_blocked` dans `p103_external_reference_audit.md`.",
         "- P1-08: verifier `dynamic_symbol_guard` / `symbol_guard_*` dans `p108_dynamic_symbol_guard_audit.md`, avec `with_shadow>0` et `live_action_unchanged_false=0`.",
+        "- P1-09: verifier `p109_oil_shadow_*` dans `p109_oil_shadow_audit.md`, avec `with_shadow>0` et `live_action_unchanged_false=0`.",
         "- Pod A: surveiller les nouveaux `exchange_closed_stop_loss` et `early_failure_exit`; comparer perte reelle vs stop planifie.",
         "- Pod C: verifier qu'aucun nouveau trade `XYZ:SILVER` ne s'ouvre et que les signaux silver sont rejetes `symbol_blocked` si presents.",
         "",
@@ -1207,6 +1367,7 @@ for pod in ("pod_a", "pod_c"):
             "performance_focus": performance_focus,
             "p103_external_reference_focus": external_reference_focus,
             "p108_dynamic_symbol_guard_focus": symbol_guard_focus,
+            "p109_oil_shadow_focus": p109_oil_focus,
             "checks": checks,
             "warnings": warnings,
             "failures": failures,

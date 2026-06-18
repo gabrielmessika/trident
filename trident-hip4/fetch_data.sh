@@ -234,7 +234,11 @@ fetch_logs_runtime() {
 }
 
 latest_file() {
-    find "$1" -maxdepth 1 -type f -name "$2" 2>/dev/null | sort | tail -n 1
+    find "$1" -maxdepth 1 -type f -name "$2" -size +0c 2>/dev/null | sort | tail -n 1
+}
+
+logs_dir_has_data() {
+    [ -d "$1" ] && [ -n "$(find "$1" -maxdepth 1 -type f -size +0c \( -name '*.csv' -o -name '*.jsonl' \) -print -quit 2>/dev/null)" ]
 }
 
 write_next_review_focus() {
@@ -274,7 +278,8 @@ full exits aux stops defensifs et n'ouvre pas de surface non-BTC implicite.
   - mesurer PnL, PF, max drawdown et worst loss par politique, pas seulement le
     win rate.
 - `hip4_policy_market_audit_latest.md`:
-  - verifier les cutoffs post `2026-06-02` et `2026-06-05`;
+  - verifier les cutoffs post `2026-06-02`, `2026-06-05` et
+    `2026-06-10T00:00:00Z` (`prob_stop_full`);
   - confirmer que `mainnet_paper` et `mainnet_observer` restent BTC-only en
     `priceBinary`, ou lister les underlyings non-BTC tradables apparus.
 - `shadow_sizing.csv`:
@@ -316,6 +321,9 @@ run_policy_market_audit() {
     if ! "${audit_cmd[@]}" \
         --paper-logs-dir "${LOG_DIR}/hip4_outcome_mainnet_paper" \
         --observer-logs-dir "${LOG_DIR}/hip4_outcome_mainnet" \
+        --entry-cutoff "2026-06-02T00:00:00Z" \
+        --entry-cutoff "2026-06-05T00:00:00Z" \
+        --entry-cutoff "2026-06-10T00:00:00Z" \
         --output-json "$output_json" \
         --output-md "$output_md" \
         >"$audit_stdout" \
@@ -329,6 +337,7 @@ run_policy_market_audit() {
     cp "$output_md" "$latest_md"
     ok "Audit policy/market HIP-4 écrit: ${output_md}"
     [ -s "$audit_stderr" ] && warn "Stderr audit capturé: ${audit_stderr}"
+    return 0
 }
 
 run_review() {
@@ -361,11 +370,29 @@ run_review() {
     else
         review_cmd=(python3 -m app.backtest.hip4_outcome_run_review)
     fi
+
+    local review_log_args=()
+    local profile_spec profile_name profile_dir
+    for profile_spec in \
+        "paper=${LOG_DIR}/hip4_outcome_paper" \
+        "mainnet_paper=${LOG_DIR}/hip4_outcome_mainnet_paper" \
+        "testnet=${LOG_DIR}/hip4_outcome_testnet" \
+        "mainnet=${LOG_DIR}/hip4_outcome_mainnet"; do
+        profile_name="${profile_spec%%=*}"
+        profile_dir="${profile_spec#*=}"
+        if logs_dir_has_data "$profile_dir"; then
+            review_log_args+=(--logs-dir "$profile_spec")
+        else
+            warn "Profil HIP-4 sans logs exploitables ignore: ${profile_name} (${profile_dir})"
+        fi
+    done
+    if [ "${#review_log_args[@]}" -eq 0 ]; then
+        warn "Review HIP-4 non générée: aucun profil avec logs exploitables"
+        return 0
+    fi
+
     if ! "${review_cmd[@]}" \
-        --logs-dir "paper=${LOG_DIR}/hip4_outcome_paper" \
-        --logs-dir "mainnet_paper=${LOG_DIR}/hip4_outcome_mainnet_paper" \
-        --logs-dir "testnet=${LOG_DIR}/hip4_outcome_testnet" \
-        --logs-dir "mainnet=${LOG_DIR}/hip4_outcome_mainnet" \
+        "${review_log_args[@]}" \
         --nautilus-shadow-dir "${LOG_DIR}/hip4_nautilus_shadow" \
         --output-json "${output}/hip4_outcome_run_review.json" \
         --output-md "${output}/hip4_outcome_run_review.md" \

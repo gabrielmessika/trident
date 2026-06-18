@@ -90,16 +90,21 @@ Donc `Pod C` n'est plus un pod de lead-lag crypto opportuniste. C'est un pod **d
 Dans la config dry-run actuelle, `Pod C` reste **actif**, mais avec un profil plus conservateur :
 
 - `min_confidence = 0.66`
-- `blocked_symbols = ["XYZ:GOLD"]`
+- `blocked_symbols = ["XYZ:SILVER"]`
 - `cluster_aware_v2_enabled = true`
+- `size_multiplier = 0.70`
 
 La logique `v2` actuellement active en dry-run est volontairement selective :
 
 - `oil` : longs de pullback seulement ;
 - `silver` : breakout long seulement ;
 - `index` : breakout long seulement ;
-- `gold` : toujours observe et collecte, mais bloque en execution via la risk gate ;
+- `gold` : breakout long seulement ;
 - pas de branche short dediee conservee pour l'instant.
+
+`XYZ:SILVER` reste collecte pour les snapshots/funding/replays, mais bloque a
+l'execution par `pod_c.blocked_symbols` tant qu'un replay dedie ne prouve pas
+un edge robuste.
 
 Le but n'est pas de le couper, mais de limiter le bruit d'observabilite sur les patterns les moins convaincants.
 

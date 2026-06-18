@@ -410,6 +410,18 @@ Principes:
   canary live explicite (`pod_c.size_multiplier = 0.70`) pour debloquer
   l'activite Pod C; review courte requise apres les premiers signaux/trades,
   avec attention particuliere aux fees, au drawdown et au volume de trades.
+- Addendum `2026-06-16`: la decision canary ci-dessus est supersedee pour les
+  prochaines promotions par le replay P2-02 frais
+  `server-data/replay_reports/p202_pod_c_cluster_multiplier_20260616T150601Z/pod_c_cluster_multiplier_compare.json`
+  sur `2026-05-24 -> 2026-06-11`. Baseline `0.55` silver debloque:
+  `-165.28 USD`, `61` trades, fees `37.99`. La forme prod actuelle
+  `current_live_blocked` reste negative (`-144.45`, `47` trades) mais evite une
+  partie des pertes silver. Toutes les variantes de promotion degradent la
+  baseline fraiche: `global_065` `-191.79`, `global_070` `-209.50`,
+  `gold_070` `-182.25`, `silver_070` `-167.81`, `metals_070` `-184.78`.
+  Decision courante: aucune promotion `global_070`/`gold_070`, conserver
+  `XYZ:SILVER` bloque; `gold`, `silver`, `index` et `oil` sont bloques pour ces
+  multipliers, `equity`/`fx` restent a surveiller faute de trades.
 
 ### Pod B Directionnel Historique
 

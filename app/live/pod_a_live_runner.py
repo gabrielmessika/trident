@@ -902,6 +902,10 @@ class PodALiveRunner:
             "break_even_trigger_bps": getattr(trade, "break_even_trigger_bps", None),
             "trailing_activation_bps": getattr(trade, "trailing_activation_bps", None),
             "trailing_distance_bps": getattr(trade, "trailing_distance_bps", None),
+            "best_price_seen": getattr(trade, "best_price_seen", None),
+            "worst_price_seen": getattr(trade, "worst_price_seen", None),
+            "mfe_bps": getattr(trade, "mfe_bps", None),
+            "mae_bps": getattr(trade, "mae_bps", None),
             "gross_pnl_usd": trade.gross_pnl_usd,
             "fees_usd": trade.fees_usd,
             "pnl_usd": trade.pnl_usd,
@@ -967,6 +971,10 @@ class PodALiveRunner:
             hold_hours=self._hold_hours(trade),
             opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
             closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+            best_price_seen=getattr(trade, "best_price_seen", None),
+            worst_price_seen=getattr(trade, "worst_price_seen", None),
+            mfe_bps=getattr(trade, "mfe_bps", None),
+            mae_bps=getattr(trade, "mae_bps", None),
             setup_details=getattr(trade, "setup_details", None),
         )
         self._record_live_loss_tax(trade)
@@ -1309,6 +1317,15 @@ class PodALiveRunner:
                     "trailing_activation_bps": position.trailing_activation_bps,
                     "trailing_distance_bps": position.trailing_distance_bps,
                     "best_price_seen": position.best_price_seen,
+                    "worst_price_seen": position.worst_price_seen,
+                    "mfe_bps": round(
+                        self.executor.portfolio._best_favorable_move_bps(position),
+                        4,
+                    ),
+                    "mae_bps": round(
+                        self.executor.portfolio._worst_favorable_move_bps(position),
+                        4,
+                    ),
                     "campaign_mode_active": bool(
                         getattr(position, "setup_details", {}).get("campaign_mode_active")
                     ),

@@ -1,6 +1,8 @@
 import csv
+import hashlib
 import json
 import os
+import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +17,7 @@ from app.settings import load_config
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import RegimeSnapshot
 from app.trident.types import SymbolMarketSnapshot
-from scripts.export_trident_audit_pack import export_directional_logs
+from scripts.export_trident_audit_pack import export_directional_logs, main as export_audit_pack_main
 
 
 class ReportingTests(unittest.TestCase):
@@ -83,6 +85,10 @@ class ReportingTests(unittest.TestCase):
                 "funding_source": "exchange_user_funding_history",
                 "funding_payment_count": 1,
                 "close_reason": "exchange_closed",
+                "best_price_seen": 2138.0,
+                "worst_price_seen": 2118.0,
+                "mfe_bps": 25.7458,
+                "mae_bps": -68.0458,
                 "close_fill_count": 1,
                 "exchange_close_fill_count": 1,
                 "opened_at": "2026-06-05T00:00:00+00:00",
@@ -170,6 +176,10 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(closed_rows[0]["funding_usd"], "-0.03")
         self.assertEqual(closed_rows[0]["funding_source"], "exchange_user_funding_history")
         self.assertEqual(closed_rows[0]["funding_payment_count"], "1")
+        self.assertEqual(closed_rows[0]["best_price_seen"], "2138.0")
+        self.assertEqual(closed_rows[0]["worst_price_seen"], "2118.0")
+        self.assertEqual(closed_rows[0]["mfe_bps"], "25.7458")
+        self.assertEqual(closed_rows[0]["mae_bps"], "-68.0458")
         self.assertEqual(closed_rows[0]["close_fill_oids"], "42")
         self.assertEqual(closed_rows[0]["external_reference_price"], "2130.0")
         self.assertEqual(closed_rows[0]["external_reference_sources"], "yahoo")
@@ -188,6 +198,39 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(fill_rows[0]["exchange_fee_usd"], "0.01")
         self.assertEqual(fill_rows[0]["funding_usd"], "-0.03")
         self.assertEqual(fill_rows[0]["exchange_direction"], "Close Long")
+
+    def test_audit_pack_manifest_has_checksums_and_active_plan(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            source_root = Path(tmpdir) / "server-data"
+            output_dir = Path(tmpdir) / "audit"
+            source_root.mkdir()
+
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "export_trident_audit_pack.py",
+                    "--source",
+                    str(source_root),
+                    "--output",
+                    str(output_dir),
+                ],
+            ):
+                self.assertEqual(export_audit_pack_main(), 0)
+
+            active_plan = output_dir / "trident_active_plan.md"
+            manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+
+            self.assertTrue(active_plan.exists())
+            self.assertEqual(
+                manifest["exports"]["active_plan"]["output"],
+                "trident_active_plan.md",
+            )
+            self.assertIn("trident_active_plan.md", manifest["file_manifest"])
+            self.assertEqual(
+                manifest["file_manifest"]["trident_active_plan.md"]["sha256"],
+                hashlib.sha256(active_plan.read_bytes()).hexdigest(),
+            )
 
     def test_build_runtime_report_includes_pod_sections(self) -> None:
         config = load_config("config/trident.toml")

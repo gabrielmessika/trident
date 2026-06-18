@@ -23,6 +23,7 @@ from app.trident.types import (
     PodAllocation,
     PodName,
     Regime,
+    RegimeSnapshot,
     RiskDecision,
     SymbolAllocation,
     SymbolMarketSnapshot,
@@ -1179,6 +1180,76 @@ class PodCTests(unittest.TestCase):
         self.assertTrue(
             runner.supervisor.state.pod_c_signal_review[0]["setup_details"][
                 "external_reference_shadow_live_action_unchanged"
+            ]
+        )
+
+    def test_pod_c_live_runner_adds_p109_oil_shadow_details(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = PodCLiveRunner(config, coins=["XYZ:CL"])
+        snapshot = SymbolMarketSnapshot(
+            symbol="XYZ:CL",
+            price=80.0,
+            ema_fast=80.1,
+            ema_slow=80.0,
+            vwap_distance_bps=8.0,
+            structure_score=0.0,
+            funding_rate=0.0,
+            spread_bps=2.0,
+            btc_aligned=True,
+            market_cluster="oil",
+            realized_vol_short_bps=10.0,
+        )
+        shadow_by_symbol = runner._p109_oil_shadow_details_by_symbol(
+            snapshots=[snapshot],
+            timestamp="2026-06-15T08:00:00Z",
+            cluster_regime_snapshots={
+                "oil": RegimeSnapshot(
+                    ready=True,
+                    adx=10.0,
+                    atr_ratio=0.2,
+                    range_width_bps=10.0,
+                    coherence_score=0.1,
+                )
+            },
+        )
+        plan = TradePlan(
+            symbol="XYZ:CL",
+            side="long",
+            setup="oil_pullback_long",
+            confidence=0.78,
+            target_notional_usd=100.0,
+            stop_bps=40.0,
+            time_stop_hours=4.0,
+            setup_details={"market_cluster": "oil"},
+        )
+        runner._apply_p109_oil_shadow_to_plans([plan], shadow_by_symbol)
+        preview_details = runner._preview_setup_details_with_external_reference_shadow(
+            [
+                SimpleNamespace(
+                    symbol="XYZ:CL",
+                    side="long",
+                    setup_details=plan.setup_details,
+                )
+            ],
+            p109_oil_shadow_by_symbol=shadow_by_symbol,
+        )
+        runner.supervisor.state.pod_c_signal_review = [
+            {
+                "symbol": "XYZ:CL",
+                "preferred_side": "long",
+                "setup_details": {"market_cluster": "oil"},
+            }
+        ]
+        runner._apply_p109_oil_shadow_to_signal_reviews(shadow_by_symbol)
+
+        self.assertTrue(plan.setup_details["would_open_p109_oil_short_shadow"])
+        self.assertEqual(
+            preview_details["XYZ:CL"]["p109_oil_shadow_mode"],
+            "observation_only",
+        )
+        self.assertTrue(
+            runner.supervisor.state.pod_c_signal_review[0]["setup_details"][
+                "p109_oil_shadow_live_action_unchanged"
             ]
         )
 

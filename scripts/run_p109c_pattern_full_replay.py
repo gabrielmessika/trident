@@ -30,7 +30,15 @@ from app.trident.types import (
     symbol_market_snapshot_from_mapping,
 )
 from scripts.run_p109_factor_research_replay import infer_cluster, regime_mode
-from scripts.run_p109b_exhaustive_factor_screen import TechSnapshot, donchian_bucket
+from scripts.run_p109b_exhaustive_factor_screen import (
+    TechSnapshot,
+    alma,
+    donchian_bucket,
+    linear_regression_bucket,
+    pivot_bucket,
+    volume_weighted_mean,
+    weighted_mean,
+)
 
 
 DEFAULT_BASELINE_INPUT = "server-data/replay_inputs/external_reference_multisource_20260405_20260513_baseline.jsonl"
@@ -194,31 +202,91 @@ class RollingIndicatorEngine:
                 "close20": deque(maxlen=20),
                 "close50": deque(maxlen=50),
                 "close14": deque(maxlen=14),
+                "closes": deque(maxlen=60),
+                "volumes": deque(maxlen=60),
                 "gains14": deque(maxlen=14),
                 "losses14": deque(maxlen=14),
                 "prices": deque(maxlen=49),
+                "true_range14": deque(maxlen=14),
                 "ema12": None,
                 "ema26": None,
                 "ema20": None,
+                "ema20_1": None,
+                "ema20_2": None,
+                "ema20_3": None,
+                "prev_ema20_3": None,
                 "signal9": None,
                 "prev_macd": None,
                 "prev_signal": None,
                 "prev_price": None,
+                "prev_high": None,
+                "prev_low": None,
+                "prev_day_key": None,
+                "current_day_high": None,
+                "current_day_low": None,
+                "current_day_close": None,
+                "previous_day_hlc": None,
+                "kama10": None,
+                "pvt": 0.0,
+                "pvt_history": deque(maxlen=21),
+                "sample_count": 0,
             },
         )
         price = float(snapshot.price)
+        volume = float(snapshot.bucket_notional_usd or 0.0)
+        if volume <= 0.0:
+            volume = max(float(snapshot.bucket_volume or 0.0) * price, float(snapshot.volume_ratio or 0.0))
+        range_bps = max(float(snapshot.bucket_range_bps or 0.0), 0.0)
         prev_price = state["prev_price"]
+        if prev_price is not None and float(prev_price) > 0:
+            range_bps = max(range_bps, abs(price / float(prev_price) - 1.0) * 10000.0)
+        half_range = price * range_bps / 20000.0
+        high = max(price, price + half_range)
+        low = max(1e-12, min(price, price - half_range))
+        true_range = high - low
         if prev_price is not None:
             delta = price - float(prev_price)
             state["gains14"].append(max(0.0, delta))
             state["losses14"].append(max(0.0, -delta))
+            true_range = max(high - low, abs(high - float(prev_price)), abs(low - float(prev_price)))
+            state["pvt"] = float(state["pvt"]) + (delta / float(prev_price)) * volume if float(prev_price) > 0 else float(state["pvt"])
+        state["true_range14"].append(true_range)
+        state["pvt_history"].append(float(state["pvt"]))
+        # Replay timestamps are carried outside this method, so use every 288
+        # samples as a session proxy for previous-session pivots.
+        day_key = int(state["sample_count"]) // 288
+        if state["prev_day_key"] is None:
+            state["prev_day_key"] = day_key
+            state["current_day_high"] = high
+            state["current_day_low"] = low
+            state["current_day_close"] = price
+        elif day_key != state["prev_day_key"]:
+            if state["current_day_high"] is not None and state["current_day_low"] is not None and state["current_day_close"] is not None:
+                state["previous_day_hlc"] = (
+                    float(state["current_day_high"]),
+                    float(state["current_day_low"]),
+                    float(state["current_day_close"]),
+                )
+            state["prev_day_key"] = day_key
+            state["current_day_high"] = high
+            state["current_day_low"] = low
+            state["current_day_close"] = price
+        else:
+            state["current_day_high"] = high if state["current_day_high"] is None else max(float(state["current_day_high"]), high)
+            state["current_day_low"] = low if state["current_day_low"] is None else min(float(state["current_day_low"]), low)
+            state["current_day_close"] = price
         state["close20"].append(price)
         state["close50"].append(price)
         state["close14"].append(price)
+        state["closes"].append(price)
+        state["volumes"].append(volume)
         state["prices"].append(price)
         state["ema12"] = _ema(state["ema12"], price, 12)
         state["ema26"] = _ema(state["ema26"], price, 26)
         state["ema20"] = _ema(state["ema20"], price, 20)
+        state["ema20_1"] = _ema(state["ema20_1"], price, 20)
+        state["ema20_2"] = _ema(state["ema20_2"], float(state["ema20_1"]), 20)
+        state["ema20_3"] = _ema(state["ema20_3"], float(state["ema20_2"]), 20)
         macd = float(state["ema12"]) - float(state["ema26"])
         state["signal9"] = _ema(state["signal9"], macd, 9)
         signal = float(state["signal9"])
@@ -234,12 +302,51 @@ class RollingIndicatorEngine:
         low14 = min(close14) if len(close14) >= 14 else None
         high20 = max(close20) if len(close20) >= 20 else None
         low20 = min(close20) if len(close20) >= 20 else None
+        closes = list(state["closes"])
+        volumes = list(state["volumes"])
         prices = list(state["prices"])
+        wma20 = weighted_mean(closes[-20:]) if len(closes) >= 20 else None
+        vwma20 = volume_weighted_mean(closes[-20:], volumes[-20:]) if len(closes) >= 20 else None
+        alma20 = alma(closes[-20:]) if len(closes) >= 20 else None
+        if len(closes) >= 10:
+            recent = closes[-10:]
+            change = abs(recent[-1] - recent[0])
+            volatility = sum(abs(recent[i] - recent[i - 1]) for i in range(1, len(recent)))
+            er = change / volatility if volatility > 0 else 0.0
+            fast = 2.0 / 3.0
+            slow = 2.0 / 31.0
+            sc = (er * (fast - slow) + slow) ** 2
+            state["kama10"] = price if state["kama10"] is None else float(state["kama10"]) + sc * (price - float(state["kama10"]))
+        tema20 = 3.0 * float(state["ema20_1"]) - 3.0 * float(state["ema20_2"]) + float(state["ema20_3"])
+        trix = (
+            (float(state["ema20_3"]) / float(state["prev_ema20_3"]) - 1.0) * 10000.0
+            if state["prev_ema20_3"] and float(state["prev_ema20_3"]) > 0
+            else None
+        )
+        atr14_bps = (
+            (_mean(state["true_range14"]) / price * 10000.0)
+            if len(state["true_range14"]) >= 14 and price > 0
+            else None
+        )
+        pvt20 = (
+            (float(state["pvt"]) - float(state["pvt_history"][0])) / sum(volumes[-20:]) * 10000.0
+            if len(state["pvt_history"]) >= 21 and len(volumes) >= 20 and sum(volumes[-20:]) > 0
+            else None
+        )
         tech = TechSnapshot(
             rsi14=rsi,
             sma20_distance_bps=((price / sma20 - 1.0) * 10000.0 if sma20 and sma20 > 0 else None),
             sma50_distance_bps=((price / sma50 - 1.0) * 10000.0 if sma50 and sma50 > 0 else None),
             ema20_distance_bps=((price / float(state["ema20"]) - 1.0) * 10000.0 if float(state["ema20"]) > 0 else None),
+            wma20_distance_bps=((price / wma20 - 1.0) * 10000.0 if wma20 and wma20 > 0 else None),
+            vwma20_distance_bps=((price / vwma20 - 1.0) * 10000.0 if vwma20 and vwma20 > 0 else None),
+            kama10_distance_bps=(
+                (price / float(state["kama10"]) - 1.0) * 10000.0
+                if state["kama10"] and float(state["kama10"]) > 0
+                else None
+            ),
+            alma20_distance_bps=((price / alma20 - 1.0) * 10000.0 if alma20 and alma20 > 0 else None),
+            tema20_distance_bps=((price / tema20 - 1.0) * 10000.0 if tema20 > 0 else None),
             macd_hist_bps=((macd - signal) / price * 10000.0 if price > 0 else None),
             macd_cross=macd_cross,
             bollinger_z20=((price - sma20) / (2.0 * sd20) if sma20 and sd20 and sd20 > 0 else None),
@@ -249,10 +356,19 @@ class RollingIndicatorEngine:
             ret15_bps=_ret_from_prices(prices, 3),
             ret60_bps=_ret_from_prices(prices, 12),
             ret240_bps=_ret_from_prices(prices, 48),
+            atr14_bps=atr14_bps,
+            pivot_standard=pivot_bucket(price, state["previous_day_hlc"]),
+            trix_bps=trix,
+            pvt20=pvt20,
+            linear_regression20=linear_regression_bucket(closes[-20:]) if len(closes) >= 20 else None,
         )
         state["prev_price"] = price
+        state["prev_high"] = high
+        state["prev_low"] = low
         state["prev_macd"] = macd
         state["prev_signal"] = signal
+        state["prev_ema20_3"] = state["ema20_3"]
+        state["sample_count"] = int(state["sample_count"]) + 1
         return tech
 
 
@@ -286,6 +402,15 @@ def default_patterns() -> list[PatternSpec]:
         PatternSpec("crypto_bollinger_very_wide_short_480", "crypto_expansion_fade_short_480", "Crypto short 480m when Bollinger width is very wide.", _crypto_expansion_short("bollinger_very_wide", 480)),
         PatternSpec("crypto_momentum60_deep_positive_short_480", "crypto_expansion_fade_short_480", "Crypto short 480m after deep-positive 60m momentum.", _crypto_expansion_short("momentum60_deep_positive", 480)),
         PatternSpec("crypto_ma20_deep_positive_short_480", "crypto_expansion_fade_short_480", "Crypto short 480m when SMA/EMA20 distance is deeply positive.", _crypto_expansion_short("ma20_deep_positive", 480)),
+        PatternSpec("all50_crypto_atr_high_short_480", "all50_crypto_vol_trend_short_480", "All-50 rerun: crypto short 480m when ATR14 proxy is high.", _all50_crypto_atr_high_short),
+        PatternSpec("all50_crypto_trix_deep_negative_short_480", "all50_crypto_vol_trend_short_480", "All-50 rerun: crypto short 480m when TRIX proxy is deeply negative.", _all50_crypto_trix_short(480)),
+        PatternSpec("all50_crypto_trix_deep_negative_short_240", "all50_crypto_vol_trend_short_480", "All-50 rerun: crypto short 240m when TRIX proxy is deeply negative.", _all50_crypto_trix_short(240)),
+        PatternSpec("all50_crypto_adaptive_ma_deep_positive_short_480", "all50_crypto_ma_pvt_exhaustion_short_480", "All-50 rerun: crypto short 480m when adaptive MA distance is deeply positive.", _all50_crypto_adaptive_ma_short),
+        PatternSpec("all50_crypto_pvt_deep_positive_short_480", "all50_crypto_ma_pvt_exhaustion_short_480", "All-50 rerun: crypto short 480m when PVT proxy is deeply positive.", _all50_crypto_pvt_short),
+        PatternSpec("all50_equity_pivot_above_r2_long_480", "all50_equity_pivot_480", "All-50 rerun: equity long 480m above previous-session R2 pivot.", _all50_equity_pivot("above_r2", "long")),
+        PatternSpec("all50_equity_pivot_below_s2_short_480", "all50_equity_pivot_480", "All-50 rerun: equity short 480m below previous-session S2 pivot.", _all50_equity_pivot("below_s2", "short")),
+        PatternSpec("all50_oil_trix_deep_negative_long_120", "all50_oil_trix_reversal", "All-50 rerun: oil long 120m when TRIX proxy is deeply negative.", _all50_oil_trix_long(120)),
+        PatternSpec("all50_oil_trix_deep_negative_long_240", "all50_oil_trix_reversal", "All-50 rerun: oil long 240m when TRIX proxy is deeply negative.", _all50_oil_trix_long(240)),
         PatternSpec("oil_chop_h04_short_480", "oil_short_4h8h", "Oil chop short 480m at 04 UTC.", _oil_chop_hour_short(4, 480)),
         PatternSpec("oil_chop_h05_short_480", "oil_short_4h8h", "Oil chop short 480m at 05 UTC.", _oil_chop_hour_short(5, 480)),
         PatternSpec("oil_momentum240_deep_positive_short_480", "oil_short_4h8h", "Oil short 480m after deep-positive 240m momentum.", _oil_momentum_short(480)),
@@ -1025,6 +1150,97 @@ def _crypto_expansion_short(kind: str, horizon: int) -> Callable[[PatternContext
             return None
         score = 80.0 + max(0.0, ctx.tech.ret60_bps or 0.0) * 0.04 + max(0.0, ctx.tech.bollinger_width_bps or 0.0) * 0.01
         return PatternMatch(f"crypto_{kind}_short_{horizon}", "short", horizon, score, kind, 500.0)
+    return matcher
+
+
+def _all50_crypto_atr_high_short(ctx: PatternContext) -> PatternMatch | None:
+    if ctx.cluster != "crypto" or (ctx.tech.atr14_bps or 0.0) < 60.0:
+        return None
+    score = 70.0 + min(ctx.tech.atr14_bps or 0.0, 180.0) * 0.20
+    return PatternMatch("all50_crypto_atr_high_short_480", "short", 480, score, "crypto ATR14 high all-50 proxy", 550.0)
+
+
+def _all50_crypto_trix_short(horizon: int) -> Callable[[PatternContext], PatternMatch | None]:
+    def matcher(ctx: PatternContext) -> PatternMatch | None:
+        if ctx.cluster != "crypto" or (ctx.tech.trix_bps or 0.0) > -16.0:
+            return None
+        score = 75.0 + min(abs(ctx.tech.trix_bps or 0.0), 120.0) * 0.35
+        return PatternMatch(
+            f"all50_crypto_trix_deep_negative_short_{horizon}",
+            "short",
+            horizon,
+            score,
+            "crypto TRIX deep negative all-50 proxy",
+            550.0,
+        )
+
+    return matcher
+
+
+def _all50_crypto_adaptive_ma_short(ctx: PatternContext) -> PatternMatch | None:
+    if ctx.cluster != "crypto":
+        return None
+    distances = [
+        ctx.tech.wma20_distance_bps,
+        ctx.tech.vwma20_distance_bps,
+        ctx.tech.kama10_distance_bps,
+        ctx.tech.alma20_distance_bps,
+        ctx.tech.tema20_distance_bps,
+    ]
+    best = max((value for value in distances if value is not None), default=0.0)
+    if best < 60.0:
+        return None
+    score = 70.0 + min(best, 180.0) * 0.15
+    return PatternMatch(
+        "all50_crypto_adaptive_ma_deep_positive_short_480",
+        "short",
+        480,
+        score,
+        "crypto adaptive MA deep-positive all-50 proxy",
+        550.0,
+    )
+
+
+def _all50_crypto_pvt_short(ctx: PatternContext) -> PatternMatch | None:
+    if ctx.cluster != "crypto" or (ctx.tech.pvt20 or 0.0) < 60.0:
+        return None
+    score = 65.0 + min(ctx.tech.pvt20 or 0.0, 240.0) * 0.10
+    return PatternMatch("all50_crypto_pvt_deep_positive_short_480", "short", 480, score, "crypto PVT deep-positive all-50 proxy", 550.0)
+
+
+def _all50_equity_pivot(pivot_bucket_name: str, side: str) -> Callable[[PatternContext], PatternMatch | None]:
+    def matcher(ctx: PatternContext) -> PatternMatch | None:
+        if ctx.cluster != "equity" or ctx.tech.pivot_standard != pivot_bucket_name:
+            return None
+        score = 70.0 + abs(ctx.snapshot.vwap_distance_bps) * 0.05
+        return PatternMatch(
+            f"all50_equity_pivot_{pivot_bucket_name}_{side}_480",
+            side,
+            480,
+            score,
+            f"equity pivot {pivot_bucket_name} all-50 proxy",
+            260.0,
+            0.72,
+        )
+
+    return matcher
+
+
+def _all50_oil_trix_long(horizon: int) -> Callable[[PatternContext], PatternMatch | None]:
+    def matcher(ctx: PatternContext) -> PatternMatch | None:
+        if ctx.cluster != "oil" or (ctx.tech.trix_bps or 0.0) > -16.0:
+            return None
+        score = 70.0 + min(abs(ctx.tech.trix_bps or 0.0), 120.0) * 0.25
+        return PatternMatch(
+            f"all50_oil_trix_deep_negative_long_{horizon}",
+            "long",
+            horizon,
+            score,
+            "oil TRIX deep-negative long all-50 proxy",
+            180.0,
+            0.72,
+        )
+
     return matcher
 
 

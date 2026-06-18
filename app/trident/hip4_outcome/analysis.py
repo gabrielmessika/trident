@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 DEFAULT_PROFILE_LOGS: dict[str, str] = {
@@ -84,7 +84,9 @@ def analyze_profile(
     latency = _read_csv(root / "latency_stats.csv")
     short_features = _read_csv(root / "short_expiry_features.csv")
     daily_summary = _read_csv(root / "daily_summary.csv")
-    market_observations = _read_jsonl(root / "market_observations.jsonl")
+    market_observation_summary, market_observation_window = (
+        _market_observation_summary_from_file(root / "market_observations.jsonl")
+    )
     decisions = _read_jsonl(root / "decisions.jsonl")
     execution_results = _read_jsonl(root / "execution_results.jsonl")
 
@@ -124,21 +126,23 @@ def analyze_profile(
             "latency": len(latency),
             "short_expiry_features": len(short_features),
             "daily_summary": len(daily_summary),
-            "market_observations": len(market_observations),
+            "market_observations": int(market_observation_summary.get("count", 0)),
             "nautilus_shadow_data_quality": nautilus_shadow.get("row_count", 0),
         },
-        "window": _window(
-            opportunities
-            + trades
-            + settlements
-            + edge_decay
-            + latency
-            + short_features
-            + daily_summary
-            + market_observations
+        "window": _merge_windows(
+            _window(
+                opportunities
+                + trades
+                + settlements
+                + edge_decay
+                + latency
+                + short_features
+                + daily_summary
+            ),
+            market_observation_window,
         ),
         "opportunities": _opportunity_summary(opportunities),
-        "market_observations": _market_observation_summary(market_observations),
+        "market_observations": market_observation_summary,
         "decisions": _decision_summary(decisions),
         "trades": {
             "summary": _trade_summary(trades),
@@ -478,9 +482,12 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return list(_iter_jsonl_dicts(path))
+
+
+def _iter_jsonl_dicts(path: Path) -> Iterable[dict[str, Any]]:
     if not path.exists():
-        return []
-    rows: list[dict[str, Any]] = []
+        return
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             text = line.strip()
@@ -491,8 +498,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
             if isinstance(payload, dict):
-                rows.append(payload)
-    return rows
+                yield payload
 
 
 def _file_summary(root: Path) -> dict[str, dict[str, Any]]:
@@ -2035,16 +2041,49 @@ def _boolish(value: object, *, default: bool = False) -> bool:
 
 
 def _market_observation_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    summary, _window_payload = _market_observation_summary_from_rows(rows)
+    return summary
+
+
+def _market_observation_summary_from_file(
+    path: Path,
+) -> tuple[dict[str, Any], dict[str, str | None]]:
+    return _market_observation_summary_from_rows(_iter_jsonl_dicts(path))
+
+
+def _market_observation_summary_from_rows(
+    rows: Iterable[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, str | None]]:
     by_class: Counter[str] = Counter()
     by_support: Counter[str] = Counter()
     by_reason: Counter[str] = Counter()
     by_underlying: Counter[str] = Counter()
     by_class_support: Counter[tuple[str, str]] = Counter()
     books_by_class_support: Counter[tuple[str, str]] = Counter()
-    book_spreads: list[float] = []
+    book_spread_sum = 0.0
+    book_spread_count = 0
     examples: list[dict[str, Any]] = []
+    count = 0
+    books_logged_count = 0
+    window_start: str | None = None
+    window_end: str | None = None
+    price_bucket_count = 0
+    price_bucket_paper_supported_count = 0
+    price_bucket_complete_count = 0
+    price_bucket_width_sum = 0.0
+    price_bucket_width_count = 0
+    price_bucket_by_underlying: Counter[str] = Counter()
+    price_bucket_examples: list[dict[str, Any]] = []
+    named_outcome_count = 0
+    named_outcome_names: Counter[str] = Counter()
+    named_outcome_examples: list[dict[str, Any]] = []
 
     for row in rows:
+        count += 1
+        ts = str(row.get("ts", "")).strip()
+        if ts:
+            window_start = ts if window_start is None else min(window_start, ts)
+            window_end = ts if window_end is None else max(window_end, ts)
         class_name = str(row.get("class_name") or "unknown")
         support = str(row.get("support_status") or "unknown")
         reason = str(row.get("support_reason") or "unspecified")
@@ -2057,21 +2096,37 @@ def _market_observation_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if underlying:
             by_underlying[underlying] += 1
         if _observation_has_book(row):
+            books_logged_count += 1
             books_by_class_support[key] += 1
-            book_spreads.extend(_observation_book_spreads(row))
+            for spread in _observation_book_spreads(row):
+                book_spread_sum += spread
+                book_spread_count += 1
         if len(examples) < 20:
             examples.append(_market_observation_example(row))
 
-    price_bucket_rows = [
-        row for row in rows if str(row.get("class_name") or "") == "priceBucket"
-    ]
-    named_rows = [
-        row for row in rows if str(row.get("class_name") or "") == "namedOutcome"
-    ]
-    return {
-        "count": len(rows),
-        "books_logged_count": len([row for row in rows if _observation_has_book(row)]),
-        "avg_book_spread": _avg(book_spreads),
+        if class_name == "priceBucket":
+            price_bucket_count += 1
+            if support == "paper_supported":
+                price_bucket_paper_supported_count += 1
+            lower = _optional_float(row.get("bucket_lower"))
+            upper = _optional_float(row.get("bucket_upper"))
+            if lower is not None and upper is not None:
+                price_bucket_complete_count += 1
+                price_bucket_width_sum += upper - lower
+                price_bucket_width_count += 1
+            price_bucket_by_underlying[str(row.get("underlying") or "unknown").upper()] += 1
+            if len(price_bucket_examples) < 10:
+                price_bucket_examples.append(_market_observation_example(row))
+        elif class_name == "namedOutcome":
+            named_outcome_count += 1
+            named_outcome_names[str(row.get("name") or "unnamed")] += 1
+            if len(named_outcome_examples) < 10:
+                named_outcome_examples.append(_market_observation_example(row))
+
+    summary = {
+        "count": count,
+        "books_logged_count": books_logged_count,
+        "avg_book_spread": _safe_div(book_spread_sum, book_spread_count),
         "by_class": _counter_rows(by_class, "class_name"),
         "by_support_status": _counter_rows(by_support, "support_status"),
         "support_reasons": _counter_rows(by_reason, "support_reason"),
@@ -2088,10 +2143,26 @@ def _market_observation_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 key=lambda item: (-item[1], item[0][0], item[0][1]),
             )
         ],
-        "price_bucket": _price_bucket_observation_summary(price_bucket_rows),
-        "named_outcome": _named_outcome_observation_summary(named_rows),
+        "price_bucket": {
+            "count": price_bucket_count,
+            "paper_supported_count": price_bucket_paper_supported_count,
+            "complete_bucket_count": price_bucket_complete_count,
+            "incomplete_count": max(price_bucket_count - price_bucket_complete_count, 0),
+            "avg_bucket_width": _safe_div(
+                price_bucket_width_sum,
+                price_bucket_width_count,
+            ),
+            "by_underlying": _counter_rows(price_bucket_by_underlying, "underlying"),
+            "examples": price_bucket_examples,
+        },
+        "named_outcome": {
+            "count": named_outcome_count,
+            "names": _counter_rows(named_outcome_names, "name"),
+            "examples": named_outcome_examples,
+        },
         "examples": examples,
     }
+    return summary, {"start": window_start, "end": window_end}
 
 
 def _price_bucket_observation_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2413,6 +2484,15 @@ def _window(rows: list[dict[str, Any]]) -> dict[str, str | None]:
     return {
         "start": timestamps[0] if timestamps else None,
         "end": timestamps[-1] if timestamps else None,
+    }
+
+
+def _merge_windows(*windows: dict[str, str | None]) -> dict[str, str | None]:
+    starts = [str(window.get("start")) for window in windows if window.get("start")]
+    ends = [str(window.get("end")) for window in windows if window.get("end")]
+    return {
+        "start": min(starts) if starts else None,
+        "end": max(ends) if ends else None,
     }
 
 

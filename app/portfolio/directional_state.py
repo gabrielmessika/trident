@@ -37,6 +37,7 @@ class OpenPosition:
     invalidation_price: float | None = None
     isolated: bool = True
     best_price_seen: float = 0.0
+    worst_price_seen: float = 0.0
     setup_details: dict[str, float | str | bool] = field(default_factory=dict)
 
 
@@ -67,6 +68,10 @@ class ClosedTrade:
     expected_loss_usd: float = 0.0
     invalidation_price: float | None = None
     isolated: bool = True
+    best_price_seen: float = 0.0
+    worst_price_seen: float = 0.0
+    mfe_bps: float = 0.0
+    mae_bps: float = 0.0
     setup_details: dict[str, float | str | bool] = field(default_factory=dict)
 
 
@@ -113,6 +118,7 @@ class DirectionalPortfolioState:
             invalidation_price=plan.invalidation_price,
             isolated=plan.isolated,
             best_price_seen=price,
+            worst_price_seen=price,
             setup_details=dict(plan.setup_details),
         )
         return True
@@ -158,6 +164,10 @@ class DirectionalPortfolioState:
             expected_loss_usd=position.expected_loss_usd,
             invalidation_price=position.invalidation_price,
             isolated=position.isolated,
+            best_price_seen=position.best_price_seen,
+            worst_price_seen=position.worst_price_seen,
+            mfe_bps=round(self._best_favorable_move_bps(position), 4),
+            mae_bps=round(self._worst_favorable_move_bps(position), 4),
             setup_details=dict(position.setup_details),
         )
         self.closed_trades.append(trade)
@@ -222,8 +232,7 @@ class DirectionalPortfolioState:
         details["campaign_add_on_count"] = current_add_ons + 1
         details["campaign_add_on_applied"] = True
         position.setup_details = details
-        if position.best_price_seen <= 0:
-            position.best_price_seen = price
+        self._update_price_extremes(position, price)
         return True
 
     def _stop_hit(self, position: OpenPosition, price: float) -> bool:
@@ -233,7 +242,7 @@ class DirectionalPortfolioState:
         return price >= position.entry_price * (1 + threshold)
 
     def protective_exit_reason(self, position: OpenPosition, price: float) -> str | None:
-        self._update_best_price(position, price)
+        self._update_price_extremes(position, price)
         favorable_bps = self._favorable_move_bps(position, price)
         best_favorable_bps = self._best_favorable_move_bps(position)
 
@@ -274,6 +283,11 @@ class DirectionalPortfolioState:
             return False
         return (current - last_closed_at).total_seconds() < cooldown_minutes * 60
 
+    def observe_price(self, symbol: str, price: float) -> None:
+        position = self.open_positions.get(symbol)
+        if position is not None:
+            self._update_price_extremes(position, price)
+
     def _time_stop_hit(self, position: OpenPosition, timestamp: str | None) -> bool:
         if position.opened_at is None or timestamp is None:
             return False
@@ -290,14 +304,17 @@ class DirectionalPortfolioState:
             ret = (position.entry_price - exit_price) / position.entry_price
         return round(position.target_notional_usd * ret, 2)
 
-    def _update_best_price(self, position: OpenPosition, price: float) -> None:
+    def _update_price_extremes(self, position: OpenPosition, price: float) -> None:
         if position.best_price_seen <= 0:
             position.best_price_seen = price
-            return
+        if position.worst_price_seen <= 0:
+            position.worst_price_seen = price
         if position.side == "long":
             position.best_price_seen = max(position.best_price_seen, price)
+            position.worst_price_seen = min(position.worst_price_seen, price)
         else:
             position.best_price_seen = min(position.best_price_seen, price)
+            position.worst_price_seen = max(position.worst_price_seen, price)
 
     def _favorable_move_bps(self, position: OpenPosition, price: float) -> float:
         if position.entry_price <= 0:
@@ -308,4 +325,8 @@ class DirectionalPortfolioState:
 
     def _best_favorable_move_bps(self, position: OpenPosition) -> float:
         reference = position.best_price_seen if position.best_price_seen > 0 else position.entry_price
+        return self._favorable_move_bps(position, reference)
+
+    def _worst_favorable_move_bps(self, position: OpenPosition) -> float:
+        reference = position.worst_price_seen if position.worst_price_seen > 0 else position.entry_price
         return self._favorable_move_bps(position, reference)

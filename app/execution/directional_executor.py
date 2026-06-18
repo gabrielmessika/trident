@@ -495,6 +495,7 @@ class DirectionalExecutor:
             snapshot = snapshot_by_symbol.get(symbol)
             if snapshot is None:
                 continue
+            self.portfolio.observe_price(symbol, snapshot.price)
             fill = self.venue.close_fill(
                 symbol=symbol,
                 side=existing.side,

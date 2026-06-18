@@ -265,15 +265,15 @@ run_fetch() {
     if "$@"; then
         ok "${label} termine"
         return 0
+    else
+        local status=$?
+        error "${label} en erreur (code ${status})"
+        [ "$OVERALL_STATUS" -eq 0 ] && OVERALL_STATUS="$status"
+        if [ -n "$FAIL_FAST" ]; then
+            exit "$status"
+        fi
+        return 0
     fi
-
-    local status=$?
-    error "${label} en erreur (code ${status})"
-    [ "$OVERALL_STATUS" -eq 0 ] && OVERALL_STATUS="$status"
-    if [ -n "$FAIL_FAST" ]; then
-        exit "$status"
-    fi
-    return 0
 }
 
 info "Fetch global TRIDENT: demarrage"

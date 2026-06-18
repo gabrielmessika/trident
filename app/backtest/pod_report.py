@@ -193,6 +193,10 @@ class PodABacktestReport:
         hold_hours: float | None,
         opened_at: str | None,
         closed_at: str | None,
+        best_price_seen: float | None = None,
+        worst_price_seen: float | None = None,
+        mfe_bps: float | None = None,
+        mae_bps: float | None = None,
         setup_details: dict[str, float | str | bool] | None = None,
     ) -> None:
         self.closed_trade_count += 1
@@ -262,6 +266,10 @@ class PodABacktestReport:
                 "hold_hours": hold_hours,
                 "opened_at": opened_at,
                 "closed_at": closed_at,
+                "best_price_seen": best_price_seen,
+                "worst_price_seen": worst_price_seen,
+                "mfe_bps": mfe_bps,
+                "mae_bps": mae_bps,
                 "setup_details": dict(setup_details or {}),
             }
         )

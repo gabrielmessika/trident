@@ -4,6 +4,9 @@ from app.trident.types import SymbolMarketSnapshot
 from scripts.run_p109b_exhaustive_factor_screen import TechSnapshot
 from scripts.run_p109c_pattern_full_replay import (
     PatternContext,
+    _all50_crypto_adaptive_ma_short,
+    _all50_crypto_atr_high_short,
+    _all50_equity_pivot,
     _calendar_symbol_top_hits,
     _crypto_expansion_short,
     _crypto_high_vol_short_hour,
@@ -105,6 +108,30 @@ def test_crypto_expansion_short_matches_bollinger_width() -> None:
 
     assert matcher(_ctx(tech=TechSnapshot(bollinger_width_bps=400.0))) is not None
     assert matcher(_ctx(tech=TechSnapshot(bollinger_width_bps=100.0))) is None
+
+
+def test_all50_crypto_atr_short_matches_high_atr_proxy() -> None:
+    match = _all50_crypto_atr_high_short(_ctx(tech=TechSnapshot(atr14_bps=80.0)))
+
+    assert match is not None
+    assert match.side == "short"
+    assert match.horizon_min == 480
+
+
+def test_all50_crypto_adaptive_ma_short_matches_deep_positive_proxy() -> None:
+    match = _all50_crypto_adaptive_ma_short(_ctx(tech=TechSnapshot(kama10_distance_bps=90.0)))
+
+    assert match is not None
+    assert match.side == "short"
+
+
+def test_all50_equity_pivot_matches_requested_bucket() -> None:
+    matcher = _all50_equity_pivot("above_r2", "long")
+
+    match = matcher(_ctx(symbol="XYZ:NVDA", cluster="equity", tech=TechSnapshot(pivot_standard="above_r2")))
+
+    assert match is not None
+    assert match.side == "long"
 
 
 def test_oil_momentum_short_requires_oil_and_positive_240m_momentum() -> None:

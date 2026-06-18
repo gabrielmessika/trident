@@ -73,6 +73,9 @@ class PodAExecutorTests(unittest.TestCase):
         self.assertEqual(closed[0].close_reason, "end_of_backtest")
         self.assertGreater(closed[0].pnl_usd, 0)
         self.assertGreater(closed[0].fees_usd, 0)
+        self.assertGreater(closed[0].mfe_bps, 0)
+        self.assertEqual(closed[0].mae_bps, 0.0)
+        self.assertGreaterEqual(closed[0].best_price_seen, closed[0].exit_price)
 
     def test_closes_on_stop_hit(self) -> None:
         executor = PodAExecutor(load_config("config/trident.toml"))

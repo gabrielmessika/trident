@@ -20,6 +20,9 @@ class HIP4OutcomePolicyMarketAuditTests(unittest.TestCase):
             markdown = render_markdown(payload)
 
             replay = payload["exit_policy_replay"]
+            cutoffs = [row["entry_cutoff"] for row in replay["entry_cutoff_summaries"]]
+            self.assertIn("2026-06-10T00:00:00Z", cutoffs)
+            self.assertIn("2026-06-10T00:00:00Z", markdown)
             policies = {row["policy"]: row for row in replay["policy_summaries"]}
             self.assertAlmostEqual(policies["active_paper"]["net_pnl_usdc"], -1.0)
             self.assertAlmostEqual(policies["prob_stop_full"]["net_pnl_usdc"], 4.0)

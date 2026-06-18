@@ -39,17 +39,7 @@ class PodCBacktestRunner:
         input_path: str | Path,
         output_path: str | Path | None = None,
     ) -> PodCBacktestResult:
-        supervisor_config = replace(
-            self.config,
-            pod_a=replace(self.config.pod_a, enabled=False),
-            pod_b=replace(self.config.pod_b, enabled=False),
-            pod_c=replace(self.config.pod_c, enabled=True),
-        )
-        supervisor = TridentSupervisor(
-            config=supervisor_config,
-            profile="trident-pod-c-backtest",
-            mode="observation",
-        )
+        supervisor = self._build_supervisor()
         output_journal = JsonlJournal(output_path) if output_path is not None else None
         report = PodABacktestReport()
 
@@ -286,6 +276,19 @@ class PodCBacktestRunner:
         if output_path is not None:
             backtest["output_path"] = str(output_path)
         return PodCBacktestResult(backtest=backtest, output_path=str(output_path) if output_path else None)
+
+    def _build_supervisor(self) -> TridentSupervisor:
+        supervisor_config = replace(
+            self.config,
+            pod_a=replace(self.config.pod_a, enabled=False),
+            pod_b=replace(self.config.pod_b, enabled=False),
+            pod_c=replace(self.config.pod_c, enabled=True),
+        )
+        return TridentSupervisor(
+            config=supervisor_config,
+            profile="trident-pod-c-backtest",
+            mode="observation",
+        )
 
     def _date_key(self, timestamp: str | None, source_file: str) -> str:
         if timestamp:

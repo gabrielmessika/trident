@@ -252,6 +252,10 @@ def _add_trade_record(
         hold_hours=hold_hours,
         opened_at=opened_at,
         closed_at=closed_at,
+        best_price_seen=_float_or_none(trade.get("best_price_seen")),
+        worst_price_seen=_float_or_none(trade.get("worst_price_seen")),
+        mfe_bps=_float_or_none(trade.get("mfe_bps")),
+        mae_bps=_float_or_none(trade.get("mae_bps")),
         setup_details=setup_details,
     )
 

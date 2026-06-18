@@ -61,6 +61,10 @@ from app.trident.pod_a.leverage import LeveragePolicy
 from app.trident.pod_c.external_reference_shadow import (
     external_reference_shadow_setup_details,
 )
+from app.trident.pod_c.oil_shadow import (
+    build_p109_oil_shadow_features,
+    p109_oil_shadow_details,
+)
 from app.trident.supervisor import TridentSupervisor
 from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 
@@ -415,9 +419,18 @@ class PodCLiveRunner:
 
         snapshots = [symbol_market_snapshot_from_mapping(item) for item in symbols if isinstance(item, dict)]
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
+        p109_oil_shadow_by_symbol = self._p109_oil_shadow_details_by_symbol(
+            snapshots=snapshots,
+            timestamp=timestamp,
+            cluster_regime_snapshots=cluster_regime_snapshots,
+        )
         previews = self.supervisor.preview_pod_c_signals(snapshots)
         trade_plans = self.supervisor.build_pod_c_trade_plans(snapshots)
         trade_plans = self._apply_external_reference_shadow_to_plans(trade_plans)
+        trade_plans = self._apply_p109_oil_shadow_to_plans(
+            trade_plans,
+            p109_oil_shadow_by_symbol,
+        )
         if self.mode == "live":
             leverage_policy = LeveragePolicy(self.config.pod_c)
             trade_plans = [
@@ -458,9 +471,11 @@ class PodCLiveRunner:
         for fill in execution.fills:
             fills_by_symbol.setdefault(str(fill["symbol"]), []).append(fill)
         preview_setup_details_by_symbol = self._preview_setup_details_with_external_reference_shadow(
-            previews
+            previews,
+            p109_oil_shadow_by_symbol=p109_oil_shadow_by_symbol,
         )
         self._apply_external_reference_shadow_to_signal_reviews()
+        self._apply_p109_oil_shadow_to_signal_reviews(p109_oil_shadow_by_symbol)
 
         for preview in previews:
             self.report.add_signal(
@@ -491,6 +506,7 @@ class PodCLiveRunner:
                                 preview.symbol,
                                 dict(preview.setup_details),
                             ),
+                            "p109_oil_shadow": p109_oil_shadow_by_symbol.get(preview.symbol, {}),
                             "confidence_components": (
                                 decisions_by_symbol[preview.symbol].trade_plan.confidence_components
                                 if preview.symbol in decisions_by_symbol
@@ -568,6 +584,7 @@ class PodCLiveRunner:
 
         if journal is not None:
             self._apply_external_reference_shadow_to_signal_reviews()
+            self._apply_p109_oil_shadow_to_signal_reviews(p109_oil_shadow_by_symbol)
             for review in self.supervisor.state.pod_c_signal_review:
                 if str(review.get("status")) != "filtered":
                     continue
@@ -633,20 +650,40 @@ class PodCLiveRunner:
             plan.setup_details = details
         return trade_plans
 
+    def _apply_p109_oil_shadow_to_plans(
+        self,
+        trade_plans: list[object],
+        details_by_symbol: dict[str, dict[str, object]],
+    ) -> list[object]:
+        for plan in trade_plans:
+            symbol = str(getattr(plan, "symbol", "")).strip().upper()
+            shadow = details_by_symbol.get(symbol)
+            if not shadow:
+                continue
+            plan.setup_details = {
+                **dict(getattr(plan, "setup_details", {}) or {}),
+                **shadow,
+            }
+        return trade_plans
+
     def _preview_setup_details_with_external_reference_shadow(
         self,
         previews: list[object],
+        *,
+        p109_oil_shadow_by_symbol: dict[str, dict[str, object]] | None = None,
     ) -> dict[str, dict[str, object]]:
         by_symbol: dict[str, dict[str, object]] = {}
         for preview in previews:
+            symbol = str(getattr(preview, "symbol", "")).strip().upper()
             details = {
                 **dict(getattr(preview, "setup_details", {}) or {}),
                 **external_reference_shadow_setup_details(
                     getattr(preview, "setup_details", {}) or {},
                     side=str(getattr(preview, "side", "")),
                 ),
+                **((p109_oil_shadow_by_symbol or {}).get(symbol) or {}),
             }
-            by_symbol[str(getattr(preview, "symbol", ""))] = details
+            by_symbol[symbol] = details
         return by_symbol
 
     def _apply_external_reference_shadow_to_signal_reviews(self) -> None:
@@ -659,6 +696,41 @@ class PodCLiveRunner:
                     side=str(review.get("preferred_side", "")),
                 ),
             }
+
+    def _apply_p109_oil_shadow_to_signal_reviews(
+        self,
+        details_by_symbol: dict[str, dict[str, object]],
+    ) -> None:
+        for review in self.supervisor.state.pod_c_signal_review:
+            symbol = str(review.get("symbol", "")).strip().upper()
+            shadow = details_by_symbol.get(symbol)
+            if not shadow:
+                continue
+            review["setup_details"] = {
+                **dict(review.get("setup_details", {}) or {}),
+                **shadow,
+            }
+            review["p109_oil_shadow"] = dict(shadow)
+
+    def _p109_oil_shadow_details_by_symbol(
+        self,
+        *,
+        snapshots: list[SymbolMarketSnapshot],
+        timestamp: str,
+        cluster_regime_snapshots: dict[str, RegimeSnapshot],
+    ) -> dict[str, dict[str, object]]:
+        oil_regime = cluster_regime_snapshots.get("oil")
+        details_by_symbol: dict[str, dict[str, object]] = {}
+        for snapshot in snapshots:
+            features = build_p109_oil_shadow_features(
+                snapshot=snapshot,
+                timestamp=timestamp,
+                cluster_regime_snapshot=oil_regime,
+            )
+            details = p109_oil_shadow_details(features)
+            if details:
+                details_by_symbol[snapshot.symbol] = details
+        return details_by_symbol
 
     def _process_maintenance_record(
         self,
@@ -776,6 +848,10 @@ class PodCLiveRunner:
             "break_even_trigger_bps": getattr(trade, "break_even_trigger_bps", None),
             "trailing_activation_bps": getattr(trade, "trailing_activation_bps", None),
             "trailing_distance_bps": getattr(trade, "trailing_distance_bps", None),
+            "best_price_seen": getattr(trade, "best_price_seen", None),
+            "worst_price_seen": getattr(trade, "worst_price_seen", None),
+            "mfe_bps": getattr(trade, "mfe_bps", None),
+            "mae_bps": getattr(trade, "mae_bps", None),
             "gross_pnl_usd": getattr(trade, "gross_pnl_usd"),
             "fees_usd": getattr(trade, "fees_usd"),
             "pnl_usd": getattr(trade, "pnl_usd"),
@@ -834,6 +910,10 @@ class PodCLiveRunner:
             hold_hours=self._hold_hours(trade),
             opened_at=trade.opened_at.isoformat() if trade.opened_at else None,
             closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+            best_price_seen=getattr(trade, "best_price_seen", None),
+            worst_price_seen=getattr(trade, "worst_price_seen", None),
+            mfe_bps=getattr(trade, "mfe_bps", None),
+            mae_bps=getattr(trade, "mae_bps", None),
             setup_details=getattr(trade, "setup_details", None),
         )
 
@@ -1110,6 +1190,15 @@ class PodCLiveRunner:
                     "trailing_activation_bps": position.trailing_activation_bps,
                     "trailing_distance_bps": position.trailing_distance_bps,
                     "best_price_seen": position.best_price_seen,
+                    "worst_price_seen": position.worst_price_seen,
+                    "mfe_bps": round(
+                        self.executor.portfolio._best_favorable_move_bps(position),
+                        4,
+                    ),
+                    "mae_bps": round(
+                        self.executor.portfolio._worst_favorable_move_bps(position),
+                        4,
+                    ),
                     "opened_at": position.opened_at.isoformat() if position.opened_at else None,
                 }
             )

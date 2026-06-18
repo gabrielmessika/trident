@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import shutil
 from collections import Counter
@@ -80,6 +81,20 @@ P108_DYNAMIC_SYMBOL_GUARD_FIELDS = [
     "falling_knife_recent_stops_score",
 ]
 
+P109_OIL_SHADOW_FIELDS = [
+    "p109_oil_shadow_mode",
+    "p109_oil_pattern",
+    "p109_oil_symbol",
+    "p109_oil_shadow_side",
+    "p109_oil_shadow_horizon_min",
+    "p109_oil_shadow_research_regime",
+    "p109_oil_shadow_hour_utc",
+    "p109_oil_shadow_score",
+    "p109_oil_shadow_reason",
+    "would_open_p109_oil_short_shadow",
+    "p109_oil_shadow_live_action_unchanged",
+]
+
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -94,6 +109,27 @@ def write_json(path: Path, payload: Any) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_file_manifest(output_dir: Path) -> dict[str, dict[str, Any]]:
+    files: dict[str, dict[str, Any]] = {}
+    for path in sorted(output_dir.rglob("*")):
+        if not path.is_file() or path.name == "manifest.json":
+            continue
+        rel_path = str(path.relative_to(output_dir))
+        files[rel_path] = {
+            "size_bytes": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+    return files
 
 
 def jsonl_records(path: Path):
@@ -177,6 +213,7 @@ def compact_setup_details(details: dict[str, Any]) -> dict[str, Any]:
         *P106_REGIME_SHADOW_FIELDS,
         *P107_ORDER_BLOCK_SHADOW_FIELDS,
         *P108_DYNAMIC_SYMBOL_GUARD_FIELDS,
+        *P109_OIL_SHADOW_FIELDS,
         "a_grade_active",
         "a_grade_level",
         "a_grade_score",
@@ -352,6 +389,7 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
                         signal.get("order_block_shadow"),
                         signal.get("dynamic_symbol_guard"),
                         signal.get("symbol_guard_shadow"),
+                        signal.get("p109_oil_shadow"),
                     )
                     compact = {
                         **base,
@@ -509,6 +547,7 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
                         review.get("order_block_shadow"),
                         review.get("dynamic_symbol_guard"),
                         review.get("symbol_guard_shadow"),
+                        review.get("p109_oil_shadow"),
                     )
                     compact = {
                         **base,
@@ -554,6 +593,10 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
         "break_even_trigger_bps",
         "trailing_activation_bps",
         "trailing_distance_bps",
+        "best_price_seen",
+        "worst_price_seen",
+        "mfe_bps",
+        "mae_bps",
         "pnl_usd",
         "is_win",
         "gross_pnl_usd",
@@ -574,6 +617,7 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
         *P106_REGIME_SHADOW_FIELDS,
         *P107_ORDER_BLOCK_SHADOW_FIELDS,
         *P108_DYNAMIC_SYMBOL_GUARD_FIELDS,
+        *P109_OIL_SHADOW_FIELDS,
         "a_grade_active",
         "a_grade_score",
         "a_grade_level",
@@ -665,6 +709,7 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
             *P106_REGIME_SHADOW_FIELDS,
             *P107_ORDER_BLOCK_SHADOW_FIELDS,
             *P108_DYNAMIC_SYMBOL_GUARD_FIELDS,
+            *P109_OIL_SHADOW_FIELDS,
             "a_grade_active",
             "a_grade_score",
             "a_grade_level",
@@ -957,7 +1002,15 @@ def export_hip4(source_root: Path, output_dir: Path) -> dict[str, Any]:
         "hip4_nautilus_shadow_status": hip4_root / "runtime" / "hip4_nautilus_shadow_status.json",
     }.items():
         if path.exists():
-            statuses[name] = read_json(path)
+            try:
+                statuses[name] = read_json(path)
+            except json.JSONDecodeError as exc:
+                statuses[name] = {
+                    "status": "invalid_json",
+                    "path": str(path.relative_to(source_root)),
+                    "error": str(exc),
+                    "size_bytes": path.stat().st_size,
+                }
     write_json(output_dir / "hip4_runtime_statuses.json", statuses)
 
     return {
@@ -1019,6 +1072,30 @@ def export_baseline_replays(source_root: Path, output_dir: Path) -> dict[str, An
         copied = copy_if_exists(src, output_dir, output_name, source_root)
         if copied:
             copies[output_name] = copied
+    latest_p202_md = latest_file(
+        replay_root,
+        "p202_pod_c_cluster_multiplier_*/pod_c_cluster_multiplier_compare.md",
+    )
+    latest_p202_json = latest_file(
+        replay_root,
+        "p202_pod_c_cluster_multiplier_*/pod_c_cluster_multiplier_compare.json",
+    )
+    copied = copy_if_exists(
+        latest_p202_md,
+        output_dir,
+        "p202_pod_c_cluster_multiplier_latest.md",
+        source_root,
+    )
+    if copied:
+        copies["p202_pod_c_cluster_multiplier_latest.md"] = copied
+    copied = copy_if_exists(
+        latest_p202_json,
+        output_dir,
+        "p202_pod_c_cluster_multiplier_latest.json",
+        source_root,
+    )
+    if copied:
+        copies["p202_pod_c_cluster_multiplier_latest.json"] = copied
 
     official_json = replay_root / "official_baseline_current_cli_20260513.json"
     official_summary = {}
@@ -1123,12 +1200,13 @@ def write_readme(output_dir: Path, manifest: dict[str, Any]) -> None:
         "- `baseline_reference_status_20260513.md`",
         "- `baseline_official_current_cli_20260513.md`",
         "- `baseline_official_current_cli_20260513.json`",
+        "- `trident_active_plan.md`",
         "- `hip4_decisions.jsonl`",
         "- `hip4_trades.csv`",
         "- `hip4_settlements.csv`",
         "- `hip4_policy_replay.csv`",
         "- `hip4_policy_cutoff_replay.csv`",
-        "- `manifest.json`",
+        "- `manifest.json` with per-file SHA-256 checksums",
         "",
     ]
     (output_dir / "README.md").write_text("\n".join(lines), encoding="utf-8")
@@ -1163,6 +1241,12 @@ def main() -> int:
     manifest["exports"]["hip4"] = export_hip4(source_root, output_dir)
     manifest["exports"]["baseline_replays"] = export_baseline_replays(source_root, output_dir)
     manifest["exports"]["copied_reviews"] = copy_latest_common_reviews(source_root, output_dir)
+    active_plan = ROOT / "docs" / "trident_active_plan.md"
+    copied_plan = copy_if_exists(active_plan, output_dir, "trident_active_plan.md", ROOT)
+    manifest["exports"]["active_plan"] = {
+        "output": "trident_active_plan.md" if copied_plan else None,
+        "source": copied_plan,
+    }
     manifest["warnings"].append(
         "If the external audit needs exact close-fill reconciliation for TRIDENT A/C, "
         "provide exchange fills in addition to this export."
@@ -1171,8 +1255,9 @@ def main() -> int:
         "This script does not run fetch_all_data.sh; use --fresh-fetch-run only after a fresh fetch."
     )
 
-    write_json(output_dir / "manifest.json", manifest)
     write_readme(output_dir, manifest)
+    manifest["file_manifest"] = build_file_manifest(output_dir)
+    write_json(output_dir / "manifest.json", manifest)
     print(output_dir)
     return 0
 
