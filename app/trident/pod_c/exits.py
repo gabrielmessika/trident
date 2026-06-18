@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 
+def _continuation_like_setup(setup: str) -> bool:
+    return setup.startswith("tradfi_continuation") or setup == "p109_oil_short_4h_time_gate"
+
+
 def initial_stop_bps(
     setup: str,
     confidence: float,
     market_cluster: str = "crypto",
 ) -> float:
-    if setup.startswith("tradfi_continuation"):
+    if _continuation_like_setup(setup):
         base = 55.0 if confidence >= 0.78 else 65.0
     else:
         base = 70.0 if confidence >= 0.75 else 82.0
@@ -38,7 +42,7 @@ def smart_exit_policy(
     confidence: float,
     market_cluster: str = "crypto",
 ) -> dict[str, float]:
-    if setup.startswith("tradfi_continuation"):
+    if _continuation_like_setup(setup):
         take_profit_multiplier = 1.8 if confidence >= 0.75 else 1.6
         break_even_multiplier = 0.85
         trailing_activation_multiplier = 1.15

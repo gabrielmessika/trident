@@ -556,7 +556,9 @@ def empty_p109_oil_stats() -> dict:
         "with_shadow": 0,
         "live_action_unchanged_false": 0,
         "would_open": 0,
+        "promoted_records": 0,
         "by_symbol": {},
+        "promoted_by_symbol": {},
         "by_research_regime": {},
         "by_hour_utc": {},
         "avg_score": 0.0,
@@ -573,6 +575,10 @@ def update_p109_oil_stats(stats: dict, symbol: str, details: dict) -> None:
     if details.get("would_open_p109_oil_short_shadow") is True:
         stats["would_open"] += 1
     symbol_key = str(symbol or details.get("p109_oil_symbol") or "").upper()
+    if details.get("p109_oil_promoted") is True:
+        stats["promoted_records"] += 1
+        if symbol_key:
+            stats["promoted_by_symbol"][symbol_key] = int(stats["promoted_by_symbol"].get(symbol_key) or 0) + 1
     if symbol_key:
         stats["by_symbol"][symbol_key] = int(stats["by_symbol"].get(symbol_key) or 0) + 1
     regime = str(details.get("p109_oil_shadow_research_regime") or "unknown")
@@ -612,6 +618,9 @@ def finalize_p109_oil_stats(stats: dict) -> dict:
     compact.pop("_score_sum", None)
     compact["by_symbol"] = dict(
         sorted(compact.get("by_symbol", {}).items(), key=lambda item: (-int(item[1]), item[0]))[:20]
+    )
+    compact["promoted_by_symbol"] = dict(
+        sorted(compact.get("promoted_by_symbol", {}).items(), key=lambda item: (-int(item[1]), item[0]))[:20]
     )
     return compact
 
@@ -1238,8 +1247,10 @@ p109_lines.extend(
         f"- with_shadow: `{p109_oil.get('with_shadow')}`",
         f"- live_action_unchanged_false: `{p109_oil.get('live_action_unchanged_false')}`",
         f"- would_open: `{p109_oil.get('would_open')}`",
+        f"- promoted_records: `{p109_oil.get('promoted_records')}`",
         f"- avg_score: `{p109_oil.get('avg_score')}`",
         f"- by_symbol: `{p109_oil.get('by_symbol')}`",
+        f"- promoted_by_symbol: `{p109_oil.get('promoted_by_symbol')}`",
         f"- by_research_regime: `{p109_oil.get('by_research_regime')}`",
         f"- by_hour_utc: `{p109_oil.get('by_hour_utc')}`",
     ]

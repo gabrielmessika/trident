@@ -33,6 +33,8 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertEqual(config.pod_c.min_confidence, 0.66)
         self.assertEqual(config.pod_c.size_multiplier, 0.70)
         self.assertEqual(config.pod_c.blocked_symbols, ["XYZ:SILVER"])
+        self.assertTrue(config.pod_c.p109_oil_short_enabled)
+        self.assertEqual(config.pod_c.p109_oil_short_min_confidence, 0.67)
         self.assertTrue(config.pod_c.external_reference.enabled)
         self.assertEqual(config.pod_c.external_reference.symbols["XYZ:GOLD"], ["yahoo:GC=F"])
         self.assertEqual(config.pod_c.external_reference.min_sources, 1)

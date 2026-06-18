@@ -62,11 +62,20 @@ from app.trident.pod_c.external_reference_shadow import (
     external_reference_shadow_setup_details,
 )
 from app.trident.pod_c.oil_shadow import (
+    P109_OIL_PROMOTED_SETUP,
     build_p109_oil_shadow_features,
     p109_oil_shadow_details,
 )
+from app.trident.pod_c.signals import TradfiTrendSignal
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
+from app.trident.types import (
+    PodName,
+    RegimeSnapshot,
+    RiskDecision,
+    SignalPreview,
+    SymbolMarketSnapshot,
+    symbol_market_snapshot_from_mapping,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -426,6 +435,12 @@ class PodCLiveRunner:
         )
         previews = self.supervisor.preview_pod_c_signals(snapshots)
         trade_plans = self.supervisor.build_pod_c_trade_plans(snapshots)
+        previews, trade_plans = self._apply_p109_oil_promotion(
+            previews=previews,
+            trade_plans=trade_plans,
+            snapshots=snapshots,
+            details_by_symbol=p109_oil_shadow_by_symbol,
+        )
         trade_plans = self._apply_external_reference_shadow_to_plans(trade_plans)
         trade_plans = self._apply_p109_oil_shadow_to_plans(
             trade_plans,
@@ -665,6 +680,175 @@ class PodCLiveRunner:
                 **shadow,
             }
         return trade_plans
+
+    def _apply_p109_oil_promotion(
+        self,
+        *,
+        previews: list[SignalPreview],
+        trade_plans: list[object],
+        snapshots: list[SymbolMarketSnapshot],
+        details_by_symbol: dict[str, dict[str, object]],
+    ) -> tuple[list[SignalPreview], list[object]]:
+        if not self.config.pod_c.p109_oil_short_enabled:
+            return previews, trade_plans
+        snapshot_by_symbol = {snapshot.symbol.upper(): snapshot for snapshot in snapshots}
+        occupied_symbols = {
+            str(getattr(item, "symbol", "")).strip().upper()
+            for item in [*previews, *trade_plans]
+        }
+        open_symbols = {
+            str(symbol).strip().upper()
+            for symbol in self.executor.portfolio.open_positions
+        }
+        pod_allocation = self.supervisor.capital_plan.pod_allocations.get(PodName.POD_C)
+        if pod_allocation is None:
+            return previews, trade_plans
+
+        promoted_previews: list[SignalPreview] = []
+        promoted_plans: list[object] = []
+        for symbol, shadow in sorted(details_by_symbol.items()):
+            normalized = str(symbol).strip().upper()
+            if not bool(shadow.get("would_open_p109_oil_short_shadow")):
+                continue
+            if normalized in occupied_symbols or normalized in open_symbols:
+                continue
+            snapshot = snapshot_by_symbol.get(normalized)
+            if snapshot is None:
+                continue
+            signal = self._p109_oil_promoted_signal(snapshot=snapshot, shadow=shadow)
+            plan = self.supervisor.pod_c_planner.build_trade_plan(signal, pod_allocation)
+            if plan is None:
+                continue
+            preview = self.supervisor._build_signal_preview(signal)
+            promoted_previews.append(preview)
+            promoted_plans.append(plan)
+            occupied_symbols.add(normalized)
+
+        if not promoted_previews:
+            return previews, trade_plans
+        self._replace_pod_c_reviews_with_promoted(previews=promoted_previews)
+        merged_previews = [*previews, *promoted_previews]
+        self.supervisor.state.pod_c_signal_preview = merged_previews
+        return merged_previews, [*trade_plans, *promoted_plans]
+
+    def _replace_pod_c_reviews_with_promoted(self, *, previews: list[SignalPreview]) -> None:
+        promoted_symbols = {preview.symbol.upper() for preview in previews}
+        self.supervisor.state.pod_c_signal_review = [
+            review
+            for review in self.supervisor.state.pod_c_signal_review
+            if str(review.get("symbol", "")).strip().upper() not in promoted_symbols
+        ]
+        self.supervisor.state.pod_c_signal_review.extend(
+            self.supervisor._build_signal_review(preview) for preview in previews
+        )
+
+    def _p109_oil_promoted_signal(
+        self,
+        *,
+        snapshot: SymbolMarketSnapshot,
+        shadow: dict[str, object],
+    ) -> TradfiTrendSignal:
+        confidence = self._p109_oil_promoted_confidence(shadow)
+        details = {
+            **dict(shadow),
+            "global_regime": self.supervisor.state.regime.value,
+            "cluster_regime": self._cluster_regime_value("oil"),
+            "market_cluster": "oil",
+            "cluster_leader": snapshot.cluster_leader,
+            "cluster_aligned": snapshot.cluster_aligned,
+            "btc_aligned": snapshot.btc_aligned,
+            "reclaim_context": False,
+            "cluster_strategy": "oil_short_4h_time_gate",
+            "trend_bps": round(self._snapshot_trend_bps(snapshot), 4),
+            "structure_score": round(snapshot.structure_score, 4),
+            "vwap_distance_bps": round(snapshot.vwap_distance_bps, 4),
+            "spread_bps": round(snapshot.spread_bps, 4),
+            "funding_rate": round(snapshot.funding_rate, 8),
+            "bucket_range_bps": round(snapshot.bucket_range_bps, 4),
+            "bucket_trade_count": float(snapshot.bucket_trade_count),
+            "bucket_notional_usd": round(
+                float(snapshot.bucket_notional_usd or snapshot.bucket_volume * snapshot.price),
+                4,
+            ),
+            "activity_ratio": round(float(snapshot.volume_ratio or 1.0), 4),
+            "trade_count_ratio": round(float(snapshot.trade_count_ratio or 1.0), 4),
+            "book_imbalance": round(snapshot.book_imbalance, 4),
+            "trade_flow_bias": round(snapshot.trade_flow_bias, 4),
+            "flow_support_score": round(snapshot.book_imbalance + snapshot.trade_flow_bias, 4),
+            "external_reference_available": snapshot.external_reference_source_count > 0,
+            "external_reference_price": round(snapshot.external_reference_price or 0.0, 8),
+            "external_reference_source_count": float(snapshot.external_reference_source_count),
+            "external_reference_sources": snapshot.external_reference_sources,
+            "external_reference_symbol": snapshot.external_reference_symbol,
+            "external_reference_time": snapshot.external_reference_time,
+            "external_reference_age_seconds": round(
+                float(snapshot.external_reference_age_seconds or 0.0),
+                4,
+            ),
+            "external_reference_max_deviation_bps": round(
+                snapshot.external_reference_max_deviation_bps,
+                4,
+            ),
+            "external_premium_bps": round(snapshot.external_premium_bps, 4),
+            "external_momentum_60s_bps": round(snapshot.external_momentum_60s_bps, 4),
+            "external_momentum_300s_bps": round(snapshot.external_momentum_300s_bps, 4),
+            "external_alignment_score": round(snapshot.external_alignment_score, 4),
+            "p109_oil_promoted": True,
+            "p109_oil_promoted_mode": "active",
+            "p109_oil_promoted_decision_date": "2026-06-18",
+            "p109_oil_promoted_source": "operator_accepted_risk_after_shadow_audit",
+            "p109_oil_promoted_setup": P109_OIL_PROMOTED_SETUP,
+            "p109_oil_promoted_live_action": "short_entry_candidate",
+            "p109_oil_promoted_confidence": confidence,
+        }
+        components = self._p109_oil_promoted_confidence_components(shadow)
+        return TradfiTrendSignal(
+            symbol=snapshot.symbol,
+            side="short",
+            setup=P109_OIL_PROMOTED_SETUP,
+            confidence=confidence,
+            entry_price=snapshot.price,
+            market_cluster="oil",
+            cluster_leader=snapshot.cluster_leader,
+            setup_details=details,
+            confidence_components=components,
+        )
+
+    def _p109_oil_promoted_confidence(self, shadow: dict[str, object]) -> float:
+        base = max(
+            float(self.config.pod_c.min_confidence),
+            float(self.config.pod_c.p109_oil_short_min_confidence),
+        )
+        score = self._p109_oil_shadow_score(shadow)
+        uplift = min(max(score - 8.0, 0.0) * 0.01, 0.06)
+        return round(min(base + uplift, 0.74), 3)
+
+    def _p109_oil_promoted_confidence_components(
+        self,
+        shadow: dict[str, object],
+    ) -> dict[str, float]:
+        score = self._p109_oil_shadow_score(shadow)
+        return {
+            "p109_oil_score_quality": round(min(max(score / 12.0, 0.0), 1.0), 4),
+            "p109_time_gate_quality": 1.0,
+            "p109_regime_gate_quality": 1.0,
+            "setup_bonus": 0.06,
+        }
+
+    def _p109_oil_shadow_score(self, shadow: dict[str, object]) -> float:
+        try:
+            return float(shadow.get("p109_oil_shadow_score") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _snapshot_trend_bps(self, snapshot: SymbolMarketSnapshot) -> float:
+        if snapshot.ema_slow == 0:
+            return 0.0
+        return (snapshot.ema_fast - snapshot.ema_slow) / snapshot.ema_slow * 10_000.0
+
+    def _cluster_regime_value(self, cluster: str) -> str:
+        regime = (self.supervisor.state.cluster_regimes or {}).get(cluster)
+        return getattr(regime, "value", str(regime or ""))
 
     def _preview_setup_details_with_external_reference_shadow(
         self,

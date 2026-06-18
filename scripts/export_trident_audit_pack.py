@@ -93,6 +93,13 @@ P109_OIL_SHADOW_FIELDS = [
     "p109_oil_shadow_reason",
     "would_open_p109_oil_short_shadow",
     "p109_oil_shadow_live_action_unchanged",
+    "p109_oil_promoted",
+    "p109_oil_promoted_mode",
+    "p109_oil_promoted_decision_date",
+    "p109_oil_promoted_source",
+    "p109_oil_promoted_setup",
+    "p109_oil_promoted_live_action",
+    "p109_oil_promoted_confidence",
 ]
 
 

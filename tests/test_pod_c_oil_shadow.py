@@ -4,6 +4,7 @@ from app.trident.pod_c.oil_shadow import (
     p109_oil_shadow_details,
 )
 from app.trident.types import RegimeSnapshot, SymbolMarketSnapshot
+from scripts.export_trident_audit_pack import compact_setup_details
 
 
 def _oil_snapshot(symbol: str = "XYZ:CL") -> SymbolMarketSnapshot:
@@ -78,3 +79,19 @@ def test_non_oil_symbol_returns_no_shadow() -> None:
     )
 
     assert features is None
+
+
+def test_oil_promoted_fields_are_kept_in_compact_export() -> None:
+    compacted = compact_setup_details(
+        {
+            "p109_oil_shadow_mode": "observation_only",
+            "p109_oil_promoted": True,
+            "p109_oil_promoted_mode": "active",
+            "p109_oil_promoted_setup": "p109_oil_short_4h_time_gate",
+            "p109_oil_promoted_live_action": "short_entry_candidate",
+            "p109_oil_promoted_confidence": 0.684,
+        }
+    )
+
+    assert compacted["p109_oil_promoted"] is True
+    assert compacted["p109_oil_promoted_setup"] == "p109_oil_short_4h_time_gate"

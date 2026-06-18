@@ -122,6 +122,15 @@ Source de verite operationnelle depuis le `2026-05-24`:
   pendant la grace si le trade part rapidement contre le plan, sizing live
   qualite/correlation/loss-tax au lieu d'un blocage dur. Le cap live A/C reste
   `200` notionnel max et Silver reste bloque cote Pod C.
+- Decision P1 `2026-06-18`: apres fetch/review frais, P1-03 est clos comme
+  restauration reference externe Pod C + shadow valide, sans guardrail actif;
+  P1-08 est clos en `research_only_no_live_change`; P1-09
+  `oil_short_4h_time_gate` est promu en candidat short Pod C actif par decision
+  operateur a risque accepte. La promotion est codee/configuree via
+  `pod_c.p109_oil_short_enabled=true`, setup
+  `p109_oil_short_4h_time_gate`, min confidence `0.67`, risk gate/caps live
+  inchanges. Aucun redeploiement serveur ne doit etre suppose tant que
+  `./deploy.sh` n'a pas ete lance explicitement apres preflight.
 - Incident live `2026-06-07`: Pod A a ouvert une position ARB mainnet
   (`oid=461196360588`, long `2446.4`, entry `0.0817`, cap live ~`200 USDC`)
   mais le state/journal n'a pas garde la position avant crash/restart. Pod A

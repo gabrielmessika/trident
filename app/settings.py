@@ -569,6 +569,8 @@ class PodCConfig:
     min_reclaim_distance_bps: float
     min_activity_ratio: float
     activity_lookback: int
+    p109_oil_short_enabled: bool = False
+    p109_oil_short_min_confidence: float = 0.67
     pattern_vetoes: list[PodAPatternVetoConfig] = field(default_factory=list)
     pattern_watchers: list[PodAPatternVetoConfig] = field(default_factory=list)
     cluster_modes: dict[str, PodCClusterModeConfig] = field(default_factory=dict)
@@ -1853,6 +1855,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 pod_c_data.get("min_activity_ratio", 0.75)
             ),
             activity_lookback=int(pod_c_data.get("activity_lookback", pod_c_data.get("squeeze_lookback", 20))),
+            p109_oil_short_enabled=bool(
+                pod_c_data.get("p109_oil_short_enabled", False)
+            ),
+            p109_oil_short_min_confidence=float(
+                pod_c_data.get("p109_oil_short_min_confidence", 0.67)
+            ),
             pattern_vetoes=_pod_a_pattern_vetoes(pod_c_data.get("pattern_vetoes", [])),
             pattern_watchers=_pod_a_pattern_watchers(
                 pod_c_data.get("pattern_watchers", [])

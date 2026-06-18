@@ -1253,6 +1253,70 @@ class PodCTests(unittest.TestCase):
             ]
         )
 
+    def test_pod_c_live_runner_promotes_p109_oil_shadow_to_short_plan(self) -> None:
+        config = load_config("config/trident.toml")
+        config.pod_c.p109_oil_short_enabled = True
+        runner = PodCLiveRunner(config, coins=["XYZ:CL"])
+        snapshot = SymbolMarketSnapshot(
+            symbol="XYZ:CL",
+            price=80.0,
+            ema_fast=80.1,
+            ema_slow=80.0,
+            vwap_distance_bps=8.0,
+            structure_score=0.0,
+            funding_rate=0.0,
+            spread_bps=2.0,
+            btc_aligned=True,
+            market_cluster="oil",
+            realized_vol_short_bps=10.0,
+            bucket_volume=1000.0,
+            bucket_trade_count=10,
+            source="live_test",
+        )
+        shadow_by_symbol = runner._p109_oil_shadow_details_by_symbol(
+            snapshots=[snapshot],
+            timestamp="2026-06-15T08:00:00Z",
+            cluster_regime_snapshots={
+                "oil": RegimeSnapshot(
+                    ready=True,
+                    adx=10.0,
+                    atr_ratio=0.2,
+                    range_width_bps=10.0,
+                    coherence_score=0.1,
+                )
+            },
+        )
+        runner.supervisor.capital_plan.pod_allocations[PodName.POD_C] = PodAllocation(
+            pod=PodName.POD_C,
+            target_pct=0.06,
+            target_usd=60.0,
+            symbols=[SymbolAllocation(symbol="XYZ:CL", target_pct=0.06, target_usd=60.0)],
+        )
+
+        previews, plans = runner._apply_p109_oil_promotion(
+            previews=[],
+            trade_plans=[],
+            snapshots=[snapshot],
+            details_by_symbol=shadow_by_symbol,
+        )
+
+        self.assertEqual(len(previews), 1)
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(previews[0].side, "short")
+        self.assertEqual(previews[0].setup, "p109_oil_short_4h_time_gate")
+        self.assertEqual(plans[0].side, "short")
+        self.assertEqual(plans[0].setup, "p109_oil_short_4h_time_gate")
+        self.assertEqual(plans[0].time_stop_hours, 4)
+        self.assertTrue(plans[0].setup_details["p109_oil_promoted"])
+        self.assertEqual(
+            plans[0].setup_details["p109_oil_promoted_live_action"],
+            "short_entry_candidate",
+        )
+        self.assertEqual(
+            runner.supervisor.state.pod_c_signal_review[0]["setup"],
+            "p109_oil_short_4h_time_gate",
+        )
+
     def test_pod_c_live_runner_defaults_to_observation_universe_filtered_by_cluster(self) -> None:
         config = load_config("config/trident.toml")
         config.pod_c.enabled = True

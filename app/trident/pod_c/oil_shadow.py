@@ -10,6 +10,7 @@ from app.trident.types import RegimeSnapshot, SymbolMarketSnapshot
 P109_OIL_SYMBOLS = {"XYZ:CL", "XYZ:BRENTOIL"}
 P109_OIL_ALLOWED_RESEARCH_REGIMES = {"chop", "mixed", "high_vol"}
 P109_OIL_HORIZON_MIN = 240
+P109_OIL_PROMOTED_SETUP = "p109_oil_short_4h_time_gate"
 
 
 @dataclass(frozen=True, slots=True)
