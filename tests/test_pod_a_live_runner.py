@@ -250,6 +250,97 @@ class PodALiveRunnerTests(unittest.TestCase):
         self.assertEqual(shaped_plan.setup_details["live_quality_sizing_multiplier"], 0.5)
         self.assertIn("low_confidence", shaped_plan.setup_details["live_quality_sizing_reasons"])
 
+    def test_dynamic_symbol_guard_sizing_is_disabled_by_default(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_a=replace(config.pod_a, live_quality_sizing_enabled=False),
+        )
+        runner = PodALiveRunner(config, coins=["BTC"])
+        plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.80,
+            target_notional_usd=200.0,
+            stop_bps=45.0,
+            time_stop_hours=24,
+            margin_usd=100.0,
+            risk_budget_usd=2.0,
+            expected_loss_usd=0.9,
+            setup_details={
+                "market_cluster": "crypto",
+                "symbol_guard_state": "quarantine",
+                "would_block_dynamic_symbol_guard": True,
+                "would_reduce_cap_dynamic_symbol_guard": True,
+                "symbol_guard_live_action_unchanged": True,
+            },
+        )
+
+        shaped = runner._shape_live_trade_plans(
+            [plan],
+            timestamp="2026-06-22T00:00:00Z",
+        )
+
+        self.assertEqual(len(shaped), 1)
+        shaped_plan = shaped[0]
+        self.assertEqual(shaped_plan.target_notional_usd, 200.0)
+        self.assertNotIn("dynamic_symbol_guard_live_sizing_active", shaped_plan.setup_details)
+        self.assertTrue(bool(shaped_plan.setup_details["symbol_guard_live_action_unchanged"]))
+
+    def test_dynamic_symbol_guard_sizing_reduces_quarantine_without_blocking(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_a=replace(
+                config.pod_a,
+                live_quality_sizing_enabled=False,
+                dynamic_symbol_guard_live_sizing_enabled=True,
+            ),
+        )
+        runner = PodALiveRunner(config, coins=["BTC"])
+        plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.80,
+            target_notional_usd=200.0,
+            stop_bps=45.0,
+            time_stop_hours=24,
+            margin_usd=100.0,
+            risk_budget_usd=2.0,
+            expected_loss_usd=0.9,
+            setup_details={
+                "market_cluster": "crypto",
+                "symbol_guard_state": "quarantine",
+                "would_block_dynamic_symbol_guard": True,
+                "would_reduce_cap_dynamic_symbol_guard": True,
+                "symbol_guard_live_action_unchanged": True,
+            },
+        )
+
+        shaped = runner._shape_live_trade_plans(
+            [plan],
+            timestamp="2026-06-22T00:00:00Z",
+        )
+
+        self.assertEqual(len(shaped), 1)
+        shaped_plan = shaped[0]
+        self.assertEqual(shaped_plan.target_notional_usd, 20.0)
+        self.assertEqual(shaped_plan.margin_usd, 10.0)
+        self.assertEqual(shaped_plan.risk_budget_usd, 0.2)
+        self.assertEqual(shaped_plan.expected_loss_usd, 0.09)
+        self.assertTrue(bool(shaped_plan.setup_details["dynamic_symbol_guard_live_sizing_active"]))
+        self.assertEqual(
+            shaped_plan.setup_details["dynamic_symbol_guard_live_sizing_multiplier"],
+            0.1,
+        )
+        self.assertEqual(
+            shaped_plan.setup_details["dynamic_symbol_guard_live_sizing_reason"],
+            "quarantine",
+        )
+        self.assertFalse(bool(shaped_plan.setup_details["symbol_guard_live_action_unchanged"]))
+
     def test_maintenance_refresh_updates_open_position_market_data_without_new_records(self) -> None:
         config = load_config("config/trident.toml")
         with tempfile.TemporaryDirectory() as tmpdir:

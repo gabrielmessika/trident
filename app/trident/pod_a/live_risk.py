@@ -218,6 +218,114 @@ def apply_pod_a_live_quality_sizing(
     return _scale_plan_for_live_quality(plan, multiplier, reasons)
 
 
+def apply_pod_a_dynamic_symbol_guard_sizing(
+    plan: TradePlan,
+    pod_a_config: object,
+) -> TradePlan:
+    if not bool(
+        getattr(pod_a_config, "dynamic_symbol_guard_live_sizing_enabled", False)
+    ):
+        return plan
+    if not is_crypto_trend_pullback(setup=plan.setup, details=plan.setup_details):
+        return _annotate_dynamic_symbol_guard_policy(
+            plan,
+            active=False,
+            reason="not_crypto_trend_pullback",
+        )
+
+    details = dict(plan.setup_details or {})
+    state = str(details.get("symbol_guard_state", "") or "").strip().lower()
+    would_reduce = bool(details.get("would_reduce_cap_dynamic_symbol_guard", False))
+    would_block = bool(details.get("would_block_dynamic_symbol_guard", False))
+    if state not in {"throttle", "quarantine"} and not would_reduce and not would_block:
+        return _annotate_dynamic_symbol_guard_policy(plan, active=False, reason="normal")
+
+    if state == "quarantine" or would_block:
+        multiplier = float(
+            getattr(pod_a_config, "dynamic_symbol_guard_quarantine_multiplier", 0.10)
+            or 0.10
+        )
+        reason = "quarantine"
+    else:
+        multiplier = float(
+            getattr(pod_a_config, "dynamic_symbol_guard_throttle_multiplier", 0.50)
+            or 0.50
+        )
+        reason = "throttle"
+
+    floor = max(
+        float(
+            getattr(pod_a_config, "dynamic_symbol_guard_min_multiplier", 0.0)
+            or 0.0
+        ),
+        0.0,
+    )
+    multiplier = max(min(multiplier, 1.0), floor)
+    if multiplier >= 0.9999:
+        return _annotate_dynamic_symbol_guard_policy(plan, active=False, reason=reason)
+    return _scale_plan_for_dynamic_symbol_guard(plan, multiplier, reason)
+
+
+def _annotate_dynamic_symbol_guard_policy(
+    plan: TradePlan,
+    *,
+    active: bool,
+    reason: str,
+) -> TradePlan:
+    setup_details = {
+        **dict(plan.setup_details or {}),
+        "dynamic_symbol_guard_live_policy_enabled": True,
+        "dynamic_symbol_guard_live_sizing_active": bool(active),
+        "dynamic_symbol_guard_live_sizing_reason": reason,
+    }
+    return replace(plan, setup_details=setup_details)
+
+
+def _scale_plan_for_dynamic_symbol_guard(
+    plan: TradePlan,
+    multiplier: float,
+    reason: str,
+) -> TradePlan:
+    setup_details = {
+        **dict(plan.setup_details or {}),
+        "dynamic_symbol_guard_live_policy_enabled": True,
+        "dynamic_symbol_guard_live_sizing_active": True,
+        "dynamic_symbol_guard_live_sizing_multiplier": round(multiplier, 4),
+        "dynamic_symbol_guard_live_sizing_reason": reason,
+        "dynamic_symbol_guard_original_target_notional_usd": round(
+            float(plan.target_notional_usd or 0.0),
+            6,
+        ),
+        "dynamic_symbol_guard_original_margin_usd": round(
+            float(plan.margin_usd or 0.0),
+            6,
+        ),
+        "dynamic_symbol_guard_original_risk_budget_usd": round(
+            float(plan.risk_budget_usd or 0.0),
+            6,
+        ),
+        "dynamic_symbol_guard_original_expected_loss_usd": round(
+            float(plan.expected_loss_usd or 0.0),
+            6,
+        ),
+        "symbol_guard_live_action_unchanged": False,
+    }
+    return replace(
+        plan,
+        target_notional_usd=round(
+            float(plan.target_notional_usd or 0.0) * multiplier,
+            6,
+        ),
+        margin_usd=round(float(plan.margin_usd or 0.0) * multiplier, 6),
+        risk_budget_usd=round(float(plan.risk_budget_usd or 0.0) * multiplier, 6),
+        expected_loss_usd=round(
+            float(plan.expected_loss_usd or 0.0) * multiplier,
+            6,
+        ),
+        setup_details=setup_details,
+    )
+
+
 def _scale_plan_for_live_quality(
     plan: TradePlan,
     multiplier: float,

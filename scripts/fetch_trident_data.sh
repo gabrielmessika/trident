@@ -491,6 +491,7 @@ P108_SYMBOL_GUARD_FIELDS = (
 P109_OIL_SHADOW_FIELDS = (
     "would_open_p109_oil_short_shadow",
 )
+P109_OIL_SYMBOLS = {"XYZ:CL", "XYZ:BRENTOIL"}
 
 def empty_shadow_stats() -> dict:
     return {
@@ -557,6 +558,10 @@ def empty_p109_oil_stats() -> dict:
         "live_action_unchanged_false": 0,
         "would_open": 0,
         "promoted_records": 0,
+        "closed_promoted_trades": 0,
+        "closed_promoted_pnl_usd": 0.0,
+        "open_oil_positions": 0,
+        "open_oil_unrealized_pnl_usd": 0.0,
         "by_symbol": {},
         "promoted_by_symbol": {},
         "by_research_regime": {},
@@ -565,7 +570,13 @@ def empty_p109_oil_stats() -> dict:
         "_score_sum": 0.0,
     }
 
-def update_p109_oil_stats(stats: dict, symbol: str, details: dict) -> None:
+def update_p109_oil_stats(
+    stats: dict,
+    symbol: str,
+    details: dict,
+    *,
+    trade: dict | None = None,
+) -> None:
     stats["records"] += 1
     if details.get("p109_oil_shadow_mode") != "observation_only":
         return
@@ -579,6 +590,11 @@ def update_p109_oil_stats(stats: dict, symbol: str, details: dict) -> None:
         stats["promoted_records"] += 1
         if symbol_key:
             stats["promoted_by_symbol"][symbol_key] = int(stats["promoted_by_symbol"].get(symbol_key) or 0) + 1
+        if isinstance(trade, dict):
+            stats["closed_promoted_trades"] += 1
+            stats["closed_promoted_pnl_usd"] += as_float(
+                trade.get("pnl_usd") or trade.get("net_pnl_usd")
+            )
     if symbol_key:
         stats["by_symbol"][symbol_key] = int(stats["by_symbol"].get(symbol_key) or 0) + 1
     regime = str(details.get("p109_oil_shadow_research_regime") or "unknown")
@@ -594,6 +610,57 @@ def update_p109_oil_stats(stats: dict, symbol: str, details: dict) -> None:
         float(stats["_score_sum"]) / max(int(stats["with_shadow"]), 1),
         4,
     )
+
+def update_p109_oil_open_position_stats(stats: dict, runtime_statuses: dict | None) -> None:
+    if not isinstance(runtime_statuses, dict):
+        return
+    pod_c_status = runtime_statuses.get("pod_c", {})
+    if not isinstance(pod_c_status, dict):
+        return
+    open_positions = pod_c_status.get("open_positions", [])
+    if not isinstance(open_positions, list):
+        return
+    for position in open_positions:
+        if not isinstance(position, dict):
+            continue
+        symbol = str(position.get("symbol") or "").upper()
+        if symbol not in P109_OIL_SYMBOLS:
+            continue
+        stats["open_oil_positions"] += 1
+        stats["open_oil_unrealized_pnl_usd"] += as_float(
+            position.get("unrealized_pnl_usd")
+        )
+
+def p109_oil_stoplight(stats: dict) -> dict:
+    closed_count = int(stats.get("closed_promoted_trades") or 0)
+    closed_pnl = as_float(stats.get("closed_promoted_pnl_usd"))
+    open_count = int(stats.get("open_oil_positions") or 0)
+    open_pnl = as_float(stats.get("open_oil_unrealized_pnl_usd"))
+    total_pnl = round(closed_pnl + open_pnl, 4)
+    reasons: list[str] = []
+    if closed_count < 10:
+        reasons.append(f"closed_promoted_trades {closed_count}/10")
+    if open_pnl < 0.0:
+        reasons.append(f"open_oil_unrealized_pnl_usd {open_pnl:.4f} < 0")
+    if total_pnl <= 0.0:
+        reasons.append(f"closed_plus_open_pnl_usd {total_pnl:.4f} <= 0")
+
+    if reasons:
+        status = "hold_exposure" if closed_count or open_count else "collect_more_data"
+        recommendation = "ne pas augmenter l'exposition P1-09 oil"
+    else:
+        status = "ready_review"
+        recommendation = "pret pour revue humaine avant toute hausse d'exposition"
+    return {
+        "status": status,
+        "recommendation": recommendation,
+        "closed_promoted_trades": closed_count,
+        "closed_promoted_pnl_usd": round(closed_pnl, 4),
+        "open_oil_positions": open_count,
+        "open_oil_unrealized_pnl_usd": round(open_pnl, 4),
+        "closed_plus_open_pnl_usd": total_pnl,
+        "reasons": reasons,
+    }
 
 def combine_shadow_details(*sources: object) -> dict:
     combined: dict = {}
@@ -616,6 +683,9 @@ def finalize_symbol_guard_stats(stats: dict) -> dict:
 def finalize_p109_oil_stats(stats: dict) -> dict:
     compact = dict(stats)
     compact.pop("_score_sum", None)
+    compact["closed_promoted_pnl_usd"] = round(as_float(compact.get("closed_promoted_pnl_usd")), 4)
+    compact["open_oil_unrealized_pnl_usd"] = round(as_float(compact.get("open_oil_unrealized_pnl_usd")), 4)
+    compact["stoplight"] = p109_oil_stoplight(compact)
     compact["by_symbol"] = dict(
         sorted(compact.get("by_symbol", {}).items(), key=lambda item: (-int(item[1]), item[0]))[:20]
     )
@@ -624,7 +694,7 @@ def finalize_p109_oil_stats(stats: dict) -> dict:
     )
     return compact
 
-def build_p109_oil_shadow_focus(*, log_dir: Path) -> dict:
+def build_p109_oil_shadow_focus(*, log_dir: Path, runtime_statuses: dict | None = None) -> dict:
     stats = empty_p109_oil_stats()
     pod_c_log = log_dir / "pod_c_live.jsonl"
     try:
@@ -653,7 +723,13 @@ def build_p109_oil_shadow_focus(*, log_dir: Path) -> dict:
                 trade.get("setup_details"),
                 trade.get("p109_oil_shadow"),
             )
-            update_p109_oil_stats(stats, str(trade.get("symbol") or ""), details)
+            update_p109_oil_stats(
+                stats,
+                str(trade.get("symbol") or ""),
+                details,
+                trade=trade,
+            )
+    update_p109_oil_open_position_stats(stats, runtime_statuses)
     status = "WARN"
     reasons: list[str] = []
     if int(stats.get("with_shadow") or 0) > 0:
@@ -1021,7 +1097,10 @@ external_reference_focus = build_p103_external_reference_focus(
     snapshot_dir=snapshot_dir,
 )
 symbol_guard_focus = build_p108_symbol_guard_focus(log_dir=log_dir)
-p109_oil_focus = build_p109_oil_shadow_focus(log_dir=log_dir)
+p109_oil_focus = build_p109_oil_shadow_focus(
+    log_dir=log_dir,
+    runtime_statuses=runtime_statuses,
+)
 
 checks: list[str] = []
 warnings: list[str] = []
@@ -1117,10 +1196,12 @@ else:
 p109_oil_status = str(p109_oil_focus.get("status") or "WARN")
 if p109_oil_status == "PASS":
     oil = p109_oil_focus.get("p109_oil_shadow", {})
+    oil_stoplight = oil.get("stoplight", {}) if isinstance(oil, dict) else {}
     checks.append(
         "P1-09 oil shadow Pod C collecté "
         f"({oil.get('with_shadow')}/{oil.get('records')}, "
-        f"would_open={oil.get('would_open')})"
+        f"would_open={oil.get('would_open')}, "
+        f"stoplight={oil_stoplight.get('status')})"
     )
 elif p109_oil_status == "FAIL":
     failures.append(
@@ -1231,6 +1312,7 @@ p108_lines.extend(
 )
 
 p109_oil = p109_oil_focus.get("p109_oil_shadow", {})
+p109_stoplight = p109_oil.get("stoplight", {}) if isinstance(p109_oil, dict) else {}
 p109_lines = [
     "# P1-09 Pod C oil short shadow audit",
     "",
@@ -1248,11 +1330,21 @@ p109_lines.extend(
         f"- live_action_unchanged_false: `{p109_oil.get('live_action_unchanged_false')}`",
         f"- would_open: `{p109_oil.get('would_open')}`",
         f"- promoted_records: `{p109_oil.get('promoted_records')}`",
+        f"- closed_promoted_trades: `{p109_oil.get('closed_promoted_trades')}`",
+        f"- closed_promoted_pnl_usd: `{p109_oil.get('closed_promoted_pnl_usd')}`",
+        f"- open_oil_positions: `{p109_oil.get('open_oil_positions')}`",
+        f"- open_oil_unrealized_pnl_usd: `{p109_oil.get('open_oil_unrealized_pnl_usd')}`",
         f"- avg_score: `{p109_oil.get('avg_score')}`",
         f"- by_symbol: `{p109_oil.get('by_symbol')}`",
         f"- promoted_by_symbol: `{p109_oil.get('promoted_by_symbol')}`",
         f"- by_research_regime: `{p109_oil.get('by_research_regime')}`",
         f"- by_hour_utc: `{p109_oil.get('by_hour_utc')}`",
+        "",
+        "## P1-09 oil stoplight",
+        f"- status: `{p109_stoplight.get('status')}`",
+        f"- recommendation: `{p109_stoplight.get('recommendation')}`",
+        f"- closed_plus_open_pnl_usd: `{p109_stoplight.get('closed_plus_open_pnl_usd')}`",
+        f"- reasons: `{p109_stoplight.get('reasons')}`",
     ]
 )
 (output / "p109_oil_shadow_audit.md").write_text(
@@ -1337,6 +1429,8 @@ lines.extend(
         f"- shadow_coverage: `{p109_oil_focus.get('p109_oil_shadow', {}).get('with_shadow')}/{p109_oil_focus.get('p109_oil_shadow', {}).get('records')}`",
         f"- shadow_live_action_unchanged_false: `{p109_oil_focus.get('p109_oil_shadow', {}).get('live_action_unchanged_false')}`",
         f"- would_open: `{p109_oil_focus.get('p109_oil_shadow', {}).get('would_open')}`",
+        f"- oil_stoplight: `{p109_oil_focus.get('p109_oil_shadow', {}).get('stoplight', {}).get('status')}`",
+        f"- oil_closed_plus_open_pnl_usd: `{p109_oil_focus.get('p109_oil_shadow', {}).get('stoplight', {}).get('closed_plus_open_pnl_usd')}`",
         f"- by_symbol: `{p109_oil_focus.get('p109_oil_shadow', {}).get('by_symbol')}`",
         f"- by_research_regime: `{p109_oil_focus.get('p109_oil_shadow', {}).get('by_research_regime')}`",
         f"- detail: `{output / 'p109_oil_shadow_audit.md'}`",

@@ -18,6 +18,7 @@ DEFAULT_PROFILE_LOGS: dict[str, str] = {
 }
 DEFAULT_NAUTILUS_SHADOW_LOGS = "logs/hip4_nautilus_shadow"
 DEFAULT_NAUTILUS_DECISION_JOIN_MAX_AGE_SECONDS = 300.0
+DEFAULT_ACTIVE_POLICY_CUTOFF_ISO = "2026-06-10T00:00:00Z"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +104,7 @@ def analyze_profile(
     )
     settlement_summary = _settlement_summary(settlement_rows)
     calibration = _calibration_summary(settlement_rows)
+    readiness_buckets = _readiness_bucket_summary(settlement_rows, limits)
     loss_review = _loss_review(settlement_rows)
     guardrail_candidates = _guardrail_candidate_analysis(settlement_rows, limits)
     nautilus_shadow = _nautilus_shadow_summary(
@@ -150,6 +152,7 @@ def analyze_profile(
         },
         "settlements": settlement_summary,
         "calibration": calibration,
+        "readiness_buckets": readiness_buckets,
         "loss_review": loss_review,
         "guardrail_candidates": guardrail_candidates,
         "edge_decay": _edge_decay_summary(edge_decay),
@@ -235,6 +238,8 @@ def render_markdown(payload: dict[str, Any]) -> str:
         for reason in profile_readiness.get("reasons", []):
             lines.append(f"- Reason: {reason}")
         lines.append("")
+
+        lines.extend(_render_readiness_buckets(profile.get("readiness_buckets", {})))
 
         market_observations = profile.get("market_observations", {})
         if market_observations.get("count"):
@@ -472,6 +477,63 @@ def render_markdown(payload: dict[str, Any]) -> str:
             lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_readiness_buckets(readiness_buckets: object) -> list[str]:
+    if not isinstance(readiness_buckets, dict):
+        return []
+    sections = [
+        ("post_active_policy_cutoff", "Post active policy cutoff"),
+        ("all", "All settlements"),
+    ]
+    group_labels = {
+        "by_underlying": "underlying",
+        "by_side": "side",
+        "by_market_type": "market_type",
+        "by_expiry_bucket": "expiry_bucket",
+        "by_underlying_side": "underlying_side",
+        "by_underlying_market_type_side": "underlying_market_type_side",
+    }
+    lines = ["### Readiness Buckets", ""]
+    cutoff = readiness_buckets.get("active_policy_cutoff")
+    if cutoff:
+        lines.append(f"- Active policy cutoff: `{cutoff}`")
+        lines.append("")
+    wrote_table = False
+    for section_key, section_label in sections:
+        section = readiness_buckets.get(section_key, {})
+        if not isinstance(section, dict):
+            continue
+        groups = section.get("groups", {})
+        if not isinstance(groups, dict):
+            continue
+        table_rows: list[tuple[str, dict[str, Any]]] = []
+        for group_key, group_label in group_labels.items():
+            table_rows.extend(
+                (group_label, row)
+                for row in groups.get(group_key, [])[:8]
+                if isinstance(row, dict)
+            )
+        if not table_rows:
+            continue
+        wrote_table = True
+        lines.append(f"#### {section_label}")
+        lines.append("")
+        lines.append(
+            "| Group | Bucket | Count | PnL | PF | Brier | Status | Reasons |"
+        )
+        lines.append("|---|---|---:|---:|---:|---:|---|---|")
+        for group_label, row in table_rows:
+            reasons = ", ".join(str(item) for item in row.get("reasons", [])[:3])
+            lines.append(
+                f"| {group_label} | {row.get('bucket')} | {row.get('count')} | "
+                f"{_fmt_num(row.get('net_pnl_usdc'))} | "
+                f"{_fmt_num(row.get('profit_factor'))} | "
+                f"{_fmt_num(row.get('brier_score'))} | "
+                f"{row.get('status')} | {reasons} |"
+            )
+        lines.append("")
+    return lines if wrote_table else []
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -734,6 +796,9 @@ def _normalize_settlements(
         trade = trade_index.get(key, {})
         edge_decay = edge_decay_index.get(key, {})
         prediction = _predicted_win_probability(signal, opportunity)
+        metadata = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
+        edge_type = str(signal.get("edge_type") or opportunity.get("edge_type", "unknown"))
+        seconds_left = _time_to_expiry_seconds(signal, opportunity)
         pnl = _settlement_pnl(row)
         gross_pnl = _optional_float(row.get("gross_pnl_usdc"))
         fee = _float(row.get("fee_usdc"))
@@ -747,8 +812,11 @@ def _normalize_settlements(
                 "market_id": str(row.get("market_id", "")),
                 "outcome": str(row.get("outcome", "")),
                 "underlying": str(row.get("underlying") or signal.get("underlying", "")).upper(),
-                "edge_type": str(signal.get("edge_type") or opportunity.get("edge_type", "unknown")),
+                "edge_type": edge_type,
+                "market_type": _market_type(signal, opportunity, edge_type),
                 "side": str(row.get("side") or signal.get("side", "")),
+                "time_to_expiry_seconds": seconds_left,
+                "expiry_bucket": _expiry_bucket(seconds_left),
                 "result": str(row.get("result", "")),
                 "payout_usdc": _float(row.get("payout_usdc")),
                 "fee_usdc": fee,
@@ -758,6 +826,12 @@ def _normalize_settlements(
                 "notes": str(row.get("notes", "")),
                 "predicted_win_probability": prediction.get("probability"),
                 "prediction_source": prediction.get("source"),
+                "policy_name": str(
+                    metadata.get("policy_name")
+                    or metadata.get("early_exit_policy")
+                    or metadata.get("policy")
+                    or ""
+                ),
                 "signal": signal,
                 "opportunity": opportunity,
                 "edge_decay": edge_decay,
@@ -845,6 +919,127 @@ def _aggregate_settlements(rows: list[dict[str, Any]], keys: list[str]) -> list[
         )
         output.append(payload)
     return sorted(output, key=lambda item: (float(item["net_pnl_usdc"]), str(item)))
+
+
+def _readiness_bucket_summary(
+    rows: list[dict[str, Any]],
+    limits: ReviewThresholds,
+) -> dict[str, Any]:
+    cutoff = _parse_ts(DEFAULT_ACTIVE_POLICY_CUTOFF_ISO)
+    post_cutoff = [
+        row
+        for row in rows
+        if cutoff is not None
+        and (parsed := _parse_ts(row.get("ts"))) is not None
+        and parsed >= cutoff
+    ]
+    return {
+        "active_policy_cutoff": DEFAULT_ACTIVE_POLICY_CUTOFF_ISO,
+        "all": _readiness_bucket_groups(rows, limits),
+        "post_active_policy_cutoff": _readiness_bucket_groups(post_cutoff, limits),
+    }
+
+
+def _readiness_bucket_groups(
+    rows: list[dict[str, Any]],
+    limits: ReviewThresholds,
+) -> dict[str, Any]:
+    specs = {
+        "by_underlying": ["underlying"],
+        "by_side": ["side"],
+        "by_market_type": ["market_type"],
+        "by_expiry_bucket": ["expiry_bucket"],
+        "by_underlying_side": ["underlying", "side"],
+        "by_underlying_market_type_side": ["underlying", "market_type", "side"],
+    }
+    return {
+        "count": len(rows),
+        "groups": {
+            name: _aggregate_readiness_bucket(rows, keys, limits)
+            for name, keys in specs.items()
+        },
+    }
+
+
+def _aggregate_readiness_bucket(
+    rows: list[dict[str, Any]],
+    keys: list[str],
+    limits: ReviewThresholds,
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for key, items in _rows_by_slice(rows, keys).items():
+        metrics = _guardrail_metrics(items)
+        status, reasons = _readiness_bucket_status(metrics, limits)
+        payload = {name: value for name, value in zip(keys, key)}
+        payload.update(
+            {
+                "bucket": " / ".join(key),
+                "count": metrics.get("count", 0),
+                "win_rate": metrics.get("win_rate"),
+                "net_pnl_usdc": metrics.get("net_pnl_usdc"),
+                "profit_factor": metrics.get("profit_factor"),
+                "brier_score": metrics.get("brier_score"),
+                "calibration_count": metrics.get("calibration_count", 0),
+                "max_drawdown_usdc": metrics.get("max_drawdown_usdc"),
+                "status": status,
+                "reasons": reasons,
+            }
+        )
+        output.append(payload)
+    return sorted(
+        output,
+        key=lambda item: (
+            _readiness_bucket_status_rank(str(item.get("status", ""))),
+            -int(item.get("count", 0) or 0),
+            str(item.get("bucket", "")),
+        ),
+    )
+
+
+def _readiness_bucket_status(
+    metrics: dict[str, Any],
+    limits: ReviewThresholds,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    count = int(metrics.get("count", 0) or 0)
+    calibration_count = int(metrics.get("calibration_count", 0) or 0)
+    min_bucket_samples = max(3, int(limits.min_guardrail_exclusions))
+    if count < min_bucket_samples:
+        reasons.append(f"settlements {count}/{min_bucket_samples}")
+    if calibration_count < min_bucket_samples:
+        reasons.append(f"calibration {calibration_count}/{min_bucket_samples}")
+
+    pnl = float(metrics.get("net_pnl_usdc", 0.0) or 0.0)
+    profit_factor = _optional_float(metrics.get("profit_factor"))
+    gross_profit = float(metrics.get("gross_profit_usdc", 0.0) or 0.0)
+    gross_loss = float(metrics.get("gross_loss_usdc", 0.0) or 0.0)
+    pf_ok = (
+        profit_factor is not None and profit_factor >= limits.min_profit_factor
+    ) or (profit_factor is None and gross_profit > 0.0 and gross_loss == 0.0)
+    if not pf_ok:
+        reasons.append(
+            f"PF {_fmt_num(profit_factor)}/{limits.min_profit_factor:.2f}"
+        )
+
+    brier = _optional_float(metrics.get("brier_score"))
+    if brier is None or brier > limits.max_brier_score:
+        reasons.append(f"Brier {_fmt_num(brier)} <= {limits.max_brier_score:.2f}")
+    if pnl <= 0.0:
+        reasons.append(f"PnL {_fmt_num(pnl)} <= 0")
+
+    if count < min_bucket_samples or calibration_count < min_bucket_samples:
+        return "collect_more_data", reasons
+    if reasons:
+        return "fail", reasons
+    return "pass", []
+
+
+def _readiness_bucket_status_rank(status: str) -> int:
+    return {
+        "fail": 0,
+        "collect_more_data": 1,
+        "pass": 2,
+    }.get(status, 3)
 
 
 def _calibration_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1317,6 +1512,57 @@ def _classify_loss(
     if net_edge is not None and net_edge >= 0.15 and pnl < 0:
         return "high_edge_loss"
     return "unclassified_loss"
+
+
+def _time_to_expiry_seconds(
+    signal: dict[str, Any],
+    opportunity: dict[str, str],
+) -> float | None:
+    metadata = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
+    return _first_optional_float(
+        metadata.get("time_to_expiry_seconds"),
+        metadata.get("seconds_left"),
+        signal.get("time_to_expiry_seconds"),
+        opportunity.get("time_to_expiry"),
+    )
+
+
+def _expiry_bucket(seconds_left: float | None) -> str:
+    if seconds_left is None:
+        return "unknown"
+    if seconds_left <= 300.0:
+        return "00-05m"
+    if seconds_left <= 900.0:
+        return "05-15m"
+    if seconds_left <= 1800.0:
+        return "15-30m"
+    if seconds_left <= 3600.0:
+        return "30-60m"
+    if seconds_left <= 14_400.0:
+        return "01-04h"
+    return ">04h"
+
+
+def _market_type(
+    signal: dict[str, Any],
+    opportunity: dict[str, str],
+    edge_type: str,
+) -> str:
+    metadata = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
+    value = (
+        metadata.get("market_type")
+        or metadata.get("market_class")
+        or metadata.get("class_name")
+        or signal.get("market_type")
+        or opportunity.get("market_type")
+        or opportunity.get("class_name")
+    )
+    if value:
+        return str(value)
+    normalized_edge = str(edge_type or "").upper()
+    if normalized_edge in {"MODEL", "SHORT_EXPIRY", "LATE_EXPIRY"}:
+        return "priceBinary"
+    return normalized_edge or "unknown"
 
 
 def _edge_decay_summary(rows: list[dict[str, str]]) -> dict[str, Any]:

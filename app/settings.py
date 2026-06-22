@@ -275,6 +275,10 @@ class PodAConfig:
     )
     live_correlation_full_size_slots: int = 3
     live_correlation_extra_multiplier: float = 0.50
+    dynamic_symbol_guard_live_sizing_enabled: bool = False
+    dynamic_symbol_guard_throttle_multiplier: float = 0.50
+    dynamic_symbol_guard_quarantine_multiplier: float = 0.10
+    dynamic_symbol_guard_min_multiplier: float = 0.10
 
 
 @dataclass(slots=True)
@@ -1707,6 +1711,18 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             live_correlation_extra_multiplier=float(
                 pod_a_data.get("live_correlation_extra_multiplier", 0.50)
+            ),
+            dynamic_symbol_guard_live_sizing_enabled=bool(
+                pod_a_data.get("dynamic_symbol_guard_live_sizing_enabled", False)
+            ),
+            dynamic_symbol_guard_throttle_multiplier=float(
+                pod_a_data.get("dynamic_symbol_guard_throttle_multiplier", 0.50)
+            ),
+            dynamic_symbol_guard_quarantine_multiplier=float(
+                pod_a_data.get("dynamic_symbol_guard_quarantine_multiplier", 0.10)
+            ),
+            dynamic_symbol_guard_min_multiplier=float(
+                pod_a_data.get("dynamic_symbol_guard_min_multiplier", 0.10)
             ),
         ),
         pod_b=PodBConfig(

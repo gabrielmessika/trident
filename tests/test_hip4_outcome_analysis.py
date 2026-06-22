@@ -49,6 +49,26 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
             self.assertAlmostEqual(payload["settlements"]["profit_factor"], 0.75)
             self.assertEqual(payload["calibration"]["count"], 2)
             self.assertAlmostEqual(payload["calibration"]["brier_score"], 0.34)
+            readiness_buckets = payload["readiness_buckets"]
+            self.assertEqual(readiness_buckets["all"]["count"], 2)
+            self.assertTrue(
+                any(
+                    row["bucket"] == "BTC"
+                    for row in readiness_buckets["all"]["groups"]["by_underlying"]
+                )
+            )
+            self.assertTrue(
+                any(
+                    row["bucket"] == "priceBinary"
+                    for row in readiness_buckets["all"]["groups"]["by_market_type"]
+                )
+            )
+            self.assertTrue(
+                any(
+                    row["bucket"] == "05-15m"
+                    for row in readiness_buckets["all"]["groups"]["by_expiry_bucket"]
+                )
+            )
             self.assertEqual(
                 payload["loss_review"]["categories"][0]["category"],
                 "late_expiry_reversal",
@@ -139,6 +159,7 @@ class HIP4OutcomeAnalysisTests(unittest.TestCase):
             self.assertEqual(len(payload["profiles"]), 2)
             self.assertIn("HIP-4 Outcome Run Review", markdown)
             self.assertIn("Guardrail Candidates", markdown)
+            self.assertIn("Readiness Buckets", markdown)
             self.assertIn("Market Observations", markdown)
             self.assertIn("Nautilus Shadow Data Quality", markdown)
             self.assertIn("Decision-time join", markdown)

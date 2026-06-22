@@ -131,6 +131,17 @@ Source de verite operationnelle depuis le `2026-05-24`:
   `p109_oil_short_4h_time_gate`, min confidence `0.67`, risk gate/caps live
   inchanges. Aucun redeploiement serveur ne doit etre suppose tant que
   `./deploy.sh` n'a pas ete lance explicitement apres preflight.
+- Implementation PnL `2026-06-22`: premiere tranche du plan
+  `docs/pnl_improvement_implementation_plan_20260622.md` codee sans activation
+  live automatique. Pod A dispose maintenant d'une policy P1-08 cap-only
+  configurable (`dynamic_symbol_guard_live_sizing_enabled=false` par defaut)
+  qui peut reduire `throttle` et `quarantine` sans bloquer les trades; toute
+  activation exige replay/review/preflight/confirmation. HIP-4 run review expose
+  des `readiness_buckets` par underlying/side/market_type/expiry_bucket avec
+  fenetre post `2026-06-10T00:00:00Z`. Le fetch A/C expose un stoplight P1-09
+  oil combinant trades promus fermes et PnL latent oil ouvert; le smoke local
+  `server-data/reviews/20260622T085010Z/` indique `hold_exposure`, donc pas de
+  hausse d'exposition oil a ce stade.
 - Incident live `2026-06-07`: Pod A a ouvert une position ARB mainnet
   (`oid=461196360588`, long `2446.4`, entry `0.0817`, cap live ~`200 USDC`)
   mais le state/journal n'a pas garde la position avant crash/restart. Pod A

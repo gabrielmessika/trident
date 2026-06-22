@@ -54,6 +54,7 @@ from app.settings import AppConfig, load_config
 from app.trident.market_clusters import cluster_for_symbol
 from app.trident.pod_a.leverage import LeveragePolicy
 from app.trident.pod_a.live_risk import (
+    apply_pod_a_dynamic_symbol_guard_sizing,
     apply_pod_a_live_quality_sizing,
     is_crypto_trend_pullback,
     pod_a_live_quality_score,
@@ -1005,6 +1006,10 @@ class PodALiveRunner:
                 timestamp=timestamp,
                 loss_tax_until_by_symbol=self._loss_tax_until_by_symbol,
                 correlated_open_count=correlated_count,
+            )
+            shaped_plan = apply_pod_a_dynamic_symbol_guard_sizing(
+                shaped_plan,
+                self.config.pod_a,
             )
             if is_crypto_trend_pullback(
                 setup=str(getattr(plan, "setup", "")),
