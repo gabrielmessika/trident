@@ -261,6 +261,18 @@ class TridentAICandidateScanTests(unittest.TestCase):
             self.assertIn("edge_quality_score", candidate_hint)
             self.assertIn("pattern_quality_score", candidate_hint)
             self.assertEqual(candidate_hint["pattern_profile"], "none")
+            self.assertIn("market_micro_regime", candidate_hint)
+            self.assertIn("range_vol_regime", candidate_hint)
+            self.assertIn("symbol_range_vol", candidate_hint)
+            micro_regime = candidate_hint["market_micro_regime"]
+            self.assertEqual(
+                candidate_hint["range_vol_regime"],
+                micro_regime["range_vol_regime"],
+            )
+            self.assertEqual(
+                candidate_hint["symbol_range_vol"],
+                f"{candidate_hint['symbol']}|{candidate_hint['range_vol_regime']}",
+            )
             self.assertTrue(candidate_hint["reasons"])
             journal_rows = [
                 json.loads(line)
@@ -329,6 +341,43 @@ class TridentAICandidateScanTests(unittest.TestCase):
             self.assertTrue(result.require_microprice_alignment)
             self.assertGreaterEqual(result.rejection_reasons["microprice_not_aligned"], 1)
 
+    def test_candidate_scan_filters_by_timestamp_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            input_path = directory / "snapshots.jsonl"
+            early = _snapshot_record()
+            early["timestamp"] = "2026-06-07T12:00:00Z"
+            late = deepcopy(early)
+            late["timestamp"] = "2026-06-08T12:00:00Z"
+            input_path.write_text(
+                "\n".join(json.dumps(record, sort_keys=True) for record in [early, late]) + "\n",
+                encoding="utf-8",
+            )
+
+            scanner = TridentAICandidateScanner(
+                config=load_trident_ai_config("config/trident_ai.toml")
+            )
+            result = scanner.run(
+                input_path,
+                journal_path=directory / "candidates.jsonl",
+                selected_input_path=directory / "selected.jsonl",
+                report_json_path=directory / "candidates.json",
+                report_md_path=directory / "candidates.md",
+                start_timestamp="2026-06-08T00:00:00Z",
+                end_timestamp="2026-06-09T00:00:00Z",
+                top_n=4,
+                min_score=0.0,
+                min_edge_to_cost=0.0,
+                min_net_edge_bps=0.0,
+                symbols=["BTC", "ETH", "SOL", "HYPE"],
+            )
+
+            self.assertEqual(result.records_processed, 1)
+            self.assertEqual(result.start_timestamp, "2026-06-08T00:00:00Z")
+            self.assertEqual(result.end_timestamp, "2026-06-09T00:00:00Z")
+            self.assertEqual(result.first_timestamp, "2026-06-08T12:00:00Z")
+            self.assertEqual(result.last_timestamp, "2026-06-08T12:00:00Z")
+
     def test_candidate_scan_cli_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             directory = Path(tmpdir)
@@ -350,6 +399,10 @@ class TridentAICandidateScanTests(unittest.TestCase):
                     str(report_json_path),
                     "--report-md-path",
                     str(directory / "candidates.md"),
+                    "--start-timestamp",
+                    "2026-06-07T00:00:00Z",
+                    "--end-timestamp",
+                    "2026-06-08T00:00:00Z",
                     "--top-n",
                     "2",
                     "--min-score",
@@ -368,6 +421,8 @@ class TridentAICandidateScanTests(unittest.TestCase):
             report = json.loads(report_json_path.read_text(encoding="utf-8"))
             self.assertEqual(report["result"]["candidates_selected"], 2)
             self.assertEqual(report["result"]["pattern_profile"], "research_v2_stable")
+            self.assertEqual(report["result"]["start_timestamp"], "2026-06-07T00:00:00Z")
+            self.assertEqual(report["result"]["end_timestamp"], "2026-06-08T00:00:00Z")
 
 
 if __name__ == "__main__":

@@ -11,8 +11,16 @@ from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
 from app.trident_ai.candidate_scan import CANDIDATE_HINT_FIELD
 from app.trident_ai.config import TridentAIConfig, load_trident_ai_config
 from app.trident_ai.features import AgentMarketContextBuildConfig, TridentAIFeatureBuilder
+from app.trident_ai.market_regime import (
+    build_market_micro_regime,
+    market_micro_regime_labels,
+)
 from app.trident_ai.paper import TridentAIPaperReplayResult, run_trident_ai_paper_replay
 from app.trident_ai.replay import LLM_REPLAY_DECISION_EVENT
+from app.trident_ai.technical_digest import (
+    TECHNICAL_DIGEST_FEATURE_NAME,
+    compact_technical_digest,
+)
 from app.trident_ai.types import (
     AgentMarketContext,
     TRIDENT_AI_MARKET_CONTEXT_SCHEMA_VERSION,
@@ -25,6 +33,17 @@ DEFAULT_CANDIDATE_PAPER_CONFIDENCE = 0.62
 DEFAULT_CANDIDATE_PAPER_STOP_BPS = 120.0
 DEFAULT_CANDIDATE_PAPER_TAKE_PROFIT_BPS = 240.0
 DEFAULT_CANDIDATE_PAPER_TIME_STOP_MINUTES = 180
+DEFAULT_CANDIDATE_PAPER_RESEARCH_PROFILE = "none"
+CANDIDATE_PAPER_RESEARCH_PROFILE_RESEARCH_V3_GUARDRAIL = "research_v3_guardrail"
+CANDIDATE_PAPER_RESEARCH_PROFILES = (
+    DEFAULT_CANDIDATE_PAPER_RESEARCH_PROFILE,
+    CANDIDATE_PAPER_RESEARCH_PROFILE_RESEARCH_V3_GUARDRAIL,
+)
+RESEARCH_V3_GUARDRAIL_MIN_EDGE_TO_COST = 4.0
+RESEARCH_V3_GUARDRAIL_MIN_NET_EDGE_BPS = 10.0
+RESEARCH_V3_GUARDRAIL_MIN_LIQUIDITY_SCORE = 1.0
+RESEARCH_V3_GUARDRAIL_MAX_ROUND_TRIP_COST_BPS = 12.0
+RESEARCH_V3_GUARDRAIL_TECHNICAL_VETO_BUCKETS = ("family::volume_flow=short",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,10 +65,16 @@ class TridentAICandidatePaperReplayResult:
     stop_bps: float = DEFAULT_CANDIDATE_PAPER_STOP_BPS
     take_profit_bps: float = DEFAULT_CANDIDATE_PAPER_TAKE_PROFIT_BPS
     time_stop_minutes: int = DEFAULT_CANDIDATE_PAPER_TIME_STOP_MINUTES
+    research_profile: str = DEFAULT_CANDIDATE_PAPER_RESEARCH_PROFILE
     min_edge_to_cost: float | None = None
     min_net_edge_bps: float | None = None
     min_liquidity_score: float | None = None
     max_round_trip_cost_bps: float | None = None
+    min_pattern_quality_score: float | None = None
+    technical_veto_buckets: tuple[str, ...] = ()
+    micro_regime_veto_buckets: tuple[str, ...] = ()
+    micro_regime_require_buckets: tuple[str, ...] = ()
+    micro_regime_size_scales: tuple[str, ...] = ()
     first_timestamp: str | None = None
     last_timestamp: str | None = None
     symbol_counts: dict[str, int] = field(default_factory=dict)
@@ -76,10 +101,16 @@ class TridentAICandidatePaperReplayResult:
             "stop_bps": round(self.stop_bps, 6),
             "take_profit_bps": round(self.take_profit_bps, 6),
             "time_stop_minutes": self.time_stop_minutes,
+            "research_profile": self.research_profile,
             "min_edge_to_cost": _round_optional(self.min_edge_to_cost),
             "min_net_edge_bps": _round_optional(self.min_net_edge_bps),
             "min_liquidity_score": _round_optional(self.min_liquidity_score),
             "max_round_trip_cost_bps": _round_optional(self.max_round_trip_cost_bps),
+            "min_pattern_quality_score": _round_optional(self.min_pattern_quality_score),
+            "technical_veto_buckets": list(self.technical_veto_buckets),
+            "micro_regime_veto_buckets": list(self.micro_regime_veto_buckets),
+            "micro_regime_require_buckets": list(self.micro_regime_require_buckets),
+            "micro_regime_size_scales": list(self.micro_regime_size_scales),
             "first_timestamp": self.first_timestamp,
             "last_timestamp": self.last_timestamp,
             "symbol_counts": dict(sorted(self.symbol_counts.items())),
@@ -99,6 +130,16 @@ class _SyntheticDecisionBuildResult:
     symbol_counts: Counter[str] = field(default_factory=Counter)
     side_counts: Counter[str] = field(default_factory=Counter)
     skip_reasons: Counter[str] = field(default_factory=Counter)
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidatePaperProfileSettings:
+    research_profile: str
+    min_edge_to_cost: float | None
+    min_net_edge_bps: float | None
+    min_liquidity_score: float | None
+    max_round_trip_cost_bps: float | None
+    technical_veto_buckets: tuple[tuple[str, str], ...]
 
 
 def run_trident_ai_candidate_paper_replay(
@@ -121,6 +162,13 @@ def run_trident_ai_candidate_paper_replay(
     min_net_edge_bps: float | None = None,
     min_liquidity_score: float | None = None,
     max_round_trip_cost_bps: float | None = None,
+    min_pattern_quality_score: float | None = None,
+    technical_veto_buckets: Sequence[str] | None = None,
+    micro_regime_veto_buckets: Sequence[str] | None = None,
+    micro_regime_require_buckets: Sequence[str] | None = None,
+    micro_regime_size_scales: Sequence[str] | None = None,
+    research_profile: str = DEFAULT_CANDIDATE_PAPER_RESEARCH_PROFILE,
+    paper_market_event_cache: Sequence[object] | None = None,
 ) -> TridentAICandidatePaperReplayResult:
     if max_candidates is not None and max_candidates <= 0:
         raise ValueError("max_candidates_must_be_positive")
@@ -134,6 +182,32 @@ def run_trident_ai_candidate_paper_replay(
         raise ValueError("time_stop_minutes_must_be_positive")
     if notional_usd is not None and notional_usd <= 0.0:
         raise ValueError("notional_usd_must_be_positive")
+    parsed_technical_vetoes = _parse_technical_veto_buckets(technical_veto_buckets or ())
+    if technical_veto_buckets and not parsed_technical_vetoes:
+        raise ValueError("technical_veto_buckets_must_use_family_bucket_format")
+    parsed_micro_vetoes = _parse_micro_regime_buckets(micro_regime_veto_buckets or ())
+    if micro_regime_veto_buckets and not parsed_micro_vetoes:
+        raise ValueError("micro_regime_veto_buckets_must_use_family_bucket_format")
+    parsed_micro_require = _parse_micro_regime_buckets(micro_regime_require_buckets or ())
+    if micro_regime_require_buckets and not parsed_micro_require:
+        raise ValueError("micro_regime_require_buckets_must_use_family_bucket_format")
+    parsed_micro_size_scales = _parse_micro_regime_size_scales(micro_regime_size_scales or ())
+    if micro_regime_size_scales and not parsed_micro_size_scales:
+        raise ValueError("micro_regime_size_scales_must_use_family_bucket_equals_scale_format")
+    profile_settings = _resolve_candidate_paper_research_profile(
+        research_profile=research_profile,
+        min_edge_to_cost=min_edge_to_cost,
+        min_net_edge_bps=min_net_edge_bps,
+        min_liquidity_score=min_liquidity_score,
+        max_round_trip_cost_bps=max_round_trip_cost_bps,
+        technical_veto_buckets=parsed_technical_vetoes,
+    )
+    research_profile = profile_settings.research_profile
+    min_edge_to_cost = profile_settings.min_edge_to_cost
+    min_net_edge_bps = profile_settings.min_net_edge_bps
+    min_liquidity_score = profile_settings.min_liquidity_score
+    max_round_trip_cost_bps = profile_settings.max_round_trip_cost_bps
+    parsed_technical_vetoes = profile_settings.technical_veto_buckets
     if min_edge_to_cost is not None and min_edge_to_cost < 0.0:
         raise ValueError("min_edge_to_cost_must_be_non_negative")
     if min_net_edge_bps is not None and min_net_edge_bps < 0.0:
@@ -142,6 +216,8 @@ def run_trident_ai_candidate_paper_replay(
         raise ValueError("min_liquidity_score_must_be_non_negative")
     if max_round_trip_cost_bps is not None and max_round_trip_cost_bps <= 0.0:
         raise ValueError("max_round_trip_cost_bps_must_be_positive")
+    if min_pattern_quality_score is not None and min_pattern_quality_score < 0.0:
+        raise ValueError("min_pattern_quality_score_must_be_non_negative")
 
     active_config = config or load_trident_ai_config()
     effective_notional = _effective_notional_usd(
@@ -181,6 +257,11 @@ def run_trident_ai_candidate_paper_replay(
         min_net_edge_bps=min_net_edge_bps,
         min_liquidity_score=min_liquidity_score,
         max_round_trip_cost_bps=max_round_trip_cost_bps,
+        min_pattern_quality_score=min_pattern_quality_score,
+        technical_veto_buckets=parsed_technical_vetoes,
+        micro_regime_veto_buckets=parsed_micro_vetoes,
+        micro_regime_require_buckets=parsed_micro_require,
+        micro_regime_size_scales=parsed_micro_size_scales,
     )
     _write_decision_journal(decision_output, build_result.decisions)
 
@@ -194,6 +275,7 @@ def run_trident_ai_candidate_paper_replay(
         report_md_path=paper_report_md,
         market_input_path=market_input_path,
         symbols=symbols_filter,
+        market_event_cache=paper_market_event_cache,
     )
 
     result = TridentAICandidatePaperReplayResult(
@@ -214,10 +296,25 @@ def run_trident_ai_candidate_paper_replay(
         stop_bps=float(stop_bps),
         take_profit_bps=float(take_profit_bps),
         time_stop_minutes=int(time_stop_minutes),
+        research_profile=research_profile,
         min_edge_to_cost=min_edge_to_cost,
         min_net_edge_bps=min_net_edge_bps,
         min_liquidity_score=min_liquidity_score,
         max_round_trip_cost_bps=max_round_trip_cost_bps,
+        min_pattern_quality_score=min_pattern_quality_score,
+        technical_veto_buckets=tuple(
+            _format_technical_veto_bucket(*item) for item in parsed_technical_vetoes
+        ),
+        micro_regime_veto_buckets=tuple(
+            _format_bucket(*item) for item in parsed_micro_vetoes
+        ),
+        micro_regime_require_buckets=tuple(
+            _format_bucket(*item) for item in parsed_micro_require
+        ),
+        micro_regime_size_scales=tuple(
+            _format_size_scale(family, bucket, scale)
+            for family, bucket, scale in parsed_micro_size_scales
+        ),
         first_timestamp=build_result.first_timestamp,
         last_timestamp=build_result.last_timestamp,
         symbol_counts=dict(build_result.symbol_counts),
@@ -261,6 +358,11 @@ def _build_synthetic_decisions(
     min_net_edge_bps: float | None,
     min_liquidity_score: float | None,
     max_round_trip_cost_bps: float | None,
+    min_pattern_quality_score: float | None,
+    technical_veto_buckets: tuple[tuple[str, str], ...],
+    micro_regime_veto_buckets: tuple[tuple[str, str], ...],
+    micro_regime_require_buckets: tuple[tuple[str, str], ...],
+    micro_regime_size_scales: tuple[tuple[str, str, float], ...],
 ) -> _SyntheticDecisionBuildResult:
     loader = SnapshotLoader()
     feature_builder = TridentAIFeatureBuilder(
@@ -290,6 +392,7 @@ def _build_synthetic_decisions(
                 min_net_edge_bps=min_net_edge_bps,
                 min_liquidity_score=min_liquidity_score,
                 max_round_trip_cost_bps=max_round_trip_cost_bps,
+                min_pattern_quality_score=min_pattern_quality_score,
             )
             if gate_rejection:
                 result.skipped_candidates += 1
@@ -310,12 +413,41 @@ def _build_synthetic_decisions(
                 result.skipped_candidates += 1
                 result.skip_reasons["invalid_candidate_side"] += 1
                 continue
+            micro_regime = _candidate_micro_regime(
+                context=context_result.context,
+                hint=hint,
+                side=side,
+            )
+            micro_regime_rejection = _micro_regime_rejection(
+                micro_regime=micro_regime,
+                veto_buckets=micro_regime_veto_buckets,
+                require_buckets=micro_regime_require_buckets,
+            )
+            if micro_regime_rejection:
+                result.skipped_candidates += 1
+                result.skip_reasons[micro_regime_rejection] += 1
+                continue
+            notional_scale = _micro_regime_notional_scale(
+                micro_regime=micro_regime,
+                size_scales=micro_regime_size_scales,
+            )
+            technical_veto = _technical_veto_rejection(
+                context=context_result.context,
+                side=side,
+                veto_buckets=technical_veto_buckets,
+            )
+            if technical_veto:
+                result.skipped_candidates += 1
+                result.skip_reasons[technical_veto] += 1
+                continue
             decision = _synthetic_decision_record(
                 context=context_result.context,
                 hint=hint,
+                micro_regime=micro_regime,
+                notional_scale=notional_scale,
                 record_index=record.record_index,
                 side=side,
-                notional_usd=notional_usd,
+                notional_usd=notional_usd * notional_scale,
                 max_leverage=max_leverage,
                 confidence=confidence,
                 stop_bps=stop_bps,
@@ -335,6 +467,8 @@ def _synthetic_decision_record(
     *,
     context: AgentMarketContext,
     hint: Mapping[str, object],
+    micro_regime: Mapping[str, object],
+    notional_scale: float,
     record_index: int,
     side: str,
     notional_usd: float,
@@ -384,7 +518,12 @@ def _synthetic_decision_record(
             "request_id": f"candidate_request_{decision_suffix}",
             "prompt_version": "candidate_paper_replay_v1",
         },
-        "context": _context_with_hint(context, hint),
+        "context": _context_with_hint(
+            context,
+            hint,
+            micro_regime=micro_regime,
+            notional_scale=notional_scale,
+        ),
         "llm_response": {
             "ok": True,
             "provider": "local_candidate_replay",
@@ -404,10 +543,26 @@ def _synthetic_decision_record(
 def _context_with_hint(
     context: AgentMarketContext,
     hint: Mapping[str, object],
+    *,
+    micro_regime: Mapping[str, object] | None = None,
+    notional_scale: float = 1.0,
 ) -> dict[str, object]:
     payload = context.to_dict()
     payload["schema_version"] = TRIDENT_AI_MARKET_CONTEXT_SCHEMA_VERSION
-    payload[CANDIDATE_HINT_FIELD] = dict(hint)
+    hint_payload = dict(hint)
+    if micro_regime:
+        hint_payload["market_micro_regime"] = dict(micro_regime)
+        for field_name in (
+            "range_vol_regime",
+            "flow_regime",
+            "micro_regime",
+            "symbol_range_vol",
+            "symbol_micro_regime",
+        ):
+            hint_payload[field_name] = micro_regime.get(field_name)
+    if abs(notional_scale - 1.0) > 1e-9:
+        hint_payload["micro_regime_notional_scale"] = round(float(notional_scale), 6)
+    payload[CANDIDATE_HINT_FIELD] = hint_payload
     payload["source"] = CANDIDATE_PAPER_DECISION_SOURCE
     return payload
 
@@ -447,6 +602,7 @@ def _candidate_gate_rejection(
     min_net_edge_bps: float | None,
     min_liquidity_score: float | None,
     max_round_trip_cost_bps: float | None,
+    min_pattern_quality_score: float | None,
 ) -> str:
     if min_edge_to_cost is not None:
         value = _number(hint.get("edge_to_cost_ratio"))
@@ -464,7 +620,275 @@ def _candidate_gate_rejection(
         value = _number(hint.get("round_trip_cost_bps"))
         if value is None or value > max_round_trip_cost_bps:
             return "round_trip_cost_above_gate"
+    if min_pattern_quality_score is not None:
+        value = _number(hint.get("pattern_quality_score"))
+        if value is None or value < min_pattern_quality_score:
+            return "pattern_quality_score_below_gate"
     return ""
+
+
+def _candidate_micro_regime(
+    *,
+    context: AgentMarketContext,
+    hint: Mapping[str, object],
+    side: str,
+) -> dict[str, object]:
+    hint_regime = _mapping(hint.get("market_micro_regime"))
+    if hint_regime:
+        return hint_regime
+    return build_market_micro_regime(
+        context.features,
+        symbol=context.symbol,
+        side=side,
+    )
+
+
+def _micro_regime_rejection(
+    *,
+    micro_regime: Mapping[str, object],
+    veto_buckets: tuple[tuple[str, str], ...],
+    require_buckets: tuple[tuple[str, str], ...],
+) -> str:
+    labels = set(market_micro_regime_labels(micro_regime))
+    if require_buckets and not any(_format_bucket(*item) in labels for item in require_buckets):
+        return "micro_regime_required_bucket_not_matched"
+    for family, bucket in veto_buckets:
+        label = _format_bucket(family, bucket)
+        if label in labels:
+            return f"micro_regime_veto_{_safe_reason_label(label)}"
+    return ""
+
+
+def _micro_regime_notional_scale(
+    *,
+    micro_regime: Mapping[str, object],
+    size_scales: tuple[tuple[str, str, float], ...],
+) -> float:
+    if not size_scales:
+        return 1.0
+    labels = set(market_micro_regime_labels(micro_regime))
+    matched = [
+        scale
+        for family, bucket, scale in size_scales
+        if _format_bucket(family, bucket) in labels
+    ]
+    if not matched:
+        return 1.0
+    return min(matched)
+
+
+def _parse_technical_veto_buckets(value: Sequence[str]) -> tuple[tuple[str, str], ...]:
+    parsed: list[tuple[str, str]] = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text or "::" not in text:
+            continue
+        family, bucket = text.split("::", 1)
+        family = family.strip()
+        bucket = bucket.strip()
+        if family and bucket and (family, bucket) not in parsed:
+            parsed.append((family, bucket))
+    return tuple(parsed)
+
+
+def _parse_micro_regime_buckets(value: Sequence[str]) -> tuple[tuple[str, str], ...]:
+    parsed: list[tuple[str, str]] = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text or "::" not in text:
+            continue
+        family, bucket = text.split("::", 1)
+        family = family.strip()
+        bucket = bucket.strip()
+        if family and bucket and (family, bucket) not in parsed:
+            parsed.append((family, bucket))
+    return tuple(parsed)
+
+
+def _parse_micro_regime_size_scales(
+    value: Sequence[str],
+) -> tuple[tuple[str, str, float], ...]:
+    parsed: list[tuple[str, str, float]] = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text or "::" not in text or "=" not in text:
+            continue
+        label, scale_text = text.rsplit("=", 1)
+        family, bucket = label.split("::", 1)
+        family = family.strip()
+        bucket = bucket.strip()
+        try:
+            scale = float(scale_text.strip())
+        except ValueError:
+            continue
+        if not family or not bucket or scale <= 0.0:
+            continue
+        candidate = (family, bucket, scale)
+        if candidate not in parsed:
+            parsed.append(candidate)
+    return tuple(parsed)
+
+
+def _resolve_candidate_paper_research_profile(
+    *,
+    research_profile: str,
+    min_edge_to_cost: float | None,
+    min_net_edge_bps: float | None,
+    min_liquidity_score: float | None,
+    max_round_trip_cost_bps: float | None,
+    technical_veto_buckets: tuple[tuple[str, str], ...],
+) -> _CandidatePaperProfileSettings:
+    profile = str(research_profile or DEFAULT_CANDIDATE_PAPER_RESEARCH_PROFILE).strip().lower()
+    if profile not in CANDIDATE_PAPER_RESEARCH_PROFILES:
+        raise ValueError("unknown_candidate_paper_research_profile")
+    if profile == DEFAULT_CANDIDATE_PAPER_RESEARCH_PROFILE:
+        return _CandidatePaperProfileSettings(
+            research_profile=profile,
+            min_edge_to_cost=min_edge_to_cost,
+            min_net_edge_bps=min_net_edge_bps,
+            min_liquidity_score=min_liquidity_score,
+            max_round_trip_cost_bps=max_round_trip_cost_bps,
+            technical_veto_buckets=technical_veto_buckets,
+        )
+
+    expected_vetoes = _parse_technical_veto_buckets(
+        RESEARCH_V3_GUARDRAIL_TECHNICAL_VETO_BUCKETS
+    )
+    _assert_profile_gate(
+        profile=profile,
+        field_name="min_edge_to_cost",
+        value=min_edge_to_cost,
+        expected=RESEARCH_V3_GUARDRAIL_MIN_EDGE_TO_COST,
+    )
+    _assert_profile_gate(
+        profile=profile,
+        field_name="min_net_edge_bps",
+        value=min_net_edge_bps,
+        expected=RESEARCH_V3_GUARDRAIL_MIN_NET_EDGE_BPS,
+    )
+    _assert_profile_gate(
+        profile=profile,
+        field_name="min_liquidity_score",
+        value=min_liquidity_score,
+        expected=RESEARCH_V3_GUARDRAIL_MIN_LIQUIDITY_SCORE,
+    )
+    _assert_profile_gate(
+        profile=profile,
+        field_name="max_round_trip_cost_bps",
+        value=max_round_trip_cost_bps,
+        expected=RESEARCH_V3_GUARDRAIL_MAX_ROUND_TRIP_COST_BPS,
+    )
+    if any(item not in expected_vetoes for item in technical_veto_buckets):
+        raise ValueError("research_v3_guardrail_profile_does_not_accept_extra_vetoes")
+    return _CandidatePaperProfileSettings(
+        research_profile=profile,
+        min_edge_to_cost=RESEARCH_V3_GUARDRAIL_MIN_EDGE_TO_COST,
+        min_net_edge_bps=RESEARCH_V3_GUARDRAIL_MIN_NET_EDGE_BPS,
+        min_liquidity_score=RESEARCH_V3_GUARDRAIL_MIN_LIQUIDITY_SCORE,
+        max_round_trip_cost_bps=RESEARCH_V3_GUARDRAIL_MAX_ROUND_TRIP_COST_BPS,
+        technical_veto_buckets=expected_vetoes,
+    )
+
+
+def _assert_profile_gate(
+    *,
+    profile: str,
+    field_name: str,
+    value: float | None,
+    expected: float,
+) -> None:
+    if value is not None and abs(float(value) - expected) > 1e-9:
+        raise ValueError(f"{profile}_profile_requires_{field_name}_{expected:g}")
+
+
+def _format_technical_veto_bucket(family: str, bucket: str) -> str:
+    return f"{family}::{bucket}"
+
+
+def _format_bucket(family: str, bucket: str) -> str:
+    return f"{family}::{bucket}"
+
+
+def _format_size_scale(family: str, bucket: str, scale: float) -> str:
+    return f"{_format_bucket(family, bucket)}={scale:g}"
+
+
+def _safe_reason_label(label: str) -> str:
+    return (
+        label.replace("::", "_")
+        .replace("|", "_")
+        .replace("=", "_")
+        .replace("-", "_")
+        .replace(".", "p")
+    )
+
+
+def _technical_veto_rejection(
+    *,
+    context: AgentMarketContext,
+    side: str,
+    veto_buckets: tuple[tuple[str, str], ...],
+) -> str:
+    if not veto_buckets:
+        return ""
+    labels = set(_technical_bucket_labels(context=context, side=side))
+    for family, bucket in veto_buckets:
+        label = _format_technical_veto_bucket(family, bucket)
+        if label in labels:
+            safe_label = label.replace("::", "_").replace("=", "_").replace("-", "_")
+            return f"technical_digest_veto_{safe_label}"
+    return ""
+
+
+def _technical_bucket_labels(*, context: AgentMarketContext, side: str) -> tuple[str, ...]:
+    tech = compact_technical_digest(context.features.get(TECHNICAL_DIGEST_FEATURE_NAME))
+    if not tech:
+        return ("digest::missing",)
+    labels: list[str] = []
+    bias = _mapping(tech.get("bias"))
+    bias_side = str(bias.get("side", "mixed") or "mixed")
+    bias_quality = str(bias.get("quality", "unknown") or "unknown")
+    labels.append(f"bias_side::{bias_side}")
+    labels.append(f"bias_quality::{bias_quality}")
+    labels.append(f"candidate_vs_bias::{_candidate_vs_bias(candidate_side=side, bias_side=bias_side)}")
+    for family, state in _mapping(tech.get("families")).items():
+        labels.append(f"family::{family}={state}")
+    top_signals = _mapping_list(tech.get("top_signals"))
+    veto_signals = _mapping_list(tech.get("veto_signals"))
+    conflicts = _mapping_list(tech.get("conflicts"))
+    for signal in top_signals:
+        signal_id = str(signal.get("id", "") or "")
+        if signal_id:
+            labels.append(f"top_signal::{signal_id}")
+    for signal in veto_signals:
+        signal_id = str(signal.get("id", "") or "")
+        if signal_id:
+            labels.append(f"veto_signal::{signal_id}")
+    for signal in conflicts:
+        signal_id = str(signal.get("id", "") or "")
+        if signal_id:
+            labels.append(f"conflict::{signal_id}")
+    labels.append(f"has_veto::{str(bool(veto_signals)).lower()}")
+    labels.append(f"has_conflict::{str(bool(conflicts)).lower()}")
+    return tuple(labels)
+
+
+def _candidate_vs_bias(*, candidate_side: str, bias_side: str) -> str:
+    if bias_side in {"mixed", "neutral", "unknown", ""}:
+        return "mixed"
+    if not candidate_side:
+        return "unknown"
+    return "aligned" if candidate_side == bias_side else "conflict"
+
+
+def _mapping(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _mapping_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [dict(item) for item in value if isinstance(item, Mapping)]
 
 
 def _number(value: object) -> float | None:
@@ -534,11 +958,17 @@ def _render_markdown_report(payload: Mapping[str, object]) -> str:
         f"- Skipped candidates: `{result['skipped_candidates']}`",
         f"- Effective notional: `${result['effective_notional_usd']:.6f}`",
         f"- Stop / TP / time stop: `{result['stop_bps']}` bps / `{result['take_profit_bps']}` bps / `{result['time_stop_minutes']}` min",
+        f"- Research profile: `{result.get('research_profile', DEFAULT_CANDIDATE_PAPER_RESEARCH_PROFILE)}`",
         "- Candidate gates: "
         f"edge/cost `>={result.get('min_edge_to_cost')}`, "
         f"net edge `>={result.get('min_net_edge_bps')}` bps, "
         f"liquidity `>={result.get('min_liquidity_score')}`, "
-        f"round-trip cost `<={result.get('max_round_trip_cost_bps')}` bps",
+        f"round-trip cost `<={result.get('max_round_trip_cost_bps')}` bps, "
+        f"pattern quality `>={result.get('min_pattern_quality_score')}`",
+        f"- Technical veto buckets: `{result.get('technical_veto_buckets', [])}`",
+        f"- Micro-regime veto buckets: `{result.get('micro_regime_veto_buckets', [])}`",
+        f"- Micro-regime required buckets: `{result.get('micro_regime_require_buckets', [])}`",
+        f"- Micro-regime size scales: `{result.get('micro_regime_size_scales', [])}`",
         "",
         "## Paper Result",
         "",

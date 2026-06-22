@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
 
 
 TRIDENT_AI_INITIAL_SYMBOLS: tuple[str, ...] = ("BTC", "ETH", "SOL", "HYPE")
@@ -16,6 +15,8 @@ _ALLOWED_SIDES = {"long", "short"}
 _OPEN_LIKE_ACTIONS = {"open"}
 _EXECUTION_ACTIONS = {"open", "close", "reduce"}
 
+FeatureValue = float | int | str | bool | None | dict[str, object] | list[object]
+
 
 @dataclass(slots=True)
 class AgentMarketContext:
@@ -25,7 +26,7 @@ class AgentMarketContext:
     symbol: str
     price: float
     regime: str
-    features: dict[str, float | str | bool | None] = field(default_factory=dict)
+    features: dict[str, FeatureValue] = field(default_factory=dict)
     source: str = ""
 
     @classmethod
@@ -472,19 +473,34 @@ def _optional_object_list(value: object, *, field_name: str) -> list[dict[str, o
     return result
 
 
-def _optional_feature_mapping(value: object) -> dict[str, float | str | bool | None]:
+def _optional_feature_mapping(value: object) -> dict[str, FeatureValue]:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
         raise _SchemaError("invalid_field:features")
-    result: dict[str, float | str | bool | None] = {}
+    result: dict[str, FeatureValue] = {}
     for key, item in value.items():
         if not isinstance(key, str) or not key.strip():
             raise _SchemaError("invalid_field:features")
-        if item is not None and not isinstance(item, (int, float, str, bool)):
-            raise _SchemaError("invalid_field:features")
-        result[key.strip()] = item
+        result[key.strip()] = _feature_json_value(item)
     return result
+
+
+def _feature_json_value(value: object) -> FeatureValue:
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, Mapping):
+        result: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key.strip():
+                raise _SchemaError("invalid_field:features")
+            result[key.strip()] = _feature_json_value(item)
+        return result
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_feature_json_value(item) for item in value]
+    raise _SchemaError("invalid_field:features")
 
 
 def _normalize_symbol(symbol: str) -> str:

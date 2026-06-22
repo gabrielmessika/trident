@@ -459,6 +459,7 @@ class TridentAIPaperReplayRunner:
         max_decisions: int | None = None,
         market_input_path: str | Path | None = None,
         symbols: Sequence[str] | None = None,
+        market_event_cache: Sequence[_PaperReplayEvent] | None = None,
     ) -> TridentAIPaperReplayResult:
         if max_decisions is not None and max_decisions <= 0:
             raise ValueError("max_decisions_must_be_positive")
@@ -483,6 +484,7 @@ class TridentAIPaperReplayRunner:
             max_decisions=max_decisions,
             market_input_path=market_input_path,
             symbols_filter=symbols_filter,
+            market_event_cache=market_event_cache,
         )
         for event in events:
             if event.kind == "decision" and event.decision_record is not None:
@@ -559,6 +561,22 @@ class TridentAIPaperReplayRunner:
         _write_report_outputs(payload, json_path=report_json_output, md_path=report_md_output)
         return result
 
+    def build_market_event_cache(
+        self,
+        market_input_path: str | Path,
+        *,
+        min_timestamp: datetime,
+        symbols: Sequence[str] | None = None,
+    ) -> tuple[_PaperReplayEvent, ...]:
+        return tuple(
+            self._market_events_from_snapshots(
+                market_input_path,
+                min_timestamp=min_timestamp,
+                start_sequence=0,
+                symbols_filter=_symbols_filter(symbols),
+            )
+        )
+
     def _build_replay_events(
         self,
         *,
@@ -566,6 +584,7 @@ class TridentAIPaperReplayRunner:
         max_decisions: int | None,
         market_input_path: str | Path | None,
         symbols_filter: tuple[str, ...],
+        market_event_cache: Sequence[_PaperReplayEvent] | None,
     ) -> list[_PaperReplayEvent]:
         decision_events = _decision_events_from_journal(
             input_path,
@@ -575,11 +594,17 @@ class TridentAIPaperReplayRunner:
         if market_input_path is None or not decision_events:
             return sorted(decision_events, key=_paper_event_sort_key)
         first_decision_at = min(event.timestamp for event in decision_events)
-        market_events = self._market_events_from_snapshots(
-            market_input_path,
-            min_timestamp=first_decision_at,
-            start_sequence=len(decision_events),
-        )
+        if market_event_cache is not None:
+            market_events = [
+                event for event in market_event_cache if event.timestamp >= first_decision_at
+            ]
+        else:
+            market_events = self._market_events_from_snapshots(
+                market_input_path,
+                min_timestamp=first_decision_at,
+                start_sequence=len(decision_events),
+                symbols_filter=(),
+            )
         return sorted([*decision_events, *market_events], key=_paper_event_sort_key)
 
     def _market_events_from_snapshots(
@@ -588,16 +613,25 @@ class TridentAIPaperReplayRunner:
         *,
         min_timestamp: datetime,
         start_sequence: int,
+        symbols_filter: tuple[str, ...],
     ) -> list[_PaperReplayEvent]:
         events: list[_PaperReplayEvent] = []
         sequence = start_sequence
+        allowed = set(symbols_filter)
         for record in self.loader.iter_merged_jsonl(input_path):
             timestamp = _parse_timestamp(record.timestamp or "")
             if timestamp is None or timestamp < min_timestamp:
                 continue
             regime = _record_regime(record)
+            symbols_payload = record.symbols
+            if allowed:
+                symbols_payload = [
+                    payload
+                    for payload in record.symbols
+                    if str(payload.get("symbol", "") or "").strip().upper() in allowed
+                ]
             for build_result in self.feature_builder.build_contexts_from_mappings(
-                record.symbols,
+                symbols_payload,
                 as_of=_format_timestamp(timestamp),
                 regime=regime,
                 now=timestamp,
@@ -913,6 +947,7 @@ def run_trident_ai_paper_replay(
     max_decisions: int | None = None,
     market_input_path: str | Path | None = None,
     symbols: Sequence[str] | None = None,
+    market_event_cache: Sequence[_PaperReplayEvent] | None = None,
 ) -> TridentAIPaperReplayResult:
     return TridentAIPaperReplayRunner(config=config).run(
         input_path,
@@ -922,6 +957,7 @@ def run_trident_ai_paper_replay(
         max_decisions=max_decisions,
         market_input_path=market_input_path,
         symbols=symbols,
+        market_event_cache=market_event_cache,
     )
 
 

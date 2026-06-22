@@ -16,7 +16,9 @@ from app.trident_ai.candidate_scan import (
     run_trident_ai_candidate_scan,
 )
 from app.trident_ai.candidate_paper import (
+    CANDIDATE_PAPER_RESEARCH_PROFILES,
     DEFAULT_CANDIDATE_PAPER_CONFIDENCE,
+    DEFAULT_CANDIDATE_PAPER_RESEARCH_PROFILE,
     DEFAULT_CANDIDATE_PAPER_STOP_BPS,
     DEFAULT_CANDIDATE_PAPER_TAKE_PROFIT_BPS,
     DEFAULT_CANDIDATE_PAPER_TIME_STOP_MINUTES,
@@ -25,11 +27,14 @@ from app.trident_ai.candidate_paper import (
 from app.trident_ai.candidate_gate_sweep import (
     DEFAULT_GATE_SWEEP_CATASTROPHIC_FOLD_PENALTY_BPS,
     DEFAULT_GATE_SWEEP_MAX_CATASTROPHIC_NET_BPS,
+    DEFAULT_GATE_SWEEP_MAX_DOMINANT_SYMBOL_RATIO,
     DEFAULT_GATE_SWEEP_MAX_NEGATIVE_FOLDS,
     DEFAULT_GATE_SWEEP_MAX_ROUND_TRIP_COST_BPS_VALUES,
     DEFAULT_GATE_SWEEP_MIN_EDGE_TO_COST_VALUES,
     DEFAULT_GATE_SWEEP_MIN_LIQUIDITY_SCORE_VALUES,
     DEFAULT_GATE_SWEEP_MIN_NET_EDGE_BPS_VALUES,
+    DEFAULT_GATE_SWEEP_MIN_PATTERN_QUALITY_SCORE_VALUES,
+    DEFAULT_GATE_SWEEP_MICRO_REGIME_PROFILE_VALUES,
     DEFAULT_GATE_SWEEP_MIN_SYMBOLS,
     DEFAULT_GATE_SWEEP_MIN_TOTAL_CLOSED_TRADES,
     DEFAULT_GATE_SWEEP_NEGATIVE_FOLD_PENALTY_BPS,
@@ -75,6 +80,11 @@ from app.trident_ai.failure_pattern import (
     run_trident_ai_failure_pattern_audit,
 )
 from app.trident_ai.intel import run_trident_ai_intel_digest
+from app.trident_ai.market_regime_audit import (
+    DEFAULT_MARKET_REGIME_MAX_DOMINANT_SYMBOL_RATIO,
+    DEFAULT_MARKET_REGIME_MIN_TRADES,
+    run_trident_ai_market_regime_audit,
+)
 from app.trident_ai.outcome_audit import (
     DEFAULT_OUTCOME_HORIZONS_MINUTES,
     run_trident_ai_candidate_outcome_audit,
@@ -96,6 +106,15 @@ from app.trident_ai.pattern_support import (
 from app.trident_ai.paper import run_trident_ai_paper_replay
 from app.trident_ai.replay import run_trident_ai_llm_replay
 from app.trident_ai.shadow_runner import run_trident_ai_shadow
+from app.trident_ai.technical_digest_audit import (
+    DEFAULT_TECHNICAL_DIGEST_MAX_NEGATIVE_FOLDS,
+    DEFAULT_TECHNICAL_DIGEST_MIN_BUCKET_SAMPLES,
+    DEFAULT_TECHNICAL_DIGEST_MIN_DELTA_BPS,
+    DEFAULT_TECHNICAL_DIGEST_MIN_POSITIVE_FOLDS,
+    run_trident_ai_technical_digest_audit,
+    run_trident_ai_technical_digest_fold_validation,
+    run_trident_ai_technical_digest_veto_audit,
+)
 
 
 DEFAULT_REPLAY_INPUT = "server-data/replay_inputs/full_bot_latest_fetch.jsonl"
@@ -152,6 +171,16 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.add_argument("--selected-input-path", default=None)
     candidates.add_argument("--report-json-path", default=None)
     candidates.add_argument("--report-md-path", default=None)
+    candidates.add_argument(
+        "--start-timestamp",
+        default=None,
+        help="Inclusive ISO-8601 scan window start, e.g. 2026-05-24T00:00:00Z.",
+    )
+    candidates.add_argument(
+        "--end-timestamp",
+        default=None,
+        help="Exclusive ISO-8601 scan window end, e.g. 2026-05-28T00:00:00Z.",
+    )
     candidates.add_argument("--top-n", type=int, default=40)
     candidates.add_argument("--min-score", type=float, default=1.25)
     candidates.add_argument(
@@ -439,6 +468,124 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated positive integer horizons. Default: 15,30,60,180",
     )
 
+    technical_digest_audit = subparsers.add_parser(
+        "technical-digest-audit",
+        help="Audit TRIDENT-AI technical digest buckets against fixed-horizon outcomes",
+    )
+    _add_config_env_args(technical_digest_audit)
+    technical_digest_audit.add_argument("--candidate-input", required=True)
+    technical_digest_audit.add_argument("--market-input", required=True)
+    technical_digest_audit.add_argument("--report-json-path", default=None)
+    technical_digest_audit.add_argument("--report-md-path", default=None)
+    technical_digest_audit.add_argument(
+        "--horizons-minutes",
+        default=",".join(str(value) for value in DEFAULT_OUTCOME_HORIZONS_MINUTES),
+        help="Comma-separated positive integer horizons. Default: 15,30,60,180",
+    )
+    technical_digest_audit.add_argument(
+        "--min-bucket-samples",
+        type=int,
+        default=DEFAULT_TECHNICAL_DIGEST_MIN_BUCKET_SAMPLES,
+    )
+    technical_digest_audit.add_argument(
+        "--min-delta-bps",
+        type=float,
+        default=DEFAULT_TECHNICAL_DIGEST_MIN_DELTA_BPS,
+    )
+
+    technical_digest_folds = subparsers.add_parser(
+        "technical-digest-fold-validation",
+        help="Validate TRIDENT-AI technical digest buckets across independent folds",
+    )
+    _add_config_env_args(technical_digest_folds)
+    technical_digest_folds.add_argument(
+        "--candidate-input",
+        action="append",
+        required=True,
+        help="Candidate-selected snapshot JSONL. Repeat once per market input.",
+    )
+    technical_digest_folds.add_argument(
+        "--market-input",
+        action="append",
+        required=True,
+        help="Market snapshot JSONL matching candidate input. Repeat in the same order.",
+    )
+    technical_digest_folds.add_argument(
+        "--fold-label",
+        action="append",
+        default=None,
+        help="Optional fold label. Repeat once per input pair.",
+    )
+    technical_digest_folds.add_argument("--report-json-path", default=None)
+    technical_digest_folds.add_argument("--report-md-path", default=None)
+    technical_digest_folds.add_argument(
+        "--horizons-minutes",
+        default=",".join(str(value) for value in DEFAULT_OUTCOME_HORIZONS_MINUTES),
+        help="Comma-separated positive integer horizons. Default: 15,30,60,180",
+    )
+    technical_digest_folds.add_argument(
+        "--min-bucket-samples",
+        type=int,
+        default=DEFAULT_TECHNICAL_DIGEST_MIN_BUCKET_SAMPLES,
+    )
+    technical_digest_folds.add_argument(
+        "--min-delta-bps",
+        type=float,
+        default=DEFAULT_TECHNICAL_DIGEST_MIN_DELTA_BPS,
+    )
+    technical_digest_folds.add_argument(
+        "--min-positive-folds",
+        type=int,
+        default=DEFAULT_TECHNICAL_DIGEST_MIN_POSITIVE_FOLDS,
+    )
+    technical_digest_folds.add_argument(
+        "--max-negative-folds",
+        type=int,
+        default=DEFAULT_TECHNICAL_DIGEST_MAX_NEGATIVE_FOLDS,
+    )
+
+    technical_digest_veto = subparsers.add_parser(
+        "technical-digest-veto-audit",
+        help="Compare candidate outcomes before/after applying technical digest veto buckets",
+    )
+    _add_config_env_args(technical_digest_veto)
+    technical_digest_veto.add_argument(
+        "--candidate-input",
+        action="append",
+        required=True,
+        help="Candidate-selected snapshot JSONL. Repeat once per market input.",
+    )
+    technical_digest_veto.add_argument(
+        "--market-input",
+        action="append",
+        required=True,
+        help="Market snapshot JSONL matching candidate input. Repeat in the same order.",
+    )
+    technical_digest_veto.add_argument(
+        "--fold-label",
+        action="append",
+        default=None,
+        help="Optional fold label. Repeat once per input pair.",
+    )
+    technical_digest_veto.add_argument(
+        "--veto-bucket",
+        action="append",
+        required=True,
+        help="Technical digest bucket to veto, formatted as family::bucket.",
+    )
+    technical_digest_veto.add_argument("--report-json-path", default=None)
+    technical_digest_veto.add_argument("--report-md-path", default=None)
+    technical_digest_veto.add_argument(
+        "--horizons-minutes",
+        default=",".join(str(value) for value in DEFAULT_OUTCOME_HORIZONS_MINUTES),
+        help="Comma-separated positive integer horizons. Default: 15,30,60,180",
+    )
+    technical_digest_veto.add_argument(
+        "--min-delta-bps",
+        type=float,
+        default=DEFAULT_TECHNICAL_DIGEST_MIN_DELTA_BPS,
+    )
+
     exit_audit = subparsers.add_parser(
         "exit-follow-through-audit",
         help="Audit paper trade path quality: MFE/MAE, early adverse moves and follow-through",
@@ -613,6 +760,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_FAILURE_PATTERN_MAX_DOMINANT_LOSS_SYMBOL_RATIO,
     )
 
+    regime_audit = subparsers.add_parser(
+        "candidate-regime-audit",
+        help="Audit candidate-paper PnL by local market micro-regime buckets",
+    )
+    _add_config_env_args(regime_audit)
+    regime_audit.add_argument("--gate-sweep-report", required=True)
+    regime_audit.add_argument(
+        "--profile-id",
+        default=None,
+        help="Gate-sweep profile id to audit. Defaults to the report best profile.",
+    )
+    regime_audit.add_argument("--report-json-path", default=None)
+    regime_audit.add_argument("--report-md-path", default=None)
+    regime_audit.add_argument(
+        "--min-trades",
+        type=int,
+        default=DEFAULT_MARKET_REGIME_MIN_TRADES,
+    )
+    regime_audit.add_argument(
+        "--max-dominant-symbol-ratio",
+        type=float,
+        default=DEFAULT_MARKET_REGIME_MAX_DOMINANT_SYMBOL_RATIO,
+    )
+
     entry_veto = subparsers.add_parser(
         "entry-veto-replay",
         help="Replay paper execution after vetoing entry-time decision buckets",
@@ -753,6 +924,37 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_paper.add_argument("--min-net-edge-bps", type=float, default=None)
     candidate_paper.add_argument("--min-liquidity-score", type=float, default=None)
     candidate_paper.add_argument("--max-round-trip-cost-bps", type=float, default=None)
+    candidate_paper.add_argument("--min-pattern-quality-score", type=float, default=None)
+    candidate_paper.add_argument(
+        "--research-profile",
+        choices=CANDIDATE_PAPER_RESEARCH_PROFILES,
+        default=DEFAULT_CANDIDATE_PAPER_RESEARCH_PROFILE,
+        help="Named local research profile. research_v3_guardrail freezes the current guardrail-aware gates.",
+    )
+    candidate_paper.add_argument(
+        "--technical-veto-bucket",
+        action="append",
+        default=None,
+        help="Optional technical digest veto bucket formatted as family::bucket. Repeat to combine vetoes.",
+    )
+    candidate_paper.add_argument(
+        "--micro-regime-veto-bucket",
+        action="append",
+        default=None,
+        help="Optional micro-regime veto bucket formatted as family::bucket. Repeat to combine vetoes.",
+    )
+    candidate_paper.add_argument(
+        "--micro-regime-require-bucket",
+        action="append",
+        default=None,
+        help="Optional micro-regime allowlist bucket formatted as family::bucket. Repeat for OR semantics.",
+    )
+    candidate_paper.add_argument(
+        "--micro-regime-size-scale",
+        action="append",
+        default=None,
+        help="Optional micro-regime notional scale formatted as family::bucket=scale. Repeat to combine.",
+    )
 
     gate_sweep = subparsers.add_parser(
         "candidate-gate-sweep",
@@ -828,6 +1030,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-round-trip-cost-bps-values",
         default=",".join(str(value) for value in DEFAULT_GATE_SWEEP_MAX_ROUND_TRIP_COST_BPS_VALUES),
     )
+    gate_sweep.add_argument(
+        "--min-pattern-quality-score-values",
+        default=",".join(
+            "none" if value is None else str(value)
+            for value in DEFAULT_GATE_SWEEP_MIN_PATTERN_QUALITY_SCORE_VALUES
+        ),
+        help="Comma-separated pattern quality gates. Use none to disable this gate.",
+    )
+    gate_sweep.add_argument(
+        "--micro-regime-profile-values",
+        default=",".join(DEFAULT_GATE_SWEEP_MICRO_REGIME_PROFILE_VALUES),
+        help="Comma-separated micro-regime profile names. Default: none.",
+    )
+    gate_sweep.add_argument(
+        "--cache-market-events",
+        action="store_true",
+        help="Prebuild market events once per fold and reuse them across candidate gate profiles.",
+    )
     gate_sweep.add_argument("--max-profiles", type=int, default=None)
     gate_sweep.add_argument(
         "--min-total-closed-trades",
@@ -846,6 +1066,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_GATE_SWEEP_MAX_CATASTROPHIC_NET_BPS,
     )
     gate_sweep.add_argument(
+        "--max-dominant-symbol-ratio",
+        type=float,
+        default=DEFAULT_GATE_SWEEP_MAX_DOMINANT_SYMBOL_RATIO,
+        help="Reject profiles where one symbol contributes more than this share of closed trades.",
+    )
+    gate_sweep.add_argument(
         "--oos-no-trade-penalty-bps",
         type=float,
         default=DEFAULT_GATE_SWEEP_OOS_NO_TRADE_PENALTY_BPS,
@@ -859,6 +1085,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--catastrophic-fold-penalty-bps",
         type=float,
         default=DEFAULT_GATE_SWEEP_CATASTROPHIC_FOLD_PENALTY_BPS,
+    )
+    gate_sweep.add_argument(
+        "--technical-veto-bucket",
+        action="append",
+        default=None,
+        help="Optional technical digest veto bucket formatted as family::bucket. Repeat to combine vetoes.",
+    )
+    gate_sweep.add_argument(
+        "--allow-guardrail-loss-avoidance",
+        action="store_true",
+        help="Allow a no-trade guardrail fold only when the same profile without technical veto trades and loses.",
+    )
+    gate_sweep.add_argument(
+        "--guardrail-fold-label",
+        action="append",
+        default=None,
+        help="Fold label eligible for guardrail loss-avoidance accounting. Repeat for multiple folds.",
     )
 
     intel = subparsers.add_parser(
@@ -943,6 +1186,8 @@ def main(argv: list[str] | None = None) -> int:
             selected_input_path=args.selected_input_path,
             max_records=args.max_records,
             max_contexts=args.max_contexts,
+            start_timestamp=args.start_timestamp,
+            end_timestamp=args.end_timestamp,
             top_n=args.top_n,
             min_score=args.min_score,
             min_edge_to_cost=args.min_edge_to_cost,
@@ -1047,6 +1292,43 @@ def main(argv: list[str] | None = None) -> int:
             report_md_path=args.report_md_path,
             horizons_minutes=_parse_int_tuple(args.horizons_minutes),
         )
+    elif args.command == "technical-digest-audit":
+        result = run_trident_ai_technical_digest_audit(
+            candidate_input_path=args.candidate_input,
+            market_input_path=args.market_input,
+            config=config,
+            report_json_path=args.report_json_path,
+            report_md_path=args.report_md_path,
+            horizons_minutes=_parse_int_tuple(args.horizons_minutes),
+            min_bucket_samples=args.min_bucket_samples,
+            min_delta_bps=args.min_delta_bps,
+        )
+    elif args.command == "technical-digest-fold-validation":
+        result = run_trident_ai_technical_digest_fold_validation(
+            candidate_input_paths=tuple(args.candidate_input),
+            market_input_paths=tuple(args.market_input),
+            fold_labels=tuple(args.fold_label) if args.fold_label else None,
+            config=config,
+            report_json_path=args.report_json_path,
+            report_md_path=args.report_md_path,
+            horizons_minutes=_parse_int_tuple(args.horizons_minutes),
+            min_bucket_samples=args.min_bucket_samples,
+            min_delta_bps=args.min_delta_bps,
+            min_positive_folds=args.min_positive_folds,
+            max_negative_folds=args.max_negative_folds,
+        )
+    elif args.command == "technical-digest-veto-audit":
+        result = run_trident_ai_technical_digest_veto_audit(
+            candidate_input_paths=tuple(args.candidate_input),
+            market_input_paths=tuple(args.market_input),
+            veto_buckets=tuple(args.veto_bucket),
+            fold_labels=tuple(args.fold_label) if args.fold_label else None,
+            config=config,
+            report_json_path=args.report_json_path,
+            report_md_path=args.report_md_path,
+            horizons_minutes=_parse_int_tuple(args.horizons_minutes),
+            min_delta_bps=args.min_delta_bps,
+        )
     elif args.command == "exit-follow-through-audit":
         result = run_trident_ai_exit_follow_through_audit(
             paper_journal_paths=tuple(args.paper_journal),
@@ -1097,6 +1379,16 @@ def main(argv: list[str] | None = None) -> int:
             min_loss_symbols=args.min_loss_symbols,
             max_win_rate=args.max_win_rate,
             max_dominant_loss_symbol_ratio=args.max_dominant_loss_symbol_ratio,
+        )
+    elif args.command == "candidate-regime-audit":
+        result = run_trident_ai_market_regime_audit(
+            gate_sweep_report_path=args.gate_sweep_report,
+            profile_id=args.profile_id,
+            config=config,
+            report_json_path=args.report_json_path,
+            report_md_path=args.report_md_path,
+            min_trades=args.min_trades,
+            max_dominant_symbol_ratio=args.max_dominant_symbol_ratio,
         )
     elif args.command == "entry-veto-replay":
         symbols = tuple(args.symbols.split(",")) if args.symbols else DEFAULT_SMOKE_SYMBOLS
@@ -1157,14 +1449,27 @@ def main(argv: list[str] | None = None) -> int:
             min_net_edge_bps_values=_parse_float_tuple(args.min_net_edge_bps_values),
             min_liquidity_score_values=_parse_float_tuple(args.min_liquidity_score_values),
             max_round_trip_cost_bps_values=_parse_float_tuple(args.max_round_trip_cost_bps_values),
+            min_pattern_quality_score_values=_parse_optional_float_tuple(
+                args.min_pattern_quality_score_values
+            ),
+            micro_regime_profile_values=_parse_str_tuple(args.micro_regime_profile_values),
+            cache_market_events=args.cache_market_events,
             max_profiles=args.max_profiles,
             min_total_closed_trades=args.min_total_closed_trades,
             min_symbols=args.min_symbols,
             max_negative_folds=args.max_negative_folds,
             max_catastrophic_net_bps=args.max_catastrophic_net_bps,
+            max_dominant_symbol_ratio=args.max_dominant_symbol_ratio,
             oos_no_trade_penalty_bps=args.oos_no_trade_penalty_bps,
             negative_fold_penalty_bps=args.negative_fold_penalty_bps,
             catastrophic_fold_penalty_bps=args.catastrophic_fold_penalty_bps,
+            technical_veto_buckets=tuple(args.technical_veto_bucket)
+            if args.technical_veto_bucket
+            else None,
+            allow_guardrail_loss_avoidance=args.allow_guardrail_loss_avoidance,
+            guardrail_fold_labels=tuple(args.guardrail_fold_label)
+            if args.guardrail_fold_label
+            else None,
         )
     elif args.command == "candidate-paper-replay":
         symbols = tuple(args.symbols.split(",")) if args.symbols else DEFAULT_SMOKE_SYMBOLS
@@ -1187,6 +1492,20 @@ def main(argv: list[str] | None = None) -> int:
             min_net_edge_bps=args.min_net_edge_bps,
             min_liquidity_score=args.min_liquidity_score,
             max_round_trip_cost_bps=args.max_round_trip_cost_bps,
+            min_pattern_quality_score=args.min_pattern_quality_score,
+            technical_veto_buckets=tuple(args.technical_veto_bucket)
+            if args.technical_veto_bucket
+            else None,
+            micro_regime_veto_buckets=tuple(args.micro_regime_veto_bucket)
+            if args.micro_regime_veto_bucket
+            else None,
+            micro_regime_require_buckets=tuple(args.micro_regime_require_bucket)
+            if args.micro_regime_require_bucket
+            else None,
+            micro_regime_size_scales=tuple(args.micro_regime_size_scale)
+            if args.micro_regime_size_scale
+            else None,
+            research_profile=args.research_profile,
         )
     else:
         symbols = tuple(args.symbols.split(",")) if args.symbols else DEFAULT_SMOKE_SYMBOLS
@@ -1278,6 +1597,25 @@ def _parse_float_tuple(value: str) -> tuple[float, ...]:
         if not text:
             continue
         parsed.append(float(text))
+    return tuple(parsed)
+
+
+def _parse_str_tuple(value: str) -> tuple[str, ...]:
+    parsed: list[str] = []
+    for item in value.split(","):
+        text = item.strip()
+        if text:
+            parsed.append(text)
+    return tuple(parsed)
+
+
+def _parse_optional_float_tuple(value: str) -> tuple[float | None, ...]:
+    parsed: list[float | None] = []
+    for item in value.split(","):
+        text = item.strip().lower()
+        if not text:
+            continue
+        parsed.append(None if text == "none" else float(text))
     return tuple(parsed)
 
 

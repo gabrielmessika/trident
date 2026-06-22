@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.trident_ai import (
+    AgentMarketContext,
     AgentProposalValidationConfig,
     TRIDENT_AI_INITIAL_SYMBOLS,
     validate_agent_proposal,
@@ -200,6 +201,44 @@ class TridentAITypesTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.reason, "invalid_symbol")
+
+    def test_market_context_accepts_json_feature_digest(self) -> None:
+        context = AgentMarketContext.from_mapping(
+            {
+                "schema_version": "trident_ai_market_context_v1",
+                "context_id": "market_BTC_20260607T120000Z",
+                "as_of": "2026-06-07T12:00:00Z",
+                "symbol": "btc",
+                "price": 60000.0,
+                "regime": "TrendExpansion",
+                "features": {
+                    "ema_alignment": "bullish",
+                    "technical_digest": {
+                        "coverage": {"used_count": 50, "missing_count": 0},
+                        "top_signals": [{"id": "ma_stack_bullish", "strength": 0.7}],
+                    },
+                },
+                "source": "unit_test",
+            }
+        )
+
+        self.assertEqual(context.symbol, "BTC")
+        self.assertEqual(context.features["technical_digest"]["coverage"]["used_count"], 50)
+
+    def test_market_context_rejects_non_json_feature_value(self) -> None:
+        with self.assertRaises(ValueError):
+            AgentMarketContext.from_mapping(
+                {
+                    "schema_version": "trident_ai_market_context_v1",
+                    "context_id": "market_BTC_20260607T120000Z",
+                    "as_of": "2026-06-07T12:00:00Z",
+                    "symbol": "BTC",
+                    "price": 60000.0,
+                    "regime": "TrendExpansion",
+                    "features": {"technical_digest": object()},
+                    "source": "unit_test",
+                }
+            )
 
 
 if __name__ == "__main__":

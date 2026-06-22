@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.trident_ai import (
     CANDIDATE_PAPER_DECISION_SOURCE,
+    CANDIDATE_PAPER_RESEARCH_PROFILE_RESEARCH_V3_GUARDRAIL,
     LLM_REPLAY_DECISION_EVENT,
     load_trident_ai_config,
     run_trident_ai_candidate_paper_replay,
@@ -137,8 +138,311 @@ class TridentAICandidatePaperReplayTests(unittest.TestCase):
             self.assertEqual(report["result"]["min_liquidity_score"], 1.2)
             self.assertEqual(report["result"]["max_round_trip_cost_bps"], 12.0)
 
+    def test_candidate_paper_replay_applies_technical_digest_veto_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            candidate_input_path = directory / "candidates.jsonl"
+            market_input_path = directory / "market.jsonl"
+            decision_journal_path = directory / "candidate_decisions.jsonl"
+            paper_journal_path = directory / "paper.jsonl"
+            report_json_path = directory / "candidate_paper.json"
+            report_md_path = directory / "candidate_paper.md"
 
-def _candidate_record(*, price: float) -> dict[str, object]:
+            _write_jsonl(candidate_input_path, [_candidate_record(price=100.0)])
+            _write_jsonl(
+                market_input_path,
+                [
+                    _market_record(
+                        timestamp="2026-06-07T15:00:00Z",
+                        price=101.0,
+                    )
+                ],
+            )
+
+            result = run_trident_ai_candidate_paper_replay(
+                candidate_input_path,
+                market_input_path=market_input_path,
+                config=load_trident_ai_config("config/trident_ai.toml"),
+                decision_journal_path=decision_journal_path,
+                journal_path=paper_journal_path,
+                report_json_path=report_json_path,
+                report_md_path=report_md_path,
+                stop_bps=120.0,
+                take_profit_bps=500.0,
+                time_stop_minutes=180,
+                technical_veto_buckets=("family::volume_flow=long",),
+            )
+
+            self.assertEqual(result.candidates_seen, 1)
+            self.assertEqual(result.decisions_written, 0)
+            self.assertEqual(result.skipped_candidates, 1)
+            self.assertEqual(
+                result.skip_reasons["technical_digest_veto_family_volume_flow_long"],
+                1,
+            )
+            self.assertEqual(result.paper_result.positions_opened, 0)
+
+            report = json.loads(report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["result"]["technical_veto_buckets"], ["family::volume_flow=long"])
+
+    def test_candidate_paper_replay_applies_micro_regime_veto_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            candidate_input_path = directory / "candidates.jsonl"
+            market_input_path = directory / "market.jsonl"
+            decision_journal_path = directory / "candidate_decisions.jsonl"
+            paper_journal_path = directory / "paper.jsonl"
+            report_json_path = directory / "candidate_paper.json"
+            report_md_path = directory / "candidate_paper.md"
+
+            _write_jsonl(
+                candidate_input_path,
+                [
+                    _candidate_record(
+                        price=100.0,
+                        bucket_range_bps=58.0,
+                        realized_vol_short_bps=24.0,
+                    )
+                ],
+            )
+            _write_jsonl(
+                market_input_path,
+                [
+                    _market_record(
+                        timestamp="2026-06-07T15:00:00Z",
+                        price=101.0,
+                    )
+                ],
+            )
+
+            result = run_trident_ai_candidate_paper_replay(
+                candidate_input_path,
+                market_input_path=market_input_path,
+                config=load_trident_ai_config("config/trident_ai.toml"),
+                decision_journal_path=decision_journal_path,
+                journal_path=paper_journal_path,
+                report_json_path=report_json_path,
+                report_md_path=report_md_path,
+                stop_bps=120.0,
+                take_profit_bps=500.0,
+                time_stop_minutes=180,
+                micro_regime_veto_buckets=("range_vol_regime::range_mid|vol_high",),
+            )
+
+            self.assertEqual(result.candidates_seen, 1)
+            self.assertEqual(result.decisions_written, 0)
+            self.assertEqual(result.skipped_candidates, 1)
+            self.assertEqual(
+                result.skip_reasons[
+                    "micro_regime_veto_range_vol_regime_range_mid_vol_high"
+                ],
+                1,
+            )
+            self.assertEqual(
+                result.micro_regime_veto_buckets,
+                ("range_vol_regime::range_mid|vol_high",),
+            )
+
+    def test_candidate_paper_replay_applies_micro_regime_require_and_size_scale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            candidate_input_path = directory / "candidates.jsonl"
+            market_input_path = directory / "market.jsonl"
+            decision_journal_path = directory / "candidate_decisions.jsonl"
+            paper_journal_path = directory / "paper.jsonl"
+            report_json_path = directory / "candidate_paper.json"
+            report_md_path = directory / "candidate_paper.md"
+
+            _write_jsonl(
+                candidate_input_path,
+                [
+                    _candidate_record(
+                        price=100.0,
+                        bucket_range_bps=58.0,
+                        realized_vol_short_bps=18.0,
+                        microprice_dislocation_bps=1.0,
+                    )
+                ],
+            )
+            _write_jsonl(
+                market_input_path,
+                [
+                    _market_record(
+                        timestamp="2026-06-07T15:00:00Z",
+                        price=101.0,
+                    )
+                ],
+            )
+
+            result = run_trident_ai_candidate_paper_replay(
+                candidate_input_path,
+                market_input_path=market_input_path,
+                config=load_trident_ai_config("config/trident_ai.toml"),
+                decision_journal_path=decision_journal_path,
+                journal_path=paper_journal_path,
+                report_json_path=report_json_path,
+                report_md_path=report_md_path,
+                stop_bps=120.0,
+                take_profit_bps=500.0,
+                time_stop_minutes=180,
+                micro_regime_require_buckets=("range_vol_regime::range_mid|vol_controlled",),
+                micro_regime_size_scales=("microprice_bucket::micro_aligned=0.5",),
+            )
+
+            self.assertEqual(result.decisions_written, 1)
+            self.assertEqual(result.micro_regime_require_buckets, ("range_vol_regime::range_mid|vol_controlled",))
+            self.assertEqual(result.micro_regime_size_scales, ("microprice_bucket::micro_aligned=0.5",))
+            decisions = _read_jsonl(decision_journal_path)
+            proposal = decisions[0]["proposal"]
+            self.assertEqual(proposal["max_notional_usd"], 12.5)
+            hint = decisions[0]["context"][CANDIDATE_HINT_FIELD]
+            self.assertEqual(hint["range_vol_regime"], "range_mid|vol_controlled")
+            self.assertEqual(hint["micro_regime_notional_scale"], 0.5)
+            self.assertEqual(result.paper_result.positions_opened, 1)
+
+    def test_candidate_paper_replay_applies_pattern_quality_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            candidate_input_path = directory / "candidates.jsonl"
+            market_input_path = directory / "market.jsonl"
+            decision_journal_path = directory / "candidate_decisions.jsonl"
+            paper_journal_path = directory / "paper.jsonl"
+            report_json_path = directory / "candidate_paper.json"
+            report_md_path = directory / "candidate_paper.md"
+
+            passing = _candidate_record(price=100.0)
+            passing["symbols"][0][CANDIDATE_HINT_FIELD]["pattern_quality_score"] = 0.9
+            failing = deepcopy(passing)
+            failing["timestamp"] = "2026-06-07T12:01:00Z"
+            failing["symbols"][0][CANDIDATE_HINT_FIELD]["timestamp"] = (
+                "2026-06-07T12:01:00Z"
+            )
+            failing["symbols"][0][CANDIDATE_HINT_FIELD]["context_id"] = (
+                "market_BTC_20260607T120100Z"
+            )
+            failing["symbols"][0][CANDIDATE_HINT_FIELD]["pattern_quality_score"] = 0.7
+
+            _write_jsonl(candidate_input_path, [failing, passing])
+            _write_jsonl(
+                market_input_path,
+                [
+                    _market_record(
+                        timestamp="2026-06-07T15:00:00Z",
+                        price=101.0,
+                    )
+                ],
+            )
+
+            result = run_trident_ai_candidate_paper_replay(
+                candidate_input_path,
+                market_input_path=market_input_path,
+                config=load_trident_ai_config("config/trident_ai.toml"),
+                decision_journal_path=decision_journal_path,
+                journal_path=paper_journal_path,
+                report_json_path=report_json_path,
+                report_md_path=report_md_path,
+                stop_bps=120.0,
+                take_profit_bps=500.0,
+                time_stop_minutes=180,
+                min_pattern_quality_score=0.85,
+            )
+
+            self.assertEqual(result.candidates_seen, 2)
+            self.assertEqual(result.decisions_written, 1)
+            self.assertEqual(result.skip_reasons["pattern_quality_score_below_gate"], 1)
+            self.assertEqual(result.min_pattern_quality_score, 0.85)
+
+            report = json.loads(report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["result"]["min_pattern_quality_score"], 0.85)
+
+    def test_candidate_paper_replay_applies_research_v3_guardrail_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            candidate_input_path = directory / "candidates.jsonl"
+            market_input_path = directory / "market.jsonl"
+            decision_journal_path = directory / "candidate_decisions.jsonl"
+            paper_journal_path = directory / "paper.jsonl"
+            report_json_path = directory / "candidate_paper.json"
+            report_md_path = directory / "candidate_paper.md"
+
+            passing = _candidate_record(price=100.0)
+            _set_candidate_gate_fields(
+                passing,
+                edge_to_cost_ratio=4.5,
+                estimated_net_edge_bps=42.0,
+                liquidity_score=1.4,
+                round_trip_cost_bps=10.0,
+            )
+            edge_rejected = deepcopy(passing)
+            edge_rejected["timestamp"] = "2026-06-07T12:01:00Z"
+            edge_rejected["symbols"][0][CANDIDATE_HINT_FIELD]["timestamp"] = (
+                "2026-06-07T12:01:00Z"
+            )
+            edge_rejected["symbols"][0][CANDIDATE_HINT_FIELD]["context_id"] = (
+                "market_BTC_20260607T120100Z"
+            )
+            edge_rejected["symbols"][0][CANDIDATE_HINT_FIELD]["edge_to_cost_ratio"] = 3.5
+            vetoed = deepcopy(passing)
+            vetoed["timestamp"] = "2026-06-07T12:02:00Z"
+            vetoed["symbols"][0]["trade_flow_bias"] = -0.9
+            vetoed["symbols"][0]["book_imbalance"] = -0.8
+            vetoed["symbols"][0][CANDIDATE_HINT_FIELD]["timestamp"] = "2026-06-07T12:02:00Z"
+            vetoed["symbols"][0][CANDIDATE_HINT_FIELD]["context_id"] = (
+                "market_BTC_20260607T120200Z"
+            )
+
+            _write_jsonl(candidate_input_path, [edge_rejected, vetoed, passing])
+            _write_jsonl(
+                market_input_path,
+                [
+                    _market_record(
+                        timestamp="2026-06-07T15:00:00Z",
+                        price=101.0,
+                    )
+                ],
+            )
+
+            result = run_trident_ai_candidate_paper_replay(
+                candidate_input_path,
+                market_input_path=market_input_path,
+                config=load_trident_ai_config("config/trident_ai.toml"),
+                decision_journal_path=decision_journal_path,
+                journal_path=paper_journal_path,
+                report_json_path=report_json_path,
+                report_md_path=report_md_path,
+                stop_bps=120.0,
+                take_profit_bps=500.0,
+                time_stop_minutes=180,
+                research_profile=CANDIDATE_PAPER_RESEARCH_PROFILE_RESEARCH_V3_GUARDRAIL,
+            )
+
+            self.assertEqual(result.research_profile, "research_v3_guardrail")
+            self.assertEqual(result.min_edge_to_cost, 4.0)
+            self.assertEqual(result.min_net_edge_bps, 10.0)
+            self.assertEqual(result.min_liquidity_score, 1.0)
+            self.assertEqual(result.max_round_trip_cost_bps, 12.0)
+            self.assertEqual(result.technical_veto_buckets, ("family::volume_flow=short",))
+            self.assertEqual(result.candidates_seen, 3)
+            self.assertEqual(result.decisions_written, 1)
+            self.assertEqual(result.skip_reasons["edge_to_cost_below_gate"], 1)
+            self.assertEqual(
+                result.skip_reasons["technical_digest_veto_family_volume_flow_short"],
+                1,
+            )
+            self.assertEqual(result.paper_result.positions_opened, 1)
+
+            report = json.loads(report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["result"]["research_profile"], "research_v3_guardrail")
+            self.assertEqual(report["result"]["technical_veto_buckets"], ["family::volume_flow=short"])
+
+
+def _candidate_record(
+    *,
+    price: float,
+    bucket_range_bps: float = 58.0,
+    realized_vol_short_bps: float = 8.0,
+    microprice_dislocation_bps: float = 1.0,
+) -> dict[str, object]:
     return {
         "timestamp": "2026-06-07T12:00:00Z",
         "regime_snapshot": {
@@ -161,14 +465,15 @@ def _candidate_record(*, price: float) -> dict[str, object]:
                 "funding_rate": 0.0,
                 "spread_bps": 1.0,
                 "btc_aligned": True,
-                "microprice_dislocation_bps": 1.0,
+                "microprice_dislocation_bps": microprice_dislocation_bps,
                 "book_imbalance": 0.5,
                 "trade_flow_bias": 0.5,
                 "bucket_notional_usd": 10_000.0,
                 "bucket_trade_count": 20,
+                "bucket_range_bps": bucket_range_bps,
                 "volume_ratio": 4.0,
                 "trade_count_ratio": 2.0,
-                "realized_vol_short_bps": 8.0,
+                "realized_vol_short_bps": realized_vol_short_bps,
                 CANDIDATE_HINT_FIELD: {
                     "schema_version": "trident_ai_candidate_hint_v5",
                     "context_id": "market_BTC_20260607T120000Z",
@@ -191,6 +496,26 @@ def _candidate_record(*, price: float) -> dict[str, object]:
             }
         ],
     }
+
+
+def _set_candidate_gate_fields(
+    record: dict[str, object],
+    *,
+    edge_to_cost_ratio: float,
+    estimated_net_edge_bps: float,
+    liquidity_score: float,
+    round_trip_cost_bps: float,
+) -> None:
+    hint = record["symbols"][0][CANDIDATE_HINT_FIELD]
+    assert isinstance(hint, dict)
+    hint.update(
+        {
+            "edge_to_cost_ratio": edge_to_cost_ratio,
+            "estimated_net_edge_bps": estimated_net_edge_bps,
+            "liquidity_score": liquidity_score,
+            "round_trip_cost_bps": round_trip_cost_bps,
+        }
+    )
 
 
 def _market_record(*, timestamp: str, price: float) -> dict[str, object]:

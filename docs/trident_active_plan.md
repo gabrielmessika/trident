@@ -166,6 +166,16 @@ Source de verite operationnelle depuis le `2026-05-24`:
   devient recurrent dans `./trident-hip4/fetch_data.sh` et doit confirmer les
   `priceBinary` BTC-only ou lister tout nouvel underlying non-BTC tradable
   avant toute decision. Aucune execution mainnet HIP-4 n'est activee.
+- Ajustement HIP-4 mainnet paper `2026-06-18`: promotion paper du guard
+  `block_reference_divergence = true` sur tous les underlyings/sides/edge
+  types, avec `reference_divergence_max_bps = 50` et
+  `reference_divergence_min_rejected_sources = 1`. Motivation: tester en flux
+  paper actif un signal shadow concret; la review
+  `server-data/hip4/reviews/20260618T095429Z/hip4_outcome_run_review.md`
+  identifie un cas `reference_divergence` a `-11.555 USDC` et le status
+  confirme des sources externes multi-exchanges sur BTC/ETH/SOL/HYPE. Le
+  profil observer mainnet reste non bloquant afin de garder une baseline brute.
+  Aucune execution mainnet HIP-4 n'est activee.
 - Incident live `2026-05-27`: les runners `pod-a-live` et `pod-c-live` ont ete
   stoppes manuellement sur le serveur a `17:01Z` apres une serie de closes Pod A
   `exchange_closed` perdants et une reconciliation Pod C KO sur `XYZ:GOLD`

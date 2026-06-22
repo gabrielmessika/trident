@@ -6,8 +6,10 @@ from datetime import datetime, timezone
 
 from app.trident.types import SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
 from app.trident_ai.config import TridentAIConfig
+from app.trident_ai.technical_digest import build_technical_digest
 from app.trident_ai.types import (
     AgentMarketContext,
+    FeatureValue,
     TRIDENT_AI_INITIAL_SYMBOLS,
     TRIDENT_AI_MARKET_CONTEXT_SCHEMA_VERSION,
 )
@@ -156,8 +158,8 @@ class TridentAIFeatureBuilder:
         ]
 
 
-def _snapshot_features(snapshot: SymbolMarketSnapshot) -> dict[str, float | str | bool | None]:
-    return {
+def _snapshot_features(snapshot: SymbolMarketSnapshot) -> dict[str, FeatureValue]:
+    features: dict[str, FeatureValue] = {
         "ema_fast": float(snapshot.ema_fast),
         "ema_slow": float(snapshot.ema_slow),
         "ema_alignment": _ema_alignment(snapshot),
@@ -223,6 +225,8 @@ def _snapshot_features(snapshot: SymbolMarketSnapshot) -> dict[str, float | str 
         "external_momentum_300s_bps": float(snapshot.external_momentum_300s_bps),
         "external_alignment_score": float(snapshot.external_alignment_score),
     }
+    features["technical_digest"] = build_technical_digest(features)
+    return features
 
 
 def _snapshot_mapping_rejection_reason(payload: Mapping[str, object]) -> str:
@@ -255,7 +259,7 @@ def _ema_alignment(snapshot: SymbolMarketSnapshot) -> str:
     return "flat"
 
 
-def _feature_value(value: object) -> float | str | bool | None:
+def _feature_value(value: object) -> FeatureValue:
     if value is None:
         return None
     if isinstance(value, bool):

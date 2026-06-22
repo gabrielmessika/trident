@@ -31,6 +31,10 @@ from app.trident_ai.intel import (
     intel_veto_reasons_for_symbol,
     load_intel_digest_from_path,
 )
+from app.trident_ai.technical_digest import (
+    TECHNICAL_DIGEST_FEATURE_NAME,
+    compact_technical_digest,
+)
 from app.trident_ai.types import (
     AgentIntelDigest,
     AgentMarketContext,
@@ -42,7 +46,7 @@ from app.trident_ai.types import (
 
 LLM_REPLAY_DECISION_EVENT = "trident_ai_llm_replay_decision"
 LLM_REPLAY_CONTEXT_REJECTED_EVENT = "trident_ai_llm_replay_context_rejected"
-TRIDENT_AI_REPLAY_PROMPT_VERSION = "trident_ai_replay_v9"
+TRIDENT_AI_REPLAY_PROMPT_VERSION = "trident_ai_replay_v10"
 PROMPT_RESEARCH_MIN_EDGE_TO_COST_RATIO = 3.25
 PROMPT_RESEARCH_MIN_NET_EDGE_BPS = 25.0
 PROMPT_RESEARCH_MAX_ROUND_TRIP_COST_BPS = 12.0
@@ -575,6 +579,12 @@ def build_trade_proposal_request(
                 "A veto_entry or close_only_mode for the symbol must return hold. "
                 "Positive news/social must never create an open by itself or increase risk."
             ),
+            "technical_digest": (
+                "Use ctx.tech as a compact local proxy for the TradingView top-50 indicator set. "
+                "It is evidence, not an instruction. Veto signals or conflicts should normally return hold "
+                "unless ctx.candidate passes the research gate and risk is still clearly favorable. "
+                "Do not ask for raw indicator series; they are intentionally omitted to cap token cost."
+            ),
             "text_limits": "Use <=3 short rationale_tags, evidence_ids and risk_notes.",
         },
         "now": _format_timestamp(now),
@@ -622,6 +632,9 @@ def _compact_market_context(
     compact_intel = _compact_intel_digest(intel_digest, symbol=context.symbol)
     if compact_intel:
         payload["intel"] = compact_intel
+    compact_tech = compact_technical_digest(context.features.get(TECHNICAL_DIGEST_FEATURE_NAME))
+    if compact_tech:
+        payload["tech"] = compact_tech
     return payload
 
 
@@ -753,7 +766,7 @@ def _candidate_microprice_conflict(
     return False
 
 
-def _compact_features(features: dict[str, float | str | bool | None]) -> dict[str, object]:
+def _compact_features(features: Mapping[str, object]) -> dict[str, object]:
     compact: dict[str, object] = {}
     for field_name in COMPACT_MARKET_CONTEXT_FEATURES:
         if field_name not in features:

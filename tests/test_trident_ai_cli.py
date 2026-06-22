@@ -494,6 +494,154 @@ class TridentAICLITests(unittest.TestCase):
             self.assertEqual(report["result"]["candidates_seen"], 1)
             self.assertTrue(report_md_path.exists())
 
+    def test_technical_digest_audit_cli_runs_on_local_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            candidate_input_path = directory / "candidates.jsonl"
+            market_input_path = directory / "market.jsonl"
+            report_json_path = directory / "technical_digest.json"
+            report_md_path = directory / "technical_digest.md"
+            candidate = _calibration_candidate_record(context_id="market_BTC_20260607T120000Z")
+            candidate["symbols"][0]["price"] = 100.0
+            _write_jsonl(candidate_input_path, [candidate])
+            _write_jsonl(
+                market_input_path,
+                [
+                    {
+                        "timestamp": "2026-06-07T12:15:00Z",
+                        "symbols": [{"symbol": "BTC", "price": 101.0}],
+                    }
+                ],
+            )
+
+            exit_code = main(
+                [
+                    "technical-digest-audit",
+                    "--candidate-input",
+                    str(candidate_input_path),
+                    "--market-input",
+                    str(market_input_path),
+                    "--report-json-path",
+                    str(report_json_path),
+                    "--report-md-path",
+                    str(report_md_path),
+                    "--horizons-minutes",
+                    "15",
+                    "--min-bucket-samples",
+                    "1",
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            report = json.loads(report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["kind"], "trident_ai_technical_digest_audit")
+            self.assertEqual(report["result"]["candidates_seen"], 1)
+            self.assertEqual(report["result"]["candidates_with_digest"], 1)
+            self.assertTrue(report_md_path.exists())
+
+    def test_technical_digest_fold_validation_cli_runs_on_local_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            fold_a_candidates = directory / "fold_a_candidates.jsonl"
+            fold_a_market = directory / "fold_a_market.jsonl"
+            fold_b_candidates = directory / "fold_b_candidates.jsonl"
+            fold_b_market = directory / "fold_b_market.jsonl"
+            report_json_path = directory / "technical_digest_folds.json"
+            report_md_path = directory / "technical_digest_folds.md"
+            candidate = _calibration_candidate_record(context_id="market_BTC_20260607T120000Z")
+            candidate["symbols"][0]["price"] = 100.0
+            market = {
+                "timestamp": "2026-06-07T12:15:00Z",
+                "symbols": [{"symbol": "BTC", "price": 101.0}],
+            }
+            _write_jsonl(fold_a_candidates, [candidate])
+            _write_jsonl(fold_a_market, [market])
+            _write_jsonl(fold_b_candidates, [deepcopy(candidate)])
+            _write_jsonl(fold_b_market, [deepcopy(market)])
+
+            exit_code = main(
+                [
+                    "technical-digest-fold-validation",
+                    "--candidate-input",
+                    str(fold_a_candidates),
+                    "--market-input",
+                    str(fold_a_market),
+                    "--fold-label",
+                    "fold_a",
+                    "--candidate-input",
+                    str(fold_b_candidates),
+                    "--market-input",
+                    str(fold_b_market),
+                    "--fold-label",
+                    "fold_b",
+                    "--report-json-path",
+                    str(report_json_path),
+                    "--report-md-path",
+                    str(report_md_path),
+                    "--horizons-minutes",
+                    "15",
+                    "--min-bucket-samples",
+                    "1",
+                    "--min-delta-bps",
+                    "0",
+                    "--min-positive-folds",
+                    "2",
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            report = json.loads(report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["kind"], "trident_ai_technical_digest_fold_validation")
+            self.assertEqual(report["result"]["fold_labels"], ["fold_a", "fold_b"])
+            self.assertEqual(report["result"]["summary"]["folds"], 2)
+            self.assertTrue(report_md_path.exists())
+
+    def test_technical_digest_veto_audit_cli_runs_on_local_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            candidate_input_path = directory / "candidates.jsonl"
+            market_input_path = directory / "market.jsonl"
+            report_json_path = directory / "technical_digest_veto.json"
+            report_md_path = directory / "technical_digest_veto.md"
+            candidate = _calibration_candidate_record(context_id="market_BTC_20260607T120000Z")
+            candidate["symbols"][0]["price"] = 100.0
+            _write_jsonl(candidate_input_path, [candidate])
+            _write_jsonl(
+                market_input_path,
+                [
+                    {
+                        "timestamp": "2026-06-07T12:15:00Z",
+                        "symbols": [{"symbol": "BTC", "price": 101.0}],
+                    }
+                ],
+            )
+
+            exit_code = main(
+                [
+                    "technical-digest-veto-audit",
+                    "--candidate-input",
+                    str(candidate_input_path),
+                    "--market-input",
+                    str(market_input_path),
+                    "--fold-label",
+                    "fixture",
+                    "--veto-bucket",
+                    "has_veto::true",
+                    "--report-json-path",
+                    str(report_json_path),
+                    "--report-md-path",
+                    str(report_md_path),
+                    "--horizons-minutes",
+                    "15",
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            report = json.loads(report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["kind"], "trident_ai_technical_digest_veto_audit")
+            self.assertEqual(report["result"]["fold_labels"], ["fixture"])
+            self.assertTrue(report_md_path.exists())
+
     def test_exit_follow_through_audit_cli_runs_on_local_journals(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             directory = Path(tmpdir)
@@ -845,12 +993,17 @@ class TridentAICLITests(unittest.TestCase):
             report_md_path = directory / "candidate_paper.md"
             candidate = _calibration_candidate_record(context_id="market_BTC_20260607T120000Z")
             candidate["symbols"][0]["price"] = 100.0
+            candidate["symbols"][0]["bucket_range_bps"] = 58.0
+            candidate["symbols"][0]["realized_vol_short_bps"] = 24.0
+            candidate["symbols"][0]["volume_ratio"] = 4.0
+            candidate["symbols"][0]["microprice_dislocation_bps"] = 1.0
             candidate["symbols"][0][CANDIDATE_HINT_FIELD].update(
                 {
                     "edge_to_cost_ratio": 4.5,
                     "estimated_net_edge_bps": 42.0,
                     "liquidity_score": 1.4,
                     "round_trip_cost_bps": 10.0,
+                    "pattern_quality_score": 0.9,
                 }
             )
             market = deepcopy(candidate)
@@ -888,6 +1041,8 @@ class TridentAICLITests(unittest.TestCase):
                     "1.2",
                     "--max-round-trip-cost-bps",
                     "12",
+                    "--min-pattern-quality-score",
+                    "0.85",
                 ]
             )
 
@@ -896,10 +1051,113 @@ class TridentAICLITests(unittest.TestCase):
             self.assertEqual(report["kind"], "trident_ai_candidate_paper_replay")
             self.assertEqual(report["result"]["decisions_written"], 1)
             self.assertEqual(report["result"]["min_edge_to_cost"], 4.0)
+            self.assertEqual(report["result"]["min_pattern_quality_score"], 0.85)
             self.assertEqual(report["result"]["paper_result"]["positions_opened"], 1)
             self.assertTrue(decision_journal_path.exists())
             self.assertTrue(journal_path.exists())
             self.assertTrue(report_md_path.exists())
+
+    def test_candidate_paper_replay_cli_accepts_technical_veto_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            candidate_input_path = directory / "candidates.jsonl"
+            market_input_path = directory / "market.jsonl"
+            decision_journal_path = directory / "candidate_decisions.jsonl"
+            journal_path = directory / "paper.jsonl"
+            report_json_path = directory / "candidate_paper.json"
+            report_md_path = directory / "candidate_paper.md"
+            candidate = _calibration_candidate_record(context_id="market_BTC_20260607T120000Z")
+            candidate["symbols"][0]["price"] = 100.0
+            market = deepcopy(candidate)
+            market["timestamp"] = "2026-06-07T15:00:00Z"
+            market["symbols"][0]["price"] = 101.0
+            market["symbols"][0].pop(CANDIDATE_HINT_FIELD, None)
+
+            _write_jsonl(candidate_input_path, [candidate])
+            _write_jsonl(market_input_path, [market])
+
+            exit_code = main(
+                [
+                    "candidate-paper-replay",
+                    "--candidate-input",
+                    str(candidate_input_path),
+                    "--market-input",
+                    str(market_input_path),
+                    "--decision-journal-path",
+                    str(decision_journal_path),
+                    "--journal-path",
+                    str(journal_path),
+                    "--report-json-path",
+                    str(report_json_path),
+                    "--report-md-path",
+                    str(report_md_path),
+                    "--technical-veto-bucket",
+                    "has_veto::false",
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            report = json.loads(report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["kind"], "trident_ai_candidate_paper_replay")
+            self.assertEqual(report["result"]["technical_veto_buckets"], ["has_veto::false"])
+            self.assertEqual(report["result"]["decisions_written"], 0)
+            self.assertEqual(report["result"]["paper_result"]["positions_opened"], 0)
+
+    def test_candidate_paper_replay_cli_accepts_research_v3_guardrail_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            candidate_input_path = directory / "candidates.jsonl"
+            market_input_path = directory / "market.jsonl"
+            decision_journal_path = directory / "candidate_decisions.jsonl"
+            journal_path = directory / "paper.jsonl"
+            report_json_path = directory / "candidate_paper.json"
+            report_md_path = directory / "candidate_paper.md"
+            candidate = _calibration_candidate_record(context_id="market_BTC_20260607T120000Z")
+            candidate["symbols"][0]["price"] = 100.0
+            candidate["symbols"][0][CANDIDATE_HINT_FIELD].update(
+                {
+                    "edge_to_cost_ratio": 4.5,
+                    "estimated_net_edge_bps": 42.0,
+                    "liquidity_score": 1.4,
+                    "round_trip_cost_bps": 10.0,
+                    "pattern_quality_score": 0.9,
+                }
+            )
+            market = deepcopy(candidate)
+            market["timestamp"] = "2026-06-07T15:00:00Z"
+            market["symbols"][0]["price"] = 101.0
+            market["symbols"][0].pop(CANDIDATE_HINT_FIELD, None)
+
+            _write_jsonl(candidate_input_path, [candidate])
+            _write_jsonl(market_input_path, [market])
+
+            exit_code = main(
+                [
+                    "candidate-paper-replay",
+                    "--candidate-input",
+                    str(candidate_input_path),
+                    "--market-input",
+                    str(market_input_path),
+                    "--decision-journal-path",
+                    str(decision_journal_path),
+                    "--journal-path",
+                    str(journal_path),
+                    "--report-json-path",
+                    str(report_json_path),
+                    "--report-md-path",
+                    str(report_md_path),
+                    "--research-profile",
+                    "research_v3_guardrail",
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            report = json.loads(report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["result"]["research_profile"], "research_v3_guardrail")
+            self.assertEqual(report["result"]["min_edge_to_cost"], 4.0)
+            self.assertEqual(report["result"]["min_net_edge_bps"], 10.0)
+            self.assertEqual(report["result"]["technical_veto_buckets"], ["family::volume_flow=short"])
+            self.assertEqual(report["result"]["decisions_written"], 1)
 
     def test_candidate_gate_sweep_cli_runs_on_local_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -911,12 +1169,17 @@ class TridentAICLITests(unittest.TestCase):
             artifact_dir = directory / "artifacts"
             candidate = _calibration_candidate_record(context_id="market_BTC_20260607T120000Z")
             candidate["symbols"][0]["price"] = 100.0
+            candidate["symbols"][0]["bucket_range_bps"] = 58.0
+            candidate["symbols"][0]["realized_vol_short_bps"] = 24.0
+            candidate["symbols"][0]["volume_ratio"] = 4.0
+            candidate["symbols"][0]["microprice_dislocation_bps"] = 1.0
             candidate["symbols"][0][CANDIDATE_HINT_FIELD].update(
                 {
                     "edge_to_cost_ratio": 4.5,
                     "estimated_net_edge_bps": 42.0,
                     "liquidity_score": 1.4,
                     "round_trip_cost_bps": 10.0,
+                    "pattern_quality_score": 0.9,
                 }
             )
             market = deepcopy(candidate)
@@ -954,18 +1217,47 @@ class TridentAICLITests(unittest.TestCase):
                     "1.2",
                     "--max-round-trip-cost-bps-values",
                     "12",
+                    "--max-dominant-symbol-ratio",
+                    "1",
+                    "--min-pattern-quality-score-values",
+                    "0.85",
+                    "--micro-regime-profile-values",
+                    "none,veto_range_mid_vol_high",
+                    "--cache-market-events",
                     "--min-total-closed-trades",
                     "1",
                     "--min-symbols",
                     "1",
+                    "--technical-veto-bucket",
+                    "has_veto::true",
+                    "--allow-guardrail-loss-avoidance",
+                    "--guardrail-fold-label",
+                    "fixture",
                 ]
             )
 
             self.assertEqual(exit_code, 0)
             report = json.loads(report_json_path.read_text(encoding="utf-8"))
             self.assertEqual(report["kind"], "trident_ai_candidate_gate_sweep")
-            self.assertEqual(report["result"]["profiles_evaluated"], 1)
+            self.assertEqual(report["result"]["profiles_evaluated"], 2)
+            self.assertEqual(report["result"]["threshold_values"]["min_pattern_quality_score"], [0.85])
+            self.assertEqual(
+                report["result"]["threshold_values"]["micro_regime_profile"],
+                ["none", "veto_range_mid_vol_high"],
+            )
+            self.assertTrue(report["result"]["cache_market_events"])
+            self.assertEqual(report["result"]["technical_veto_buckets"], ["has_veto::true"])
+            self.assertEqual(report["result"]["max_dominant_symbol_ratio"], 1.0)
+            self.assertTrue(report["result"]["allow_guardrail_loss_avoidance"])
+            self.assertEqual(report["result"]["guardrail_fold_labels"], ["fixture"])
             self.assertEqual(report["result"]["best_profile"]["closed_trades"], 1)
+            self.assertEqual(report["result"]["best_profile"]["min_pattern_quality_score"], 0.85)
+            veto_profile = next(
+                row
+                for row in report["result"]["profile_rows"]
+                if row["micro_regime_profile"] == "veto_range_mid_vol_high"
+            )
+            self.assertEqual(veto_profile["closed_trades"], 0)
             self.assertTrue(report_md_path.exists())
             self.assertTrue(artifact_dir.exists())
 

@@ -9,6 +9,9 @@ from pathlib import Path
 from app.trident_ai import (
     AgentMarketContext,
     AgentMarketContextBuildConfig,
+    MAX_TECHNICAL_DIGEST_CHARS,
+    TECHNICAL_DIGEST_FEATURE_NAME,
+    TRIDENT_AI_TECHNICAL_DIGEST_SCHEMA_VERSION,
     TridentAIFeatureBuilder,
     load_trident_ai_config,
 )
@@ -61,6 +64,12 @@ class TridentAIFeatureBuilderTests(unittest.TestCase):
         self.assertEqual(result.context.features["spread_bps"], 1.2)
         self.assertEqual(result.context.features["market_cluster"], "crypto")
         self.assertEqual(result.context.features["open_interest"], 123456789.0)
+        digest = result.context.features[TECHNICAL_DIGEST_FEATURE_NAME]
+        self.assertIsInstance(digest, dict)
+        assert isinstance(digest, dict)
+        self.assertEqual(digest["schema_version"], TRIDENT_AI_TECHNICAL_DIGEST_SCHEMA_VERSION)
+        self.assertEqual(digest["coverage"]["used_count"], 50)
+        self.assertLessEqual(digest["char_count"], MAX_TECHNICAL_DIGEST_CHARS)
 
     def test_builds_only_initial_universe_from_snapshot_batch(self) -> None:
         builder = TridentAIFeatureBuilder()
@@ -138,6 +147,7 @@ class TridentAIFeatureBuilderTests(unittest.TestCase):
         self.assertEqual(restored.to_dict(), payload)
         self.assertEqual(payload["context_id"], "market_HYPE_20260607T120000Z")
         self.assertEqual(payload["features"]["ema_alignment"], "bearish")
+        self.assertIn(TECHNICAL_DIGEST_FEATURE_NAME, payload["features"])
 
     def test_build_config_can_derive_from_trident_ai_config(self) -> None:
         config = load_trident_ai_config("config/trident_ai.toml")

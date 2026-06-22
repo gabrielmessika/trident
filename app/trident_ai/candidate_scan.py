@@ -11,12 +11,13 @@ from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord
 from app.persistence.journal import JsonlJournal
 from app.trident_ai.config import TridentAIConfig, TridentAIPaperConfig, load_trident_ai_config
 from app.trident_ai.features import AgentMarketContextBuildConfig, TridentAIFeatureBuilder
+from app.trident_ai.market_regime import build_market_micro_regime
 from app.trident_ai.types import AgentMarketContext
 
 
 CANDIDATE_SCAN_EVENT = "trident_ai_candidate_scan"
 CANDIDATE_HINT_FIELD = "trident_ai_candidate"
-CANDIDATE_HINT_SCHEMA_VERSION = "trident_ai_candidate_hint_v6"
+CANDIDATE_HINT_SCHEMA_VERSION = "trident_ai_candidate_hint_v7"
 DEFAULT_MIN_EDGE_TO_COST_RATIO = 1.5
 DEFAULT_MIN_NET_EDGE_BPS = 5.0
 DEFAULT_MICROPRICE_CONFLICT_BPS = 0.25
@@ -113,6 +114,8 @@ class TridentAICandidateScanResult:
     top_n: int = 0
     max_records: int | None = None
     max_contexts: int | None = None
+    start_timestamp: str | None = None
+    end_timestamp: str | None = None
     limit_reached: bool = False
     first_timestamp: str | None = None
     last_timestamp: str | None = None
@@ -143,6 +146,8 @@ class TridentAICandidateScanResult:
             "top_n": self.top_n,
             "max_records": self.max_records,
             "max_contexts": self.max_contexts,
+            "start_timestamp": self.start_timestamp,
+            "end_timestamp": self.end_timestamp,
             "limit_reached": self.limit_reached,
             "first_timestamp": self.first_timestamp,
             "last_timestamp": self.last_timestamp,
@@ -203,6 +208,8 @@ class TridentAICandidateScanner:
         selected_input_path: str | Path | None = None,
         max_records: int | None = None,
         max_contexts: int | None = None,
+        start_timestamp: str | None = None,
+        end_timestamp: str | None = None,
         top_n: int = 40,
         min_score: float = 1.25,
         min_edge_to_cost: float = DEFAULT_MIN_EDGE_TO_COST_RATIO,
@@ -225,6 +232,16 @@ class TridentAICandidateScanner:
             raise ValueError("min_net_edge_bps_must_be_non_negative")
         if microprice_conflict_bps < 0.0:
             raise ValueError("microprice_conflict_bps_must_be_non_negative")
+        window_start = _parse_optional_window_timestamp(
+            start_timestamp,
+            field_name="start_timestamp",
+        )
+        window_end = _parse_optional_window_timestamp(
+            end_timestamp,
+            field_name="end_timestamp",
+        )
+        if window_start is not None and window_end is not None and window_start >= window_end:
+            raise ValueError("start_timestamp_must_be_before_end_timestamp")
         normalized_pattern_profile = _normalize_pattern_profile(pattern_profile)
         symbols_filter = _symbols_filter(symbols)
         run_id = _timestamp_id(datetime.now(timezone.utc))
@@ -244,10 +261,15 @@ class TridentAICandidateScanner:
         scored: list[TridentAICandidateScore] = []
 
         for record in self.loader.iter_merged_jsonl(input_path):
+            timestamp = _record_timestamp(record)
+            record_time = _parse_timestamp(timestamp)
+            if window_start is not None and record_time is not None and record_time < window_start:
+                continue
+            if window_end is not None and record_time is not None and record_time >= window_end:
+                break
             if max_records is not None and counters.records_processed >= max_records:
                 break
             counters.records_processed += 1
-            timestamp = _record_timestamp(record)
             counters.first_timestamp = counters.first_timestamp or timestamp
             counters.last_timestamp = timestamp
             regime = _record_regime(record)
@@ -327,6 +349,8 @@ class TridentAICandidateScanner:
             top_n=int(top_n),
             max_records=max_records,
             max_contexts=max_contexts,
+            start_timestamp=_format_timestamp(window_start) if window_start is not None else None,
+            end_timestamp=_format_timestamp(window_end) if window_end is not None else None,
             limit_reached=counters.limit_reached,
             first_timestamp=counters.first_timestamp,
             last_timestamp=counters.last_timestamp,
@@ -353,6 +377,8 @@ def run_trident_ai_candidate_scan(
     selected_input_path: str | Path | None = None,
     max_records: int | None = None,
     max_contexts: int | None = None,
+    start_timestamp: str | None = None,
+    end_timestamp: str | None = None,
     top_n: int = 40,
     min_score: float = 1.25,
     min_edge_to_cost: float = DEFAULT_MIN_EDGE_TO_COST_RATIO,
@@ -371,6 +397,8 @@ def run_trident_ai_candidate_scan(
         selected_input_path=selected_input_path,
         max_records=max_records,
         max_contexts=max_contexts,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
         top_n=top_n,
         min_score=min_score,
         min_edge_to_cost=min_edge_to_cost,
@@ -496,6 +524,11 @@ def _candidate_hint(
     reasons: Sequence[str],
     pattern_reasons: Sequence[str],
 ) -> dict[str, object]:
+    micro_regime = build_market_micro_regime(
+        context.features,
+        symbol=context.symbol,
+        side=side,
+    )
     return {
         "schema_version": CANDIDATE_HINT_SCHEMA_VERSION,
         "context_id": context.context_id,
@@ -515,6 +548,12 @@ def _candidate_hint(
         "round_trip_cost_bps": round_trip_cost_bps,
         "estimated_net_edge_bps": estimated_net_edge_bps,
         "edge_to_cost_ratio": edge_to_cost_ratio,
+        "market_micro_regime": micro_regime,
+        "range_vol_regime": micro_regime["range_vol_regime"],
+        "flow_regime": micro_regime["flow_regime"],
+        "micro_regime": micro_regime["micro_regime"],
+        "symbol_range_vol": micro_regime["symbol_range_vol"],
+        "symbol_micro_regime": micro_regime["symbol_micro_regime"],
         "reasons": list(reasons[:8]),
         "pattern_reasons": list(pattern_reasons[:8]),
     }
@@ -566,6 +605,7 @@ def _render_markdown_report(payload: dict[str, object]) -> str:
         f"- Microprice conflict bps: `{result['microprice_conflict_bps']}`",
         f"- Pattern profile: `{result['pattern_profile']}`",
         f"- Top N: `{result['top_n']}`",
+        f"- Window: `{result.get('start_timestamp')}` -> `{result.get('end_timestamp')}`",
         "",
         "## Selection",
         "",
@@ -1147,6 +1187,16 @@ def _parse_timestamp(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _parse_optional_window_timestamp(value: str | None, *, field_name: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parsed = _parse_timestamp(text)
+    if parsed is None:
+        raise ValueError(f"{field_name}_must_be_iso8601")
+    return parsed
 
 
 def _format_timestamp(value: datetime) -> str:

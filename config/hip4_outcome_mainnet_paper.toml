@@ -28,6 +28,17 @@ max_source_deviation_bps = 50
 min_reference_sources = 1
 external_price_timeout_seconds = 5
 external_price_user_agent = "trident-hip4-outcome-mainnet-paper/0.1"
+
+# Paper promotion 2026-06-18: reject entries when the Hyperliquid-anchored
+# external reference check has already rejected at least one source beyond 50bps.
+# The standalone mainnet observer stays non-blocking as the comparison baseline.
+block_reference_divergence = true
+reference_divergence_max_bps = 50
+reference_divergence_min_rejected_sources = 1
+reference_divergence_underlyings = []
+reference_divergence_sides = []
+reference_divergence_edge_types = []
+
 max_markets_per_loop = 12
 max_opportunities_per_loop = 4
 min_time_to_expiry_seconds = 20

@@ -14,6 +14,8 @@ from app.trident_ai import (
     LLMUsage,
     LLM_REPLAY_CONTEXT_REJECTED_EVENT,
     LLM_REPLAY_DECISION_EVENT,
+    MAX_TECHNICAL_DIGEST_CHARS,
+    TECHNICAL_DIGEST_FEATURE_NAME,
     TridentAIFeatureBuilder,
     TridentAILLMReplayError,
     TridentAILLMReplayRunner,
@@ -164,7 +166,7 @@ def _prime_cache(cache: JSONFileLLMCache, config) -> None:
 
 
 class TridentAILLMReplayRunnerTests(unittest.TestCase):
-    def test_trade_proposal_request_uses_compact_prompt_v8_with_intel_and_pass_flags(self) -> None:
+    def test_trade_proposal_request_uses_compact_prompt_v10_with_technical_digest(self) -> None:
         config = load_trident_ai_config("config/trident_ai.toml")
         context = _contexts(config)[0]
         intel_digest = load_fixture_intel_digest(INTEL_FIXTURE_PATH, symbols=("BTC", "HYPE"))
@@ -199,6 +201,7 @@ class TridentAILLMReplayRunnerTests(unittest.TestCase):
         compact_features = compact_context["f"]
         compact_candidate = compact_context["candidate"]
         compact_intel = compact_context["intel"]
+        compact_tech = compact_context["tech"]
         full_context_payload = json.dumps(
             {
                 "market_context": context.to_dict(),
@@ -214,10 +217,11 @@ class TridentAILLMReplayRunnerTests(unittest.TestCase):
             separators=(",", ":"),
         )
         self.assertEqual(request.metadata["prompt_version"], TRIDENT_AI_REPLAY_PROMPT_VERSION)
-        self.assertEqual(TRIDENT_AI_REPLAY_PROMPT_VERSION, "trident_ai_replay_v9")
+        self.assertEqual(TRIDENT_AI_REPLAY_PROMPT_VERSION, "trident_ai_replay_v10")
         self.assertNotIn("market_context", payload)
         self.assertEqual(payload["rules"]["actions"], ["hold", "open"])
         self.assertIn("intel_digest", payload["rules"])
+        self.assertIn("technical_digest", payload["rules"])
         self.assertEqual(compact_context["id"], context.context_id)
         self.assertEqual(compact_context["s"], context.symbol)
         self.assertEqual(compact_intel["digest_id"], "intel_digest_20260607T120000Z")
@@ -249,9 +253,14 @@ class TridentAILLMReplayRunnerTests(unittest.TestCase):
         )
         self.assertEqual(compact_candidate["reasons"], candidate_hint["reasons"])
         self.assertEqual(set(compact_features), set(COMPACT_MARKET_CONTEXT_FEATURES))
+        self.assertNotIn(TECHNICAL_DIGEST_FEATURE_NAME, compact_features)
+        self.assertEqual(compact_tech["coverage"]["used_count"], 50)
+        self.assertLessEqual(compact_tech["char_count"], MAX_TECHNICAL_DIGEST_CHARS)
+        self.assertIn("top_signals", compact_tech)
+        self.assertIn("families", compact_tech)
         self.assertNotIn("best_bid", compact_features)
         self.assertNotIn("bid_depth_10bps", compact_features)
-        self.assertLess(len(compact_context_payload), len(full_context_payload) * 0.65)
+        self.assertLess(len(compact_context_payload), len(full_context_payload) * 0.75)
         self.assertIn("scientific notation", request.system_prompt)
 
     def test_llm_replay_uses_cache_only_and_writes_reports(self) -> None:

@@ -30,12 +30,18 @@ Statut: `RESEARCH_SHADOW_FIRST`
 - [x] Etape 7o - Premier fold out-of-sample payant v9 sous budget.
 - [x] Etape 7p - Recalibration locale edge/exit avant nouvel appel LLM.
 - [x] Etape 7q - Validation zero-cout d'un overlay exit robuste multi-fold.
-- [ ] Etape 7r - Micro-replay LLM payant v10 uniquement apres validation.
+- [x] Etape 7r - Pack indicateurs techniques top-50 compact avant nouveau LLM
+  (implemente et audite; pas d'edge positif stable).
+- [x] Etape 7r-bis - Audit micro-regimes zero-cout par symbole avant nouveau
+  LLM.
+- [x] Etape 7r-ter - Replay exact micro-regimes avec cache marche et garde-fou
+  concentration symbole.
+- [ ] Etape 7s - Micro-replay LLM payant v10 uniquement apres validation.
 - [ ] Etape 8 - Intel/news-social avec xAI en veto shadow uniquement.
 - [ ] Etape 9 - Testnet live sur compte Hyperliquid independant.
 - [ ] Etape 10 - Mainnet paper puis canary tiny apres confirmation manuelle.
 
-Derniere mise a jour implementation: `2026-06-11`.
+Derniere mise a jour implementation: `2026-06-19`.
 
 ## Decision courte
 
@@ -164,6 +170,8 @@ experience separee. Il doit recevoir des features compactes:
 - spread, depth, imbalance, trade flow;
 - funding, open interest, premium;
 - volatilite realisee;
+- digest compact d'indicateurs techniques top-50 TradingView-like, calcule
+  localement depuis les snapshots TRIDENT et jamais envoye comme serie brute;
 - regime global et cluster;
 - positions ouvertes de `tridentAI` uniquement si necessaire, jamais celles des
   autres pods au debut;
@@ -201,7 +209,21 @@ Output:
     "realized_vol_short_bps": 46.0,
     "funding_rate": 0.00012,
     "book_imbalance": 0.18,
-    "trade_flow_bias": 0.22
+    "trade_flow_bias": 0.22,
+    "technical_digest": {
+      "schema_version": "trident_ai_technical_digest_v1",
+      "coverage": "top50_local_proxy",
+      "top_signals": [
+        "ema_bullish",
+        "vwap_aligned",
+        "atr_high",
+        "macd_hist_positive"
+      ],
+      "veto_signals": [
+        "rsi_overbought"
+      ],
+      "omitted_neutral_count": 41
+    }
   }
 }
 ```
@@ -4343,12 +4365,879 @@ Verdict 7q:
 
 Blocage actuel avant next step payant:
 
-- le prochain step qui change l'information disponible est payant: nouveau
+- le prochain step LLM qui change l'information disponible est payant: nouveau
   batch LLM hors cache;
+- avant ce step payant, l'etape 7r ci-dessous doit ajouter un digest technique
+  top-50 compact en zero-cout;
 - recommandation de cap si validation: `max_live_calls<=4` et
   `max_incremental_cost_usd<=0.02`;
 - tant que ce n'est pas valide, continuer uniquement les audits/reports locaux
   et ne pas activer de live/testnet.
+
+Next step planifie: Etape 7r - pack indicateurs techniques top-50 compact.
+
+Motivation:
+
+- le screener P1-09b all-50 calcule deja des proxies locaux pour les `50`
+  indicateurs TradingView-like fournis par l'operateur, sans consommer
+  TradingView comme source externe;
+- `tridentAI` ne doit pas envoyer ces `50` indicateurs bruts au LLM: cela
+  augmente le cout, le bruit, les contradictions et le risque de surfit;
+- la bonne integration est un pre-traitement deterministe local qui transforme
+  les indicateurs en digest court, classe, versionne et replayable.
+
+Principe:
+
+```text
+Snapshots TRIDENT 5m
+  -> calcul local top-50 technical proxies
+  -> normalisation en buckets et familles
+  -> selection top-K signaux / vetoes / conflits
+  -> digest compact dans AgentMarketContext
+  -> LLM v10 lit le digest, pas les series ni les 50 valeurs completes
+```
+
+Couverture fonctionnelle visee:
+
+- reprendre la couverture P1-09b all-50 comme source de calcul locale:
+  `SMA/EMA`, volume, `RSI`, `MACD`, Bollinger, `VWAP`, stochastiques,
+  `ATR`, Volume Profile, Fibonacci, Supertrend, Ichimoku, pivots, `ADX/DMI`,
+  `SAR`, `OBV`, `CCI`, Williams %R, `MFI`, Keltner, Donchian, Aroon,
+  Awesome Oscillator, A/D, Chaikin Money Flow, `ROC`, momentum, `HMA`, `WMA`,
+  `VWMA`, MA ribbon, regression lineaire, `KAMA`, `ALMA`, `TEMA`, `TRIX`,
+  Ultimate Oscillator, `TSI`, `RVI`, Vortex, Klinger, Ease of Movement, `PVT`,
+  net volume, volume delta, anchored VWAP et technical rating;
+- garder ces indicateurs comme features de recherche et de veto, pas comme
+  regles de trading autonomes;
+- exposer explicitement la version de calcul, les indicateurs couverts et les
+  indicateurs indisponibles si un input live ne permet pas de les calculer.
+
+Optimisation tokens obligatoire:
+
+- ne jamais envoyer les `50` valeurs numeriques completes par symbole;
+- envoyer au plus `8` signaux techniques dominants par contexte, plus au plus
+  `4` vetoes/conflits;
+- representer les valeurs en buckets courts plutot qu'en floats quand la
+  precision brute n'est pas utile: `rsi=overbought`, `atr=high`,
+  `macd=bull_cross`, `bollinger=upper_extreme`, `adx=trend_strong`;
+- grouper les indicateurs par familles pour eviter la redondance:
+  `trend_ma`, `momentum`, `volatility_bands`, `volume_flow`, `levels`,
+  `composite`;
+- supprimer les indicateurs neutres, redondants ou non disponibles, en gardant
+  seulement des compteurs: `omitted_neutral_count`, `missing_count`,
+  `conflict_count`;
+- inclure seulement les deltas utiles: changement de bucket, cross recent,
+  divergence ou extreme, pas les series temporelles;
+- imposer un budget cible par contexte: `technical_digest <= 1200 caracteres`
+  et prompt marche complet `<= 2500 tokens` avant intel/news;
+- le replay LLM doit logguer le digest exact pour permettre cache-only,
+  audit de decisions et reproduction.
+
+Schema indicatif:
+
+```json
+{
+  "schema_version": "trident_ai_technical_digest_v1",
+  "coverage": {
+    "profile": "tradingview_top50_local_proxy",
+    "used_count": 50,
+    "missing_count": 0,
+    "source": "local_5m_trident_snapshots"
+  },
+  "families": {
+    "trend_ma": ["ema_bullish", "ma_ribbon_bullish"],
+    "momentum": ["macd_bull", "rsi_overbought"],
+    "volatility_bands": ["atr_high", "bollinger_upper_extreme"],
+    "volume_flow": ["obv_rising", "volume_delta_positive"],
+    "levels": ["price_above_pivot_r1"],
+    "composite": ["technical_rating_buy"]
+  },
+  "top_signals": [
+    "atr_high",
+    "macd_bull",
+    "vwap_aligned"
+  ],
+  "veto_signals": [
+    "rsi_overbought_against_long"
+  ],
+  "conflicts": [
+    "momentum_bull_but_volume_flow_weak"
+  ],
+  "omitted_neutral_count": 38
+}
+```
+
+Criteres avant micro-replay v10 payant:
+
+- implementer le digest en zero-cout et le valider sur les memes folds IS/OOS
+  que v9;
+- comparer `v9 sans digest` vs `v10 candidate avec digest` en cache/replay
+  local sur les candidats deja payes lorsque possible;
+- verifier que le digest ne fait pas exploser les tokens ni le cout projete;
+- verifier que les signaux top-50 ameliorent la separation winners/faux
+  positifs sans creer un gate calendrier/symbole deguise;
+- si le digest ne produit pas de meilleure separation locale, ne pas lancer
+  OpenAI v10.
+
+Implementation v1 ajoutee le `2026-06-18`:
+
+- nouveau module `app/trident_ai/technical_digest.py` avec contrat
+  `trident_ai_technical_digest_v1`, couverture explicite des `50` indicateurs
+  TradingView-like et regroupement en familles `trend_ma`, `momentum`,
+  `volatility_bands`, `volume_flow`, `levels`, `composite`;
+- `TridentAIFeatureBuilder` ajoute `features.technical_digest` a chaque
+  `AgentMarketContext`;
+- `AgentMarketContext.from_mapping()` accepte maintenant des features JSON
+  imbriquees et rejette toujours les objets non serialisables;
+- le prompt replay passe en `TRIDENT_AI_REPLAY_PROMPT_VERSION =
+  "trident_ai_replay_v10"` et expose le digest dans `ctx.tech`, separement des
+  features plates `ctx.f`;
+- le compacteur garde `coverage.used_count=50`, selectionne les signaux/vetos/
+  conflits dominants, supprime les series et applique le budget
+  `technical_digest <= 1200 caracteres`;
+- nouveau module `app/trident_ai/technical_digest_audit.py` et commande CLI
+  `technical-digest-audit` pour tester zero-cout la separation des familles,
+  signaux, vetoes et conflits du digest contre les outcomes a horizons fixes;
+- commande CLI `technical-digest-fold-validation` pour valider qu'un bucket
+  technique se repete sur plusieurs folds avant tout budget OpenAI v10;
+- tests lances:
+  `rtk uv run pytest tests/test_trident_ai_*.py -q` -> `116 passed,
+  4 subtests passed`.
+
+Limite importante: cette v1 est un digest proxy local construit depuis les
+features deja presentes dans `SymbolMarketSnapshot`. Elle couvre le contrat
+top-50 pour le LLM et les audits, mais ne remplace pas encore un calcul rolling
+complet de chaque indicateur avec toutes ses fenetres historiques. Avant un
+micro-replay payant v10, il faut donc verifier zero-cout que ce digest ameliore
+vraiment la separation winners/faux positifs sur les folds IS/OOS, sans
+augmenter la frequence de faux positifs ni le cout prompt.
+
+Next steps zero-cout avant 7s:
+
+1. relancer le candidate-scan/replay local sur les memes inputs IS/OOS que v9
+   avec le digest loggue dans les contextes;
+2. produire un audit de separation par famille technique:
+   `trend_ma`, `momentum`, `volatility_bands`, `volume_flow`, `levels`,
+   `composite`, puis `veto_signals` et `conflicts`;
+3. comparer `v9 sans digest` vs `v10 digest` en cache-only quand les decisions
+   v9 existent deja, sans nouvel appel fournisseur;
+4. ne demander une validation operateur pour OpenAI v10 que si l'audit local
+   montre un potentiel de PnL net superieur au cout LLM additionnel.
+
+Audit zero-cout initial ajoute le `2026-06-18`:
+
+- tests apres ajout de l'audit:
+  `rtk uv run pytest tests/test_trident_ai_*.py -q` -> `116 passed,
+  4 subtests passed`;
+- IS mini-batch v9:
+  `server-data/replay_reports/trident_ai_technical_digest_audit_v10_is_004_20260618.json`;
+- OOS liq-diverse v9:
+  `server-data/replay_reports/trident_ai_technical_digest_audit_v10_oos_liq_diverse_004_20260618.json`.
+
+Resultats initiaux:
+
+| Fold | Candidats | Digest OK | Best horizon | Avg net best | Positive buckets | Recommendation |
+|---|---:|---:|---:|---:|---:|---|
+| IS v9 004 | 4 | 4 | 15m | `-3.4632 bps` | 0 | `hold_zero_cost` |
+| OOS liq-diverse v9 004 | 4 | 4 | 30m | `-54.8215 bps` | 0 | `hold_zero_cost_digest_not_promising` |
+
+Lecture:
+
+- le digest compact se reconstruit correctement sur les inputs v9: `0`
+  `missing_digest`;
+- aucun bucket technique ne justifie un appel LLM v10 payant sur ces deux
+  micro-folds;
+- OOS montre plutot des buckets negatifs (`trend_ma=long`, `volume_flow=long`,
+  `ma_stack_bullish`, `volatility_bands=risk`) sur ce petit echantillon;
+- les `veto_signals`/`conflicts` actuels ne capturent pas encore ces faux
+  positifs OOS, car les quatre candidats restent `has_veto=false` et
+  `has_conflict=false`;
+- conclusion PNL/cout: ne pas lancer OpenAI v10 maintenant. Continuer en
+  zero-cout avec un meilleur veto local ou un calcul rolling plus riche avant
+  de rouvrir un budget LLM.
+
+Validation multi-fold zero-cout ajoutee le `2026-06-18`:
+
+- nouveau rapport:
+  `server-data/replay_reports/trident_ai_technical_digest_fold_validation_v10_multifold_20260618.json`;
+- markdown associe:
+  `server-data/replay_reports/trident_ai_technical_digest_fold_validation_v10_multifold_20260618.md`;
+- folds testes:
+  - IS `2026-04-13 -> 2026-04-17`;
+  - OOS liquide `2026-04-18 -> 2026-04-23`;
+  - OOS guardrail `2026-05-12 -> 2026-05-13`;
+- seuils: `min_bucket_samples=4`, `min_delta_bps=5`,
+  `min_positive_folds=2`, `max_negative_folds=0`.
+
+Resultats multi-fold:
+
+| Fold | Candidats | Digest OK | Best horizon | Avg net best | Positive buckets | Negative buckets | Recommendation |
+|---|---:|---:|---:|---:|---:|---:|---|
+| IS 2026-04-13 -> 2026-04-17 | 50 | 50 | 180m | `+19.5285 bps` | 12 | 8 | `v10_candidate_signal_only` |
+| OOS liq 2026-04-18 -> 2026-04-23 | 25 | 25 | 15m | `-16.2036 bps` | 0 | 4 | `hold_zero_cost_digest_not_promising` |
+| OOS guardrail 2026-05-12 -> 2026-05-13 | 1 | 1 | 30m | `+78.5586 bps` | 0 | 0 | `hold_zero_cost` |
+
+Synthese:
+
+| Metric | Valeur |
+|---|---:|
+| Candidats totaux | 76 |
+| Digest OK | 76 |
+| Stable positive buckets | 0 |
+| Stable negative buckets | 1 |
+| Unstable buckets | 10 |
+| Recommendation globale | `hold_zero_cost_multifold_digest_not_promising` |
+
+Bucket stable negatif detecte:
+
+| Family | Bucket | Samples | Positive folds | Negative folds | Avg net | Avg delta |
+|---|---|---:|---:|---:|---:|---:|
+| `family` | `volume_flow=short` | 26 | 0 | 2 | `-22.6084 bps` | `-33.4128 bps` |
+
+Lecture PNL/cout:
+
+- les signaux positifs observes en IS ne survivent pas au fold OOS liquide;
+- aucun bucket technique n'a assez de support multi-fold pour meriter un
+  micro-replay OpenAI v10 payant;
+- le seul signal stable est negatif (`volume_flow=short`), donc il peut servir
+  de candidat veto local/research, mais pas encore de bonus d'entree;
+- objectif PNL: priorite a transformer ce bucket negatif en veto paper-testable
+  ou a enrichir le calcul rolling avant d'ajouter du contexte LLM;
+- objectif cout: garder `Etape 7s` fermee tant que le digest ne produit pas une
+  separation positive robuste et compensatrice du cout LLM.
+
+Veto local `volume_flow=short` teste le `2026-06-18`:
+
+- nouvelle commande CLI `technical-digest-veto-audit`;
+- `candidate-paper-replay` accepte maintenant `--technical-veto-bucket` pour
+  rejouer le meme veto avec l'executor paper existant;
+- bucket teste: `family::volume_flow=short`;
+- rapport fixed-horizon:
+  `server-data/replay_reports/trident_ai_technical_digest_veto_volume_flow_short_multifold_20260618.json`;
+- markdown fixed-horizon:
+  `server-data/replay_reports/trident_ai_technical_digest_veto_volume_flow_short_multifold_20260618.md`;
+- artefacts paper:
+  `server-data/replay_reports/trident_ai_technical_digest_veto_volume_flow_short_paper_20260618_artifacts/`;
+- tests apres ajout:
+  `rtk uv run pytest tests/test_trident_ai_*.py -q` -> `120 passed,
+  4 subtests passed`.
+
+Resultats fixed-horizon candidat:
+
+| Slice | Samples | Win rate | Avg net | Total net |
+|---|---:|---:|---:|---:|
+| Baseline | 68 | 54.41% | `+7.2598 bps` | `+493.6650 bps` |
+| Apres veto | 42 | 64.29% | `+25.7496 bps` | `+1081.4826 bps` |
+| Vetoed | 26 | 38.46% | `-22.6084 bps` | `-587.8176 bps` |
+| Delta kept-baseline | -26 | +9.87 pts win rate | `+18.4898 bps` | `+587.8176 bps` |
+
+Par fold fixed-horizon:
+
+| Fold | Vetoed | Delta total | Classe |
+|---|---:|---:|---|
+| IS `2026-04-13 -> 2026-04-17` | 18 | `+445.2790 bps` | `improved` |
+| OOS liq `2026-04-18 -> 2026-04-23` | 8 | `+221.0971 bps` | `improved` |
+| OOS guardrail `2026-05-12 -> 2026-05-13` | 1 | `-78.5586 bps` | `degraded` |
+
+Recommendation fixed-horizon: `candidate_veto_promising_but_fold_risk`.
+
+Resultats paper counterfactual:
+
+| Fold | Baseline trades | Baseline PnL | Veto trades | Veto PnL | Delta PnL |
+|---|---:|---:|---:|---:|---:|
+| IS `2026-04-13 -> 2026-04-17` | 13 | `$+0.381977` | 10 | `$+0.994730` | `$+0.612753` |
+| OOS liq `2026-04-18 -> 2026-04-23` | 10 | `$-2.146554` | 9 | `$-2.242724` | `$-0.096170` |
+| OOS guardrail `2026-05-12 -> 2026-05-13` | 1 | `$-0.075351` | 0 | `$0.000000` | `$+0.075351` |
+| Total | 24 | `$-1.839928` | 19 | `$-1.247994` | `$+0.591934` |
+
+Lecture PNL/cout:
+
+- le veto `volume_flow=short` ameliore le total paper et reduit le turnover;
+- il degrade toutefois le fold OOS liquide de `$-0.096170`, donc il ne passe
+  pas encore le critere robuste "aucun fold OOS degrade";
+- il reste un bon candidat research de garde-fou local, mais ne doit pas etre
+  promu seul comme gate de production ni justifier un micro-replay LLM v10;
+- prochaine piste zero-cout: tester ce veto combine aux gates edge/liquidite
+  et/ou a l'overlay exit deja prometteur, avec penalite explicite si OOS liq
+  se degrade encore;
+- `Etape 7s` reste fermee: aucun cout OpenAI additionnel tant que le gain PnL
+  n'est pas robuste par fold.
+
+Sweep gates + veto technique execute le `2026-06-18`:
+
+- `candidate-gate-sweep` accepte maintenant `--technical-veto-bucket`;
+- bucket applique: `family::volume_flow=short`;
+- grid volontairement focalise:
+  - `min_edge_to_cost`: `3.5`, `4.0`;
+  - `min_net_edge_bps`: `10`, `15`, `25`, `35`;
+  - `min_liquidity_score`: `1.0`;
+  - `max_round_trip_cost_bps`: `12`;
+- rapport:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_technical_veto_volume_flow_short_20260618.json`;
+- markdown:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_technical_veto_volume_flow_short_20260618.md`;
+- artefacts:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_technical_veto_volume_flow_short_20260618_artifacts/`;
+- tests apres ajout:
+  `rtk uv run pytest tests/test_trident_ai_*.py -q` -> `121 passed,
+  4 subtests passed`.
+
+Resultats du sweep focalise:
+
+| Profile | Class | Trades | Symbols | PnL | Avg bps | Penalized bps | Neg folds | OOS no-trade |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `edge4_net10_liq1_cost12` | `oos_no_trade` | 5 | 2 | `$+0.284920` | `+22.7936` | `-2.2064` | 0 | 1 |
+| `edge4_net15_liq1_cost12` | `oos_no_trade` | 5 | 2 | `$+0.284920` | `+22.7936` | `-2.2064` | 0 | 1 |
+| `edge4_net25_liq1_cost12` | `oos_no_trade` | 5 | 2 | `$+0.284920` | `+22.7936` | `-2.2064` | 0 | 1 |
+| `edge3p5_net35_liq1_cost12` | `insufficient_trades` | 3 | 2 | `$+0.027019` | `+3.6025` | `-46.3975` | 0 | 2 |
+| `edge4_net35_liq1_cost12` | `insufficient_trades` | 3 | 2 | `$+0.027019` | `+3.6025` | `-46.3975` | 0 | 2 |
+| `edge3p5_net10_liq1_cost12` | `oos_no_trade` | 9 | 2 | `$-0.514756` | `-22.8780` | `-107.8780` | 1 | 1 |
+
+Meilleur profil penalise:
+
+- `edge4_net10_liq1_cost12`;
+- trades: `5`;
+- PnL: `$+0.284920`;
+- avg net: `+22.7936 bps`;
+- negative folds: `0`;
+- catastrophic folds: `0`;
+- OOS no-trade folds: `1`;
+- skips dus au veto technique: `9`;
+- par fold:
+  - IS: `4` trades, `$+0.156050`, `+15.6050 bps`;
+  - OOS liq: `1` trade, `$+0.128870`, `+51.5480 bps`;
+  - OOS guardrail: `0` trade, car le seul candidat est veto.
+
+Lecture:
+
+- le veto combine aux gates `edge>=4`, `net>=10/15/25`, `liq>=1`,
+  `cost<=12` corrige la degradation OOS liq observee dans le veto seul;
+- le profil devient positif et n'a plus de fold negatif, mais il ne prouve pas
+  de presence OOS guardrail;
+- selon les guardrails conservateurs existants, cela reste `oos_no_trade`, pas
+  `robust_candidate`;
+- decision PNL/cout: garder le profil en watchlist research zero-cout, ne pas
+  promouvoir et ne pas lancer OpenAI v10;
+- prochaine piste possible: tester une variante ou le fold guardrail est traite
+  explicitement comme "loss-avoidance guardrail" plutot que presence OOS, mais
+  uniquement si on formalise ce critere avant de regarder d'autres resultats
+  pour eviter le surfit.
+
+Validation guardrail-aware executee le `2026-06-18`:
+
+- `candidate-gate-sweep` accepte maintenant:
+  - `--allow-guardrail-loss-avoidance`;
+  - `--guardrail-fold-label`;
+- critere formalise avant lecture du resultat:
+  - un no-trade OOS ne peut etre accepte que sur un fold explicitement marque
+    guardrail;
+  - le meme profil sans veto technique doit ouvrir au moins un trade sur ce
+    fold;
+  - cette baseline sans veto doit etre perdante;
+  - le no-trade du profil veto doit venir d'un skip
+    `technical_digest_veto_*`;
+- rapport:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_guardrail_aware_volume_flow_short_20260618.json`;
+- markdown:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_guardrail_aware_volume_flow_short_20260618.md`;
+- artefacts:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_guardrail_aware_volume_flow_short_20260618_artifacts/`;
+- tests apres ajout:
+  `rtk uv run pytest tests/test_trident_ai_*.py -q` -> `122 passed,
+  4 subtests passed`.
+
+Profil valide:
+
+| Profile | Class | Trades | Symbols | PnL | Avg bps | Penalized bps | Neg folds | Guardrail avoided | Effective OOS no-trade |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `edge4_net10_liq1_cost12` | `guardrail_loss_avoidance_candidate` | 5 | 2 | `$+0.284920` | `+22.7936` | `+22.7936` | 0 | 1 | 0 |
+
+Par fold:
+
+| Fold | Trades | PnL | Avg bps | Guardrail loss avoidance | Baseline sans veto |
+|---|---:|---:|---:|---|---|
+| IS `2026-04-13 -> 2026-04-17` | 4 | `$+0.156050` | `+15.6050` | non | n/a |
+| OOS liq `2026-04-18 -> 2026-04-23` | 1 | `$+0.128870` | `+51.5480` | non | n/a |
+| OOS guardrail `2026-05-12 -> 2026-05-13` | 0 | `$0.000000` | `0.0000` | oui | 1 trade, `$-0.075351` |
+
+Lecture guardrail-aware:
+
+- le profil passe le critere local formalise:
+  `edge_to_cost>=4`, `net_edge>=10`, `liq>=1`, `round_trip_cost<=12`,
+  veto `family::volume_flow=short`;
+- il trade le fold OOS liquide avec PnL positif;
+- il evite le seul trade du fold guardrail, et la baseline sans veto perdait
+  `$-0.075351`;
+- il n'a aucun fold negatif ni catastrophique;
+- ce resultat merite un tag research local, mais pas encore une depense LLM:
+  l'echantillon reste petit (`5` trades fermes, `2` symboles);
+- next step zero-cout: figer ce profil comme candidat `research_v3_guardrail`
+  et le tester sur une fenetre supplementaire plus recente/independante avant
+  tout micro-replay OpenAI v10.
+
+Suite `research_v3_guardrail` executee le `2026-06-19`:
+
+- `candidate-paper-replay` accepte maintenant
+  `--research-profile research_v3_guardrail`;
+- le profil fige explicitement:
+  - `min_edge_to_cost>=4`;
+  - `min_net_edge_bps>=10`;
+  - `min_liquidity_score>=1`;
+  - `max_round_trip_cost_bps<=12`;
+  - veto `family::volume_flow=short`;
+- le replay paper et le sweep acceptent aussi une gate optionnelle
+  `min_pattern_quality_score`, exposee en CLI:
+  - `candidate-paper-replay --min-pattern-quality-score`;
+  - `candidate-gate-sweep --min-pattern-quality-score-values`;
+- cette gate est un outil de recherche local zero-token, pas une promotion.
+
+Validation recente independante:
+
+- source marche:
+  `server-data/replay_inputs/full_bot_live_window_20260524T1605_20260611_no_external_reference.jsonl`;
+- taille source: `52144` snapshots, du `2026-05-24T16:05:00Z` au
+  `2026-06-11T13:43:00Z`;
+- scan borne initial:
+  - `max_records=5000`;
+  - `contexts_scored=18216`;
+  - `candidates_selected=160`;
+  - fenetre effective: `2026-05-24T16:05:00Z` ->
+    `2026-05-27T20:14:00Z`;
+- artefacts scan:
+  - `server-data/replay_reports/trident_ai_candidate_scan_research_v3_guardrail_recent_smoke_20260619.json`;
+  - `server-data/replay_inputs/trident_ai_candidate_research_v3_guardrail_recent_smoke_20260619.jsonl`.
+
+Resultat recent `research_v3_guardrail` sans gate qualite:
+
+- rapport:
+  `server-data/replay_reports/trident_ai_research_v3_guardrail_recent_smoke_paper_20260619.json`;
+- decisions: `11`;
+- trades fermes: `9`;
+- symboles: `HYPE=7`, `SOL=2`;
+- PnL realise: `$-1.085657`;
+- avg net: `-48.2514 bps`;
+- close reasons: `6 stop_hit`, `1 take_profit_hit`, `2 time_stop`;
+- cout LLM: `$0.000000`;
+- decision: echec OOS recent, aucune promotion.
+
+Resultat recent avec `min_pattern_quality_score=0.85`:
+
+- rapport:
+  `server-data/replay_reports/trident_ai_research_v3_quality085_recent_smoke_paper_20260619.json`;
+- decisions/trades fermes: `3`;
+- symboles: `HYPE=3`;
+- PnL realise: `$-0.371663`;
+- avg net: `-49.5551 bps`;
+- le filtre qualite reduit la perte absolue mais reste negatif;
+- aucun candidat ne passe `pattern_quality_score>=0.9` sur ce scan recent;
+- decision: ne pas promouvoir `pq>=0.85`.
+
+Sweep multi-fold de verification:
+
+- rapport:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_recent_quality_probe_20260619.json`;
+- markdown:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_recent_quality_probe_20260619.md`;
+- artefacts:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_recent_quality_probe_20260619_artifacts/`;
+- folds:
+  - IS `2026-04-13 -> 2026-04-17`;
+  - OOS liq `2026-04-18 -> 2026-04-23`;
+  - OOS guardrail `2026-05-12 -> 2026-05-13`;
+  - OOS recent smoke `2026-05-24 -> 2026-05-27`;
+- profils testes:
+  - `edge4_net10_liq1_cost12_pqnone`;
+  - `edge4_net10_liq1_cost12_pq0p85`.
+
+Resultats multi-fold:
+
+| Profile | Class | Trades | Symbols | PnL | Avg bps | Penalized bps | Neg folds | Effective OOS no-trade |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `edge4_net10_liq1_cost12_pqnone` | `fold_unstable` | 14 | 2 | `$-0.800737` | `-22.8782` | `-32.8782` | 1 | 0 |
+| `edge4_net10_liq1_cost12_pq0p85` | `insufficient_symbol_support` | 5 | 1 | `$+0.105161` | `+8.4129` | `-51.5871` | 1 | 2 |
+
+Lecture PNL/cout du `2026-06-19`:
+
+- le fold recent invalide la promotion de `research_v3_guardrail`;
+- la gate qualite `0.85` ameliore le total brut sur les anciens folds mais:
+  - supprime le trade OOS liq positif;
+  - ne garde qu'un seul symbole (`HYPE`);
+  - reste negative sur le fold recent;
+  - cree deux OOS no-trade effectifs;
+- un filtre simple `vwap_distance_bps` a ete inspecte mais non implemente:
+  il coupe aussi des gagnants historiques et serait trop fragile;
+- decision conforme aux deux guidelines:
+  - objectif PnL: ne pas promouvoir un profil qui perd en OOS recent;
+  - objectif cout: ne pas lancer OpenAI v10 tant que l'edge local n'est pas
+    positif et robuste;
+- next step zero-cout:
+  - segmenter la fenetre recente complete `2026-05-24 -> 2026-06-11` en
+    plusieurs folds, pas seulement les `5000` premiers records;
+  - auditer les clusters de `stop_hit` du fold recent avec features locales
+    deja presentes (`vwap_distance_bps`, vol courte, range bucket, regime);
+  - ne creer un nouveau profil `research_v4` que si un filtre passe les anciens
+    folds et au moins deux sous-fenatres recentes.
+
+Segmentation recente executee le `2026-06-19`:
+
+- `candidate-scan` accepte maintenant:
+  - `--start-timestamp` inclusif;
+  - `--end-timestamp` exclusif;
+- objectif: eviter le biais `max_records=5000` et decouper toute la fenetre
+  recente `2026-05-24T16:05:00Z -> 2026-06-11T13:43:00Z`;
+- folds generes:
+
+| Fold | Records | Contexts | Candidates | First | Last |
+|---|---:|---:|---:|---|---|
+| `recent_a_20260524_20260528` | 5225 | 19116 | 160 | `2026-05-24T16:05:00Z` | `2026-05-27T23:59:00Z` |
+| `recent_b_20260528_20260601` | 5957 | 23041 | 160 | `2026-05-28T00:00:00Z` | `2026-05-31T23:59:00Z` |
+| `recent_c_20260601_20260605` | 6317 | 23024 | 160 | `2026-06-01T00:00:00Z` | `2026-06-04T23:59:00Z` |
+| `recent_d_20260605_20260609` | 5976 | 21098 | 160 | `2026-06-05T00:00:00Z` | `2026-06-08T23:59:00Z` |
+| `recent_e_20260609_20260612` | 3979 | 15067 | 160 | `2026-06-09T00:00:00Z` | `2026-06-11T13:43:00Z` |
+
+Artefacts de scan:
+
+- `server-data/replay_inputs/trident_ai_candidate_recent_a_20260524_20260528_20260619.jsonl`;
+- `server-data/replay_inputs/trident_ai_candidate_recent_b_20260528_20260601_20260619.jsonl`;
+- `server-data/replay_inputs/trident_ai_candidate_recent_c_20260601_20260605_20260619.jsonl`;
+- `server-data/replay_inputs/trident_ai_candidate_recent_d_20260605_20260609_20260619.jsonl`;
+- `server-data/replay_inputs/trident_ai_candidate_recent_e_20260609_20260612_20260619.jsonl`;
+- rapports:
+  `server-data/replay_reports/trident_ai_candidate_scan_recent_*_20260619.{json,md}`.
+
+Sweep recent segmente:
+
+- rapport:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_recent_segmented_probe_20260619.json`;
+- markdown:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_recent_segmented_probe_20260619.md`;
+- artefacts:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_recent_segmented_probe_20260619_artifacts/`;
+- profils:
+  - `edge4_net10_liq1_cost12_pqnone`;
+  - `edge4_net10_liq1_cost12_pq0p85`;
+- les deux profils sont classes `catastrophic_fold`.
+
+Resultats:
+
+| Profile | Trades | Symbols | PnL | Avg bps | Penalized bps | Neg folds | Stops |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `edge4_net10_liq1_cost12_pqnone` | 43 | 4 | `$-0.779928` | `-7.2551` | `-147.2551` | 4 | 22 |
+| `edge4_net10_liq1_cost12_pq0p85` | 22 | 4 | `$-2.627259` | `-47.7683` | `-237.7683` | 4 | 14 |
+
+Par fold, profil `pqnone`:
+
+| Fold | Trades | PnL | Avg bps | Close reasons |
+|---|---:|---:|---:|---|
+| `recent_a_20260524_20260528` | 7 | `$-1.021343` | `-58.3625` | `5 stop`, `1 TP`, `1 time` |
+| `recent_b_20260528_20260601` | 6 | `$-0.887658` | `-59.1772` | `4 stop`, `1 TP`, `1 time` |
+| `recent_c_20260601_20260605` | 12 | `$-1.057905` | `-35.2635` | `6 stop`, `1 TP`, `5 time` |
+| `recent_d_20260605_20260609` | 10 | `$+2.982902` | `+119.3161` | `2 stop`, `5 TP`, `3 time` |
+| `recent_e_20260609_20260612` | 8 | `$-0.795924` | `-39.7962` | `5 stop`, `1 TP`, `2 time` |
+
+Audit stop/loss:
+
+- `pqnone`:
+  - `43` trades, `17` gagnants, `26` perdants, `22` stops;
+  - PnL par symbole: `BTC +$0.577197`, `ETH -$0.229982`,
+    `HYPE -$0.568834`, `SOL -$0.558309`;
+  - les perdants ont en moyenne:
+    - `volume_ratio=11.4917` vs `8.2755` chez les gagnants;
+    - `realized_vol_short_bps=23.3447` vs `21.3852`;
+    - `bucket_range_bps=69.6807` vs `65.7005`;
+  - `pattern_quality_score` ne separe pas bien gagnants/perdants:
+    `0.7807` chez les perdants vs `0.7440` chez les gagnants.
+- `pq0p85`:
+  - reduit le nombre de trades mais aggrave le PnL recent;
+  - `22` trades, `6` gagnants, `16` perdants, `14` stops;
+  - `HYPE` reste la plus grosse perte (`-$1.654804`).
+
+Hypothese post-hoc non promue:
+
+- filtre local teste uniquement en audit:
+  - `bucket_range_bps<=65`;
+  - `realized_vol_short_bps<=20`;
+  - autres gates `research_v3_guardrail` inchangees;
+- sur les 5 folds recents, ce filtre garde `8` trades, `3` symboles,
+  `+$1.154720`, aucun fold negatif, aucun no-trade fold;
+- sur les anciens folds guardrail-aware, il garde `0` trade et coupe donc les
+  anciens gagnants;
+- conclusion: piste de regime `low_range_low_vol`, pas profil global robuste.
+  Ne pas implementer comme `research_v4` tant qu'il n'a pas une validation
+  hors echantillon dediee.
+
+Decision PNL/cout apres segmentation:
+
+- `research_v3_guardrail` est invalide comme profil global recent;
+- `pq>=0.85` est rejete;
+- aucune depense LLM OpenAI v10 n'est justifiee;
+- next step zero-cout:
+  - ajouter un mode d'audit/sweep plus rapide avec fenetre marche pour ne pas
+    relire tout le JSONL sur chaque fold;
+  - tester l'hypothese `low_range_low_vol` sur d'autres periodes
+    independantes, avec la contrainte de ne pas perdre les anciens folds
+    positifs ou de la marquer explicitement comme regime-only.
+
+Next step execute: audit micro-regimes par symbole.
+
+Motivation:
+
+- le champ `regime` global des replays candidats vaut majoritairement
+  `unknown`; il n'est donc pas assez informatif pour piloter un profil
+  `tridentAI`;
+- l'audit des pertes montre que les echecs ne sont pas seulement
+  coin-specifiques: ils dependent de sous-regimes locaux melant range,
+  volatilite courte, flow, distance VWAP et microprice;
+- l'exemple attendu est confirme: un coin comme `HYPE` peut etre bon dans un
+  sous-regime et mauvais dans un autre. Il ne faut donc pas blacklister un coin
+  globalement sans tenir compte du micro-regime.
+
+Implementation zero-cout:
+
+- ajout de `app/trident_ai/market_regime_audit.py`;
+- nouvelle commande CLI `candidate-regime-audit`;
+- test dedie `tests/test_trident_ai_market_regime_audit.py`;
+- aucune requete LLM, aucune execution live, aucun changement de risque live.
+
+Buckets calcules localement:
+
+- `range_bucket`: `range_low`, `range_mid`, `range_high`,
+  `range_extreme`;
+- `short_vol_bucket`: `vol_low`, `vol_controlled`, `vol_high`,
+  `vol_extreme`;
+- `volume_ratio_bucket`: `flow_normal`, `flow_elevated`, `flow_crowded`,
+  `flow_blowoff`;
+- `vwap_bucket`: `vwap_near`, `vwap_extended`, `vwap_far`,
+  `vwap_extreme`;
+- `microprice_bucket`: `micro_aligned`, `micro_adverse`,
+  `micro_neutral`;
+- composites:
+  - `range_vol_regime`;
+  - `flow_regime`;
+  - `micro_regime`;
+  - `symbol_range_vol`;
+  - `symbol_micro_regime`.
+
+Artefacts:
+
+- recent:
+  `server-data/replay_reports/trident_ai_market_regime_audit_recent_segmented_pqnone_20260619.json`;
+- recent markdown:
+  `server-data/replay_reports/trident_ai_market_regime_audit_recent_segmented_pqnone_20260619.md`;
+- historique guardrail-aware:
+  `server-data/replay_reports/trident_ai_market_regime_audit_guardrail_aware_min2_20260619.json`;
+- historique markdown:
+  `server-data/replay_reports/trident_ai_market_regime_audit_guardrail_aware_min2_20260619.md`.
+
+Resultats recents, profil `edge4_net10_liq1_cost12_pqnone`:
+
+| Scope | Trades | PnL | Avg bps | Stops | Folds negatifs |
+|---|---:|---:|---:|---:|---:|
+| global | 43 | `$-0.779928` | `-7.2551` | 22 | 4 |
+| `range_mid|vol_high` | 15 | `$-2.335475` | `-62.2793` | 11 | 4 |
+| `range_mid` | 20 | `$-1.788970` | `-35.7794` | 13 | 4 |
+| `vol_high` | 27 | `$-1.724801` | `-25.5526` | 17 | 4 |
+| `micro_adverse` | 11 | `$-1.197553` | `-43.5474` | 7 | 4 |
+
+Lecture par symbole:
+
+- dans `range_mid|vol_high`, `HYPE` porte `-$1.749732` sur `8` trades et
+  `SOL` porte `-$0.686676` sur `2` trades;
+- le meme `HYPE` n'est pas mauvais partout:
+  - `HYPE|range_mid|vol_controlled`: `4` trades, `+$0.536500`;
+  - `HYPE|range_low|vol_controlled`: `2` trades, `+$0.587848`;
+  - `range_low` global: `4` trades, `+$1.200919`;
+- conclusion locale: `range_mid|vol_high` ressemble a un sous-regime de perte,
+  tandis que `range_low/vol_controlled` et `range_mid/vol_controlled`
+  meritent un sweep de support.
+
+Comparaison historique guardrail-aware:
+
+| Scope | Trades | PnL | Avg bps | Stops | Folds negatifs |
+|---|---:|---:|---:|---:|---:|
+| global | 5 | `$+0.284920` | `+22.7936` | 1 | 0 |
+| `HYPE` | 3 | `$+0.605694` | `+80.7592` | 0 | 0 |
+| `flow_normal|vwap_extended` | 2 | `$+0.476663` | `+95.3326` | 0 | 0 |
+| `SOL` | 2 | `$-0.320774` | `-64.1548` | 1 | 1 |
+
+Decision PNL/cout apres audit micro-regimes:
+
+- oui, il faut affiner les regimes calcules: le regime global courant n'est pas
+  pertinent pour les candidats `tridentAI`;
+- ne pas creer de blacklist coin globale: `HYPE` est un bon exemple de coin
+  regime-dependent;
+- ne pas promouvoir encore un filtre live ou `research_v4`: les supports
+  positifs ont peu de trades et peuvent overfit;
+- ne pas lancer de v10 payant tant qu'un sweep zero-cout n'a pas prouve que les
+  micro-regimes augmentent le PNL net sans tuer la couverture;
+- next step zero-cout:
+  - injecter les labels `range_vol_regime`, `flow_regime`,
+    `micro_regime` et `symbol_range_vol` dans le scan candidat/replay;
+  - ajouter un sweep de gates/sizing par micro-regime:
+    veto `range_mid|vol_high`, sizing reduit sur `micro_adverse`, support
+    conditionnel sur `range_low|vol_controlled` et
+    `HYPE|range_mid|vol_controlled`;
+  - valider sur les 5 folds recents et les folds guardrail-aware, avec
+    penalite forte pour no-trade fold, fold negatif et concentration sur un
+    seul symbole.
+
+Next step execute: labels et profils micro-regimes dans le replay candidat.
+
+Implementation:
+
+- ajout de `app/trident_ai/market_regime.py`, source commune pour les buckets
+  micro-regime;
+- `candidate-scan` passe le hint candidat en
+  `trident_ai_candidate_hint_v7` et ajoute:
+  - `market_micro_regime`;
+  - `range_vol_regime`;
+  - `flow_regime`;
+  - `micro_regime`;
+  - `symbol_range_vol`;
+  - `symbol_micro_regime`;
+- `candidate-paper-replay` accepte maintenant:
+  - `--micro-regime-veto-bucket`;
+  - `--micro-regime-require-bucket`;
+  - `--micro-regime-size-scale`;
+- `candidate-gate-sweep` accepte `--micro-regime-profile-values`, avec profils
+  locaux:
+  - `none`;
+  - `veto_range_mid_vol_high`;
+  - `veto_range_mid_vol_high_size_micro_adverse`;
+  - `low_vol_support`;
+  - `low_vol_support_size_micro_adverse`;
+- le sizing micro-regime est conservateur: si plusieurs scales matchent, le
+  plus petit scale est applique.
+
+Artefacts:
+
+- exact historique:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_micro_regime_guardrail_aware_20260619.json`;
+- exact historique markdown:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_micro_regime_guardrail_aware_20260619.md`;
+- post-hoc recent:
+  `server-data/replay_reports/trident_ai_micro_regime_posthoc_recent_20260619.json`;
+- post-hoc recent markdown:
+  `server-data/replay_reports/trident_ai_micro_regime_posthoc_recent_20260619.md`;
+- market slices recents, crees pour accelerer les prochains replays exacts:
+  `server-data/replay_inputs/trident_ai_market_recent_*_20260619.jsonl`.
+
+Resultats exacts historiques guardrail-aware:
+
+| Profil micro | Classe | Trades | PnL | Avg bps | Penalized bps | Neg folds | OOS no-trade |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `none` | `guardrail_loss_avoidance_candidate` | 5 | `$+0.284920` | `+22.7936` | `+22.7936` | 0 | 1 |
+| `veto_range_mid_vol_high` | `guardrail_loss_avoidance_candidate` | 4 | `$+0.155889` | `+15.5889` | `+15.5889` | 0 | 1 |
+| `veto_range_mid_vol_high_size_micro_adverse` | `guardrail_loss_avoidance_candidate` | 4 | `$+0.155889` | `+15.5889` | `+15.5889` | 0 | 1 |
+| `low_vol_support` | `insufficient_trades` | 0 | `$0.000000` | `0.0000` | `-50.0000` | 0 | 2 |
+| `low_vol_support_size_micro_adverse` | `insufficient_trades` | 0 | `$0.000000` | `0.0000` | `-50.0000` | 0 | 2 |
+
+Resultats recents post-hoc, sans trades de remplacement:
+
+| Profil micro | Trades | PnL | Avg bps | Penalized bps | Neg folds | No-trade folds |
+|---|---:|---:|---:|---:|---:|---:|
+| `low_vol_support_size_micro_adverse` | 7 | `$+1.303873` | `+86.9249` | `+61.9249` | 0 | 1 |
+| `low_vol_support` | 7 | `$+1.144715` | `+65.4123` | `+40.4123` | 0 | 1 |
+| `veto_range_mid_vol_high_size_micro_adverse` | 28 | `$+1.927175` | `+31.4641` | `+11.4641` | 2 | 0 |
+| `veto_range_mid_vol_high` | 28 | `$+1.555547` | `+22.2221` | `-7.7779` | 3 | 0 |
+| `none` | 43 | `$-0.779928` | `-7.2551` | `-47.2551` | 4 | 0 |
+
+Lecture:
+
+- le veto `range_mid|vol_high` supprime `15` trades recents et transforme le
+  PnL ferme de `-$0.779928` a `+$1.555547` en post-hoc;
+- ajouter un sizing `0.5` sur `micro_adverse` ameliore encore le post-hoc
+  recent (`+$1.927175`), mais laisse `2` folds negatifs;
+- le support `low_vol_support` est le meilleur post-hoc recent, mais il cree
+  un no-trade fold recent et `0` trade sur les anciens folds guardrail-aware:
+  il ne peut pas devenir profil global;
+- le replay exact recent complet a ete interrompu car trop lent avec le moteur
+  actuel: il relit encore trop de donnees par profil/fold. Les slices marche
+  existent maintenant pour relancer plus vite, mais il faut ajouter un mode
+  exact cache/sidecar avant promotion.
+
+Decision PNL/cout apres sweep micro-regime:
+
+- pas de LLM v10: les signaux utiles sont deterministes et le risque de
+  surfit reste eleve;
+- ne pas promouvoir `low_vol_support` comme profil global;
+- ne pas promouvoir encore `veto_range_mid_vol_high_size_micro_adverse`:
+  prometteur, mais validation exacte recente incomplete et encore `2` folds
+  negatifs en post-hoc;
+- next step zero-cout:
+  - optimiser `candidate-gate-sweep` pour reutiliser les replays paper par
+    fold/profil ou consommer directement des market slices;
+  - relancer un exact recent cible sur
+    `none`, `veto_range_mid_vol_high_size_micro_adverse` et
+    `low_vol_support_size_micro_adverse`;
+  - seulement si le profil garde PnL positif, zero no-trade fold injustifie et
+    reduction nette des folds negatifs, le marquer `research_v4_candidate`.
+
+Next step execute: cache exact et garde-fou concentration symbole.
+
+Implementation:
+
+- `paper.py` accepte maintenant un cache d'evenements marche preconstruits;
+- `candidate-gate-sweep` expose `--cache-market-events` pour construire ces
+  evenements une seule fois par fold et les reutiliser entre profils;
+- `candidate-gate-sweep` expose aussi `--max-dominant-symbol-ratio` et calcule
+  `dominant_symbol_ratio` par profil;
+- si un seul symbole depasse ce ratio, la classification devient
+  `symbol_concentrated` avant toute promotion `robust_candidate`.
+
+Artefacts exacts recents:
+
+- sans garde-fou concentration:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_micro_regime_recent_cached_exact_20260619.json`;
+- markdown sans garde-fou:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_micro_regime_recent_cached_exact_20260619.md`;
+- avec garde-fou concentration `0.75`:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_micro_regime_recent_support_guarded_20260619.json`;
+- markdown avec garde-fou:
+  `server-data/replay_reports/trident_ai_candidate_gate_sweep_micro_regime_recent_support_guarded_20260619.md`.
+
+Resultats exacts recents, sans garde-fou concentration:
+
+| Profil micro | Classe | Trades | PnL | Avg bps | Penalized bps | Neg folds | No-trade |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `low_vol_support_size_micro_adverse` | `robust_candidate` | 13 | `$+1.898671` | `+66.0407` | `+66.0407` | 0 | 0 |
+| `veto_range_mid_vol_high_size_micro_adverse` | `fold_unstable` | 36 | `$+2.380516` | `+30.7163` | `+20.7163` | 1 | 0 |
+| `none` | `catastrophic_fold` | 43 | `$-0.779928` | `-7.2551` | `-147.2551` | 4 | 0 |
+
+Resultats exacts recents, avec `max_dominant_symbol_ratio=0.75`:
+
+| Profil micro | Classe | Trades | PnL | Avg bps | Dom symbol | Neg folds |
+|---|---|---:|---:|---:|---:|---:|
+| `low_vol_support_size_micro_adverse` | `symbol_concentrated` | 13 | `$+1.898671` | `+66.0407` | `0.846154` | 0 |
+| `veto_range_mid_vol_high_size_micro_adverse` | `fold_unstable` | 36 | `$+2.380516` | `+30.7163` | `0.638889` | 1 |
+| `none` | `catastrophic_fold` | 43 | `$-0.779928` | `-7.2551` | `0.627907` | 4 |
+
+Decision PNL/cout apres exact cache:
+
+- le decoupage micro-regime a bien extrait un edge PnL recent: le profil
+  `low_vol_support_size_micro_adverse` transforme la baseline recente
+  `-$0.779928` en `+$1.898671`, sans fold negatif ni no-trade fold;
+- ne pas promouvoir en `research_v4` global: `11/13` trades viennent de `HYPE`
+  et le profil devient `symbol_concentrated` avec un seuil de support `0.75`;
+- ne pas relancer de LLM v10: l'information utile vient du regime local et du
+  sizing deterministe, donc le cout LLM n'est pas justifie;
+- prochaine experience zero-cout:
+  - splitter `low_vol_support` en profils separes `symbol_range_vol` vs
+    `range_vol_regime` global;
+  - imposer support minimal par symbole ou ratio dominant `<=0.75`;
+  - chercher une variante qui garde PnL positif avec au moins `3` symboles,
+    zero fold negatif et support historique non nul avant tout statut
+    `research_v4_candidate`.
+
+Impact deploy/fetch des etapes 7r/7r-bis/7r-ter:
+
+- aucun impact tant que le digest technique et l'audit micro-regimes restent
+  locaux/replay;
+- pas de changement `deploy.sh`, `docker-compose.trident.yml`,
+  `scripts/trident_server.sh` ou `scripts/fetch_trident_data.sh`;
+- ces scripts ne seront a modifier que si le digest ou les labels
+  micro-regimes deviennent un service live, un champ runtime serveur ou un
+  artefact a rapatrier automatiquement.
 
 ### Etape 9 - Testnet live
 
