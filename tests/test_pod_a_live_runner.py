@@ -326,14 +326,14 @@ class PodALiveRunnerTests(unittest.TestCase):
 
         self.assertEqual(len(shaped), 1)
         shaped_plan = shaped[0]
-        self.assertEqual(shaped_plan.target_notional_usd, 20.0)
-        self.assertEqual(shaped_plan.margin_usd, 10.0)
-        self.assertEqual(shaped_plan.risk_budget_usd, 0.2)
-        self.assertEqual(shaped_plan.expected_loss_usd, 0.09)
+        self.assertEqual(shaped_plan.target_notional_usd, 100.0)
+        self.assertEqual(shaped_plan.margin_usd, 50.0)
+        self.assertEqual(shaped_plan.risk_budget_usd, 1.0)
+        self.assertEqual(shaped_plan.expected_loss_usd, 0.45)
         self.assertTrue(bool(shaped_plan.setup_details["dynamic_symbol_guard_live_sizing_active"]))
         self.assertEqual(
             shaped_plan.setup_details["dynamic_symbol_guard_live_sizing_multiplier"],
-            0.1,
+            0.5,
         )
         self.assertEqual(
             shaped_plan.setup_details["dynamic_symbol_guard_live_sizing_reason"],

@@ -142,6 +142,26 @@ Source de verite operationnelle depuis le `2026-05-24`:
   oil combinant trades promus fermes et PnL latent oil ouvert; le smoke local
   `server-data/reviews/20260622T085010Z/` indique `hold_exposure`, donc pas de
   hausse d'exposition oil a ce stade.
+- Deploiement A/C `2026-06-22`: redeploiement live/mainnet effectue sans
+  activer `dynamic_symbol_guard_live_sizing_enabled`; preflight Pod A/Pod C OK,
+  services `trident-api`, `pod-a-live`, `pod-c-live`,
+  `tradfi-funding-collector` et `funding-collector` actifs. Fetch post-deploy
+  `server-data/reviews/20260622T101548Z/review_summary.md` en `PASS`, mode
+  `live`, network `mainnet`, reconciliations Pod A/Pod C ready, aucun conflit
+  d'ownership. P1-09 oil est `hold_exposure` avec closed+open PnL `-0.4198`,
+  donc pas de hausse d'exposition oil.
+- Decision P1-08 live sizing `2026-06-22`: le replay dedie
+  `server-data/replay_reports/p108_dynamic_symbol_guard_live_sizing_halfsize_20260622T102000Z/`
+  interdit l'activation de la variante `cap50/cap10`:
+  `live_sizing_55_75_cap50_cap10_rejected` degrade A/C de `-6.92` vs courant
+  (`-47.11` total, Pod A `-38.46`, `71` trades Pod A, PF `0.4767`). La variante
+  candidate `cap50/cap50` ameliore faiblement la fenetre live (`+2.91`,
+  total `-37.28`, Pod A `-28.63`, PF `0.6879`, max drawdown Pod A `37.37`) mais
+  reste `research_only_no_live_change`: ne pas activer live sans confirmation
+  explicite, audit `live_action_unchanged` adapte et nouveau fetch/review. La
+  config locale dormante est alignee sur `quarantine_multiplier=0.50`, mais ce
+  patch n'a pas ete redeploye et n'a aucun effet live tant que
+  `dynamic_symbol_guard_live_sizing_enabled=false`.
 - Incident live `2026-06-07`: Pod A a ouvert une position ARB mainnet
   (`oid=461196360588`, long `2446.4`, entry `0.0817`, cap live ~`200 USDC`)
   mais le state/journal n'a pas garde la position avant crash/restart. Pod A

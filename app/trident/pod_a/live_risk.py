@@ -242,8 +242,8 @@ def apply_pod_a_dynamic_symbol_guard_sizing(
 
     if state == "quarantine" or would_block:
         multiplier = float(
-            getattr(pod_a_config, "dynamic_symbol_guard_quarantine_multiplier", 0.10)
-            or 0.10
+            getattr(pod_a_config, "dynamic_symbol_guard_quarantine_multiplier", 0.50)
+            or 0.50
         )
         reason = "quarantine"
     else:

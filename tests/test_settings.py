@@ -31,7 +31,7 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertEqual(config.pod_a.live_correlation_full_size_slots, 3)
         self.assertFalse(config.pod_a.dynamic_symbol_guard_live_sizing_enabled)
         self.assertEqual(config.pod_a.dynamic_symbol_guard_throttle_multiplier, 0.50)
-        self.assertEqual(config.pod_a.dynamic_symbol_guard_quarantine_multiplier, 0.10)
+        self.assertEqual(config.pod_a.dynamic_symbol_guard_quarantine_multiplier, 0.50)
         self.assertEqual(config.pod_a.dynamic_symbol_guard_min_multiplier, 0.10)
         self.assertTrue(config.pod_c.cluster_aware_v2_enabled)
         self.assertEqual(config.pod_c.min_confidence, 0.66)

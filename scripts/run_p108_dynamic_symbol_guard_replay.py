@@ -51,6 +51,8 @@ class ScenarioSpec:
     throttle_score: float = 55.0
     quarantine_score: float = 75.0
     action: str = "shadow_only"
+    throttle_multiplier: float = 0.50
+    quarantine_multiplier: float = 0.50
 
 
 @dataclass(slots=True)
@@ -104,6 +106,23 @@ def default_scenarios() -> list[ScenarioSpec]:
             action="throttle_only",
         ),
         ScenarioSpec(
+            name="live_sizing_55_75_cap50_cap50",
+            description=(
+                "Counterfactual policy live candidate: throttle/quarantine "
+                "reduisent le notional de 50%, aucun blocage."
+            ),
+            action="live_sizing_policy",
+        ),
+        ScenarioSpec(
+            name="live_sizing_55_75_cap50_cap10_rejected",
+            description=(
+                "Counterfactual policy live rejetee: throttle reduit le notional "
+                "de 50%, quarantine reduit le notional a 10%, aucun blocage."
+            ),
+            action="live_sizing_policy",
+            quarantine_multiplier=0.10,
+        ),
+        ScenarioSpec(
             name="quarantine_only_75",
             description="Counterfactual: score >=75 bloque les nouvelles entrées Pod A du symbole.",
             action="quarantine_only",
@@ -132,6 +151,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-end", default="2026-05-13T23:59:59Z")
     parser.add_argument("--live-start", default="2026-05-14T00:00:00Z")
     parser.add_argument("--live-end", default="2026-06-15T23:59:59Z")
+    parser.add_argument(
+        "--window",
+        choices=("both", "baseline", "live"),
+        default="both",
+        help="Fenetre a rejouer; utile pour relancer rapidement la tranche live.",
+    )
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--no-live-caps", action="store_true")
     return parser.parse_args()
@@ -143,9 +168,16 @@ def main() -> None:
     output_dir = Path(args.output_dir or f"server-data/replay_reports/p108_dynamic_symbol_guard_{generated_at}")
     output_dir.mkdir(parents=True, exist_ok=True)
     config = load_config(args.config)
-    windows = [
+    all_windows = [
         WindowSpec("baseline_apr_may", Path(args.baseline_input), parse_timestamp(args.baseline_start), parse_timestamp(args.baseline_end)),
         WindowSpec("live_post_baseline", Path(args.live_input), parse_timestamp(args.live_start), parse_timestamp(args.live_end)),
+    ]
+    windows = [
+        window
+        for window in all_windows
+        if args.window == "both"
+        or (args.window == "baseline" and window.name == "baseline_apr_may")
+        or (args.window == "live" and window.name == "live_post_baseline")
     ]
     rows: list[WindowResult] = []
     for window in windows:
@@ -390,16 +422,24 @@ def process_state(
             state.throttle_count += 1
         if feature is not None and feature.would_block:
             state.quarantine_count += 1
-        if state.spec.action in {"throttle_only", "throttle_then_quarantine"} and feature is not None and feature.would_throttle:
+        cap_multiplier = p108_cap_multiplier(state.spec, feature)
+        if cap_multiplier < 1.0:
             state.cap_reduction_count += 1
             plan = TradePlan(
                 **{
                     **asdict(plan),
-                    "target_notional_usd": float(plan.target_notional_usd) * 0.5,
-                    "margin_usd": float(plan.margin_usd) * 0.5,
-                    "risk_budget_usd": float(plan.risk_budget_usd) * 0.5,
-                    "expected_loss_usd": float(plan.expected_loss_usd) * 0.5,
-                    "setup_details": {**dict(plan.setup_details or {}), "p108_shadow_cap_multiplier": 0.5},
+                    "target_notional_usd": float(plan.target_notional_usd) * cap_multiplier,
+                    "margin_usd": float(plan.margin_usd) * cap_multiplier,
+                    "risk_budget_usd": float(plan.risk_budget_usd) * cap_multiplier,
+                    "expected_loss_usd": float(plan.expected_loss_usd) * cap_multiplier,
+                    "setup_details": {
+                        **dict(plan.setup_details or {}),
+                        "p108_shadow_cap_multiplier": cap_multiplier,
+                        "p108_live_sizing_policy_counterfactual": (
+                            state.spec.action == "live_sizing_policy"
+                        ),
+                        "symbol_guard_live_action_unchanged": False,
+                    },
                 }
             )
         filtered.append(plan)
@@ -435,6 +475,21 @@ def guard_filter_reason(spec: ScenarioSpec, feature: Any) -> str | None:
     if spec.action in {"quarantine_only", "throttle_then_quarantine"} and score >= spec.quarantine_score:
         return f"p108_dynamic_symbol_guard_quarantine_ge_{int(spec.quarantine_score)}"
     return None
+
+
+def p108_cap_multiplier(spec: ScenarioSpec, feature: Any) -> float:
+    if feature is None:
+        return 1.0
+    if spec.action == "live_sizing_policy":
+        state = str(getattr(feature, "state", "") or "").lower()
+        if state == "quarantine" or bool(getattr(feature, "would_block", False)):
+            return spec.quarantine_multiplier
+        if state == "throttle" or bool(getattr(feature, "would_reduce_cap", False)):
+            return spec.throttle_multiplier
+    if spec.action in {"throttle_only", "throttle_then_quarantine"}:
+        if bool(getattr(feature, "would_throttle", False)):
+            return spec.throttle_multiplier
+    return 1.0
 
 
 def record_tick(

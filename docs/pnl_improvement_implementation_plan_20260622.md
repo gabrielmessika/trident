@@ -58,6 +58,29 @@ Cette section garde la trace directe des conclusions de la review serveur du
 | Ne pas durcir `early_failure_exit` sans savoir s'il coupe des recoveries. | `A-PNL-04`: MFE/MAE post-sortie et PnL contrefactuel avant toute promotion. |
 | Pod C: ne pas extrapoler P1-09 oil trop vite, car l'echantillon reste faible et l'unrealized doit compter. | `C-PNL-01`: stoplight oil avec closed + open mark-to-market avant toute hausse d'exposition. |
 
+### Replay dedie P1-08 live sizing
+
+Replay local lance apres redeploiement A/C live/mainnet sans activation:
+`server-data/replay_reports/p108_dynamic_symbol_guard_live_sizing_halfsize_20260622T102000Z/`.
+
+Fenetre: `2026-05-14T00:00:00Z` -> `2026-06-22T10:14:00Z`, live caps actifs,
+`45782` records rejoues. Le resultat est `research_only_no_live_change`:
+
+| Scenario | Total A/C | Delta | Pod A | Trades Pod A | PF Pod A | Max DD Pod A | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `current_ac` | `-40.19` | `+0.00` | `-31.54` | `88` | `0.6756` | `41.14` | Baseline live. |
+| `live_sizing_55_75_cap50_cap50` | `-37.28` | `+2.91` | `-28.63` | `88` | `0.6879` | `37.37` | Candidat demi-cap, pas live encore. |
+| `live_sizing_55_75_cap50_cap10_rejected` | `-47.11` | `-6.92` | `-38.46` | `71` | `0.4767` | `41.05` | Rejete: ne pas activer. |
+
+Conclusion: ne pas activer `dynamic_symbol_guard_live_sizing_enabled` sur la
+variante `quarantine=0.10`. La config locale dormante a ete ramenee a
+`dynamic_symbol_guard_quarantine_multiplier=0.50` pour que la prochaine
+activation candidate corresponde au seul replay positif, mais le flag reste
+`false` et ce patch n'a pas ete redeploye apres le replay. Avant toute activation
+live, il faut une confirmation explicite, un audit adapte au fait que
+`symbol_guard_live_action_unchanged=false` devienne normal quand la policy agit,
+et un fetch/review post-deploiement.
+
 ### TRIDENT-HIP4
 
 | Recommandation review | Traduction dans ce plan |
@@ -76,6 +99,8 @@ Sources locales:
 - `docs/server_data_review_agent.md`
 - `docs/resultat_audit.md`
 - `server-data/reviews/20260622T074233Z/review_summary.md`
+- `server-data/reviews/20260622T101548Z/review_summary.md`
+- `server-data/replay_reports/p108_dynamic_symbol_guard_live_sizing_halfsize_20260622T102000Z/`
 - `server-data/hip4/reviews/20260622T075700Z/hip4_outcome_run_review.md`
 - `server-data/hip4/replay_reports/hip4_policy_market_audit_20260622T075232Z.md`
 - Rapports de replay et d'audit P1-03, P1-08, P1-09, P1-11, P105, P108, P111.
@@ -131,6 +156,9 @@ different, nouveau dataset et comparaison full-bot.
 - Ne pas promouvoir P111 micro-regime tel que teste:
   `veto_range_mid_vol_high`, `half_size_micro_adverse` et combinaison ont empire
   la baseline.
+- Ne pas activer P1-08 en `quarantine_multiplier=0.10`: le replay live dedie du
+  `2026-06-22` degrade A/C de `-6.92` vs courant et abaisse le PF Pod A a
+  `0.4767`.
 
 ### Pod C
 
@@ -172,7 +200,7 @@ Statuts:
 
 | ID | Statut | Changement a faire | Pourquoi ca peut augmenter le PnL | Validation minimale |
 | --- | --- | --- | --- | --- |
-| A-PNL-01 | ready_review | Promouvoir P1-08 uniquement en sizing progressif: `cap-reduced` = demi-cap, `quarantine` = tres petit cap ou no-new-entry temporaire, avec logs `guard_state` et `live_action_changed`. Implementation 2026-06-22: code cap-only disponible via config `dynamic_symbol_guard_live_sizing_enabled=false` par defaut. | Les donnees recentes montrent que les symboles en etat degrade concentrent des pertes; un sizing progressif conserve l'activite sans accepter les memes pertes pleines. | Replay full-bot vs baseline, puis paper/live audit 7 jours; prouver que les winners retires ne compensent pas les pertes evitees. |
+| A-PNL-01 | ready_review | P1-08 uniquement en sizing progressif demi-cap: `throttle=0.50`, `quarantine=0.50`, aucun blocage, avec logs `guard_state` et `live_action_changed`. Implementation 2026-06-22: code cap-only disponible via config `dynamic_symbol_guard_live_sizing_enabled=false` par defaut; la variante `quarantine=0.10` est rejetee. | Les donnees recentes montrent que les symboles en etat degrade concentrent des pertes; le demi-cap conserve l'activite et reduit legerement le drawdown sans supprimer les trades Pod A sur la fenetre live. | Replay dedie positif mais faible (`+2.91` A/C, PF Pod A `0.6879`): avant live, adapter l'audit `live_action_unchanged`, redeployer explicitement, puis review post-deploiement; aucune activation automatique. |
 | A-PNL-02 | todo | Introduire une echelle de notional par etat symbole: base plus basse, retour progressif au cap seulement apres PF/expectancy rolling positifs. | Les pertes recentes ne viennent pas d'un manque d'activite mais d'un mauvais payoff; reduire la taille dans les contextes mediocres ameliore l'esperance sans couper. | Comparer PnL, PF, max loss/trade, trades conserves et missed upside par symbole. |
 | A-PNL-03 | todo | Neutraliser ou capper le boost de taille A-grade en shadow/replay avant tout changement live. | Le bot semble payer cher ses convictions fortes quand elles se trompent; enlever le boost peut reduire les gros losers sans toucher au signal principal. | Replay full-bot `boost=1.0` vs courant, buckets A-grade par symbole/regime, puis paper shadow de 7 jours. |
 | A-PNL-04 | shadow | Ajouter un journal MFE/MAE post-sortie pour `early_failure_exit`: suivre virtuellement le trade jusqu'au stop/time/trailing original. | Les sorties precoces reduisent certaines pertes mais peuvent tuer des recoveries; il faut mesurer le cout d'opportunite avant de durcir. | Rapport par exit_reason: pertes evitees, winners manques, delai moyen de recovery, PnL contrefactuel. |
@@ -274,8 +302,9 @@ suivantes:
 ## Decision actuelle
 
 - A/C: ne pas couper. Priorite a la reduction de taille conditionnelle, a la
-  qualite d'execution et a la microstructure. Le changement le plus proche d'une
-  promotion est P1-08 en version soft/cap-only, pas en blocage brutal.
+  qualite d'execution et a la microstructure. P1-08 `cap50/cap10` est rejete;
+  P1-08 `cap50/cap50` reste le candidat le plus proche, mais seulement apres
+  confirmation live explicite et audit adapte.
 - HIP4: ne pas passer live maintenant. Continuer `prob_stop_full` en paper actif,
   enrichir Nautilus/observability et ne promouvoir le shadow que s'il prouve une
   amelioration nette sur settlements reels avec fills realistes.
