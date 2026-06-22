@@ -210,10 +210,20 @@ class AnchorTrendPlanner:
                 "special_symbol_mode_active": symbol_mode is not None,
             },
         )
-        self._apply_a_grade_boost_and_exits(plan)
+        self._apply_a_grade_boost_and_exits(
+            plan,
+            margin_cap_usd=symbol_allocation.target_usd,
+            risk_budget_cap_usd=base_risk_budget_usd,
+        )
         return plan
 
-    def _apply_a_grade_boost_and_exits(self, plan: TradePlan) -> None:
+    def _apply_a_grade_boost_and_exits(
+        self,
+        plan: TradePlan,
+        *,
+        margin_cap_usd: float,
+        risk_budget_cap_usd: float,
+    ) -> None:
         config = self._config.pod_a
         if not config.a_grade_enabled:
             return
@@ -233,7 +243,14 @@ class AnchorTrendPlanner:
         else:
             scale = config.a_grade_boost_scale
             grade = "standard"
-        self._scale_plan(plan, scale)
+        requested_scale = max(0.0, min(float(scale), 2.0))
+        applied_scale, cap_reasons = self._a_grade_size_scale(
+            plan,
+            requested_scale=requested_scale,
+            margin_cap_usd=margin_cap_usd,
+            risk_budget_cap_usd=risk_budget_cap_usd,
+        )
+        self._scale_plan(plan, applied_scale)
         plan.break_even_trigger_bps = round(
             plan.break_even_trigger_bps * max(config.a_grade_break_even_multiplier, 0.0),
             4,
@@ -252,9 +269,53 @@ class AnchorTrendPlanner:
             "a_grade_active": True,
             "a_grade_score": score,
             "a_grade_level": grade,
-            "a_grade_size_scale": round(scale, 4),
+            "a_grade_size_scale": round(applied_scale, 4),
+            "a_grade_requested_size_scale": round(requested_scale, 4),
             "a_grade_reason": reason,
+            "a_grade_size_headroom_cap_active": bool(cap_reasons),
+            "a_grade_size_headroom_cap_reasons": ",".join(cap_reasons),
+            "a_grade_size_headroom_cap_margin_usd": round(float(margin_cap_usd), 6),
+            "a_grade_size_headroom_cap_risk_budget_usd": round(
+                float(risk_budget_cap_usd),
+                6,
+            ),
         }
+
+    def _a_grade_size_scale(
+        self,
+        plan: TradePlan,
+        *,
+        requested_scale: float,
+        margin_cap_usd: float,
+        risk_budget_cap_usd: float,
+    ) -> tuple[float, list[str]]:
+        bounded = max(0.0, min(float(requested_scale), 2.0))
+        if not self._config.pod_a.a_grade_size_headroom_cap_enabled:
+            return bounded, []
+
+        limits: list[tuple[str, float]] = []
+        if plan.margin_usd > 0 and margin_cap_usd > 0:
+            limits.append(("margin_cap", float(margin_cap_usd) / float(plan.margin_usd)))
+        if plan.expected_loss_usd > 0 and risk_budget_cap_usd > 0:
+            limits.append(
+                (
+                    "risk_budget_cap",
+                    float(risk_budget_cap_usd) / float(plan.expected_loss_usd),
+                )
+            )
+        if not limits:
+            return bounded, []
+
+        cap_scale = min([bounded, *(scale for _reason, scale in limits)])
+        applied = max(1.0, min(bounded, cap_scale))
+        if applied >= bounded - 1e-9:
+            return bounded, []
+        reasons = [
+            reason
+            for reason, scale in limits
+            if scale <= applied + 1e-9 and scale < bounded - 1e-9
+        ]
+        return applied, reasons or ["headroom_cap"]
 
     def _scale_plan(self, plan: TradePlan, scale: float) -> None:
         bounded = max(0.0, min(float(scale), 2.0))

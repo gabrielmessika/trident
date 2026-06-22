@@ -233,6 +233,7 @@ class PodAConfig:
     a_grade_boost_scale: float = 1.25
     a_grade_strong_score: int = 8
     a_grade_strong_boost_scale: float = 1.40
+    a_grade_size_headroom_cap_enabled: bool = False
     a_grade_break_even_multiplier: float = 1.20
     a_grade_trailing_activation_multiplier: float = 1.15
     a_grade_trailing_distance_multiplier: float = 1.35
@@ -1614,6 +1615,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             a_grade_strong_score=int(pod_a_data.get("a_grade_strong_score", 8)),
             a_grade_strong_boost_scale=float(
                 pod_a_data.get("a_grade_strong_boost_scale", 1.40)
+            ),
+            a_grade_size_headroom_cap_enabled=bool(
+                pod_a_data.get("a_grade_size_headroom_cap_enabled", False)
             ),
             a_grade_break_even_multiplier=float(
                 pod_a_data.get("a_grade_break_even_multiplier", 1.20)

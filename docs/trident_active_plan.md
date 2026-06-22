@@ -182,6 +182,60 @@ Source de verite operationnelle depuis le `2026-05-24`:
   inferieure au P1-08 simple `cap50/cap50` (`+2.91`, total `-37.28`, Pod A
   `-28.63`, PF `0.6879`, max DD `37.37`) avec plus de reductions de cap. Garder
   A-PNL-02 en `research_only_no_live_change`; ne pas activer live tel quel.
+- Implementation A-PNL-03 `2026-06-22`: ajout d'un cap headroom A-grade dormant
+  (`a_grade_size_headroom_cap_enabled=false`). Si active en replay, le label
+  A-grade et les exits restent inchanges, mais le scale taille applique ne peut
+  pas depasser la marge symbole ni le risk budget initial; les champs
+  `a_grade_requested_size_scale` et `a_grade_size_headroom_cap_*` sont exportes.
+  P1-05 `strong_frozen_1p00` reste une piste deja testee/rejetee, pas une
+  proposition live. Validations locales OK, dont suite complete
+  `rtk uv run pytest` (`667` passed, `1` warning historique).
+- Decision A-PNL-03 `2026-06-22`: replay live-window filtre
+  `server-data/replay_reports/p105_a_grade_headroom_cap_live_20260622/` sur
+  `2026-05-14T00:00:00Z -> 2026-06-22T10:14:00Z`. `headroom_cap_current` cappe
+  `69` trades A-grade et ameliore seulement de `+0.08` A/C (`-40.11` vs
+  `-40.19`; Pod A `-31.46` vs `-31.54`; PF `0.6762` vs `0.6756`; max DD `41.06`
+  vs `41.14`). Garder A-PNL-03 en `research_only_no_live_change`; ne pas activer
+  live tel quel.
+- Implementation A-PNL-04 `2026-06-22`: ajout de l'audit local
+  `scripts/run_p116_early_failure_post_exit_audit.py` pour les trades Pod A
+  fermes par `early_failure_exit`. P1-02 avait deja couvert la sensibilite
+  globale des exits; P116 ne repropose pas de disable global, il desactive
+  seulement EFE en simulation per-trade et suit le trade jusqu'au prochain
+  stop/trailing/break-even/time-stop/stop catastrophe naturel. Aucun flag live,
+  aucun deploy, aucun changement de fetch et aucun ordre.
+- Decision A-PNL-04 `2026-06-22`: replay complet
+  `server-data/replay_reports/p116_early_failure_post_exit_20260622/` a partir
+  de la baseline full-bot courante no-dedupe `-40.19` A/C (`-31.54` Pod A) sur
+  `2026-05-14T00:00:00Z -> 2026-06-22T10:14:00Z`. Sur les `41` trades EFE,
+  PnL original `-72.38` vs PnL naturel sans EFE `-80.84`, delta `-8.46`.
+  EFE manque `6` winners et `6` reductions de perte (`19.30` USD de recovery
+  manquee), mais evite `29` deteriorations (`27.76` USD de perte evitee);
+  avg post-exit MFE `30.77` bps vs MAE `94.47` bps. Garder
+  `early_failure_exit` actif; ne pas promouvoir de relaxation/desactivation
+  globale. Validations locales OK, dont suite complete `rtk uv run pytest`
+  (`678` passed, `1` warning historique) et `rtk git diff --check`.
+- Implementation A-PNL-05 `2026-06-22`: ajout d'un score microstructure Pod A
+  en shadow dans les `setup_details` (`microstructure_shadow_score`, bucket
+  `poor/weak/ok/strong`, sous-scores spread, flow, microprice, depth, activite,
+  range et churn). Le contexte Pod A reutilise les champs microstructure deja
+  presents dans les snapshots live; `scripts/export_trident_audit_pack.py`
+  exporte les champs `microstructure_shadow_*` et `p115_*`. Nouveau replay local
+  `scripts/run_p115_microstructure_entry_replay.py`, sans flag live, sans deploy
+  et sans changement de fetch.
+- Decision A-PNL-05 `2026-06-22`: replay complet
+  `server-data/replay_reports/p115_microstructure_entry_20260622/` sur baseline
+  officielle avril/mai et live
+  `2026-05-14T00:00:00Z -> 2026-06-22T10:14:00Z`. Baseline neutre (`77.08`
+  total, Pod A `56.72`) meme avec `57` plan caps et `4` trades fermes cappes
+  sur `<0.56`. Live negatif: `micro_cap_poor50_lt42` degrade de `-1.02` A/C
+  (`-41.21` vs `-40.19`, Pod A `-32.56`, PF `0.6651`, max DD `42.16`) et
+  `micro_cap_weak50_lt56` degrade de `-0.13` A/C (`-40.32`, Pod A `-31.67`,
+  PF `0.6701`, max DD `41.29`). Le bucket live `poor` est gagnant (`+9.61`) et
+  le pire bucket est `strong` (`-21.62`); garder le score en audit/shadow, ne
+  pas promouvoir la policy cap-only microstructure. Validations locales OK,
+  dont `rtk uv run pytest` (`675` passed, `1` warning historique) et
+  `rtk git diff --check`.
 - Incident live `2026-06-07`: Pod A a ouvert une position ARB mainnet
   (`oid=461196360588`, long `2446.4`, entry `0.0817`, cap live ~`200 USDC`)
   mais le state/journal n'a pas garde la position avant crash/restart. Pod A

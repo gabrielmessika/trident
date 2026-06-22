@@ -55,6 +55,7 @@ class ScenarioSpec:
     description: str
     standard_scale: float
     strong_scale: float
+    headroom_cap_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,7 @@ class WindowScenarioResult:
     description: str
     standard_scale: float
     strong_scale: float
+    headroom_cap_enabled: bool
     records_processed: int
     duplicate_timestamps_skipped: int
     first_timestamp: str | None
@@ -104,6 +106,8 @@ class WindowScenarioResult:
     standard_a_grade_pnl_usd: float
     no_a_grade_pnl_usd: float
     avg_a_grade_size_scale: float | None
+    avg_a_grade_requested_size_scale: float | None
+    a_grade_headroom_capped_trades: int
     live_quality_scaled_trades: int
     avg_live_quality_multiplier: float | None
     worst_symbol: str | None
@@ -122,6 +126,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--live-start", default=DEFAULT_LIVE_START)
     parser.add_argument("--live-end", default=DEFAULT_LIVE_END)
     parser.add_argument("--output-dir", default="")
+    parser.add_argument(
+        "--scenarios",
+        default="",
+        help="Comma-separated scenario names to run; empty runs all scenarios.",
+    )
+    parser.add_argument(
+        "--windows",
+        default="baseline,live",
+        help="Comma-separated windows to run: baseline, live.",
+    )
     parser.add_argument("--no-live-caps", action="store_true")
     parser.add_argument(
         "--respect-config-enabled",
@@ -143,6 +157,17 @@ def default_scenarios(config: AppConfig) -> list[ScenarioSpec]:
             ),
             current_standard,
             current_strong,
+            bool(config.pod_a.a_grade_size_headroom_cap_enabled),
+        ),
+        ScenarioSpec(
+            "headroom_cap_current",
+            (
+                "Config courante avec cap headroom dormant: le boost A-grade "
+                "ne depasse pas la marge symbole ni le risk budget initial."
+            ),
+            current_standard,
+            current_strong,
+            True,
         ),
         ScenarioSpec(
             "flat_scale_1p00",
@@ -182,8 +207,33 @@ def scenario_config(config: AppConfig, scenario: ScenarioSpec) -> AppConfig:
             a_grade_enabled=True,
             a_grade_boost_scale=float(scenario.standard_scale),
             a_grade_strong_boost_scale=float(scenario.strong_scale),
+            a_grade_size_headroom_cap_enabled=bool(scenario.headroom_cap_enabled),
         ),
     )
+
+
+def selected_names(raw: str, *, available: set[str], label: str) -> list[str]:
+    if not str(raw or "").strip():
+        return sorted(available)
+    names = [item.strip() for item in str(raw).split(",") if item.strip()]
+    unknown = [name for name in names if name not in available]
+    if unknown:
+        raise ValueError(f"unknown {label}(s): {', '.join(unknown)}")
+    return names
+
+
+def selected_scenarios(
+    scenarios: list[ScenarioSpec],
+    raw: str,
+) -> list[ScenarioSpec]:
+    if not str(raw or "").strip():
+        return scenarios
+    by_name = {scenario.name: scenario for scenario in scenarios}
+    names = [item.strip() for item in str(raw).split(",") if item.strip()]
+    unknown = [name for name in names if name not in by_name]
+    if unknown:
+        raise ValueError(f"unknown scenario(s): {', '.join(unknown)}")
+    return [by_name[name] for name in names]
 
 
 def main() -> None:
@@ -200,26 +250,37 @@ def main() -> None:
     if live_start is None or live_end is None or live_start >= live_end:
         raise ValueError("--live-start and --live-end must define a valid UTC window")
 
-    live_input_dir, live_input_files = prepare_snapshot_window(
-        snapshots_dir=Path(args.live_input),
-        output_dir=output_dir,
-        name="live_post_baseline",
-        start=live_start,
-        end=live_end,
+    requested_windows = selected_names(
+        args.windows,
+        available={"baseline", "live"},
+        label="window",
     )
-    windows = [
-        WindowSpec(
-            "baseline_apr_may",
-            Path(args.baseline_input),
-            "Baseline officielle avril/mai.",
-        ),
-        WindowSpec(
-            "live_post_baseline",
-            live_input_dir,
-            f"Snapshots live {isoformat(live_start)} -> {isoformat(live_end)}.",
-        ),
-    ]
-    scenarios = default_scenarios(config)
+    windows: list[WindowSpec] = []
+    live_input_files: list[dict[str, object]] = []
+    if "baseline" in requested_windows:
+        windows.append(
+            WindowSpec(
+                "baseline_apr_may",
+                Path(args.baseline_input),
+                "Baseline officielle avril/mai.",
+            )
+        )
+    if "live" in requested_windows:
+        live_input_dir, live_input_files = prepare_snapshot_window(
+            snapshots_dir=Path(args.live_input),
+            output_dir=output_dir,
+            name="live_post_baseline",
+            start=live_start,
+            end=live_end,
+        )
+        windows.append(
+            WindowSpec(
+                "live_post_baseline",
+                live_input_dir,
+                f"Snapshots live {isoformat(live_start)} -> {isoformat(live_end)}.",
+            )
+        )
+    scenarios = selected_scenarios(default_scenarios(config), args.scenarios)
 
     results: list[WindowScenarioResult] = []
     for window in windows:
@@ -564,6 +625,7 @@ def summarize_reports(
         description=state.spec.description,
         standard_scale=round(float(state.spec.standard_scale), 4),
         strong_scale=round(float(state.spec.strong_scale), 4),
+        headroom_cap_enabled=bool(state.spec.headroom_cap_enabled),
         records_processed=records_processed,
         duplicate_timestamps_skipped=0,
         first_timestamp=first_timestamp,
@@ -591,6 +653,10 @@ def summarize_reports(
         standard_a_grade_pnl_usd=round(float(grade["standard_a_grade_pnl_usd"]), 6),
         no_a_grade_pnl_usd=round(float(grade["no_a_grade_pnl_usd"]), 6),
         avg_a_grade_size_scale=optional_round(grade["avg_a_grade_size_scale"]),
+        avg_a_grade_requested_size_scale=optional_round(
+            grade["avg_a_grade_requested_size_scale"]
+        ),
+        a_grade_headroom_capped_trades=int(grade["a_grade_headroom_capped_trades"]),
         live_quality_scaled_trades=int(grade["live_quality_scaled_trades"]),
         avg_live_quality_multiplier=optional_round(grade["avg_live_quality_multiplier"]),
         worst_symbol=worst_symbol,
@@ -622,6 +688,7 @@ def summarize_result(
         description=scenario.description,
         standard_scale=round(float(scenario.standard_scale), 4),
         strong_scale=round(float(scenario.strong_scale), 4),
+        headroom_cap_enabled=bool(scenario.headroom_cap_enabled),
         records_processed=int(result.records_processed),
         duplicate_timestamps_skipped=int(result.duplicate_timestamps_skipped),
         first_timestamp=result.first_timestamp,
@@ -645,6 +712,10 @@ def summarize_result(
         standard_a_grade_pnl_usd=round(float(grade["standard_a_grade_pnl_usd"]), 6),
         no_a_grade_pnl_usd=round(float(grade["no_a_grade_pnl_usd"]), 6),
         avg_a_grade_size_scale=optional_round(grade["avg_a_grade_size_scale"]),
+        avg_a_grade_requested_size_scale=optional_round(
+            grade["avg_a_grade_requested_size_scale"]
+        ),
+        a_grade_headroom_capped_trades=int(grade["a_grade_headroom_capped_trades"]),
         live_quality_scaled_trades=int(grade["live_quality_scaled_trades"]),
         avg_live_quality_multiplier=optional_round(grade["avg_live_quality_multiplier"]),
         worst_symbol=worst_symbol,
@@ -660,6 +731,7 @@ def summarize_a_grade_trades(trades: Iterable[dict[str, Any]]) -> dict[str, Any]
     counts = Counter()
     pnl = defaultdict(float)
     grade_scales: list[float] = []
+    requested_grade_scales: list[float] = []
     quality_multipliers: list[float] = []
     for trade in trades:
         details = setup_details(trade)
@@ -678,6 +750,11 @@ def summarize_a_grade_trades(trades: Iterable[dict[str, Any]]) -> dict[str, Any]
             scale = optional_float(details.get("a_grade_size_scale"))
             if scale is not None:
                 grade_scales.append(scale)
+            requested_scale = optional_float(details.get("a_grade_requested_size_scale"))
+            if requested_scale is not None:
+                requested_grade_scales.append(requested_scale)
+            if bool(details.get("a_grade_size_headroom_cap_active", False)):
+                counts["a_grade_headroom_capped_trades"] += 1
         else:
             counts["no_a_grade_trades"] += 1
             pnl["no_a_grade_pnl_usd"] += trade_pnl
@@ -696,6 +773,8 @@ def summarize_a_grade_trades(trades: Iterable[dict[str, Any]]) -> dict[str, Any]
         "standard_a_grade_pnl_usd": pnl["standard_a_grade_pnl_usd"],
         "no_a_grade_pnl_usd": pnl["no_a_grade_pnl_usd"],
         "avg_a_grade_size_scale": average(grade_scales),
+        "avg_a_grade_requested_size_scale": average(requested_grade_scales),
+        "a_grade_headroom_capped_trades": counts["a_grade_headroom_capped_trades"],
         "avg_live_quality_multiplier": average(quality_multipliers),
     }
 
@@ -788,7 +867,7 @@ def write_report(path: Path, *, rows: list[WindowScenarioResult], generated_at: 
         "",
         f"- generated_at: `{generated_at}`",
         "- status: `research_only_no_live_change`",
-        "- note: `Les scénarios changent uniquement les scales A-grade Pod A; aucune config live n'est modifiée.`",
+        "- note: `Les scénarios changent uniquement les scales/caps A-grade Pod A; aucune config live n'est modifiée.`",
         "",
     ]
     for window, window_rows in by_window.items():
@@ -799,9 +878,9 @@ def write_report(path: Path, *, rows: list[WindowScenarioResult], generated_at: 
                 "",
                 (
                     "| Scenario | Std | Strong | Total A/C | Delta | Pod A | Trades A | "
-                    "WR | PF | DD | Strong trades | Strong PnL | Quality scaled | Worst symbol |"
+                    "WR | PF | DD | Strong trades | Strong PnL | Headroom capped | Quality scaled | Worst symbol |"
                 ),
-                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
             ]
         )
         for row in window_rows:
@@ -811,7 +890,8 @@ def write_report(path: Path, *, rows: list[WindowScenarioResult], generated_at: 
                 f"{row.pod_a_pnl_usd:.2f} | {row.pod_a_trades} | {fmt_optional(row.pod_a_win_rate)} | "
                 f"{fmt_optional(row.pod_a_profit_factor)} | {row.pod_a_max_drawdown_usd:.2f} | "
                 f"{row.strong_a_grade_trades} | {row.strong_a_grade_pnl_usd:.2f} | "
-                f"{row.live_quality_scaled_trades} | `{row.worst_symbol or ''}` {fmt_money(row.worst_symbol_pnl_usd)} |"
+                f"{row.a_grade_headroom_capped_trades} | {row.live_quality_scaled_trades} | "
+                f"`{row.worst_symbol or ''}` {fmt_money(row.worst_symbol_pnl_usd)} |"
             )
         lines.extend(["", "### Lecture rapide", ""])
         lines.extend(decision_notes(window_rows))
@@ -822,14 +902,21 @@ def write_report(path: Path, *, rows: list[WindowScenarioResult], generated_at: 
 def decision_notes(rows: list[WindowScenarioResult]) -> list[str]:
     current = next(row for row in rows if row.scenario == "current")
     notes: list[str] = []
-    for scenario_name in ("strong_frozen_1p00", "flat_scale_1p00", "flat_scale_1p25", "flat_scale_1p40"):
+    for scenario_name in (
+        "headroom_cap_current",
+        "strong_frozen_1p00",
+        "flat_scale_1p00",
+        "flat_scale_1p25",
+        "flat_scale_1p40",
+    ):
         row = next((candidate for candidate in rows if candidate.scenario == scenario_name), None)
         if row is None:
             continue
         notes.append(
             f"- `{scenario_name}`: delta total A/C {row.total_ac_pnl_usd - current.total_ac_pnl_usd:+.2f}, "
             f"delta Pod A {row.pod_a_pnl_usd - current.pod_a_pnl_usd:+.2f}, "
-            f"DD {row.pod_a_max_drawdown_usd:.2f} vs {current.pod_a_max_drawdown_usd:.2f}."
+            f"DD {row.pod_a_max_drawdown_usd:.2f} vs {current.pod_a_max_drawdown_usd:.2f}, "
+            f"headroom capped {row.a_grade_headroom_capped_trades} trades."
         )
     return notes
 

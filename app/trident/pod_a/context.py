@@ -74,7 +74,27 @@ class MarketContextService:
             trade_flow_bias=snapshot.trade_flow_bias,
             bucket_volume=snapshot.bucket_volume,
             bucket_trade_count=snapshot.bucket_trade_count,
+            bucket_notional_usd=(
+                snapshot.bucket_notional_usd
+                if snapshot.bucket_notional_usd > 0.0
+                else snapshot.bucket_volume * snapshot.price
+            ),
             bucket_range_bps=snapshot.bucket_range_bps,
+            best_bid_size=snapshot.best_bid_size,
+            best_ask_size=snapshot.best_ask_size,
+            bid_depth_10bps=snapshot.bid_depth_10bps,
+            ask_depth_10bps=snapshot.ask_depth_10bps,
+            bid_depth_velocity=snapshot.bid_depth_velocity,
+            ask_depth_velocity=snapshot.ask_depth_velocity,
+            best_bid_size_velocity=snapshot.best_bid_size_velocity,
+            best_ask_size_velocity=snapshot.best_ask_size_velocity,
+            microprice_dislocation_bps=snapshot.microprice_dislocation_bps,
+            delta_spread_bps=snapshot.delta_spread_bps,
+            delta_book_imbalance=snapshot.delta_book_imbalance,
+            delta_trade_flow_bias=snapshot.delta_trade_flow_bias,
+            volume_ratio=snapshot.volume_ratio,
+            trade_count_ratio=snapshot.trade_count_ratio,
+            realized_vol_short_bps=snapshot.realized_vol_short_bps,
             trend_15m_bps=float(features["trend_15m_bps"]),
             trend_1h_bps=float(features["trend_1h_bps"]),
             trend_4h_bps=float(features["trend_4h_bps"]),

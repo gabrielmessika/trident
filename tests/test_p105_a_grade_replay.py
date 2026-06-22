@@ -6,7 +6,10 @@ from scripts.export_trident_audit_pack import compact_setup_details
 from scripts.run_p105_a_grade_replay import (
     ScenarioSpec,
     WindowSpec,
+    default_scenarios,
     scenario_config,
+    selected_names,
+    selected_scenarios,
     summarize_result,
 )
 
@@ -27,8 +30,43 @@ def test_scenario_config_overrides_a_grade_scales_without_mutating_base() -> Non
     assert changed.pod_a.a_grade_enabled
     assert changed.pod_a.a_grade_boost_scale == 1.0
     assert changed.pod_a.a_grade_strong_boost_scale == 1.0
+    assert not changed.pod_a.a_grade_size_headroom_cap_enabled
     assert config.pod_a.a_grade_boost_scale == original_standard
     assert config.pod_a.a_grade_strong_boost_scale == original_strong
+
+
+def test_scenario_config_can_enable_dormant_a_grade_headroom_cap() -> None:
+    config = load_config("config/trident.toml")
+    scenario = ScenarioSpec(
+        "headroom_cap_current",
+        "test",
+        standard_scale=config.pod_a.a_grade_boost_scale,
+        strong_scale=config.pod_a.a_grade_strong_boost_scale,
+        headroom_cap_enabled=True,
+    )
+
+    changed = scenario_config(config, scenario)
+
+    assert changed.pod_a.a_grade_enabled
+    assert changed.pod_a.a_grade_size_headroom_cap_enabled
+    assert not config.pod_a.a_grade_size_headroom_cap_enabled
+    assert any(item.name == "headroom_cap_current" for item in default_scenarios(config))
+
+
+def test_scenario_and_window_filters_keep_requested_order() -> None:
+    config = load_config("config/trident.toml")
+    scenarios = selected_scenarios(
+        default_scenarios(config),
+        "headroom_cap_current,current",
+    )
+    windows = selected_names(
+        "live,baseline",
+        available={"baseline", "live"},
+        label="window",
+    )
+
+    assert [scenario.name for scenario in scenarios] == ["headroom_cap_current", "current"]
+    assert windows == ["live", "baseline"]
 
 
 def test_summarize_result_counts_a_grade_and_quality_sizing() -> None:
@@ -52,6 +90,8 @@ def test_summarize_result_counts_a_grade_and_quality_sizing() -> None:
                         "a_grade_active": True,
                         "a_grade_level": "strong",
                         "a_grade_size_scale": 1.4,
+                        "a_grade_requested_size_scale": 1.4,
+                        "a_grade_size_headroom_cap_active": True,
                     },
                 },
                 {
@@ -88,6 +128,8 @@ def test_summarize_result_counts_a_grade_and_quality_sizing() -> None:
     assert row.no_a_grade_trades == 1
     assert row.strong_a_grade_pnl_usd == 3.0
     assert row.no_a_grade_pnl_usd == -4.0
+    assert row.avg_a_grade_requested_size_scale == 1.4
+    assert row.a_grade_headroom_capped_trades == 1
     assert row.live_quality_scaled_trades == 1
     assert row.avg_live_quality_multiplier == 0.5
     assert row.worst_symbol == "ETH"
@@ -101,6 +143,9 @@ def test_compact_setup_details_exports_p105_fields() -> None:
             "a_grade_level": "strong",
             "a_grade_score": 9,
             "a_grade_size_scale": 1.4,
+            "a_grade_requested_size_scale": 1.4,
+            "a_grade_size_headroom_cap_active": True,
+            "a_grade_size_headroom_cap_reasons": "risk_budget_cap",
             "a_grade_reason": "trend+flow",
             "live_quality_sizing_active": True,
             "live_quality_sizing_multiplier": 0.85,
@@ -113,6 +158,8 @@ def test_compact_setup_details_exports_p105_fields() -> None:
     assert compacted["a_grade_active"] is True
     assert compacted["a_grade_level"] == "strong"
     assert compacted["a_grade_size_scale"] == 1.4
+    assert compacted["a_grade_requested_size_scale"] == 1.4
+    assert compacted["a_grade_size_headroom_cap_active"] is True
     assert compacted["live_quality_sizing_active"] is True
     assert compacted["live_quality_original_target_notional_usd"] == 200
     assert "ignored" not in compacted

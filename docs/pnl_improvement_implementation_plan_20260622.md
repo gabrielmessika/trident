@@ -111,6 +111,95 @@ Implementation locale du 2026-06-22, sans activation live automatique:
   PF `0.6879`, max DD `37.37`) et applique davantage de reductions de cap
   (`4694` vs `3762`). Ne pas promouvoir cette variante telle quelle.
 
+### Implementation A-PNL-03 A-grade headroom cap dormant
+
+Implementation locale du 2026-06-22, sans activation live automatique:
+
+- La piste P1-05 `strong_frozen_1p00` avait deja ete testee le 2026-06-15 et
+  rejetee comme changement live: le replay ne montrait pas de gain materiel au
+  freeze strong. A-PNL-03 ne reprend donc pas ce freeze comme proposition live.
+- Une variante dormante `a_grade_size_headroom_cap_enabled=false` est ajoutee:
+  elle garde le label A-grade et les exits elargis, mais si le flag est active,
+  le scale de taille applique ne peut pas depasser la marge symbole ni le risk
+  budget initial calcules avant boost.
+- Les `setup_details` exposent `a_grade_requested_size_scale`,
+  `a_grade_size_headroom_cap_active`, les raisons de cap et les budgets de cap;
+  `scripts/export_trident_audit_pack.py` les exporte dans les closed trades.
+- Le replay P105 accepte maintenant `--scenarios` et `--windows` pour rejouer
+  seulement les variantes utiles. Nouveau scenario:
+  `headroom_cap_current`.
+- Replay live-window filtre:
+  `server-data/replay_reports/p105_a_grade_headroom_cap_live_20260622/`,
+  fenetre `2026-05-14T00:00:00Z` -> `2026-06-22T10:14:00Z`, `45782` records.
+  Resultat: `research_only_no_live_change`. `headroom_cap_current` cappe `69`
+  trades A-grade et ameliore tres legerement le courant (`-40.11` vs `-40.19`,
+  delta `+0.08`; Pod A `-31.46` vs `-31.54`; PF `0.6762` vs `0.6756`; max DD
+  `41.06` vs `41.14`). Effet trop faible pour une promotion live.
+
+### Implementation A-PNL-04 early_failure_exit post-exit audit
+
+Implementation locale du 2026-06-22, sans activation live automatique:
+
+- Verification prealable: P1-02 avait deja teste la sensibilite globale des
+  exits et `early_failure_enabled`; A-PNL-04 ne repropose donc pas de desactiver
+  ou relaxer EFE globalement.
+- Nouveau replay/audit `scripts/run_p116_early_failure_post_exit_audit.py`: il
+  prend uniquement les trades Pod A effectivement fermes par
+  `early_failure_exit`, desactive seulement ce trigger dans une simulation
+  per-trade, puis suit le trade jusqu'au prochain stop/trailing/break-even/time
+  stop/stop catastrophe naturel.
+- Le rapport sort `early_failure_post_exit_summary.csv`,
+  `early_failure_post_exit_trades.csv`,
+  `p116_early_failure_post_exit_audit.json` et
+  `p116_early_failure_post_exit_audit.md`, avec MFE/MAE total, MFE/MAE apres la
+  sortie EFE originale, delai supplementaire, winners manques, pertes reduites
+  manquees et pertes evitees par EFE.
+- Replay complet live:
+  `server-data/replay_reports/p116_early_failure_post_exit_20260622/`, base
+  full-bot courante no-dedupe `-40.19` A/C (`-31.54` Pod A) sur
+  `2026-05-14T00:00:00Z -> 2026-06-22T10:14:00Z`.
+- Resultat P116 sur `41` trades EFE: PnL original `-72.38`, PnL naturel sans
+  EFE `-80.84`, delta `-8.46`. EFE coupe `6` winners futurs et `6` pertes qui
+  auraient ete moins mauvaises (`19.30` USD de recovery manquee), mais evite
+  `29` degradations (`27.76` USD de perte evitee). Les sorties naturelles sans
+  EFE auraient ete `17` catastrophic stops, `17` stop hits, `6` trailing stops
+  et `1` break-even stop.
+- Decision: `research_only_no_live_change`. Ne pas relaxer/desactiver EFE
+  globalement; l'audit suggere plutot une piste future de classifieur de
+  recovery tres cible, a comparer contre cette baseline.
+
+### Implementation A-PNL-05 microstructure entry score shadow
+
+Implementation locale du 2026-06-22, sans activation live automatique:
+
+- Pod A attache maintenant a chaque signal un score
+  `microstructure_shadow_score` borne `0..1`, avec bucket
+  `poor/weak/ok/strong` et sous-scores spread, flow, microprice, profondeur,
+  activite, range et churn.
+- Le contexte Pod A consomme les champs microstructure deja presents dans
+  `SymbolMarketSnapshot`: `bucket_notional_usd`, delta spread/flow/book,
+  ratios volume/trades, depth 10bps, velocities et
+  `microprice_dislocation_bps`.
+- `scripts/export_trident_audit_pack.py` expose les champs
+  `microstructure_shadow_*` et les champs counterfactual `p115_*` dans les
+  closed trades.
+- Nouveau replay `scripts/run_p115_microstructure_entry_replay.py`: baseline
+  A/C + live-window, scenarios `current`, `micro_cap_poor50_lt42` et
+  `micro_cap_weak50_lt56`. Les scenarios changent uniquement le sizing Pod A
+  contrefactuel; aucun trade n'est bloque et aucun flag live n'est ajoute.
+- Replay complet:
+  `server-data/replay_reports/p115_microstructure_entry_20260622/`.
+  Baseline avril/mai: aucun changement PnL (`77.08` total, Pod A `56.72`) meme
+  avec `57` plan caps et `4` trades fermes cappes sur `<0.56`. Fenetre live
+  `2026-05-14T00:00:00Z -> 2026-06-22T10:14:00Z`: `micro_cap_poor50_lt42`
+  degrade de `-1.02` A/C (`-41.21` vs `-40.19`, Pod A `-32.56`, PF `0.6651`,
+  DD `42.16`), et `micro_cap_weak50_lt56` degrade legerement de `-0.13` A/C
+  (`-40.32`, Pod A `-31.67`, PF `0.6701`, DD `41.29`).
+- Lecture bucket live: le bucket `poor` est gagnant (`+9.61` courant, `2/2`
+  winners) et le pire PnL vient du bucket `strong` (`-21.62`). Le score est
+  donc utile comme instrumentation/audit, mais la variante cap-only sur mauvais
+  score est rejetee en `research_only_no_live_change`.
+
 ### TRIDENT-HIP4
 
 | Recommandation review | Traduction dans ce plan |
@@ -232,9 +321,9 @@ Statuts:
 | --- | --- | --- | --- | --- |
 | A-PNL-01 | ready_review | P1-08 uniquement en sizing progressif demi-cap: `throttle=0.50`, `quarantine=0.50`, aucun blocage, avec logs `guard_state` et `live_action_changed`. Implementation 2026-06-22: code cap-only disponible via config `dynamic_symbol_guard_live_sizing_enabled=false` par defaut; la variante `quarantine=0.10` est rejetee. | Les donnees recentes montrent que les symboles en etat degrade concentrent des pertes; le demi-cap conserve l'activite et reduit legerement le drawdown sans supprimer les trades Pod A sur la fenetre live. | Replay dedie positif mais faible (`+2.91` A/C, PF Pod A `0.6879`): avant live, adapter l'audit `live_action_unchanged`, redeployer explicitement, puis review post-deploiement; aucune activation automatique. |
 | A-PNL-02 | shadow | Echelle de notional par etat symbole implementee en dormant: stats rolling `symbol/setup` exposees, base `0.70`, partiel `0.85`, plein sizing seulement apres PF/expectancy rolling positifs. Flag `dynamic_symbol_guard_recovery_sizing_enabled=false` par defaut. | Les pertes recentes ne viennent pas d'un manque d'activite mais d'un mauvais payoff; reduire la taille dans les contextes mediocres ameliore l'esperance sans couper. | Replay full-window `p108_recovery_sizing_20260622`: positif vs courant (`+2.79`) mais inferieur a P1-08 `cap50/cap50` (`+2.91`) avec plus de reductions. Statut `research_only_no_live_change`; ne pas activer tel quel, garder dormant pour variantes futures. |
-| A-PNL-03 | todo | Neutraliser ou capper le boost de taille A-grade en shadow/replay avant tout changement live. | Le bot semble payer cher ses convictions fortes quand elles se trompent; enlever le boost peut reduire les gros losers sans toucher au signal principal. | Replay full-bot `boost=1.0` vs courant, buckets A-grade par symbole/regime, puis paper shadow de 7 jours. |
-| A-PNL-04 | shadow | Ajouter un journal MFE/MAE post-sortie pour `early_failure_exit`: suivre virtuellement le trade jusqu'au stop/time/trailing original. | Les sorties precoces reduisent certaines pertes mais peuvent tuer des recoveries; il faut mesurer le cout d'opportunite avant de durcir. | Rapport par exit_reason: pertes evitees, winners manques, delai moyen de recovery, PnL contrefactuel. |
-| A-PNL-05 | shadow | Ajouter un score microstructure entree base sur micro-price/VAMP, profondeur BBO, order flow recent et age du carnet. | Les sources HFT indiquent que le desalignement prix mid vs micro-price/VAMP revele souvent l'adverse selection; utile pour eviter d'entrer juste avant un move adverse. | Shadow score attache a chaque signal, deciles de PnL par score, puis replay avec cap-only sur pires deciles. |
+| A-PNL-03 | shadow | Cap headroom A-grade implemente en dormant: `a_grade_size_headroom_cap_enabled=false`; garde le label/exits A-grade mais limite le scale taille a la marge symbole et au risk budget initial si active. Le freeze strong P1-05 reste rejete. | Reduire la convexite des losers A-grade sans supprimer le signal ni les exits, tout en evitant de reproposer le freeze deja teste. | Replay live-window `p105_a_grade_headroom_cap_live_20260622`: positif mais non materiel (`+0.08` A/C, PF Pod A `0.6762` vs `0.6756`, DD `41.06` vs `41.14`). Statut `research_only_no_live_change`; ne pas activer tel quel. |
+| A-PNL-04 | shadow | Audit P116 implemente pour `early_failure_exit`: replay per-trade sans EFE, jusqu'au stop/trailing/break-even/time-stop/cat-stop naturel, avec MFE/MAE post-sortie. | Les sorties precoces reduisent certaines pertes mais peuvent tuer des recoveries; l'audit mesure le cout d'opportunite sans reproposer le disable global deja couvert par P1-02. | Replay complet `p116_early_failure_post_exit_20260622`: sans EFE, les 41 trades EFE empirent de `-8.46` USD. `6` winners + `6` loss-cuts manques, mais `29` pertes evitees; garder EFE, ne pas promouvoir une relaxation globale. |
+| A-PNL-05 | shadow | Score microstructure entree implemente en shadow/export: sous-scores spread, flow, microprice, depth, activite, range et churn. Replay P115 cap-only `<0.42` et `<0.56` ajoute, sans blocage ni flag live. | Les sources HFT indiquent que le desalignement prix mid vs micro-price/VAMP revele souvent l'adverse selection; utile en audit, mais la version cap-only testee ne separe pas assez les losers live. | Replay complet `p115_microstructure_entry_20260622`: baseline neutre, live negatif (`-1.02` poor50, `-0.13` weak50). Bucket `poor` live gagnant et pire bucket `strong`; garder shadow/audit, ne pas promouvoir le cap-only. |
 | A-PNL-06 | shadow | Ajouter une reference crypto cross-exchange par symbole liquide: Binance/OKX/Bybit/Coinbase/Kraken selon disponibilite, avec premium HL et divergence momentum. | Si Hyperliquid est temporairement en avance ou en retard contre le marche large, le bot peut entrer sur un prix local defavorable. | Aucun effet trading au debut; verifier PnL par bucket de divergence et fraicheur reference. |
 | A-PNL-07 | todo | Diagnostiquer les echecs IOC et la qualite de fill attendue: BBO age, depth, spread, price impact theorique, missed fill outcome. | Un bon signal peut devenir mauvais si l'execution paie le spread ou chase un carnet mince; filtrer ou repricer peut ameliorer le payoff moyen. | Rapport fill_quality: accepted, rejected, missed, adverse return 1/5/15m. |
 | A-PNL-08 | todo | Remplacer toute blocklist statique par une probation a hysteresis: entree degradee apres cluster de losses, rehabilitation lente apres expectancy positive. | Evite le piege de `evo4_symbol_health` trop brutal: on reduit l'exposition au lieu d'effacer durablement des symboles qui peuvent redevenir bons. | Replay avec comparaison stricte contre P1-08 et baseline courante; mesurer winners perdus. |
@@ -301,6 +390,21 @@ TRIDENT A/C:
   `scripts/run_p108_dynamic_symbol_guard_replay.py` expose le scenario
   `live_sizing_recovery_55_75_base70_partial85`; les scripts de deploy/fetch ne
   necessitent pas de modification car aucun nouvel artefact serveur n'est cree.
+- Impact A-PNL-03 du 2026-06-22: `scripts/export_trident_audit_pack.py` expose
+  les champs de cap headroom A-grade et `scripts/run_p105_a_grade_replay.py`
+  expose le scenario `headroom_cap_current` avec filtres `--scenarios` et
+  `--windows`; aucun script de deploy/fetch a modifier, aucun nouvel artefact
+  serveur requis, flag live dormant `a_grade_size_headroom_cap_enabled=false`.
+- Impact A-PNL-04 du 2026-06-22: nouveau replay local
+  `scripts/run_p116_early_failure_post_exit_audit.py`, qui reutilise le rapport
+  full-bot et les snapshots live existants. Aucun script de deploy/fetch a
+  modifier: pas de nouveau champ serveur, pas de config live, pas d'ordre, et
+  aucune activation automatique de sortie.
+- Impact A-PNL-05 du 2026-06-22: `scripts/export_trident_audit_pack.py` expose
+  les champs `microstructure_shadow_*` et `p115_*`; nouveau replay local
+  `scripts/run_p115_microstructure_entry_replay.py`. Aucun script de deploy ou
+  fetch a modifier: le score reutilise les champs deja collectes dans les
+  snapshots/live logs et n'ajoute aucun ordre, cap live ou service serveur.
 
 TRIDENT-HIP4:
 
@@ -339,6 +443,52 @@ Validations locales A-PNL-02 du 2026-06-22:
   hypothese de routing generique; le test small-wallet desactive A-grade pour
   verifier le sizing brut sans boost.
 
+Validations locales A-PNL-03 du 2026-06-22:
+
+- `rtk uv run python -m py_compile app/settings.py app/trident/pod_a/planner.py scripts/run_p105_a_grade_replay.py scripts/export_trident_audit_pack.py`: OK.
+- `rtk uv run pytest tests/test_settings.py tests/test_pod_a.py::AnchorTrendServiceTests::test_trade_planner_applies_a_grade_boost_and_wider_exits tests/test_pod_a.py::AnchorTrendServiceTests::test_trade_planner_can_cap_a_grade_size_to_initial_headroom tests/test_p105_a_grade_replay.py -q`: OK (`8` tests).
+- Smoke replay technique:
+  `rtk uv run python scripts/run_p105_a_grade_replay.py --baseline-input server-data/live_snapshots/2026-06-20.jsonl --live-input server-data/live_snapshots --live-start 2026-06-20T00:00:00Z --live-end 2026-06-21T00:00:00Z --output-dir tmp/p105_headroom_smoke_20260622`:
+  OK; `headroom_cap_current` cappe `3` trades A-grade sur ce smoke, PnL neutre
+  vs courant (`-4.31` vs `-4.31`).
+- Replay live-window filtre:
+  `rtk uv run python scripts/run_p105_a_grade_replay.py --windows live --scenarios current,headroom_cap_current --live-input server-data/live_snapshots --live-start 2026-05-14T00:00:00Z --live-end 2026-06-23T00:00:00Z --output-dir server-data/replay_reports/p105_a_grade_headroom_cap_live_20260622`:
+  OK, `research_only_no_live_change`; delta `+0.08` A/C, insuffisant pour
+  promotion live.
+- Suite complete `rtk uv run pytest`: OK (`667` passed, `1` warning pytest
+  historique sur `TestnetOutcomeExecutor`).
+
+Validations locales A-PNL-04 du 2026-06-22:
+
+- `rtk uv run python -m py_compile scripts/run_p116_early_failure_post_exit_audit.py scripts/run_p102_exit_sensitivity.py`: OK.
+- `rtk uv run pytest tests/test_p116_early_failure_post_exit_audit.py tests/test_p102_exit_sensitivity.py -q`: OK (`6` tests).
+- Base full-bot courante no-dedupe pour comparabilite P115:
+  `rtk uv run python app/backtest/full_bot_replay.py --input server-data/replay_reports/p115_microstructure_entry_20260622/input_live_post_baseline --no-dedupe-timestamps --apply-live-notional-caps --report-output server-data/replay_reports/p116_early_failure_post_exit_20260622/full_bot_current_live_nodedupe.json --summary-output server-data/replay_reports/p116_early_failure_post_exit_20260622/full_bot_current_live_nodedupe.md`:
+  OK, `-40.19` A/C, Pod A `-31.54`, Pod C `-8.65`, `45782` records.
+- Replay/audit complet P116:
+  `rtk uv run python scripts/run_p116_early_failure_post_exit_audit.py --replay-report server-data/replay_reports/p116_early_failure_post_exit_20260622/full_bot_current_live_nodedupe.json --snapshot-input server-data/replay_reports/p115_microstructure_entry_20260622/input_live_post_baseline --output-dir server-data/replay_reports/p116_early_failure_post_exit_20260622`:
+  OK, `research_only_no_live_change`; delta naturel sans EFE `-8.46` USD sur
+  les `41` trades EFE. Ne pas promouvoir une relaxation globale.
+- `rtk uv run pytest`: OK (`678` passed, `1` warning pytest historique sur
+  `TestnetOutcomeExecutor`).
+- `rtk git diff --check`: OK.
+
+Validations locales A-PNL-05 du 2026-06-22:
+
+- `rtk uv run python -m py_compile app/trident/pod_a/microstructure_shadow.py app/trident/pod_a/service.py scripts/run_p115_microstructure_entry_replay.py`: OK.
+- `rtk uv run pytest tests/test_pod_a_microstructure_shadow.py tests/test_p115_microstructure_entry_replay.py tests/test_pod_a.py::AnchorTrendServiceTests::test_generates_long_signal_in_trend_expansion -q`: OK (`9` tests).
+- Smoke replay technique:
+  `rtk uv run python scripts/run_p115_microstructure_entry_replay.py --windows live --live-input server-data/live_snapshots --live-start 2026-06-20T00:00:00Z --live-end 2026-06-21T00:00:00Z --scenarios current,micro_cap_poor50_lt42,micro_cap_weak50_lt56 --output-dir tmp/p115_microstructure_smoke_fast_20260622`:
+  OK; PnL neutre vs courant sur `3` trades (`-4.31`), `micro_cap_weak50_lt56`
+  cappe `3` plans mais aucun trade ferme effectivement cappe.
+- Replay complet A-PNL-05:
+  `rtk uv run python scripts/run_p115_microstructure_entry_replay.py --windows baseline,live --baseline-input server-data/replay_inputs/external_reference_multisource_20260405_20260513_baseline.jsonl --live-input server-data/live_snapshots --live-start 2026-05-14T00:00:00Z --live-end 2026-06-23T00:00:00Z --scenarios current,micro_cap_poor50_lt42,micro_cap_weak50_lt56 --output-dir server-data/replay_reports/p115_microstructure_entry_20260622`:
+  OK, `research_only_no_live_change`; baseline neutre, live negatif (`-1.02`
+  et `-0.13` A/C). Ne pas promouvoir le cap-only microstructure tel quel.
+- `rtk uv run pytest`: OK (`675` passed, `1` warning pytest historique sur
+  `TestnetOutcomeExecutor`).
+- `rtk git diff --check`: OK.
+
 ## Definition de "promotable"
 
 Une piste est promotable seulement si elle remplit toutes les conditions
@@ -362,8 +512,11 @@ suivantes:
   P1-08 `cap50/cap50` reste le candidat le plus proche, mais seulement apres
   confirmation live explicite et audit adapte. A-PNL-02 est code en dormant
   pour replay/shadow, mais la variante `base70/partial85` ne bat pas P1-08
-  `cap50/cap50`; son flag reste `false`, aucune activation live ni hausse de cap
-  n'est incluse.
+  `cap50/cap50`. A-PNL-05 garde son score microstructure en shadow/audit, mais
+  le cap-only `<0.42`/`<0.56` est rejete car negatif sur la fenetre live.
+  A-PNL-04 montre que `early_failure_exit` evite plus de pertes qu'il ne manque
+  de recoveries sur la fenetre live; ne pas le relaxer globalement. Aucun flag
+  live, aucune activation live ni hausse de cap n'est incluse.
 - HIP4: ne pas passer live maintenant. Continuer `prob_stop_full` en paper actif,
   enrichir Nautilus/observability et ne promouvoir le shadow que s'il prouve une
   amelioration nette sur settlements reels avec fills realistes.

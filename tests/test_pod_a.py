@@ -144,6 +144,8 @@ class AnchorTrendServiceTests(unittest.TestCase):
         assert signal is not None
         self.assertEqual(signal.side, "long")
         self.assertEqual(signal.setup, "trend_pullback_long")
+        self.assertIn("microstructure_shadow_score", signal.setup_details)
+        self.assertTrue(bool(signal.setup_details["microstructure_shadow_active"]))
 
     def test_trend_pullback_details_include_btc_overextension_features(self) -> None:
         signal = self.service.evaluate(
@@ -1060,6 +1062,86 @@ class AnchorTrendServiceTests(unittest.TestCase):
         self.assertAlmostEqual(
             boosted_plan.trailing_distance_bps,
             base_plan.trailing_distance_bps * 1.35,
+            places=4,
+        )
+
+    def test_trade_planner_can_cap_a_grade_size_to_initial_headroom(self) -> None:
+        base_config = replace(
+            self.config,
+            pod_a=replace(self.config.pod_a, a_grade_enabled=False),
+        )
+        capped_config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                a_grade_enabled=True,
+                a_grade_size_headroom_cap_enabled=True,
+            ),
+        )
+        signal = AnchorTrendSignal(
+            symbol="ETH",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.70,
+            entry_price=3100.0,
+            invalidation_price=3050.0,
+            market_cluster="crypto",
+            cluster_leader="BTC",
+            setup_details={
+                "regime": "TrendExpansion",
+                "structure_score": 0.62,
+                "candles_ready": True,
+                "trend_1h_bps": 22.0,
+                "trend_4h_bps": 48.0,
+                "stoch_rsi_k": 0.58,
+                "cci20": 48.0,
+                "vwap_reclaim_score": 0.55,
+                "btc_overextension_score": 0.20,
+            },
+        )
+        base_allocation = CapitalAllocator(base_config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+        capped_allocation = CapitalAllocator(capped_config).build_plan(
+            Regime.TREND_EXPANSION,
+            {
+                PodName.POD_A: ["ETH"],
+                PodName.POD_B: [],
+                PodName.POD_C: [],
+            },
+        ).pod_allocations[PodName.POD_A]
+
+        base_plan = AnchorTrendPlanner(base_config).build_trade_plan(signal, base_allocation)
+        capped_plan = AnchorTrendPlanner(capped_config).build_trade_plan(
+            signal,
+            capped_allocation,
+        )
+
+        self.assertIsNotNone(base_plan)
+        self.assertIsNotNone(capped_plan)
+        assert base_plan is not None
+        assert capped_plan is not None
+        self.assertTrue(bool(capped_plan.setup_details.get("a_grade_active")))
+        self.assertEqual(capped_plan.setup_details.get("a_grade_level"), "strong")
+        self.assertAlmostEqual(capped_plan.setup_details.get("a_grade_requested_size_scale"), 1.4)
+        self.assertAlmostEqual(capped_plan.setup_details.get("a_grade_size_scale"), 1.0)
+        self.assertTrue(bool(capped_plan.setup_details.get("a_grade_size_headroom_cap_active")))
+        self.assertIn(
+            "risk_budget_cap",
+            str(capped_plan.setup_details.get("a_grade_size_headroom_cap_reasons")),
+        )
+        self.assertAlmostEqual(capped_plan.target_notional_usd, base_plan.target_notional_usd)
+        self.assertAlmostEqual(capped_plan.margin_usd, base_plan.margin_usd)
+        self.assertAlmostEqual(capped_plan.risk_budget_usd, base_plan.risk_budget_usd)
+        self.assertAlmostEqual(capped_plan.expected_loss_usd, base_plan.expected_loss_usd)
+        self.assertAlmostEqual(
+            capped_plan.break_even_trigger_bps,
+            base_plan.break_even_trigger_bps * 1.2,
             places=4,
         )
 

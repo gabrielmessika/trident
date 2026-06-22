@@ -396,6 +396,7 @@ a_grade_min_score = 6
 a_grade_boost_scale = 1.25
 a_grade_strong_score = 8
 a_grade_strong_boost_scale = 1.40
+a_grade_size_headroom_cap_enabled = false
 a_grade_break_even_multiplier = 1.20
 a_grade_trailing_activation_multiplier = 1.15
 a_grade_trailing_distance_multiplier = 1.35

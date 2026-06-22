@@ -6,6 +6,7 @@ from app.trident.pod_a.filters import (
     max_spread_bps_for_cluster,
     passes_anchor_filters,
 )
+from app.trident.pod_a.microstructure_shadow import microstructure_shadow_setup_details
 from app.trident.pod_a.setups import (
     ema_separation_bps,
     flow_alignment_short,
@@ -31,10 +32,25 @@ def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
 
 
-def _with_regime(context: AnchorTrendContext, details: dict[str, float | str | bool]) -> dict[str, float | str | bool]:
+def _with_regime(
+    context: AnchorTrendContext,
+    details: dict[str, float | str | bool],
+    *,
+    side: str,
+) -> dict[str, float | str | bool]:
     return {
         **details,
         "regime": context.regime,
+        "spread_bps": round(context.spread_bps, 4),
+        "book_imbalance": round(context.book_imbalance, 4),
+        "trade_flow_bias": round(context.trade_flow_bias, 4),
+        "bucket_trade_count": float(context.bucket_trade_count),
+        "bucket_notional_usd": round(
+            context.bucket_notional_usd
+            if context.bucket_notional_usd > 0.0
+            else max(context.bucket_volume, 0.0) * max(context.price, 0.0),
+            4,
+        ),
         "structure_ready": context.structure_ready,
         "range_high_1h": round(context.range_high_1h, 8),
         "range_low_1h": round(context.range_low_1h, 8),
@@ -84,6 +100,7 @@ def _with_regime(context: AnchorTrendContext, details: dict[str, float | str | b
         "external_momentum_60s_bps": round(context.external_momentum_60s_bps, 4),
         "external_momentum_300s_bps": round(context.external_momentum_300s_bps, 4),
         "external_alignment_score": round(context.external_alignment_score, 4),
+        **microstructure_shadow_setup_details(context, side=side),
     }
 
 
@@ -129,6 +146,7 @@ class AnchorTrendService:
                             "bos_long_confirmed": context.bos_long_confirmed,
                             "swing_high_1h": round(context.swing_high_1h, 8),
                         },
+                        side="long",
                     )
                 },
                 confidence_components=components,
@@ -160,6 +178,7 @@ class AnchorTrendService:
                             "bos_short_confirmed": context.bos_short_confirmed,
                             "swing_low_1h": round(context.swing_low_1h, 8),
                         },
+                        side="short",
                     )
                 },
                 confidence_components=components,
@@ -193,6 +212,7 @@ class AnchorTrendService:
                             ),
                             "mtf_bias_score": round(context.mtf_bias_score, 4),
                         },
+                        side="long",
                     )
                 },
                 confidence_components=components,
@@ -226,6 +246,7 @@ class AnchorTrendService:
                             ),
                             "mtf_bias_score": round(context.mtf_bias_score, 4),
                         },
+                        side="short",
                     )
                 },
                 confidence_components=components,
@@ -258,6 +279,7 @@ class AnchorTrendService:
                             ),
                             "mtf_bias_score": round(context.mtf_bias_score, 4),
                         },
+                        side="long",
                     )
                 },
                 confidence_components=components,
@@ -290,6 +312,7 @@ class AnchorTrendService:
                             ),
                             "mtf_bias_score": round(context.mtf_bias_score, 4),
                         },
+                        side="short",
                     )
                 },
                 confidence_components=components,
@@ -321,6 +344,7 @@ class AnchorTrendService:
                             "bos_long_confirmed": context.bos_long_confirmed,
                             "swing_high_1h": round(context.swing_high_1h, 8),
                         },
+                        side="long",
                     )
                 },
                 confidence_components=components,
@@ -352,6 +376,7 @@ class AnchorTrendService:
                             "bos_short_confirmed": context.bos_short_confirmed,
                             "swing_low_1h": round(context.swing_low_1h, 8),
                         },
+                        side="short",
                     )
                 },
                 confidence_components=components,
@@ -387,6 +412,7 @@ class AnchorTrendService:
                         "resistance_level_1h": round(resistance_level, 8),
                         "support_level_1h": round(support_level, 8),
                     },
+                    side="short",
                 ),
                 confidence_components=components,
             )
@@ -417,6 +443,7 @@ class AnchorTrendService:
                         "trend_4h_bps": round(context.trend_4h_bps, 4),
                         "mtf_bias_score": round(context.mtf_bias_score, 4),
                     },
+                    side="long",
                 ),
                 confidence_components=components,
             )
@@ -447,6 +474,7 @@ class AnchorTrendService:
                         "trend_4h_bps": round(context.trend_4h_bps, 4),
                         "mtf_bias_score": round(context.mtf_bias_score, 4),
                     },
+                    side="short",
                 ),
                 confidence_components=components,
             )
@@ -475,6 +503,7 @@ class AnchorTrendService:
                         "trend_1h_bps": round(context.trend_1h_bps, 4),
                         "trend_4h_bps": round(context.trend_4h_bps, 4),
                     },
+                    side="long",
                 ),
                 confidence_components=components,
             )
@@ -503,6 +532,7 @@ class AnchorTrendService:
                         "trend_1h_bps": round(context.trend_1h_bps, 4),
                         "trend_4h_bps": round(context.trend_4h_bps, 4),
                     },
+                    side="short",
                 ),
                 confidence_components=components,
             )
