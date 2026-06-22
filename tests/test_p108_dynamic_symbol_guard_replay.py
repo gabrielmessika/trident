@@ -1,5 +1,10 @@
 from scripts.export_trident_audit_pack import combine_setup_details, compact_setup_details
-from scripts.run_p108_dynamic_symbol_guard_replay import _profit_factor, _win_rate
+from scripts.run_p108_dynamic_symbol_guard_replay import (
+    ScenarioSpec,
+    _profit_factor,
+    _win_rate,
+    p108_recovery_multiplier,
+)
 
 
 def test_win_rate_uses_reported_value_when_available() -> None:
@@ -32,6 +37,9 @@ def test_dynamic_symbol_guard_details_are_compacted_for_export() -> None:
             "would_throttle_dynamic_symbol_guard": True,
             "would_block_dynamic_symbol_guard": False,
             "symbol_guard_live_action_unchanged": True,
+            "symbol_setup_rolling_profit_factor": 1.2,
+            "dynamic_symbol_guard_recovery_sizing_active": True,
+            "dynamic_symbol_guard_recovery_multiplier": 0.7,
         },
     )
     compacted = compact_setup_details(details)
@@ -42,3 +50,39 @@ def test_dynamic_symbol_guard_details_are_compacted_for_export() -> None:
     assert compacted["falling_knife_score"] == 62.5
     assert compacted["would_throttle_dynamic_symbol_guard"] is True
     assert compacted["symbol_guard_live_action_unchanged"] is True
+    assert compacted["symbol_setup_rolling_profit_factor"] == 1.2
+    assert compacted["dynamic_symbol_guard_recovery_sizing_active"] is True
+    assert compacted["dynamic_symbol_guard_recovery_multiplier"] == 0.7
+
+
+def test_recovery_multiplier_requires_positive_pf_and_expectancy() -> None:
+    spec = ScenarioSpec(
+        name="recovery",
+        description="test",
+        action="recovery_sizing_policy",
+    )
+
+    assert p108_recovery_multiplier(
+        spec,
+        {
+            "symbol_setup_rolling_trades": 2,
+            "symbol_setup_rolling_expectancy_usd": 1.0,
+            "symbol_setup_rolling_profit_factor": 2.0,
+        },
+    ) == 0.70
+    assert p108_recovery_multiplier(
+        spec,
+        {
+            "symbol_setup_rolling_trades": 4,
+            "symbol_setup_rolling_expectancy_usd": 0.25,
+            "symbol_setup_rolling_profit_factor": 0.9,
+        },
+    ) == 0.85
+    assert p108_recovery_multiplier(
+        spec,
+        {
+            "symbol_setup_rolling_trades": 4,
+            "symbol_setup_rolling_expectancy_usd": 0.25,
+            "symbol_setup_rolling_profit_factor": 1.2,
+        },
+    ) == 1.0

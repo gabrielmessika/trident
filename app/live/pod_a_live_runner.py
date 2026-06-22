@@ -504,6 +504,7 @@ class PodALiveRunner:
                 **regime_shadow_setup_details(shadow_details),
                 **order_block_shadow_setup_details(order_block_details),
                 **symbol_guard_setup_details(guard_details),
+                **self.risk_gate.rolling_symbol_setup_stats(plan.symbol, plan.setup),
             }
         if self.mode == "live":
             leverage_policy = LeveragePolicy(self.config.pod_a)

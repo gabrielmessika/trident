@@ -341,6 +341,115 @@ class PodALiveRunnerTests(unittest.TestCase):
         )
         self.assertFalse(bool(shaped_plan.setup_details["symbol_guard_live_action_unchanged"]))
 
+    def test_dynamic_symbol_guard_recovery_sizing_reduces_unproven_normal_symbol(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_a=replace(
+                config.pod_a,
+                live_quality_sizing_enabled=False,
+                dynamic_symbol_guard_live_sizing_enabled=False,
+                dynamic_symbol_guard_recovery_sizing_enabled=True,
+            ),
+        )
+        runner = PodALiveRunner(config, coins=["BTC"])
+        plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.80,
+            target_notional_usd=200.0,
+            stop_bps=45.0,
+            time_stop_hours=24,
+            margin_usd=100.0,
+            risk_budget_usd=2.0,
+            expected_loss_usd=0.9,
+            setup_details={
+                "market_cluster": "crypto",
+                "symbol_guard_state": "normal",
+                "symbol_setup_rolling_trades": 2,
+                "symbol_setup_rolling_expectancy_usd": 0.5,
+                "symbol_setup_rolling_profit_factor": 1.8,
+                "symbol_guard_live_action_unchanged": True,
+            },
+        )
+
+        shaped = runner._shape_live_trade_plans(
+            [plan],
+            timestamp="2026-06-22T00:00:00Z",
+        )
+
+        self.assertEqual(len(shaped), 1)
+        shaped_plan = shaped[0]
+        self.assertEqual(shaped_plan.target_notional_usd, 140.0)
+        self.assertEqual(shaped_plan.margin_usd, 70.0)
+        self.assertTrue(
+            bool(shaped_plan.setup_details["dynamic_symbol_guard_recovery_sizing_active"])
+        )
+        self.assertEqual(
+            shaped_plan.setup_details["dynamic_symbol_guard_recovery_multiplier"],
+            0.7,
+        )
+        self.assertEqual(
+            shaped_plan.setup_details["dynamic_symbol_guard_recovery_reason"],
+            "insufficient_rolling_history",
+        )
+        self.assertFalse(bool(shaped_plan.setup_details["symbol_guard_live_action_unchanged"]))
+
+    def test_dynamic_symbol_guard_recovery_sizing_keeps_full_size_after_positive_stats(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_a=replace(
+                config.pod_a,
+                live_quality_sizing_enabled=False,
+                dynamic_symbol_guard_live_sizing_enabled=False,
+                dynamic_symbol_guard_recovery_sizing_enabled=True,
+            ),
+        )
+        runner = PodALiveRunner(config, coins=["BTC"])
+        plan = TradePlan(
+            symbol="BTC",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.80,
+            target_notional_usd=200.0,
+            stop_bps=45.0,
+            time_stop_hours=24,
+            margin_usd=100.0,
+            risk_budget_usd=2.0,
+            expected_loss_usd=0.9,
+            setup_details={
+                "market_cluster": "crypto",
+                "symbol_guard_state": "normal",
+                "symbol_setup_rolling_trades": 4,
+                "symbol_setup_rolling_expectancy_usd": 0.25,
+                "symbol_setup_rolling_profit_factor": 1.2,
+                "symbol_guard_live_action_unchanged": True,
+            },
+        )
+
+        shaped = runner._shape_live_trade_plans(
+            [plan],
+            timestamp="2026-06-22T00:00:00Z",
+        )
+
+        self.assertEqual(len(shaped), 1)
+        shaped_plan = shaped[0]
+        self.assertEqual(shaped_plan.target_notional_usd, 200.0)
+        self.assertFalse(
+            bool(shaped_plan.setup_details["dynamic_symbol_guard_recovery_sizing_active"])
+        )
+        self.assertEqual(
+            shaped_plan.setup_details["dynamic_symbol_guard_recovery_multiplier"],
+            1.0,
+        )
+        self.assertEqual(
+            shaped_plan.setup_details["dynamic_symbol_guard_recovery_reason"],
+            "rolling_pf_expectancy_positive",
+        )
+        self.assertTrue(bool(shaped_plan.setup_details["symbol_guard_live_action_unchanged"]))
+
     def test_maintenance_refresh_updates_open_position_market_data_without_new_records(self) -> None:
         config = load_config("config/trident.toml")
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -162,6 +162,26 @@ Source de verite operationnelle depuis le `2026-05-24`:
   config locale dormante est alignee sur `quarantine_multiplier=0.50`, mais ce
   patch n'a pas ete redeploye et n'a aucun effet live tant que
   `dynamic_symbol_guard_live_sizing_enabled=false`.
+- Implementation A-PNL-02 `2026-06-22`: Pod A expose les stats rolling
+  `symbol/setup` dans les `setup_details` (`trades`, PnL, expectancy, profit
+  factor) et dispose d'une policy dormante de recovery sizing
+  (`dynamic_symbol_guard_recovery_sizing_enabled=false` par defaut). Le candidat
+  reduit les symboles non prouves a `0.70`, les recoveries partielles a `0.85`,
+  et ne revient au plein sizing qu'apres `>=4` trades rolling avec PF `>=1.05`
+  et expectancy positive. Le replay P1-08 expose le scenario counterfactual
+  `live_sizing_recovery_55_75_base70_partial85`. Aucun effet live, aucun
+  changement de cap, aucun deploy et aucun nouvel artefact fetch tant que le flag
+  reste `false`; validations locales OK, dont suite complete `rtk uv run pytest`
+  (`664` passed, `1` warning historique), detaillees dans
+  `docs/pnl_improvement_implementation_plan_20260622.md`.
+- Decision A-PNL-02 `2026-06-22`: replay full-window
+  `server-data/replay_reports/p108_recovery_sizing_20260622/` sur
+  `2026-05-14T00:00:00Z -> 2026-06-22T10:14:00Z`. La variante
+  `live_sizing_recovery_55_75_base70_partial85` ameliore le courant de `+2.79`
+  (`-37.40` total, Pod A `-28.75`, PF `0.6866`, max DD `37.49`) mais reste
+  inferieure au P1-08 simple `cap50/cap50` (`+2.91`, total `-37.28`, Pod A
+  `-28.63`, PF `0.6879`, max DD `37.37`) avec plus de reductions de cap. Garder
+  A-PNL-02 en `research_only_no_live_change`; ne pas activer live tel quel.
 - Incident live `2026-06-07`: Pod A a ouvert une position ARB mainnet
   (`oid=461196360588`, long `2446.4`, entry `0.0817`, cap live ~`200 USDC`)
   mais le state/journal n'a pas garde la position avant crash/restart. Pod A

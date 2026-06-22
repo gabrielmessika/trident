@@ -75,6 +75,40 @@ class PodARiskGate(TradePlanRiskGate):
             self._closed_trade_pnl_by_intraday_setup[intraday_key] = intraday_history
         intraday_history.append(float(pnl_usd))
 
+    def rolling_symbol_setup_stats(self, symbol: str, setup: str | None) -> dict[str, float | int]:
+        key = self._guardrail_key(symbol, setup)
+        if key is None:
+            return {
+                "symbol_setup_rolling_trades": 0,
+                "symbol_setup_rolling_pnl_usd": 0.0,
+                "symbol_setup_rolling_expectancy_usd": 0.0,
+                "symbol_setup_rolling_profit_factor": 0.0,
+            }
+        history = list(self._closed_trade_pnl_by_key.get(key) or [])
+        if not history:
+            return {
+                "symbol_setup_rolling_trades": 0,
+                "symbol_setup_rolling_pnl_usd": 0.0,
+                "symbol_setup_rolling_expectancy_usd": 0.0,
+                "symbol_setup_rolling_profit_factor": 0.0,
+            }
+        gross_profit = sum(value for value in history if value > 0.0)
+        gross_loss = abs(sum(value for value in history if value < 0.0))
+        if gross_loss > 0.0:
+            profit_factor = gross_profit / gross_loss
+        elif gross_profit > 0.0:
+            profit_factor = 999.0
+        else:
+            profit_factor = 0.0
+        total = sum(history)
+        trades = len(history)
+        return {
+            "symbol_setup_rolling_trades": trades,
+            "symbol_setup_rolling_pnl_usd": round(total, 6),
+            "symbol_setup_rolling_expectancy_usd": round(total / trades, 6),
+            "symbol_setup_rolling_profit_factor": round(profit_factor, 6),
+        }
+
     def evaluate_many(self, plans: list[TradePlan]) -> list[RiskDecision]:
         decisions: list[RiskDecision] = []
         seen_symbols: set[str] = set()

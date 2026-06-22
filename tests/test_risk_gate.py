@@ -102,7 +102,18 @@ class PodARiskGateTests(unittest.TestCase):
         self.assertEqual(rules["mtf_1h_overextension_chase"].min_entry_vs_open_1h_bps, 50.0)
 
     def test_allows_hype_trend_pullback_after_targeted_veto_rollback(self) -> None:
-        decisions = self.gate.evaluate_many(
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                blocked_symbols=[
+                    symbol for symbol in self.config.pod_a.blocked_symbols if symbol != "HYPE"
+                ],
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
             [
                 TradePlan(
                     symbol="HYPE",
@@ -125,7 +136,18 @@ class PodARiskGateTests(unittest.TestCase):
         self.assertEqual(decisions[0].reason, "accepted")
 
     def test_rejects_xrp_overextension_targeted_veto(self) -> None:
-        decisions = self.gate.evaluate_many(
+        config = replace(
+            self.config,
+            pod_a=replace(
+                self.config.pod_a,
+                blocked_symbols=[
+                    symbol for symbol in self.config.pod_a.blocked_symbols if symbol != "XRP"
+                ],
+            ),
+        )
+        gate = PodARiskGate(config)
+
+        decisions = gate.evaluate_many(
             [
                 TradePlan(
                     symbol="XRP",
@@ -720,6 +742,20 @@ class PodARiskGateTests(unittest.TestCase):
         gate.record_closed_trade(symbol="ETH", setup="trend_pullback_long", pnl_usd=8.0)
         recovered = gate.evaluate_many([plan])
         self.assertTrue(recovered[0].accepted)
+
+    def test_exposes_rolling_symbol_setup_stats_without_blocking_policy(self) -> None:
+        gate = PodARiskGate(self.config)
+
+        gate.record_closed_trade(symbol="ETH", setup="trend_pullback_long", pnl_usd=-1.0)
+        gate.record_closed_trade(symbol="ETH", setup="trend_pullback_long", pnl_usd=2.5)
+        gate.record_closed_trade(symbol="ETH", setup="trend_pullback_long", pnl_usd=0.5)
+
+        stats = gate.rolling_symbol_setup_stats("ETH", "trend_pullback_long")
+
+        self.assertEqual(stats["symbol_setup_rolling_trades"], 3)
+        self.assertEqual(stats["symbol_setup_rolling_pnl_usd"], 2.0)
+        self.assertEqual(stats["symbol_setup_rolling_expectancy_usd"], 0.666667)
+        self.assertEqual(stats["symbol_setup_rolling_profit_factor"], 3.0)
 
     def test_applies_setup_guardrail_across_symbols(self) -> None:
         config = replace(

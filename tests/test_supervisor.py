@@ -22,6 +22,13 @@ from app.trident.types import (
 class SupervisorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = load_config("config/trident.toml")
+        self._runtime_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._runtime_dir.cleanup)
+        self.config.trident.routing.runtime_override_path = str(
+            Path(self._runtime_dir.name) / "symbol_routing_overrides.json"
+        )
+        self.config.hyperliquid.tradable_blocked_symbols = []
+        self.config.pod_a.blocked_symbols = []
 
     def test_supervisor_observed_symbols_do_not_fallback_to_pod_a_symbols(self) -> None:
         self.config.hyperliquid.observation_universe = []

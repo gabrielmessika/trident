@@ -53,6 +53,11 @@ class ScenarioSpec:
     action: str = "shadow_only"
     throttle_multiplier: float = 0.50
     quarantine_multiplier: float = 0.50
+    recovery_base_multiplier: float = 0.70
+    recovery_partial_multiplier: float = 0.85
+    recovery_min_closed_trades: int = 4
+    recovery_min_profit_factor: float = 1.05
+    recovery_min_expectancy_usd: float = 0.0
 
 
 @dataclass(slots=True)
@@ -121,6 +126,16 @@ def default_scenarios() -> list[ScenarioSpec]:
             ),
             action="live_sizing_policy",
             quarantine_multiplier=0.10,
+        ),
+        ScenarioSpec(
+            name="live_sizing_recovery_55_75_base70_partial85",
+            description=(
+                "Counterfactual A-PNL-02: throttle/quarantine restent a 50%, "
+                "les symboles normaux non prouves restent a 70%, recovery "
+                "partielle a 85%, plein sizing seulement apres PF/expectancy "
+                "rolling positifs."
+            ),
+            action="recovery_sizing_policy",
         ),
         ScenarioSpec(
             name="quarantine_only_75",
@@ -412,7 +427,17 @@ def process_state(
     filtered: list[TradePlan] = []
     for plan in plans:
         feature = guard_features.get(plan.symbol.upper())
-        plan = TradePlan(**{**asdict(plan), "setup_details": {**dict(plan.setup_details or {}), "current_date_key": date_key}})
+        rolling_stats = state.risk_gate.rolling_symbol_setup_stats(plan.symbol, plan.setup)
+        plan = TradePlan(
+            **{
+                **asdict(plan),
+                "setup_details": {
+                    **dict(plan.setup_details or {}),
+                    "current_date_key": date_key,
+                    **rolling_stats,
+                },
+            }
+        )
         reason = guard_filter_reason(state.spec, feature)
         if reason is not None:
             state.rejections[reason] += 1
@@ -422,7 +447,7 @@ def process_state(
             state.throttle_count += 1
         if feature is not None and feature.would_block:
             state.quarantine_count += 1
-        cap_multiplier = p108_cap_multiplier(state.spec, feature)
+        cap_multiplier = p108_cap_multiplier(state.spec, feature, plan.setup_details)
         if cap_multiplier < 1.0:
             state.cap_reduction_count += 1
             plan = TradePlan(
@@ -437,6 +462,9 @@ def process_state(
                         "p108_shadow_cap_multiplier": cap_multiplier,
                         "p108_live_sizing_policy_counterfactual": (
                             state.spec.action == "live_sizing_policy"
+                        ),
+                        "p108_recovery_sizing_policy_counterfactual": (
+                            state.spec.action == "recovery_sizing_policy"
                         ),
                         "symbol_guard_live_action_unchanged": False,
                     },
@@ -477,19 +505,42 @@ def guard_filter_reason(spec: ScenarioSpec, feature: Any) -> str | None:
     return None
 
 
-def p108_cap_multiplier(spec: ScenarioSpec, feature: Any) -> float:
+def p108_cap_multiplier(
+    spec: ScenarioSpec,
+    feature: Any,
+    details: dict[str, Any] | None = None,
+) -> float:
     if feature is None:
-        return 1.0
-    if spec.action == "live_sizing_policy":
+        if spec.action != "recovery_sizing_policy":
+            return 1.0
+        return p108_recovery_multiplier(spec, details or {})
+    if spec.action in {"live_sizing_policy", "recovery_sizing_policy"}:
         state = str(getattr(feature, "state", "") or "").lower()
         if state == "quarantine" or bool(getattr(feature, "would_block", False)):
             return spec.quarantine_multiplier
         if state == "throttle" or bool(getattr(feature, "would_reduce_cap", False)):
             return spec.throttle_multiplier
+        if spec.action == "recovery_sizing_policy":
+            return p108_recovery_multiplier(spec, details or {})
     if spec.action in {"throttle_only", "throttle_then_quarantine"}:
         if bool(getattr(feature, "would_throttle", False)):
             return spec.throttle_multiplier
     return 1.0
+
+
+def p108_recovery_multiplier(spec: ScenarioSpec, details: dict[str, Any]) -> float:
+    trades = int(float(details.get("symbol_setup_rolling_trades", 0) or 0))
+    expectancy = float(details.get("symbol_setup_rolling_expectancy_usd", 0.0) or 0.0)
+    profit_factor = float(details.get("symbol_setup_rolling_profit_factor", 0.0) or 0.0)
+    if trades < max(int(spec.recovery_min_closed_trades), 0):
+        return spec.recovery_base_multiplier
+    expectancy_ok = expectancy > spec.recovery_min_expectancy_usd
+    profit_factor_ok = profit_factor >= spec.recovery_min_profit_factor
+    if expectancy_ok and profit_factor_ok:
+        return 1.0
+    if expectancy_ok or profit_factor_ok:
+        return spec.recovery_partial_multiplier
+    return spec.recovery_base_multiplier
 
 
 def record_tick(

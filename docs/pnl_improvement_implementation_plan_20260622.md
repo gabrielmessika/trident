@@ -81,6 +81,36 @@ live, il faut une confirmation explicite, un audit adapte au fait que
 `symbol_guard_live_action_unchanged=false` devienne normal quand la policy agit,
 et un fetch/review post-deploiement.
 
+### Implementation A-PNL-02 recovery sizing dormant
+
+Implementation locale du 2026-06-22, sans activation live automatique:
+
+- `PodARiskGate` expose maintenant des stats rolling par couple
+  `symbol/setup`: nombre de trades fermes, PnL, expectancy et profit factor.
+- Le live runner Pod A attache ces stats aux `setup_details` des plans; c'est
+  une instrumentation shadow exploitable par les exports d'audit.
+- Une policy dormante `dynamic_symbol_guard_recovery_sizing_enabled=false` peut
+  appliquer une echelle de notional progressive:
+  - etat degrade `throttle/quarantine`: multiplicateurs P1-08 existants;
+  - etat normal non prouve: `recovery_base_multiplier=0.70`;
+  - recovery partielle: `recovery_partial_multiplier=0.85`;
+  - plein sizing seulement si `rolling_trades>=4`,
+    `rolling_profit_factor>=1.05` et `rolling_expectancy_usd>0`.
+- Le flag reste `false` dans `config/trident.toml`; aucun cap live, service,
+  ordre, deploy ou comportement d'execution actif n'est modifie.
+- Le replay P1-08 inclut maintenant le scenario counterfactual
+  `live_sizing_recovery_55_75_base70_partial85` afin de comparer A-PNL-02 a la
+  baseline courante et au candidat P1-08 demi-cap avant toute activation.
+- Replay full-window:
+  `server-data/replay_reports/p108_recovery_sizing_20260622/`, fenetre
+  `2026-05-14T00:00:00Z` -> `2026-06-22T10:14:00Z`, `45782` records.
+  Resultat: `research_only_no_live_change`. A-PNL-02 `base70/partial85`
+  ameliore la baseline courante (`-37.40` vs `-40.19`, delta `+2.79`, Pod A
+  `-28.75`, PF `0.6866`, max DD `37.49`) mais ne bat pas le candidat plus
+  simple P1-08 `cap50/cap50` (`-37.28`, delta `+2.91`, Pod A `-28.63`,
+  PF `0.6879`, max DD `37.37`) et applique davantage de reductions de cap
+  (`4694` vs `3762`). Ne pas promouvoir cette variante telle quelle.
+
 ### TRIDENT-HIP4
 
 | Recommandation review | Traduction dans ce plan |
@@ -201,7 +231,7 @@ Statuts:
 | ID | Statut | Changement a faire | Pourquoi ca peut augmenter le PnL | Validation minimale |
 | --- | --- | --- | --- | --- |
 | A-PNL-01 | ready_review | P1-08 uniquement en sizing progressif demi-cap: `throttle=0.50`, `quarantine=0.50`, aucun blocage, avec logs `guard_state` et `live_action_changed`. Implementation 2026-06-22: code cap-only disponible via config `dynamic_symbol_guard_live_sizing_enabled=false` par defaut; la variante `quarantine=0.10` est rejetee. | Les donnees recentes montrent que les symboles en etat degrade concentrent des pertes; le demi-cap conserve l'activite et reduit legerement le drawdown sans supprimer les trades Pod A sur la fenetre live. | Replay dedie positif mais faible (`+2.91` A/C, PF Pod A `0.6879`): avant live, adapter l'audit `live_action_unchanged`, redeployer explicitement, puis review post-deploiement; aucune activation automatique. |
-| A-PNL-02 | todo | Introduire une echelle de notional par etat symbole: base plus basse, retour progressif au cap seulement apres PF/expectancy rolling positifs. | Les pertes recentes ne viennent pas d'un manque d'activite mais d'un mauvais payoff; reduire la taille dans les contextes mediocres ameliore l'esperance sans couper. | Comparer PnL, PF, max loss/trade, trades conserves et missed upside par symbole. |
+| A-PNL-02 | shadow | Echelle de notional par etat symbole implementee en dormant: stats rolling `symbol/setup` exposees, base `0.70`, partiel `0.85`, plein sizing seulement apres PF/expectancy rolling positifs. Flag `dynamic_symbol_guard_recovery_sizing_enabled=false` par defaut. | Les pertes recentes ne viennent pas d'un manque d'activite mais d'un mauvais payoff; reduire la taille dans les contextes mediocres ameliore l'esperance sans couper. | Replay full-window `p108_recovery_sizing_20260622`: positif vs courant (`+2.79`) mais inferieur a P1-08 `cap50/cap50` (`+2.91`) avec plus de reductions. Statut `research_only_no_live_change`; ne pas activer tel quel, garder dormant pour variantes futures. |
 | A-PNL-03 | todo | Neutraliser ou capper le boost de taille A-grade en shadow/replay avant tout changement live. | Le bot semble payer cher ses convictions fortes quand elles se trompent; enlever le boost peut reduire les gros losers sans toucher au signal principal. | Replay full-bot `boost=1.0` vs courant, buckets A-grade par symbole/regime, puis paper shadow de 7 jours. |
 | A-PNL-04 | shadow | Ajouter un journal MFE/MAE post-sortie pour `early_failure_exit`: suivre virtuellement le trade jusqu'au stop/time/trailing original. | Les sorties precoces reduisent certaines pertes mais peuvent tuer des recoveries; il faut mesurer le cout d'opportunite avant de durcir. | Rapport par exit_reason: pertes evitees, winners manques, delai moyen de recovery, PnL contrefactuel. |
 | A-PNL-05 | shadow | Ajouter un score microstructure entree base sur micro-price/VAMP, profondeur BBO, order flow recent et age du carnet. | Les sources HFT indiquent que le desalignement prix mid vs micro-price/VAMP revele souvent l'adverse selection; utile pour eviter d'entrer juste avant un move adverse. | Shadow score attache a chaque signal, deciles de PnL par score, puis replay avec cap-only sur pires deciles. |
@@ -266,6 +296,11 @@ TRIDENT A/C:
   doivent etre visibles dans les reviews.
 - Scripts de replay P1/P10x/P11x si les nouvelles variantes doivent etre
   comparees a la baseline full-bot.
+- Impact A-PNL-02 du 2026-06-22: `scripts/export_trident_audit_pack.py` expose
+  les nouveaux champs rolling/recovery, et
+  `scripts/run_p108_dynamic_symbol_guard_replay.py` expose le scenario
+  `live_sizing_recovery_55_75_base70_partial85`; les scripts de deploy/fetch ne
+  necessitent pas de modification car aucun nouvel artefact serveur n'est cree.
 
 TRIDENT-HIP4:
 
@@ -282,6 +317,27 @@ Verification avant toute PR:
 - `rtk bash -n trident-hip4/fetch_data.sh`
 - `rtk bash -n scripts/fetch_all_data.sh`
 - Review locale des donnees apres fetch si les champs de logs changent.
+
+Validations locales A-PNL-02 du 2026-06-22:
+
+- `rtk uv run python -m py_compile app/settings.py app/risk/pod_a_gate.py app/trident/pod_a/live_risk.py app/live/pod_a_live_runner.py scripts/export_trident_audit_pack.py`: OK.
+- `rtk uv run python -m unittest tests.test_settings tests.test_risk_gate tests.test_pod_a_live_runner tests.test_p108_dynamic_symbol_guard_replay`: OK (`42` tests).
+- `rtk bash -n scripts/fetch_trident_data.sh trident-hip4/fetch_data.sh scripts/fetch_all_data.sh`: OK.
+- Smoke replay technique:
+  `rtk uv run python scripts/run_p108_dynamic_symbol_guard_replay.py --window live --live-input server-data/live_snapshots/2026-06-20.jsonl --live-start 2026-06-20T00:00:00Z --live-end 2026-06-20T01:00:00Z --output-dir tmp/p108_recovery_smoke_20260622`:
+  OK. Le scenario `live_sizing_recovery_55_75_base70_partial85` sort `-4.29`
+  vs baseline `-4.31` sur `3` trades; c'est un smoke technique, pas une preuve
+  de promotion.
+- Replay full-window A-PNL-02:
+  `rtk uv run python scripts/run_p108_dynamic_symbol_guard_replay.py --window live --live-input server-data/live_snapshots --live-start 2026-05-14T00:00:00Z --live-end 2026-06-22T10:14:00Z --output-dir server-data/replay_reports/p108_recovery_sizing_20260622`:
+  OK, `research_only_no_live_change`; A-PNL-02 positif vs courant mais inferieur
+  au demi-cap P1-08 simple.
+- Suite complete `rtk uv run pytest`: OK (`664` passed, `1` warning pytest
+  historique sur `TestnetOutcomeExecutor`). Les tests supervisor/report/backtest
+  ont ete isoles des artefacts runtime locaux (`runtime/trident/*`,
+  `logs/*_live_status.json`) et des blocklists prod quand ils testent une
+  hypothese de routing generique; le test small-wallet desactive A-grade pour
+  verifier le sizing brut sans boost.
 
 ## Definition de "promotable"
 
@@ -304,7 +360,10 @@ suivantes:
 - A/C: ne pas couper. Priorite a la reduction de taille conditionnelle, a la
   qualite d'execution et a la microstructure. P1-08 `cap50/cap10` est rejete;
   P1-08 `cap50/cap50` reste le candidat le plus proche, mais seulement apres
-  confirmation live explicite et audit adapte.
+  confirmation live explicite et audit adapte. A-PNL-02 est code en dormant
+  pour replay/shadow, mais la variante `base70/partial85` ne bat pas P1-08
+  `cap50/cap50`; son flag reste `false`, aucune activation live ni hausse de cap
+  n'est incluse.
 - HIP4: ne pas passer live maintenant. Continuer `prob_stop_full` en paper actif,
   enrichir Nautilus/observability et ne promouvoir le shadow que s'il prouve une
   amelioration nette sur settlements reels avec fills realistes.

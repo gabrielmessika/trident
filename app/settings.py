@@ -279,6 +279,12 @@ class PodAConfig:
     dynamic_symbol_guard_throttle_multiplier: float = 0.50
     dynamic_symbol_guard_quarantine_multiplier: float = 0.50
     dynamic_symbol_guard_min_multiplier: float = 0.10
+    dynamic_symbol_guard_recovery_sizing_enabled: bool = False
+    dynamic_symbol_guard_recovery_base_multiplier: float = 0.70
+    dynamic_symbol_guard_recovery_partial_multiplier: float = 0.85
+    dynamic_symbol_guard_recovery_min_closed_trades: int = 4
+    dynamic_symbol_guard_recovery_min_profit_factor: float = 1.05
+    dynamic_symbol_guard_recovery_min_expectancy_usd: float = 0.0
 
 
 @dataclass(slots=True)
@@ -1723,6 +1729,24 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             dynamic_symbol_guard_min_multiplier=float(
                 pod_a_data.get("dynamic_symbol_guard_min_multiplier", 0.10)
+            ),
+            dynamic_symbol_guard_recovery_sizing_enabled=bool(
+                pod_a_data.get("dynamic_symbol_guard_recovery_sizing_enabled", False)
+            ),
+            dynamic_symbol_guard_recovery_base_multiplier=float(
+                pod_a_data.get("dynamic_symbol_guard_recovery_base_multiplier", 0.70)
+            ),
+            dynamic_symbol_guard_recovery_partial_multiplier=float(
+                pod_a_data.get("dynamic_symbol_guard_recovery_partial_multiplier", 0.85)
+            ),
+            dynamic_symbol_guard_recovery_min_closed_trades=int(
+                pod_a_data.get("dynamic_symbol_guard_recovery_min_closed_trades", 4)
+            ),
+            dynamic_symbol_guard_recovery_min_profit_factor=float(
+                pod_a_data.get("dynamic_symbol_guard_recovery_min_profit_factor", 1.05)
+            ),
+            dynamic_symbol_guard_recovery_min_expectancy_usd=float(
+                pod_a_data.get("dynamic_symbol_guard_recovery_min_expectancy_usd", 0.0)
             ),
         ),
         pod_b=PodBConfig(

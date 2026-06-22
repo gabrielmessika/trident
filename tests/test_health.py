@@ -965,9 +965,18 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["regime_evaluation_count"], 9)
 
     def test_report_payload_exposes_multi_pod_runtime_report(self) -> None:
+        def _missing_runtime(_path):
+            return None
+
         with patch(
+            "app.observability.api.load_runtime_status",
+            side_effect=_missing_runtime,
+        ), patch(
+            "app.observability.api._refresh_supervisor_from_latest_snapshot",
+            return_value=False,
+        ), patch(
             "app.reporting.multi_pod.load_runtime_status",
-            side_effect=[None, None, None, None, None, None],
+            side_effect=_missing_runtime,
         ):
             payload = report_payload(self.supervisor, self.metrics)
         self.assertEqual(payload["profile"], "trident")

@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from app.backtest.pod_a_runner import PodABacktestRunner
@@ -241,6 +242,10 @@ class PodABacktestRunnerTests(unittest.TestCase):
             reference_equity_usd=500.0,
             pod_a_default_leverage=2.0,
             pod_a_max_leverage=2.0,
+        )
+        config = replace(
+            config,
+            pod_a=replace(config.pod_a, a_grade_enabled=False),
         )
         runner = PodABacktestRunner(config)
 
