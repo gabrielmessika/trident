@@ -250,11 +250,15 @@ class PodALiveRunnerTests(unittest.TestCase):
         self.assertEqual(shaped_plan.setup_details["live_quality_sizing_multiplier"], 0.5)
         self.assertIn("low_confidence", shaped_plan.setup_details["live_quality_sizing_reasons"])
 
-    def test_dynamic_symbol_guard_sizing_is_disabled_by_default(self) -> None:
+    def test_dynamic_symbol_guard_sizing_can_be_disabled_by_config(self) -> None:
         config = load_config("config/trident.toml")
         config = replace(
             config,
-            pod_a=replace(config.pod_a, live_quality_sizing_enabled=False),
+            pod_a=replace(
+                config.pod_a,
+                live_quality_sizing_enabled=False,
+                dynamic_symbol_guard_live_sizing_enabled=False,
+            ),
         )
         runner = PodALiveRunner(config, coins=["BTC"])
         plan = TradePlan(

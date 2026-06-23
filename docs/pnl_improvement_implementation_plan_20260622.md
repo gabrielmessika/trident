@@ -683,6 +683,14 @@ Validations locales A-PNL-01 audit P108 du 2026-06-23:
 - `rtk ./scripts/fetch_trident_data.sh --review-only`: OK,
   `server-data/reviews/20260623T091959Z/review_summary.md` en `PASS`; P1-08
   `with_shadow=2000/2000`, `unexpected_live_action_changed=0`.
+- Promotion/deploiement A-PNL-01 live/mainnet:
+  `rtk ./deploy.sh --start --mode live --network mainnet --config config/trident.toml`:
+  OK; preflight Pod A/Pod C ready, services A/C actifs.
+- Fetch/review post-deploy:
+  `rtk ./scripts/fetch_trident_data.sh --days 1`: OK,
+  `server-data/reviews/20260623T095928Z/review_summary.md` en `PASS`; config
+  serveur `dynamic_symbol_guard_live_sizing_enabled=true`, `throttle=0.50`,
+  `quarantine=0.50`, P108 `unexpected_live_action_changed=0`.
 
 Validations locales A-PNL-02 du 2026-06-22:
 
@@ -861,7 +869,7 @@ preflight, rapport de replay/paper, confirmation explicite et rollback par confi
 
 | Priorite | Candidat | Etat actuel | Condition avant live |
 | --- | --- | --- | --- |
-| 1 | `A-PNL-01` / P1-08 `cap50/cap50` Pod A | Candidat le plus proche: `+2.91` A/C vs courant, gain faible. Audit P108 adapte et review locale PASS, mais la config serveur rapatriee montre encore `quarantine_multiplier=0.10` avec flag desactive. | Confirmation explicite, redeploiement de la config candidate `dynamic_symbol_guard_live_sizing_enabled=true` + `throttle=0.50` + `quarantine=0.50`, puis fetch/review post-deploiement avec `unexpected_live_action_changed=0` et rollback par config. |
+| 1 | `A-PNL-01` / P1-08 `cap50/cap50` Pod A | Promu live/mainnet le `2026-06-23T09:59Z`: config serveur `dynamic_symbol_guard_live_sizing_enabled=true`, `throttle=0.50`, `quarantine=0.50`, review post-deploy `server-data/reviews/20260623T095928Z/` en `PASS`, `unexpected_live_action_changed=0`. | Surveiller les prochains signaux Pod A: au moment de la review, aucun record recent n'avait encore `live_sizing_active_records>0`. Rollback simple: remettre `dynamic_symbol_guard_live_sizing_enabled=false`, redeployer, fetch/review. |
 | 2 | `C-PNL-01` stoplight P1-09 oil Pod C | Garde-fou operationnel pret, mais stoplight courant `hold_exposure` avec closed+open oil negatif. | Aucune hausse d'exposition oil tant que closed+open PnL, PF, MAE et nombre de setups independants ne passent pas au vert. |
 | 3 | `H-PNL-01` readiness HIP4 `prob_stop_full` | Paper actif seulement; readiness buckets ajoutes, pas de live. | Buckets significatifs avec PF `>1.15`, Brier `<=0.23`, fills/capital realistes, preflight et tiny caps confirmes. |
 | 4 | Variante future issue de `A-PNL-07` fill-quality | Audits P117/P118 implementes. `parent_plus50` est prometteur en research (`+16.31`, PF `3.1495`) mais trop petit et trop INJ-concentre; aucun filtre simple spread/depth/cost ni scale-in simple n'est promotable. | Tester un classifieur combine ou repricing/cap-only qui bat la baseline full-bot, n'efface pas les winners et ne concentre pas le gain sur un symbole/regime. |
@@ -881,8 +889,9 @@ oil pair brut non dedupe, plus les anciennes pistes listees dans
 
 - A/C: ne pas couper. Priorite a la reduction de taille conditionnelle, a la
   qualite d'execution et a la microstructure. P1-08 `cap50/cap10` est rejete;
-  P1-08 `cap50/cap50` reste le candidat le plus proche, mais seulement apres
-  confirmation live explicite et audit adapte. A-PNL-02 est code en dormant
+  P1-08 `cap50/cap50` est promu live/mainnet depuis le `2026-06-23T09:59Z`
+  apres confirmation operateur, preflight et review post-deploiement `PASS`.
+  A-PNL-02 est code en dormant
   pour replay/shadow, mais la variante `base70/partial85` ne bat pas P1-08
   `cap50/cap50`. A-PNL-05 garde son score microstructure en shadow/audit, mais
   le cap-only `<0.42`/`<0.56` est rejete car negatif sur la fenetre live.

@@ -179,6 +179,19 @@ Source de verite operationnelle depuis le `2026-05-24`:
   confirmation explicite, redeploiement de la variante `cap50/cap50`, puis
   fetch/review verifiant `unexpected_live_action_changed=0` et la config serveur
   `throttle=0.50`, `quarantine=0.50`.
+- Promotion A-PNL-01 `2026-06-23T09:59Z`: decision operateur executee, variante
+  P1-08 `cap50/cap50` deployee en live/mainnet via
+  `./deploy.sh --start --mode live --network mainnet --config config/trident.toml`.
+  Config serveur verifiee avec `dynamic_symbol_guard_live_sizing_enabled=true`,
+  `dynamic_symbol_guard_throttle_multiplier=0.50` et
+  `dynamic_symbol_guard_quarantine_multiplier=0.50`. Preflight Pod A/Pod C OK,
+  services `trident-api`, `pod-a-live`, `pod-c-live`,
+  `tradfi-funding-collector` et `funding-collector` actifs. Fetch post-deploy
+  `server-data/reviews/20260623T095928Z/review_summary.md` en `PASS`; P108
+  `unexpected_live_action_changed=0`. Les logs recents n'avaient pas encore de
+  record Pod A avec sizing actif au moment de la review
+  (`live_sizing_active_records=0`), donc surveiller la prochaine fenetre de
+  signaux pour confirmer les premiers caps effectifs.
 - Implementation A-PNL-02 `2026-06-22`: Pod A expose les stats rolling
   `symbol/setup` dans les `setup_details` (`trades`, PnL, expectancy, profit
   factor) et dispose d'une policy dormante de recovery sizing

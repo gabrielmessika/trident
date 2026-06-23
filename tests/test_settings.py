@@ -30,7 +30,7 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertTrue(config.pod_a.live_loss_tax_enabled)
         self.assertEqual(config.pod_a.live_correlation_full_size_slots, 3)
         self.assertFalse(config.pod_a.a_grade_size_headroom_cap_enabled)
-        self.assertFalse(config.pod_a.dynamic_symbol_guard_live_sizing_enabled)
+        self.assertTrue(config.pod_a.dynamic_symbol_guard_live_sizing_enabled)
         self.assertEqual(config.pod_a.dynamic_symbol_guard_throttle_multiplier, 0.50)
         self.assertEqual(config.pod_a.dynamic_symbol_guard_quarantine_multiplier, 0.50)
         self.assertEqual(config.pod_a.dynamic_symbol_guard_min_multiplier, 0.10)
