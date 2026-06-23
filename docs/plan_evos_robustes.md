@@ -359,3 +359,30 @@ Pistes rejetées ou non prioritaires:
 4. `P118 parent_plus50 scale-in`: garder en research; pas de live direct.
 5. `Pod C execution_cost bucket_notional_lt100k` / `spread_not_high_activity`: shadow seulement.
 6. `Oil dedupe/stoplight`: ne pas augmenter l’exposition tant que closed+open oil reste négatif.
+
+**Promotion Live 2026-06-23T13:33Z**
+
+Statut: promotions 1 et 2 exécutées sur TRIDENT A/C live/mainnet.
+
+Config live promue:
+
+- Pod A: `dynamic_symbol_guard_loss_probation_sizing_enabled=true`;
+- Pod C: `external_reference_fresh_cap_sizing_enabled=true`;
+- seuils inchangés: cap `0.50`, P119 `lb8/min2/pnl<=-16/pf<=0.60`, C-PNL-02 gate `fresh_candidate_default_5m`.
+
+Déploiement:
+
+- commande: `./deploy.sh --start --mode live --network mainnet --config config/trident.toml`;
+- preflight Pod A OK: reconciliation ready, pas de position inconnue, pas d'ordre ouvert/orphelin;
+- preflight Pod C OK: reconciliation ready, pas de position inconnue, pas d'ordre ouvert/orphelin;
+- services redémarrés: `trident-api`, `pod-a-live`, `pod-c-live`, `tradfi-funding-collector`, `funding-collector`.
+
+Reviews post-deploy:
+
+- `server-data/reviews/20260623T133321Z/review_summary.md`;
+- `server-data/reviews/20260623T133539Z/review_summary.md` après ~1 minute de runtime;
+- statut `PASS`, mode `live`, network `mainnet`;
+- config serveur vérifiée: les deux flags promus sont `true`;
+- P1-03: `runtime_symbols_enriched=17`, `unexpected_live_action_changed=0`, `fresh_cap_sizing_active_records=0`;
+- P1-08: `unexpected_live_action_changed=0`, `loss_probation_sizing_active_records=0`;
+- aucun trade/cap effectif observé dans le tail immédiatement post-restart; suivre la prochaine fenêtre de signaux.

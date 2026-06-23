@@ -413,6 +413,23 @@ Source de verite operationnelle depuis le `2026-05-24`:
   shadow-only: combined sizing v0, recovery sizing, A-grade headroom,
   microstructure, fill/depth simple, scale-in P118, oil dedupe, session/liquidity
   et execution-cost simples.
+- Promotion PnL `2026-06-23T13:33Z`: decision operateur executee, les deux
+  meilleures evolutions sont deployees en live/mainnet:
+  `dynamic_symbol_guard_loss_probation_sizing_enabled=true` pour Pod A et
+  `external_reference_fresh_cap_sizing_enabled=true` pour Pod C, avec caps `0.50`
+  et seuils backtestes inchanges. Commande:
+  `./deploy.sh --start --mode live --network mainnet --config config/trident.toml`.
+  Preflight Pod A/Pod C OK, reconciliations ready, pas de position inconnue ni
+  ordre orphelin. Fetch post-deploy
+  `server-data/reviews/20260623T133321Z/review_summary.md` en `PASS`, mode
+  `live`, network `mainnet`, config serveur verifiee avec les deux flags a
+  `true`. Deuxieme review apres ~1 minute de runtime
+  `server-data/reviews/20260623T133539Z/review_summary.md` egalement en `PASS`
+  avec `runtime_symbols_enriched=17` cote P1-03. Aucun nouveau cap effectif
+  observe (`loss_probation_sizing_active_records=0`,
+  `fresh_cap_sizing_active_records=0`) et aucun changement inattendu
+  (`unexpected_live_action_changed=0` sur P1-03/P1-08); suivre les prochains
+  signaux pour confirmer les premiers caps reels.
 - Implementation C-PNL-03/P120 `2026-06-23`: ajout de l'audit local
   `scripts/run_p120_oil_relative_value_audit.py` sur les observations
   `p109_oil_shadow_*` Pod C. Le rapport

@@ -258,6 +258,7 @@ class PodALiveRunnerTests(unittest.TestCase):
                 config.pod_a,
                 live_quality_sizing_enabled=False,
                 dynamic_symbol_guard_live_sizing_enabled=False,
+                dynamic_symbol_guard_loss_probation_sizing_enabled=False,
             ),
         )
         runner = PodALiveRunner(config, coins=["BTC"])
