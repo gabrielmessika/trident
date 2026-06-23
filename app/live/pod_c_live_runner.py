@@ -61,6 +61,9 @@ from app.trident.pod_a.leverage import LeveragePolicy
 from app.trident.pod_c.external_reference_shadow import (
     external_reference_shadow_setup_details,
 )
+from app.trident.pod_c.external_reference_sizing import (
+    apply_external_reference_sizing_policy,
+)
 from app.trident.pod_c.oil_shadow import (
     P109_OIL_PROMOTED_SETUP,
     build_p109_oil_shadow_features,
@@ -74,6 +77,7 @@ from app.trident.types import (
     RiskDecision,
     SignalPreview,
     SymbolMarketSnapshot,
+    TradePlan,
     symbol_market_snapshot_from_mapping,
 )
 
@@ -442,6 +446,7 @@ class PodCLiveRunner:
             details_by_symbol=p109_oil_shadow_by_symbol,
         )
         trade_plans = self._apply_external_reference_shadow_to_plans(trade_plans)
+        trade_plans = self._apply_external_reference_sizing_policy_to_plans(trade_plans)
         trade_plans = self._apply_p109_oil_shadow_to_plans(
             trade_plans,
             p109_oil_shadow_by_symbol,
@@ -664,6 +669,15 @@ class PodCLiveRunner:
             }
             plan.setup_details = details
         return trade_plans
+
+    def _apply_external_reference_sizing_policy_to_plans(
+        self,
+        trade_plans: list[TradePlan],
+    ) -> list[TradePlan]:
+        return [
+            apply_external_reference_sizing_policy(plan, self.config.pod_c)
+            for plan in trade_plans
+        ]
 
     def _apply_p109_oil_shadow_to_plans(
         self,

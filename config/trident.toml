@@ -373,6 +373,13 @@ dynamic_symbol_guard_recovery_partial_multiplier = 0.85
 dynamic_symbol_guard_recovery_min_closed_trades = 4
 dynamic_symbol_guard_recovery_min_profit_factor = 1.05
 dynamic_symbol_guard_recovery_min_expectancy_usd = 0.0
+dynamic_symbol_guard_loss_probation_sizing_enabled = false
+dynamic_symbol_guard_loss_probation_multiplier = 0.50
+dynamic_symbol_guard_loss_probation_min_closed_trades = 2
+dynamic_symbol_guard_loss_probation_max_pnl_usd = -16.0
+dynamic_symbol_guard_loss_probation_max_profit_factor = 0.60
+dynamic_symbol_guard_loss_probation_rehab_min_profit_factor = 1.05
+dynamic_symbol_guard_loss_probation_rehab_min_expectancy_usd = 0.0
 opposite_signal_debounce_minutes = 15
 allowed_setups = ["trend_pullback_long"]
 disabled_setups = ["bos_retest_short", "bos_retest_long", "trend_pullback_short", "liquidity_sweep_reclaim_short", "liquidity_sweep_reclaim_long", "vwap_reclaim_long"]
@@ -738,6 +745,9 @@ min_activity_ratio = 0.75
 activity_lookback = 20
 p109_oil_short_enabled = true
 p109_oil_short_min_confidence = 0.67
+external_reference_fresh_cap_sizing_enabled = false
+external_reference_fresh_cap_gate = "fresh_candidate_default_5m"
+external_reference_fresh_cap_multiplier = 0.50
 
 [pod_c.external_reference]
 enabled = true

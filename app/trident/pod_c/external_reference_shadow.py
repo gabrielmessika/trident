@@ -20,6 +20,7 @@ def external_reference_shadow_details(
 
     missing = not available
     stale_15m = available and age is not None and age > 900.0
+    fresh_15m = available and age is not None and age <= 900.0
     abs_premium_gt_50 = available and premium is not None and abs(premium) > 50.0
     abs_premium_gt_100 = available and premium is not None and abs(premium) > 100.0
     long_chase_gt_50 = (
@@ -34,6 +35,44 @@ def external_reference_shadow_details(
         and (
             (side_normalized == "long" and momentum_300 <= -6.0)
             or (side_normalized == "short" and momentum_300 >= 6.0)
+        )
+    )
+    fresh_abs_premium_gt_50 = (
+        fresh_15m
+        and premium is not None
+        and abs(premium) > 50.0
+    )
+    fresh_abs_premium_gt_100 = (
+        fresh_15m
+        and premium is not None
+        and abs(premium) > 100.0
+    )
+    fresh_long_chase_gt_25 = (
+        fresh_15m
+        and side_normalized == "long"
+        and premium is not None
+        and premium > 25.0
+    )
+    fresh_long_chase_gt_50 = (
+        fresh_15m
+        and side_normalized == "long"
+        and premium is not None
+        and premium > 50.0
+    )
+    fresh_counter_momentum_5m_6bps = (
+        fresh_15m
+        and momentum_300 is not None
+        and (
+            (side_normalized == "long" and momentum_300 <= -6.0)
+            or (side_normalized == "short" and momentum_300 >= 6.0)
+        )
+    )
+    fresh_counter_momentum_5m_12bps = (
+        fresh_15m
+        and momentum_300 is not None
+        and (
+            (side_normalized == "long" and momentum_300 <= -12.0)
+            or (side_normalized == "short" and momentum_300 >= 12.0)
         )
     )
 
@@ -56,6 +95,16 @@ def external_reference_shadow_details(
         )
         or counter_momentum_5m_6bps
     )
+    fresh_candidate_loose = (
+        fresh_abs_premium_gt_100
+        or fresh_long_chase_gt_50
+        or fresh_counter_momentum_5m_12bps
+    )
+    fresh_candidate_default = (
+        fresh_abs_premium_gt_50
+        or fresh_long_chase_gt_25
+        or fresh_counter_momentum_5m_6bps
+    )
 
     reasons = []
     if missing:
@@ -71,6 +120,20 @@ def external_reference_shadow_details(
     if counter_momentum_5m_6bps:
         reasons.append("counter_momentum_5m_6bps")
 
+    fresh_reasons = []
+    if fresh_abs_premium_gt_50:
+        fresh_reasons.append("fresh_abs_premium_gt_50")
+    if fresh_abs_premium_gt_100:
+        fresh_reasons.append("fresh_abs_premium_gt_100")
+    if fresh_long_chase_gt_25:
+        fresh_reasons.append("fresh_long_chase_premium_gt_25")
+    if fresh_long_chase_gt_50:
+        fresh_reasons.append("fresh_long_chase_premium_gt_50")
+    if fresh_counter_momentum_5m_6bps:
+        fresh_reasons.append("fresh_counter_momentum_5m_6bps")
+    if fresh_counter_momentum_5m_12bps:
+        fresh_reasons.append("fresh_counter_momentum_5m_12bps")
+
     return {
         "external_reference_shadow_mode": "observation_only",
         "external_reference_shadow_available": available,
@@ -80,6 +143,14 @@ def external_reference_shadow_details(
         "would_block_external_reference_candidate_loose_5m": candidate_loose,
         "would_block_external_reference_candidate_default_5m": candidate_default,
         "external_reference_shadow_reason": ",".join(reasons),
+        "external_reference_fresh_shadow_available": fresh_15m,
+        "would_block_external_reference_fresh_abs_premium_gt_50": fresh_abs_premium_gt_50,
+        "would_block_external_reference_fresh_counter_momentum_5m_6bps": (
+            fresh_counter_momentum_5m_6bps
+        ),
+        "would_block_external_reference_fresh_candidate_loose_5m": fresh_candidate_loose,
+        "would_block_external_reference_fresh_candidate_default_5m": fresh_candidate_default,
+        "external_reference_fresh_shadow_reason": ",".join(fresh_reasons),
         "external_reference_shadow_live_action_unchanged": True,
     }
 

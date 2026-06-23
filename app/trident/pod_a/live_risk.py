@@ -228,7 +228,18 @@ def apply_pod_a_dynamic_symbol_guard_sizing(
     recovery_sizing_enabled = bool(
         getattr(pod_a_config, "dynamic_symbol_guard_recovery_sizing_enabled", False)
     )
-    if not live_state_sizing_enabled and not recovery_sizing_enabled:
+    loss_probation_sizing_enabled = bool(
+        getattr(
+            pod_a_config,
+            "dynamic_symbol_guard_loss_probation_sizing_enabled",
+            False,
+        )
+    )
+    if (
+        not live_state_sizing_enabled
+        and not recovery_sizing_enabled
+        and not loss_probation_sizing_enabled
+    ):
         return plan
     if not is_crypto_trend_pullback(setup=plan.setup, details=plan.setup_details):
         return _annotate_dynamic_symbol_guard_policy(
@@ -241,18 +252,75 @@ def apply_pod_a_dynamic_symbol_guard_sizing(
     state = str(details.get("symbol_guard_state", "") or "").strip().lower()
     would_reduce = bool(details.get("would_reduce_cap_dynamic_symbol_guard", False))
     would_block = bool(details.get("would_block_dynamic_symbol_guard", False))
-    if state == "quarantine" or would_block:
+    if live_state_sizing_enabled and (state == "quarantine" or would_block):
         multiplier = float(
             getattr(pod_a_config, "dynamic_symbol_guard_quarantine_multiplier", 0.50)
             or 0.50
         )
         reason = "quarantine"
-    elif state == "throttle" or would_reduce:
+    elif live_state_sizing_enabled and (state == "throttle" or would_reduce):
         multiplier = float(
             getattr(pod_a_config, "dynamic_symbol_guard_throttle_multiplier", 0.50)
             or 0.50
         )
         reason = "throttle"
+    elif loss_probation_sizing_enabled:
+        multiplier, reason = _dynamic_symbol_guard_loss_probation_multiplier(
+            details,
+            pod_a_config,
+        )
+        if multiplier < 0.9999:
+            floor = max(
+                float(
+                    getattr(pod_a_config, "dynamic_symbol_guard_min_multiplier", 0.0)
+                    or 0.0
+                ),
+                0.0,
+            )
+            multiplier = max(min(multiplier, 1.0), floor)
+            return _scale_plan_for_dynamic_symbol_guard_loss_probation(
+                plan,
+                multiplier,
+                reason,
+            )
+        if recovery_sizing_enabled:
+            multiplier, recovery_reason = _dynamic_symbol_guard_recovery_multiplier(
+                details,
+                pod_a_config,
+            )
+            if multiplier >= 0.9999:
+                return _annotate_dynamic_symbol_guard_policy(
+                    plan,
+                    active=False,
+                    reason="recovery_full_size",
+                    recovery_active=False,
+                    recovery_multiplier=1.0,
+                    recovery_reason=recovery_reason,
+                    loss_probation_active=False,
+                    loss_probation_multiplier=1.0,
+                    loss_probation_reason=reason,
+                )
+            floor = max(
+                float(
+                    getattr(pod_a_config, "dynamic_symbol_guard_min_multiplier", 0.0)
+                    or 0.0
+                ),
+                0.0,
+            )
+            multiplier = max(min(multiplier, 1.0), floor)
+            return _scale_plan_for_dynamic_symbol_guard_recovery(
+                plan,
+                multiplier,
+                recovery_reason,
+            )
+        return _annotate_dynamic_symbol_guard_policy(
+            plan,
+            active=False,
+            reason="normal",
+            loss_probation_active=False,
+            loss_probation_multiplier=1.0,
+            loss_probation_reason=reason,
+        )
     elif recovery_sizing_enabled:
         multiplier, reason = _dynamic_symbol_guard_recovery_multiplier(
             details,
@@ -300,6 +368,9 @@ def _annotate_dynamic_symbol_guard_policy(
     recovery_active: bool | None = None,
     recovery_multiplier: float | None = None,
     recovery_reason: str | None = None,
+    loss_probation_active: bool | None = None,
+    loss_probation_multiplier: float | None = None,
+    loss_probation_reason: str | None = None,
 ) -> TradePlan:
     setup_details = {
         **dict(plan.setup_details or {}),
@@ -316,6 +387,17 @@ def _annotate_dynamic_symbol_guard_policy(
         )
     if recovery_reason is not None:
         setup_details["dynamic_symbol_guard_recovery_reason"] = recovery_reason
+    if loss_probation_active is not None:
+        setup_details["dynamic_symbol_guard_loss_probation_sizing_active"] = bool(
+            loss_probation_active
+        )
+    if loss_probation_multiplier is not None:
+        setup_details["dynamic_symbol_guard_loss_probation_multiplier"] = round(
+            float(loss_probation_multiplier),
+            4,
+        )
+    if loss_probation_reason is not None:
+        setup_details["dynamic_symbol_guard_loss_probation_reason"] = loss_probation_reason
     return replace(plan, setup_details=setup_details)
 
 
@@ -410,6 +492,52 @@ def _scale_plan_for_dynamic_symbol_guard_recovery(
     )
 
 
+def _scale_plan_for_dynamic_symbol_guard_loss_probation(
+    plan: TradePlan,
+    multiplier: float,
+    reason: str,
+) -> TradePlan:
+    setup_details = {
+        **dict(plan.setup_details or {}),
+        "dynamic_symbol_guard_live_policy_enabled": True,
+        "dynamic_symbol_guard_live_sizing_active": False,
+        "dynamic_symbol_guard_loss_probation_sizing_active": True,
+        "dynamic_symbol_guard_loss_probation_multiplier": round(multiplier, 4),
+        "dynamic_symbol_guard_loss_probation_reason": reason,
+        "dynamic_symbol_guard_loss_probation_original_target_notional_usd": round(
+            float(plan.target_notional_usd or 0.0),
+            6,
+        ),
+        "dynamic_symbol_guard_loss_probation_original_margin_usd": round(
+            float(plan.margin_usd or 0.0),
+            6,
+        ),
+        "dynamic_symbol_guard_loss_probation_original_risk_budget_usd": round(
+            float(plan.risk_budget_usd or 0.0),
+            6,
+        ),
+        "dynamic_symbol_guard_loss_probation_original_expected_loss_usd": round(
+            float(plan.expected_loss_usd or 0.0),
+            6,
+        ),
+        "symbol_guard_live_action_unchanged": False,
+    }
+    return replace(
+        plan,
+        target_notional_usd=round(
+            float(plan.target_notional_usd or 0.0) * multiplier,
+            6,
+        ),
+        margin_usd=round(float(plan.margin_usd or 0.0) * multiplier, 6),
+        risk_budget_usd=round(float(plan.risk_budget_usd or 0.0) * multiplier, 6),
+        expected_loss_usd=round(
+            float(plan.expected_loss_usd or 0.0) * multiplier,
+            6,
+        ),
+        setup_details=setup_details,
+    )
+
+
 def _dynamic_symbol_guard_recovery_multiplier(
     details: Mapping[str, object],
     pod_a_config: object,
@@ -455,6 +583,85 @@ def _dynamic_symbol_guard_recovery_multiplier(
     if expectancy_ok or profit_factor_ok:
         return partial, "partial_rolling_recovery"
     return base, "rolling_pf_expectancy_not_positive"
+
+
+def _dynamic_symbol_guard_loss_probation_multiplier(
+    details: Mapping[str, object],
+    pod_a_config: object,
+) -> tuple[float, str]:
+    multiplier = max(
+        float(
+            getattr(
+                pod_a_config,
+                "dynamic_symbol_guard_loss_probation_multiplier",
+                0.50,
+            )
+            or 0.50
+        ),
+        0.0,
+    )
+    min_trades = max(
+        int(
+            getattr(
+                pod_a_config,
+                "dynamic_symbol_guard_loss_probation_min_closed_trades",
+                2,
+            )
+            or 2
+        ),
+        0,
+    )
+    max_pnl = float(
+        getattr(
+            pod_a_config,
+            "dynamic_symbol_guard_loss_probation_max_pnl_usd",
+            -16.0,
+        )
+    )
+    max_profit_factor = max(
+        float(
+            getattr(
+                pod_a_config,
+                "dynamic_symbol_guard_loss_probation_max_profit_factor",
+                0.60,
+            )
+            or 0.60
+        ),
+        0.0,
+    )
+    rehab_min_profit_factor = max(
+        float(
+            getattr(
+                pod_a_config,
+                "dynamic_symbol_guard_loss_probation_rehab_min_profit_factor",
+                1.05,
+            )
+            or 1.05
+        ),
+        0.0,
+    )
+    rehab_min_expectancy = float(
+        getattr(
+            pod_a_config,
+            "dynamic_symbol_guard_loss_probation_rehab_min_expectancy_usd",
+            0.0,
+        )
+        or 0.0
+    )
+
+    trades = max(_int_detail(details, "symbol_setup_rolling_trades", 0), 0)
+    pnl = _float_detail(details, "symbol_setup_rolling_pnl_usd", 0.0)
+    expectancy = _float_detail(details, "symbol_setup_rolling_expectancy_usd", 0.0)
+    profit_factor = _float_detail(details, "symbol_setup_rolling_profit_factor", 0.0)
+    if trades < min_trades:
+        return 1.0, "insufficient_rolling_history"
+    if expectancy > rehab_min_expectancy and profit_factor >= rehab_min_profit_factor:
+        return 1.0, "rolling_loss_probation_rehabilitated"
+    if pnl <= max_pnl:
+        return multiplier, "rolling_loss_probation_pnl"
+    if expectancy < 0.0 and profit_factor <= max_profit_factor:
+        return multiplier, "rolling_loss_probation_pf_expectancy"
+    return 1.0, "rolling_loss_probation_not_degraded"
 
 
 def _scale_plan_for_live_quality(

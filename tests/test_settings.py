@@ -40,6 +40,19 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertEqual(config.pod_a.dynamic_symbol_guard_recovery_min_closed_trades, 4)
         self.assertEqual(config.pod_a.dynamic_symbol_guard_recovery_min_profit_factor, 1.05)
         self.assertEqual(config.pod_a.dynamic_symbol_guard_recovery_min_expectancy_usd, 0.0)
+        self.assertFalse(config.pod_a.dynamic_symbol_guard_loss_probation_sizing_enabled)
+        self.assertEqual(config.pod_a.dynamic_symbol_guard_loss_probation_multiplier, 0.50)
+        self.assertEqual(config.pod_a.dynamic_symbol_guard_loss_probation_min_closed_trades, 2)
+        self.assertEqual(config.pod_a.dynamic_symbol_guard_loss_probation_max_pnl_usd, -16.0)
+        self.assertEqual(config.pod_a.dynamic_symbol_guard_loss_probation_max_profit_factor, 0.60)
+        self.assertEqual(
+            config.pod_a.dynamic_symbol_guard_loss_probation_rehab_min_profit_factor,
+            1.05,
+        )
+        self.assertEqual(
+            config.pod_a.dynamic_symbol_guard_loss_probation_rehab_min_expectancy_usd,
+            0.0,
+        )
         self.assertTrue(config.pod_c.cluster_aware_v2_enabled)
         self.assertEqual(config.pod_c.min_confidence, 0.66)
         self.assertEqual(config.pod_c.size_multiplier, 0.70)
@@ -49,6 +62,12 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertTrue(config.pod_c.external_reference.enabled)
         self.assertEqual(config.pod_c.external_reference.symbols["XYZ:GOLD"], ["yahoo:GC=F"])
         self.assertEqual(config.pod_c.external_reference.min_sources, 1)
+        self.assertFalse(config.pod_c.external_reference_fresh_cap_sizing_enabled)
+        self.assertEqual(
+            config.pod_c.external_reference_fresh_cap_gate,
+            "fresh_candidate_default_5m",
+        )
+        self.assertEqual(config.pod_c.external_reference_fresh_cap_multiplier, 0.50)
         self.assertEqual(config.pod_c.cluster_modes["silver"].break_even_multiplier, 0.90)
         self.assertEqual(config.pod_c.cluster_modes["silver"].trailing_activation_multiplier, 0.75)
         self.assertEqual(config.pod_c.cluster_modes["silver"].trailing_distance_multiplier, 0.75)

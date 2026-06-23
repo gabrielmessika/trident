@@ -286,6 +286,13 @@ class PodAConfig:
     dynamic_symbol_guard_recovery_min_closed_trades: int = 4
     dynamic_symbol_guard_recovery_min_profit_factor: float = 1.05
     dynamic_symbol_guard_recovery_min_expectancy_usd: float = 0.0
+    dynamic_symbol_guard_loss_probation_sizing_enabled: bool = False
+    dynamic_symbol_guard_loss_probation_multiplier: float = 0.50
+    dynamic_symbol_guard_loss_probation_min_closed_trades: int = 2
+    dynamic_symbol_guard_loss_probation_max_pnl_usd: float = -16.0
+    dynamic_symbol_guard_loss_probation_max_profit_factor: float = 0.60
+    dynamic_symbol_guard_loss_probation_rehab_min_profit_factor: float = 1.05
+    dynamic_symbol_guard_loss_probation_rehab_min_expectancy_usd: float = 0.0
 
 
 @dataclass(slots=True)
@@ -582,6 +589,9 @@ class PodCConfig:
     activity_lookback: int
     p109_oil_short_enabled: bool = False
     p109_oil_short_min_confidence: float = 0.67
+    external_reference_fresh_cap_sizing_enabled: bool = False
+    external_reference_fresh_cap_gate: str = "fresh_candidate_default_5m"
+    external_reference_fresh_cap_multiplier: float = 0.50
     pattern_vetoes: list[PodAPatternVetoConfig] = field(default_factory=list)
     pattern_watchers: list[PodAPatternVetoConfig] = field(default_factory=list)
     cluster_modes: dict[str, PodCClusterModeConfig] = field(default_factory=dict)
@@ -1752,6 +1762,33 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             dynamic_symbol_guard_recovery_min_expectancy_usd=float(
                 pod_a_data.get("dynamic_symbol_guard_recovery_min_expectancy_usd", 0.0)
             ),
+            dynamic_symbol_guard_loss_probation_sizing_enabled=bool(
+                pod_a_data.get("dynamic_symbol_guard_loss_probation_sizing_enabled", False)
+            ),
+            dynamic_symbol_guard_loss_probation_multiplier=float(
+                pod_a_data.get("dynamic_symbol_guard_loss_probation_multiplier", 0.50)
+            ),
+            dynamic_symbol_guard_loss_probation_min_closed_trades=int(
+                pod_a_data.get("dynamic_symbol_guard_loss_probation_min_closed_trades", 2)
+            ),
+            dynamic_symbol_guard_loss_probation_max_pnl_usd=float(
+                pod_a_data.get("dynamic_symbol_guard_loss_probation_max_pnl_usd", -16.0)
+            ),
+            dynamic_symbol_guard_loss_probation_max_profit_factor=float(
+                pod_a_data.get("dynamic_symbol_guard_loss_probation_max_profit_factor", 0.60)
+            ),
+            dynamic_symbol_guard_loss_probation_rehab_min_profit_factor=float(
+                pod_a_data.get(
+                    "dynamic_symbol_guard_loss_probation_rehab_min_profit_factor",
+                    1.05,
+                )
+            ),
+            dynamic_symbol_guard_loss_probation_rehab_min_expectancy_usd=float(
+                pod_a_data.get(
+                    "dynamic_symbol_guard_loss_probation_rehab_min_expectancy_usd",
+                    0.0,
+                )
+            ),
         ),
         pod_b=PodBConfig(
             enabled=_env_bool("TRIDENT_ENABLE_POD_B", bool(pod_b_data.get("enabled", False))),
@@ -1904,6 +1941,18 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             p109_oil_short_min_confidence=float(
                 pod_c_data.get("p109_oil_short_min_confidence", 0.67)
+            ),
+            external_reference_fresh_cap_sizing_enabled=bool(
+                pod_c_data.get("external_reference_fresh_cap_sizing_enabled", False)
+            ),
+            external_reference_fresh_cap_gate=str(
+                pod_c_data.get(
+                    "external_reference_fresh_cap_gate",
+                    "fresh_candidate_default_5m",
+                )
+            ),
+            external_reference_fresh_cap_multiplier=float(
+                pod_c_data.get("external_reference_fresh_cap_multiplier", 0.50)
             ),
             pattern_vetoes=_pod_a_pattern_vetoes(pod_c_data.get("pattern_vetoes", [])),
             pattern_watchers=_pod_a_pattern_watchers(

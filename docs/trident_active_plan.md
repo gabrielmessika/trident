@@ -192,6 +192,17 @@ Source de verite operationnelle depuis le `2026-05-24`:
   record Pod A avec sizing actif au moment de la review
   (`live_sizing_active_records=0`), donc surveiller la prochaine fenetre de
   signaux pour confirmer les premiers caps effectifs.
+- Implementation Robust PnL Lab `2026-06-23`: demarrage du plan
+  `docs/plan_evos_robustes.md` par un harness commun research-only
+  `scripts/run_pnl_robust_candidate_lab.py` et sa suite
+  `tests/test_pnl_robust_candidate_lab.py`. Rapport initial:
+  `server-data/replay_reports/pnl_robust_candidate_lab_20260623/pnl_robust_candidate_lab.md`
+  (`27` candidats, `49` periodes, `93` decisions Pod A). Aucun candidat n'est
+  encore `promotable_candidate`; les meilleurs signaux restent shadow, surtout
+  `pod_c_external_reference::cap50_candidate_default_5m` (`+40.05` USD sur la
+  fenetre couverte, bloque par coverage/OOS insuffisant). Le candidat
+  `pod_a_combined_sizing_v0` est rejete (`-16.73` USD, cappe trop de PnL
+  gagnant). Aucun changement live/config/deploy/fetch.
 - Implementation A-PNL-02 `2026-06-22`: Pod A expose les stats rolling
   `symbol/setup` dans les `setup_details` (`trades`, PnL, expectancy, profit
   factor) et dispose d'une policy dormante de recovery sizing
@@ -327,6 +338,81 @@ Source de verite operationnelle depuis le `2026-05-24`:
   (`cap50_candidate_default_5m` `+40.05`, coverage `91.67%`), mais la baseline
   avril/mai a `0%` de coverage reference. Garder en shadow/OOS; aucune
   promotion sans baseline reference complete, aucun flag live/deploy/fetch.
+- Implementation C-PNL-02 forward OOS `2026-06-23`: P103 sait maintenant lire
+  les `trade_close` du journal live Pod C via `--journal` et les references
+  externes embarquees dans `setup_details`; le lab robuste accepte plusieurs
+  rapports P103. Fetch frais `server-data/reviews/20260623T123504Z/` en `PASS`
+  (`journal_setup_coverage=1000/1000`, `shadow_live_action_unchanged_false=0`).
+  Rapport forward
+  `server-data/replay_reports/p103_pod_c_external_reference_forward_oos_20260623/`:
+  coverage `100%`, `2026-06-15_to_2026-06-21` base `+1.50` et
+  `cap50_candidate_default_5m=-0.75`, puis `2026-06-22_to_2026-06-23` base
+  `-9.29` et `cap50_candidate_default_5m=+2.95`. Lab agrege
+  `server-data/replay_reports/pnl_robust_candidate_lab_20260623/`: C-PNL-02
+  reste seulement `shadow_candidate` (`+42.24` total couvert, mais baseline
+  insuffisante et une fenetre couverte negative). Aucun changement live/config
+  ou deploy; prochaine piste = variante `fresh-only` sans cap stale/missing.
+- Implementation C-PNL-02 v2 fresh-only `2026-06-23`: P103 expose quatre
+  variantes `fresh-only` (`fresh_abs_premium_gt_50`,
+  `fresh_counter_momentum_5m_6bps`, `fresh_candidate_default_5m`,
+  `fresh_candidate_loose_5m`) et leurs outcomes cap-only `50%`. Elles ignorent
+  les references manquantes/stale et ne cappent que si la reference externe est
+  disponible et agee de `<=900s`; les vieux payloads `setup_details` zeroes ne
+  sont plus pris pour des references valides. Replay historique + forward:
+  `server-data/replay_reports/p103_pod_c_external_reference_cap50_20260623/`
+  et
+  `server-data/replay_reports/p103_pod_c_external_reference_forward_oos_20260623/`.
+  Lab agrege mis a jour
+  `server-data/replay_reports/pnl_robust_candidate_lab_20260623/`: `31`
+  candidats, `77` periodes, aucun `promotable_candidate`. Le meilleur signal
+  est `pod_c_external_reference::cap50_fresh_candidate_default_5m`
+  (`+34.28`, `3/0` periodes couvertes positives, concentration max `50%`),
+  avec `+29.85` sur `2026-05-24_to_2026-06-11`, `+1.48` sur
+  `2026-06-15_to_2026-06-21` et `+2.95` sur `2026-06-22_to_2026-06-23`.
+  Il reste `shadow_candidate` a cause de la baseline ancienne non couverte
+  (`insufficient_coverage_periods=1`). Aucun changement live/config/deploy;
+  prochaine etape = plus de forward OOS frais avant tout flag live.
+- Observabilite C-PNL-02 v2 `2026-06-23`: le shadow Pod C exporte maintenant
+  les champs `would_block_external_reference_fresh_*` correspondant aux quatre
+  variantes fresh-only, toujours avec
+  `external_reference_shadow_live_action_unchanged=true`. Le fetch P1-03 compte
+  ces gates dans `by_gate`, et `scripts/export_trident_audit_pack.py` les inclut
+  dans le pack compact. Aucun comportement live/config ne change; un deploy
+  code-only serait necessaire plus tard pour les voir dans de nouveaux journaux
+  serveur.
+- Implementation A-PNL-08/P119 v2 `2026-06-23`: la variante robuste
+  `loss_probation cap50_lb8_min2_pnl-16_pf0p6` est codee en policy Pod A
+  activable par config et desactivee par defaut:
+  `dynamic_symbol_guard_loss_probation_sizing_enabled=false`,
+  `multiplier=0.50`, `min_closed_trades=2`,
+  `max_pnl_usd=-16.0`, `max_profit_factor=0.60`. Le fetch P1-08 et l'audit pack
+  exposent maintenant `loss_probation_sizing_active_records` et les raisons de
+  cap. Replay final:
+  `server-data/replay_reports/p119_loss_probation_cap_v2_20260623/`; lab final:
+  `server-data/replay_reports/pnl_robust_candidate_lab_20260623/`. Resultat:
+  seul `promotable_candidate` du lab, `+30.95` USD, `2/0` periodes positives,
+  PF global `0.8078 -> 0.8834`, concentration max `29.55%`. Aucun deploy/live
+  change effectue.
+- Implementation C-PNL-02 cap dormant `2026-06-23`: Pod C dispose maintenant
+  d'une policy fresh-only cap-only configurable et desactivee par defaut:
+  `external_reference_fresh_cap_sizing_enabled=false`,
+  `external_reference_fresh_cap_gate="fresh_candidate_default_5m"`,
+  `external_reference_fresh_cap_multiplier=0.50`. `PodCLiveRunner` applique la
+  policy apres l'annotation shadow et avant le cap notional live/risk gate. Le
+  fetch P1-03 distingue `expected_live_action_changed` et
+  `unexpected_live_action_changed`; review locale
+  `server-data/reviews/20260623T131803Z/review_summary.md` en `PASS` avec
+  `unexpected_live_action_changed=0`. Replay/lab: `cap50_fresh_candidate_default_5m`
+  reste le meilleur candidat Pod C (`+34.28`, `3/0` periodes couvertes
+  positives) mais reste shadow/risk-accepted car la baseline ancienne a `0%` de
+  coverage.
+- Priorite promotion PnL `2026-06-23`: si l'operateur accepte une prise de
+  risque controlee sans shadow long, promouvoir d'abord A-PNL-08/P119 v2
+  loss-probation, puis C-PNL-02 fresh-only. A-PNL-01 cap50/cap50 reste live et
+  a monitorer. Toutes les autres pistes robustes testees sont rejetees ou
+  shadow-only: combined sizing v0, recovery sizing, A-grade headroom,
+  microstructure, fill/depth simple, scale-in P118, oil dedupe, session/liquidity
+  et execution-cost simples.
 - Implementation C-PNL-03/P120 `2026-06-23`: ajout de l'audit local
   `scripts/run_p120_oil_relative_value_audit.py` sur les observations
   `p109_oil_shadow_*` Pod C. Le rapport

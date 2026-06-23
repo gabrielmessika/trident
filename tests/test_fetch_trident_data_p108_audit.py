@@ -27,9 +27,39 @@ def test_p108_live_action_change_fails_when_policy_disabled(tmp_path: Path) -> N
     assert guard["unexpected_live_action_changed"] == 1
 
 
-def run_review_with_p108_log(tmp_path: Path, *, live_sizing_enabled: bool) -> dict:
+def test_p108_loss_probation_action_change_passes_when_policy_enabled(
+    tmp_path: Path,
+) -> None:
+    payload = run_review_with_p108_log(
+        tmp_path,
+        live_sizing_enabled=False,
+        loss_probation_sizing_enabled=True,
+        loss_probation_record=True,
+    )
+
+    guard = payload["dynamic_symbol_guard"]
+    assert payload["status"] == "PASS"
+    assert guard["live_action_unchanged_false"] == 1
+    assert guard["expected_live_action_changed"] == 1
+    assert guard["unexpected_live_action_changed"] == 0
+    assert guard["loss_probation_sizing_active_records"] == 1
+    assert guard["by_loss_probation_reason"]["rolling_loss_probation_pnl"] == 1
+
+
+def run_review_with_p108_log(
+    tmp_path: Path,
+    *,
+    live_sizing_enabled: bool,
+    loss_probation_sizing_enabled: bool = False,
+    loss_probation_record: bool = False,
+) -> dict:
     data_dir = tmp_path / "server-data"
-    write_minimal_review_inputs(data_dir, live_sizing_enabled=live_sizing_enabled)
+    write_minimal_review_inputs(
+        data_dir,
+        live_sizing_enabled=live_sizing_enabled,
+        loss_probation_sizing_enabled=loss_probation_sizing_enabled,
+        loss_probation_record=loss_probation_record,
+    )
 
     subprocess.run(
         [
@@ -50,7 +80,13 @@ def run_review_with_p108_log(tmp_path: Path, *, live_sizing_enabled: bool) -> di
     return json.loads((review_dirs[-1] / "p108_dynamic_symbol_guard_audit.json").read_text())
 
 
-def write_minimal_review_inputs(data_dir: Path, *, live_sizing_enabled: bool) -> None:
+def write_minimal_review_inputs(
+    data_dir: Path,
+    *,
+    live_sizing_enabled: bool,
+    loss_probation_sizing_enabled: bool,
+    loss_probation_record: bool,
+) -> None:
     for name in ("api", "logs", "runtime", "config"):
         (data_dir / name).mkdir(parents=True, exist_ok=True)
     (data_dir / "api" / "health-20260101_000000.json").write_text('{"status":"ok"}\n')
@@ -91,6 +127,10 @@ def write_minimal_review_inputs(data_dir: Path, *, live_sizing_enabled: bool) ->
                 "stop_grace_minutes = 60",
                 f"dynamic_symbol_guard_live_sizing_enabled = {str(live_sizing_enabled).lower()}",
                 "dynamic_symbol_guard_recovery_sizing_enabled = false",
+                (
+                    "dynamic_symbol_guard_loss_probation_sizing_enabled = "
+                    f"{str(loss_probation_sizing_enabled).lower()}"
+                ),
                 "dynamic_symbol_guard_throttle_multiplier = 0.50",
                 "dynamic_symbol_guard_quarantine_multiplier = 0.50",
                 "dynamic_symbol_guard_min_multiplier = 0.10",
@@ -104,23 +144,39 @@ def write_minimal_review_inputs(data_dir: Path, *, live_sizing_enabled: bool) ->
         )
         + "\n"
     )
+    details = {
+        "symbol_guard_shadow_mode": "observation_only",
+        "symbol_guard_state": "throttle",
+        "falling_knife_score": 62.5,
+        "would_throttle_dynamic_symbol_guard": True,
+        "would_block_dynamic_symbol_guard": False,
+        "would_reduce_cap_dynamic_symbol_guard": True,
+        "dynamic_symbol_guard_live_policy_enabled": True,
+        "dynamic_symbol_guard_live_sizing_active": True,
+        "dynamic_symbol_guard_live_sizing_multiplier": 0.5,
+        "dynamic_symbol_guard_live_sizing_reason": "throttle",
+        "symbol_guard_live_action_unchanged": False,
+    }
+    if loss_probation_record:
+        details = {
+            "symbol_guard_shadow_mode": "observation_only",
+            "symbol_guard_state": "normal",
+            "falling_knife_score": 12.5,
+            "would_throttle_dynamic_symbol_guard": False,
+            "would_block_dynamic_symbol_guard": False,
+            "would_reduce_cap_dynamic_symbol_guard": False,
+            "dynamic_symbol_guard_live_policy_enabled": True,
+            "dynamic_symbol_guard_live_sizing_active": False,
+            "dynamic_symbol_guard_loss_probation_sizing_active": True,
+            "dynamic_symbol_guard_loss_probation_multiplier": 0.5,
+            "dynamic_symbol_guard_loss_probation_reason": "rolling_loss_probation_pnl",
+            "symbol_guard_live_action_unchanged": False,
+        }
     record = {
         "event_type": "signal",
         "signal": {
             "symbol": "ENA",
-            "setup_details": {
-                "symbol_guard_shadow_mode": "observation_only",
-                "symbol_guard_state": "throttle",
-                "falling_knife_score": 62.5,
-                "would_throttle_dynamic_symbol_guard": True,
-                "would_block_dynamic_symbol_guard": False,
-                "would_reduce_cap_dynamic_symbol_guard": True,
-                "dynamic_symbol_guard_live_policy_enabled": True,
-                "dynamic_symbol_guard_live_sizing_active": True,
-                "dynamic_symbol_guard_live_sizing_multiplier": 0.5,
-                "dynamic_symbol_guard_live_sizing_reason": "throttle",
-                "symbol_guard_live_action_unchanged": False,
-            },
+            "setup_details": details,
         },
     }
     (data_dir / "logs" / "pod_a_live.jsonl").write_text(json.dumps(record) + "\n")

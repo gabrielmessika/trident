@@ -25,6 +25,21 @@ P103_EXTERNAL_REFERENCE_SHADOW_FIELDS = [
     "would_block_external_reference_candidate_loose_5m",
     "would_block_external_reference_candidate_default_5m",
     "external_reference_shadow_reason",
+    "external_reference_fresh_shadow_available",
+    "would_block_external_reference_fresh_abs_premium_gt_50",
+    "would_block_external_reference_fresh_counter_momentum_5m_6bps",
+    "would_block_external_reference_fresh_candidate_loose_5m",
+    "would_block_external_reference_fresh_candidate_default_5m",
+    "external_reference_fresh_shadow_reason",
+    "external_reference_live_policy_enabled",
+    "external_reference_fresh_cap_sizing_active",
+    "external_reference_fresh_cap_gate",
+    "external_reference_fresh_cap_multiplier",
+    "external_reference_fresh_cap_reason",
+    "external_reference_fresh_cap_original_target_notional_usd",
+    "external_reference_fresh_cap_original_margin_usd",
+    "external_reference_fresh_cap_original_risk_budget_usd",
+    "external_reference_fresh_cap_original_expected_loss_usd",
     "external_reference_shadow_live_action_unchanged",
 ]
 
@@ -98,6 +113,13 @@ P108_DYNAMIC_SYMBOL_GUARD_FIELDS = [
     "dynamic_symbol_guard_recovery_original_margin_usd",
     "dynamic_symbol_guard_recovery_original_risk_budget_usd",
     "dynamic_symbol_guard_recovery_original_expected_loss_usd",
+    "dynamic_symbol_guard_loss_probation_sizing_active",
+    "dynamic_symbol_guard_loss_probation_multiplier",
+    "dynamic_symbol_guard_loss_probation_reason",
+    "dynamic_symbol_guard_loss_probation_original_target_notional_usd",
+    "dynamic_symbol_guard_loss_probation_original_margin_usd",
+    "dynamic_symbol_guard_loss_probation_original_risk_budget_usd",
+    "dynamic_symbol_guard_loss_probation_original_expected_loss_usd",
 ]
 
 P109_OIL_SHADOW_FIELDS = [

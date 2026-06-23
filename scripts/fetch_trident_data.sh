@@ -479,6 +479,10 @@ P103_SHADOW_FIELDS = (
     "would_block_external_reference_counter_momentum_5m_6bps",
     "would_block_external_reference_candidate_loose_5m",
     "would_block_external_reference_candidate_default_5m",
+    "would_block_external_reference_fresh_abs_premium_gt_50",
+    "would_block_external_reference_fresh_counter_momentum_5m_6bps",
+    "would_block_external_reference_fresh_candidate_loose_5m",
+    "would_block_external_reference_fresh_candidate_default_5m",
 )
 
 P108_SYMBOL_GUARD_FIELDS = (
@@ -498,16 +502,66 @@ def empty_shadow_stats() -> dict:
         "records": 0,
         "with_shadow": 0,
         "live_action_unchanged_false": 0,
+        "expected_live_action_changed": 0,
+        "unexpected_live_action_changed": 0,
+        "live_policy_enabled_records": 0,
+        "fresh_cap_sizing_active_records": 0,
         "by_gate": {field: 0 for field in P103_SHADOW_FIELDS},
+        "by_fresh_cap_reason": {},
         "by_symbol": {},
     }
 
-def update_shadow_stats(stats: dict, symbol: str, details: dict) -> None:
+def external_reference_policy_config(pod_c_config: dict) -> dict:
+    return {
+        "external_reference_fresh_cap_sizing_enabled": pod_c_config.get(
+            "external_reference_fresh_cap_sizing_enabled",
+            False,
+        )
+        is True,
+        "external_reference_fresh_cap_gate": pod_c_config.get(
+            "external_reference_fresh_cap_gate",
+            "fresh_candidate_default_5m",
+        ),
+        "external_reference_fresh_cap_multiplier": pod_c_config.get(
+            "external_reference_fresh_cap_multiplier",
+            0.50,
+        ),
+    }
+
+def external_reference_expected_live_action_change(
+    details: dict,
+    policy_config: dict,
+) -> bool:
+    return (
+        details.get("external_reference_live_policy_enabled") is True
+        and policy_config.get("external_reference_fresh_cap_sizing_enabled") is True
+        and details.get("external_reference_fresh_cap_sizing_active") is True
+    )
+
+def update_shadow_stats(
+    stats: dict,
+    symbol: str,
+    details: dict,
+    *,
+    policy_config: dict,
+) -> None:
     if details.get("external_reference_shadow_mode") != "observation_only":
         return
     stats["with_shadow"] += 1
+    if details.get("external_reference_live_policy_enabled") is True:
+        stats["live_policy_enabled_records"] += 1
+    if details.get("external_reference_fresh_cap_sizing_active") is True:
+        stats["fresh_cap_sizing_active_records"] += 1
+        reason = str(details.get("external_reference_fresh_cap_reason") or "unknown")
+        stats["by_fresh_cap_reason"][reason] = (
+            int(stats["by_fresh_cap_reason"].get(reason) or 0) + 1
+        )
     if details.get("external_reference_shadow_live_action_unchanged") is not True:
         stats["live_action_unchanged_false"] += 1
+        if external_reference_expected_live_action_change(details, policy_config):
+            stats["expected_live_action_changed"] += 1
+        else:
+            stats["unexpected_live_action_changed"] += 1
     symbol_key = str(symbol or "").upper()
     if symbol_key:
         stats["by_symbol"][symbol_key] = int(stats["by_symbol"].get(symbol_key) or 0) + 1
@@ -525,10 +579,12 @@ def empty_symbol_guard_stats() -> dict:
         "live_policy_enabled_records": 0,
         "live_sizing_active_records": 0,
         "recovery_sizing_active_records": 0,
+        "loss_probation_sizing_active_records": 0,
         "by_state": {},
         "by_gate": {field: 0 for field in P108_SYMBOL_GUARD_FIELDS},
         "by_live_sizing_reason": {},
         "by_recovery_sizing_reason": {},
+        "by_loss_probation_reason": {},
         "by_symbol": {},
         "avg_score": 0.0,
         "_score_sum": 0.0,
@@ -542,6 +598,10 @@ def symbol_guard_policy_config(pod_a_config: dict) -> dict:
         is True,
         "dynamic_symbol_guard_recovery_sizing_enabled": pod_a_config.get(
             "dynamic_symbol_guard_recovery_sizing_enabled"
+        )
+        is True,
+        "dynamic_symbol_guard_loss_probation_sizing_enabled": pod_a_config.get(
+            "dynamic_symbol_guard_loss_probation_sizing_enabled"
         )
         is True,
         "dynamic_symbol_guard_throttle_multiplier": pod_a_config.get(
@@ -566,6 +626,11 @@ def symbol_guard_expected_live_action_change(details: dict, policy_config: dict)
     if (
         policy_config.get("dynamic_symbol_guard_recovery_sizing_enabled") is True
         and details.get("dynamic_symbol_guard_recovery_sizing_active") is True
+    ):
+        return True
+    if (
+        policy_config.get("dynamic_symbol_guard_loss_probation_sizing_enabled") is True
+        and details.get("dynamic_symbol_guard_loss_probation_sizing_active") is True
     ):
         return True
     return False
@@ -594,6 +659,12 @@ def update_symbol_guard_stats(
         reason = str(details.get("dynamic_symbol_guard_recovery_reason") or "unknown")
         stats["by_recovery_sizing_reason"][reason] = (
             int(stats["by_recovery_sizing_reason"].get(reason) or 0) + 1
+        )
+    if details.get("dynamic_symbol_guard_loss_probation_sizing_active") is True:
+        stats["loss_probation_sizing_active_records"] += 1
+        reason = str(details.get("dynamic_symbol_guard_loss_probation_reason") or "unknown")
+        stats["by_loss_probation_reason"][reason] = (
+            int(stats["by_loss_probation_reason"].get(reason) or 0) + 1
         )
     if details.get("symbol_guard_live_action_unchanged") is not True:
         stats["live_action_unchanged_false"] += 1
@@ -893,6 +964,7 @@ def build_p103_external_reference_focus(
     snapshot_dir: Path,
 ) -> dict:
     configured_symbols = configured_pod_c_external_symbols(pod_c_config)
+    policy_config = external_reference_policy_config(pod_c_config)
     runtime_external = runtime_statuses.get("pod_c", {}).get("external_reference")
     if not isinstance(runtime_external, dict):
         runtime_external = {}
@@ -974,7 +1046,12 @@ def build_p103_external_reference_focus(
             if ref_available(details):
                 journal_setup_with_reference += 1
             update_symbol_stats(setup_detail_stats, symbol.upper(), details)
-            update_shadow_stats(shadow_stats, symbol.upper(), details)
+            update_shadow_stats(
+                shadow_stats,
+                symbol.upper(),
+                details,
+                policy_config=policy_config,
+            )
 
         snapshot = record.get("symbol_snapshot")
         if isinstance(snapshot, dict):
@@ -1019,14 +1096,19 @@ def build_p103_external_reference_focus(
     if not silver_blocked_by_config:
         p103_status = "FAIL"
         p103_reasons.append("XYZ:SILVER absent de pod_c.blocked_symbols")
-    if int(shadow_stats.get("live_action_unchanged_false") or 0) > 0:
+    if int(shadow_stats.get("expected_live_action_changed") or 0) > 0:
+        p103_reasons.append(
+            "P1-03 external reference cap actif: live_action_unchanged=false attendu pour les plans cappes"
+        )
+    if int(shadow_stats.get("unexpected_live_action_changed") or 0) > 0:
         p103_status = "FAIL"
-        p103_reasons.append("shadow P1-03 indique live_action_unchanged=false")
+        p103_reasons.append("shadow P1-03 indique live_action_unchanged=false sans policy active attendue")
 
     return {
         "status": p103_status,
         "reasons": p103_reasons,
         "runtime_external_reference": runtime_external,
+        "policy_config": policy_config,
         "configured_symbols": sorted(configured_symbols),
         "snapshot_files_scanned": [str(path) for path in snapshot_files],
         "snapshot_symbol_records": snapshot_records,
@@ -1316,8 +1398,14 @@ p103_lines = [
 ]
 for reason in external_reference_focus.get("reasons", []):
     p103_lines.append(f"- reason: `{reason}`")
+external_reference_policy_config = external_reference_focus.get("policy_config", {})
 p103_lines.extend(
     [
+        "",
+        "## Policy Config",
+        f"- external_reference_fresh_cap_sizing_enabled: `{external_reference_policy_config.get('external_reference_fresh_cap_sizing_enabled')}`",
+        f"- external_reference_fresh_cap_gate: `{external_reference_policy_config.get('external_reference_fresh_cap_gate')}`",
+        f"- external_reference_fresh_cap_multiplier: `{external_reference_policy_config.get('external_reference_fresh_cap_multiplier')}`",
         "",
         "## Runtime",
         f"- enabled: `{external_reference_focus.get('runtime_external_reference', {}).get('enabled')}`",
@@ -1344,7 +1432,11 @@ p103_lines.extend(
         f"- records: `{external_reference_focus.get('external_reference_shadow', {}).get('records')}`",
         f"- with_shadow: `{external_reference_focus.get('external_reference_shadow', {}).get('with_shadow')}`",
         f"- live_action_unchanged_false: `{external_reference_focus.get('external_reference_shadow', {}).get('live_action_unchanged_false')}`",
+        f"- expected_live_action_changed: `{external_reference_focus.get('external_reference_shadow', {}).get('expected_live_action_changed')}`",
+        f"- unexpected_live_action_changed: `{external_reference_focus.get('external_reference_shadow', {}).get('unexpected_live_action_changed')}`",
+        f"- fresh_cap_sizing_active_records: `{external_reference_focus.get('external_reference_shadow', {}).get('fresh_cap_sizing_active_records')}`",
         f"- by_gate: `{external_reference_focus.get('external_reference_shadow', {}).get('by_gate')}`",
+        f"- by_fresh_cap_reason: `{external_reference_focus.get('external_reference_shadow', {}).get('by_fresh_cap_reason')}`",
         f"- by_symbol: `{external_reference_focus.get('external_reference_shadow', {}).get('by_symbol')}`",
         "",
         "## Silver",
@@ -1386,6 +1478,7 @@ p108_lines.extend(
         "## Policy Config",
         f"- dynamic_symbol_guard_live_sizing_enabled: `{policy_config.get('dynamic_symbol_guard_live_sizing_enabled')}`",
         f"- dynamic_symbol_guard_recovery_sizing_enabled: `{policy_config.get('dynamic_symbol_guard_recovery_sizing_enabled')}`",
+        f"- dynamic_symbol_guard_loss_probation_sizing_enabled: `{policy_config.get('dynamic_symbol_guard_loss_probation_sizing_enabled')}`",
         f"- throttle_multiplier: `{policy_config.get('dynamic_symbol_guard_throttle_multiplier')}`",
         f"- quarantine_multiplier: `{policy_config.get('dynamic_symbol_guard_quarantine_multiplier')}`",
         f"- min_multiplier: `{policy_config.get('dynamic_symbol_guard_min_multiplier')}`",
@@ -1399,11 +1492,13 @@ p108_lines.extend(
         f"- live_policy_enabled_records: `{guard.get('live_policy_enabled_records')}`",
         f"- live_sizing_active_records: `{guard.get('live_sizing_active_records')}`",
         f"- recovery_sizing_active_records: `{guard.get('recovery_sizing_active_records')}`",
+        f"- loss_probation_sizing_active_records: `{guard.get('loss_probation_sizing_active_records')}`",
         f"- avg_score: `{guard.get('avg_score')}`",
         f"- by_state: `{guard.get('by_state')}`",
         f"- by_gate: `{guard.get('by_gate')}`",
         f"- by_live_sizing_reason: `{guard.get('by_live_sizing_reason')}`",
         f"- by_recovery_sizing_reason: `{guard.get('by_recovery_sizing_reason')}`",
+        f"- by_loss_probation_reason: `{guard.get('by_loss_probation_reason')}`",
         f"- by_symbol: `{guard.get('by_symbol')}`",
     ]
 )
@@ -1517,6 +1612,9 @@ lines.extend(
         f"- journal_setup_coverage: `{external_reference_focus.get('journal_setup_with_reference')}/{external_reference_focus.get('journal_setup_records')} ({external_reference_focus.get('journal_setup_reference_coverage_pct')}%)`",
         f"- shadow_coverage: `{external_reference_focus.get('external_reference_shadow', {}).get('with_shadow')}/{external_reference_focus.get('external_reference_shadow', {}).get('records')}`",
         f"- shadow_live_action_unchanged_false: `{external_reference_focus.get('external_reference_shadow', {}).get('live_action_unchanged_false')}`",
+        f"- expected_live_action_changed: `{external_reference_focus.get('external_reference_shadow', {}).get('expected_live_action_changed')}`",
+        f"- unexpected_live_action_changed: `{external_reference_focus.get('external_reference_shadow', {}).get('unexpected_live_action_changed')}`",
+        f"- fresh_cap_sizing_active_records: `{external_reference_focus.get('external_reference_shadow', {}).get('fresh_cap_sizing_active_records')}`",
         f"- silver_blocked_by_config: `{external_reference_focus.get('silver_blocked_by_config')}`",
         f"- detail: `{output / 'p103_external_reference_audit.md'}`",
         "",
@@ -1524,12 +1622,14 @@ lines.extend(
         f"- status: `{symbol_guard_focus.get('status')}`",
         f"- live_sizing_enabled: `{symbol_guard_focus.get('policy_config', {}).get('dynamic_symbol_guard_live_sizing_enabled')}`",
         f"- recovery_sizing_enabled: `{symbol_guard_focus.get('policy_config', {}).get('dynamic_symbol_guard_recovery_sizing_enabled')}`",
+        f"- loss_probation_sizing_enabled: `{symbol_guard_focus.get('policy_config', {}).get('dynamic_symbol_guard_loss_probation_sizing_enabled')}`",
         f"- shadow_coverage: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('with_shadow')}/{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('records')}`",
         f"- shadow_live_action_unchanged_false: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('live_action_unchanged_false')}`",
         f"- expected_live_action_changed: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('expected_live_action_changed')}`",
         f"- unexpected_live_action_changed: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('unexpected_live_action_changed')}`",
         f"- live_sizing_active_records: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('live_sizing_active_records')}`",
         f"- recovery_sizing_active_records: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('recovery_sizing_active_records')}`",
+        f"- loss_probation_sizing_active_records: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('loss_probation_sizing_active_records')}`",
         f"- avg_score: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('avg_score')}`",
         f"- by_state: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('by_state')}`",
         f"- by_gate: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('by_gate')}`",
@@ -1548,7 +1648,7 @@ lines.extend(
         "",
         "## Next Review Focus",
         "- Verifier que le serveur expose bien `live_max_order_notional_usd=200`, `pod_a.stop_grace_minutes=60` et `live_block_stop_grace_setups=false`.",
-        "- P1-03: verifier `external_reference.symbols_enriched>0`, la couverture par symbole et les revues `XYZ:SILVER` en `symbol_blocked` dans `p103_external_reference_audit.md`.",
+        "- P1-03: verifier `external_reference.symbols_enriched>0`, la couverture par symbole, `unexpected_live_action_changed=0` et les revues `XYZ:SILVER` en `symbol_blocked` dans `p103_external_reference_audit.md`; si le cap fresh-only est explicitement actif, `expected_live_action_changed>0` devient normal.",
         "- P1-08: verifier `dynamic_symbol_guard` / `symbol_guard_*` dans `p108_dynamic_symbol_guard_audit.md`, avec `with_shadow>0` et `unexpected_live_action_changed=0`; si le sizing live est explicitement actif, `expected_live_action_changed>0` devient normal.",
         "- P1-09: verifier `p109_oil_shadow_*` dans `p109_oil_shadow_audit.md`, avec `with_shadow>0` et `live_action_unchanged_false=0`.",
         "- Pod A: surveiller les nouveaux `exchange_closed_stop_loss` et `early_failure_exit`; comparer perte reelle vs stop planifie.",

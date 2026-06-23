@@ -63,6 +63,13 @@ class EnrichedTrade:
     external_premium_bps: float | None
     external_momentum_300s_bps: float | None
     reference_available: bool
+    reference_data_source: str = ""
+    confidence: float | None = None
+    market_cluster: str = ""
+    activity_bucket: str = ""
+    trade_count_bucket: str = ""
+    bucket_notional_usd: float | None = None
+    spread_bps: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +127,16 @@ def _parse_dt(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _round(value: float | None, digits: int = 4) -> float | None:
@@ -277,13 +294,68 @@ def _build_quote_indexes(
     return indexes
 
 
+def _reference_from_trade_setup(window: str, trade: dict[str, object]) -> EnrichedTrade | None:
+    details = trade.get("setup_details") if isinstance(trade.get("setup_details"), dict) else {}
+    if not isinstance(details, dict):
+        return None
+
+    source_count = _float(details.get("external_reference_source_count"))
+    available = _truthy(details.get("external_reference_available")) or source_count > 0.0
+    reference_price = _optional_float(details.get("external_reference_price"))
+    reference_time = str(details.get("external_reference_time") or "")
+    reference_symbol = str(details.get("external_reference_symbol") or "")
+    has_reference_payload = (
+        available
+        or (reference_price is not None and reference_price > 0.0)
+        or bool(reference_time)
+        or bool(reference_symbol)
+    )
+    if not has_reference_payload:
+        return None
+
+    symbol = str(trade.get("symbol") or "").upper()
+    opened_at = _parse_dt(str(trade.get("opened_at") or ""))
+    entry_price = _float(trade.get("entry_price"))
+    premium = _optional_float(details.get("external_premium_bps"))
+    if premium is None and reference_price is not None and reference_price > 0.0 and entry_price > 0.0:
+        premium = (entry_price - reference_price) / reference_price * 10_000.0
+
+    return EnrichedTrade(
+        window=window,
+        symbol=symbol,
+        side=str(trade.get("side") or "long").lower(),
+        opened_at=opened_at.isoformat() if opened_at else str(trade.get("opened_at") or ""),
+        pnl_usd=round(_float(trade.get("pnl_usd")), 6),
+        entry_price=round(entry_price, 8),
+        reference_symbol=reference_symbol or REFERENCE_SYMBOLS.get(symbol, ""),
+        reference_price=_round(reference_price, 8),
+        reference_time=reference_time or None,
+        reference_age_seconds=_round(_optional_float(details.get("external_reference_age_seconds")), 4),
+        external_premium_bps=_round(premium, 4),
+        external_momentum_300s_bps=_round(
+            _optional_float(details.get("external_momentum_300s_bps")),
+            4,
+        ),
+        reference_available=available,
+        reference_data_source="embedded_setup_details",
+        **_trade_metadata(trade),
+    )
+
+
 def _enrich_trades(
     trades_by_window: dict[str, list[dict[str, object]]],
     indexes: dict[str, list[QuotePoint]],
+    *,
+    prefer_embedded_reference: bool = True,
 ) -> list[EnrichedTrade]:
     enriched: list[EnrichedTrade] = []
     for window, trades in trades_by_window.items():
         for trade in trades:
+            if prefer_embedded_reference:
+                embedded = _reference_from_trade_setup(window, trade)
+                if embedded is not None:
+                    enriched.append(embedded)
+                    continue
             symbol = str(trade.get("symbol") or "").upper()
             opened_at = _parse_dt(str(trade.get("opened_at") or ""))
             entry_price = _float(trade.get("entry_price"))
@@ -324,9 +396,77 @@ def _enrich_trades(
                     external_premium_bps=_round(premium, 4),
                     external_momentum_300s_bps=_round(momentum, 4),
                     reference_available=quote is not None,
+                    reference_data_source="yahoo_chart",
+                    **_trade_metadata(trade),
                 )
             )
     return enriched
+
+
+def _trade_metadata(trade: dict[str, object]) -> dict[str, object]:
+    details = trade.get("setup_details") if isinstance(trade.get("setup_details"), dict) else {}
+    if not isinstance(details, dict):
+        details = {}
+    return {
+        "confidence": _optional_float(trade.get("confidence")),
+        "market_cluster": str(trade.get("market_cluster") or details.get("market_cluster") or ""),
+        "activity_bucket": str(details.get("activity_bucket") or ""),
+        "trade_count_bucket": str(details.get("trade_count_bucket") or ""),
+        "bucket_notional_usd": _optional_float(details.get("bucket_notional_usd")),
+        "spread_bps": _optional_float(details.get("spread_bps")),
+    }
+
+
+def _load_pod_c_trade_close_journal(
+    journal_path: Path,
+    *,
+    start: datetime | None,
+    end: datetime | None,
+    splits: list[datetime],
+) -> dict[str, list[dict[str, object]]]:
+    scoped: list[tuple[datetime, dict[str, object]]] = []
+    with journal_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict) or record.get("event_type") != "trade_close":
+                continue
+            trade = record.get("trade")
+            if not isinstance(trade, dict):
+                continue
+            opened_at = _parse_dt(str(trade.get("opened_at") or ""))
+            if opened_at is None:
+                continue
+            if start is not None and opened_at < start:
+                continue
+            if end is not None and opened_at >= end:
+                continue
+            scoped.append((opened_at, trade))
+    if not scoped:
+        return {}
+
+    lower = start or min(opened_at for opened_at, _ in scoped)
+    upper = end or max(opened_at for opened_at, _ in scoped) + timedelta(seconds=1)
+    boundaries = [lower]
+    boundaries.extend(split for split in sorted(set(splits)) if lower < split < upper)
+    boundaries.append(upper)
+
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for opened_at, trade in scoped:
+        index = bisect.bisect_right(boundaries, opened_at) - 1
+        index = min(max(index, 0), len(boundaries) - 2)
+        label = _window_label(boundaries[index], boundaries[index + 1])
+        grouped.setdefault(label, []).append(trade)
+    return grouped
+
+
+def _window_label(start: datetime, end: datetime) -> str:
+    end_inclusive = end - timedelta(seconds=1)
+    return f"{start.date().isoformat()}_to_{end_inclusive.date().isoformat()}"
 
 
 def _float(value: object) -> float:
@@ -335,6 +475,16 @@ def _float(value: object) -> float:
     except (TypeError, ValueError):
         return 0.0
     return result if math.isfinite(result) else 0.0
+
+
+def _optional_float(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _gate_reason(trade: EnrichedTrade, gate: str) -> str | None:
@@ -372,6 +522,58 @@ def _gate_reason(trade: EnrichedTrade, gate: str) -> str | None:
         if side == "short" and momentum is not None and momentum >= 6:
             return "momentum"
         return None
+    if gate == "fresh_abs_premium_gt_50":
+        if not _is_fresh_reference(trade, max_age_seconds=900):
+            return None
+        return "premium" if premium is not None and abs(premium) > 50 else None
+    if gate == "fresh_counter_momentum_5m_6bps":
+        if not _is_fresh_reference(trade, max_age_seconds=900):
+            return None
+        if side == "long" and momentum is not None and momentum <= -6:
+            return "momentum"
+        if side == "short" and momentum is not None and momentum >= 6:
+            return "momentum"
+        return None
+    if gate == "fresh_candidate_default_5m":
+        if not _is_fresh_reference(trade, max_age_seconds=900):
+            return None
+        if premium is not None and abs(premium) > 50:
+            return "premium"
+        if side == "long" and premium is not None and premium > 25:
+            return "premium"
+        if side == "long" and momentum is not None and momentum <= -6:
+            return "momentum"
+        if side == "short" and momentum is not None and momentum >= 6:
+            return "momentum"
+        return None
+    if gate == "fresh_candidate_loose_5m":
+        if not _is_fresh_reference(trade, max_age_seconds=900):
+            return None
+        if premium is not None and abs(premium) > 100:
+            return "premium"
+        if side == "long" and premium is not None and premium > 50:
+            return "premium"
+        if side == "long" and momentum is not None and momentum <= -12:
+            return "momentum"
+        if side == "short" and momentum is not None and momentum >= 12:
+            return "momentum"
+        return None
+    if gate == "fresh_candidate_default_5m_not_high_activity":
+        if not _is_not_high_activity(trade):
+            return None
+        return _gate_reason(trade, "fresh_candidate_default_5m")
+    if gate == "fresh_candidate_default_5m_low_conf_lt80":
+        if trade.confidence is None or trade.confidence >= 0.80:
+            return None
+        return _gate_reason(trade, "fresh_candidate_default_5m")
+    if gate == "fresh_candidate_default_5m_bucket_lt100k":
+        if trade.bucket_notional_usd is None or trade.bucket_notional_usd >= 100_000.0:
+            return None
+        return _gate_reason(trade, "fresh_candidate_default_5m")
+    if gate == "fresh_counter_momentum_5m_6bps_not_high_activity":
+        if not _is_not_high_activity(trade):
+            return None
+        return _gate_reason(trade, "fresh_counter_momentum_5m_6bps")
     if gate == "candidate_default_5m":
         if missing:
             return "missing"
@@ -401,6 +603,18 @@ def _gate_reason(trade: EnrichedTrade, gate: str) -> str | None:
             return "momentum"
         return None
     raise ValueError(f"unknown gate: {gate}")
+
+
+def _is_fresh_reference(trade: EnrichedTrade, *, max_age_seconds: float) -> bool:
+    return (
+        trade.reference_available
+        and trade.reference_age_seconds is not None
+        and trade.reference_age_seconds <= max_age_seconds
+    )
+
+
+def _is_not_high_activity(trade: EnrichedTrade) -> bool:
+    return trade.activity_bucket.strip().lower() != "high"
 
 
 def _evaluate_gate(window: str, trades: list[EnrichedTrade], gate: str) -> GateOutcome:
@@ -596,24 +810,52 @@ def _render_markdown(report: ValidationReport) -> str:
 def run_validation(
     *,
     report_paths: list[Path],
+    journal_paths: list[Path] | None = None,
     output_dir: Path,
     cache_dir: Path,
     interval: str,
     timeout_seconds: float,
+    journal_start: datetime | None = None,
+    journal_end: datetime | None = None,
+    journal_splits: list[datetime] | None = None,
+    prefer_embedded_reference: bool = True,
 ) -> ValidationReport:
     trades_by_window: dict[str, list[dict[str, object]]] = {}
     input_by_window: dict[str, Path] = {}
+    quote_trades_by_window: dict[str, list[dict[str, object]]] = {}
     for report_path in report_paths:
         window, trades = _load_pod_c_trades(report_path)
         trades_by_window[window] = trades
         input_by_window[window] = report_path
-    indexes = _build_quote_indexes(
-        trades_by_window,
-        interval=interval,
-        cache_dir=cache_dir,
-        timeout_seconds=timeout_seconds,
+        quote_trades_by_window[window] = trades
+    for journal_path in journal_paths or []:
+        journal_windows = _load_pod_c_trade_close_journal(
+            journal_path,
+            start=journal_start,
+            end=journal_end,
+            splits=journal_splits or [],
+        )
+        for window, trades in journal_windows.items():
+            unique_window = window
+            if unique_window in trades_by_window:
+                unique_window = f"{window}_{journal_path.stem}"
+            trades_by_window[unique_window] = trades
+            input_by_window[unique_window] = journal_path
+    indexes = (
+        _build_quote_indexes(
+            quote_trades_by_window,
+            interval=interval,
+            cache_dir=cache_dir,
+            timeout_seconds=timeout_seconds,
+        )
+        if quote_trades_by_window
+        else {}
     )
-    enriched = _enrich_trades(trades_by_window, indexes)
+    enriched = _enrich_trades(
+        trades_by_window,
+        indexes,
+        prefer_embedded_reference=prefer_embedded_reference,
+    )
     enriched_by_window: dict[str, list[EnrichedTrade]] = {}
     for trade in enriched:
         enriched_by_window.setdefault(trade.window, []).append(trade)
@@ -626,6 +868,14 @@ def run_validation(
         "long_chase_premium_gt_25",
         "long_chase_premium_gt_50",
         "counter_momentum_5m_6bps",
+        "fresh_abs_premium_gt_50",
+        "fresh_counter_momentum_5m_6bps",
+        "fresh_candidate_default_5m",
+        "fresh_candidate_loose_5m",
+        "fresh_candidate_default_5m_not_high_activity",
+        "fresh_candidate_default_5m_low_conf_lt80",
+        "fresh_candidate_default_5m_bucket_lt100k",
+        "fresh_counter_momentum_5m_6bps_not_high_activity",
         "candidate_default_5m",
         "candidate_loose_5m",
     ]
@@ -634,6 +884,14 @@ def run_validation(
         "abs_premium_gt_50",
         "long_chase_premium_gt_25",
         "counter_momentum_5m_6bps",
+        "fresh_abs_premium_gt_50",
+        "fresh_counter_momentum_5m_6bps",
+        "fresh_candidate_default_5m",
+        "fresh_candidate_loose_5m",
+        "fresh_candidate_default_5m_not_high_activity",
+        "fresh_candidate_default_5m_low_conf_lt80",
+        "fresh_candidate_default_5m_bucket_lt100k",
+        "fresh_counter_momentum_5m_6bps_not_high_activity",
         "candidate_default_5m",
         "candidate_loose_5m",
     ]
@@ -652,10 +910,15 @@ def run_validation(
         for gate in cap_gates
     )
     recommendation, notes = _recommendation(outcomes, summaries)
+    if journal_paths:
+        notes.append(
+            "Les fenetres journal utilisent les references externes embarquees "
+            "dans setup_details au moment de l'entree live."
+        )
     report = ValidationReport(
         generated_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         interval=interval,
-        input_reports=[str(path) for path in report_paths],
+        input_reports=[str(path) for path in report_paths + list(journal_paths or [])],
         window_summaries=summaries,
         gate_outcomes=outcomes,
         recommendation=recommendation,
@@ -680,24 +943,67 @@ def build_parser() -> argparse.ArgumentParser:
         help="Full-bot replay JSON containing pod_c.closed_trade_log. Can be repeated.",
     )
     parser.add_argument(
+        "--journal",
+        action="append",
+        dest="journals",
+        help="Pod C live JSONL journal containing trade_close events. Can be repeated.",
+    )
+    parser.add_argument(
+        "--journal-start",
+        default="",
+        help="Inclusive UTC opened_at lower bound for --journal, for example 2026-06-15T00:00:00Z.",
+    )
+    parser.add_argument(
+        "--journal-end",
+        default="",
+        help="Exclusive UTC opened_at upper bound for --journal.",
+    )
+    parser.add_argument(
+        "--journal-split",
+        action="append",
+        default=[],
+        help="UTC boundary splitting journal trades into OOS windows. Can be repeated.",
+    )
+    parser.add_argument(
         "--output-dir",
         default="server-data/replay_reports/p103_pod_c_external_reference_validation_20260615",
     )
     parser.add_argument("--cache-dir", default="server-data/external_reference_yahoo")
     parser.add_argument("--interval", default="5m")
     parser.add_argument("--timeout-seconds", type=float, default=20.0)
+    parser.add_argument(
+        "--prefer-embedded-reference",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prefer external_reference_* fields already embedded in trade setup_details.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    report_paths = [Path(item) for item in args.reports] if args.reports else DEFAULT_REPORTS
+    journal_paths = [Path(item) for item in args.journals] if args.journals else []
+    if args.reports:
+        report_paths = [Path(item) for item in args.reports]
+    elif journal_paths:
+        report_paths = []
+    else:
+        report_paths = DEFAULT_REPORTS
     report = run_validation(
         report_paths=report_paths,
+        journal_paths=journal_paths,
         output_dir=Path(args.output_dir),
         cache_dir=Path(args.cache_dir),
         interval=args.interval,
         timeout_seconds=args.timeout_seconds,
+        journal_start=_parse_dt(args.journal_start),
+        journal_end=_parse_dt(args.journal_end),
+        journal_splits=[
+            split
+            for split in (_parse_dt(value) for value in args.journal_split)
+            if split is not None
+        ],
+        prefer_embedded_reference=bool(args.prefer_embedded_reference),
     )
     print(f"recommendation={report.recommendation}")
     for summary in report.window_summaries:

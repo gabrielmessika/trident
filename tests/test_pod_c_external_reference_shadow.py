@@ -48,3 +48,40 @@ def test_shadow_flags_counter_momentum_against_side() -> None:
 
     assert details["would_block_external_reference_counter_momentum_5m_6bps"] is True
     assert "counter_momentum_5m_6bps" in details["external_reference_shadow_reason"]
+
+
+def test_fresh_shadow_ignores_stale_reference_even_when_old_shadow_blocks() -> None:
+    details = external_reference_shadow_details(
+        {
+            "external_reference_source_count": 1,
+            "external_reference_age_seconds": 3600.0,
+            "external_premium_bps": 200.0,
+            "external_momentum_300s_bps": -20.0,
+        },
+        side="long",
+    )
+
+    assert details["would_block_external_reference_candidate_default_5m"] is True
+    assert details["external_reference_fresh_shadow_available"] is False
+    assert details["would_block_external_reference_fresh_abs_premium_gt_50"] is False
+    assert details["would_block_external_reference_fresh_counter_momentum_5m_6bps"] is False
+    assert details["would_block_external_reference_fresh_candidate_default_5m"] is False
+    assert details["external_reference_fresh_shadow_reason"] == ""
+
+
+def test_fresh_shadow_flags_default_candidate_on_fresh_reference_only() -> None:
+    details = external_reference_shadow_details(
+        {
+            "external_reference_source_count": 1,
+            "external_reference_age_seconds": 60.0,
+            "external_premium_bps": 75.0,
+            "external_momentum_300s_bps": 1.0,
+        },
+        side="long",
+    )
+
+    assert details["external_reference_fresh_shadow_available"] is True
+    assert details["would_block_external_reference_fresh_abs_premium_gt_50"] is True
+    assert details["would_block_external_reference_fresh_candidate_default_5m"] is True
+    assert details["would_block_external_reference_fresh_candidate_loose_5m"] is True
+    assert "fresh_abs_premium_gt_50" in details["external_reference_fresh_shadow_reason"]
