@@ -520,20 +520,87 @@ def empty_symbol_guard_stats() -> dict:
         "records": 0,
         "with_shadow": 0,
         "live_action_unchanged_false": 0,
+        "expected_live_action_changed": 0,
+        "unexpected_live_action_changed": 0,
+        "live_policy_enabled_records": 0,
+        "live_sizing_active_records": 0,
+        "recovery_sizing_active_records": 0,
         "by_state": {},
         "by_gate": {field: 0 for field in P108_SYMBOL_GUARD_FIELDS},
+        "by_live_sizing_reason": {},
+        "by_recovery_sizing_reason": {},
         "by_symbol": {},
         "avg_score": 0.0,
         "_score_sum": 0.0,
     }
 
-def update_symbol_guard_stats(stats: dict, symbol: str, details: dict) -> None:
+def symbol_guard_policy_config(pod_a_config: dict) -> dict:
+    return {
+        "dynamic_symbol_guard_live_sizing_enabled": pod_a_config.get(
+            "dynamic_symbol_guard_live_sizing_enabled"
+        )
+        is True,
+        "dynamic_symbol_guard_recovery_sizing_enabled": pod_a_config.get(
+            "dynamic_symbol_guard_recovery_sizing_enabled"
+        )
+        is True,
+        "dynamic_symbol_guard_throttle_multiplier": pod_a_config.get(
+            "dynamic_symbol_guard_throttle_multiplier"
+        ),
+        "dynamic_symbol_guard_quarantine_multiplier": pod_a_config.get(
+            "dynamic_symbol_guard_quarantine_multiplier"
+        ),
+        "dynamic_symbol_guard_min_multiplier": pod_a_config.get(
+            "dynamic_symbol_guard_min_multiplier"
+        ),
+    }
+
+def symbol_guard_expected_live_action_change(details: dict, policy_config: dict) -> bool:
+    if details.get("dynamic_symbol_guard_live_policy_enabled") is not True:
+        return False
+    if (
+        policy_config.get("dynamic_symbol_guard_live_sizing_enabled") is True
+        and details.get("dynamic_symbol_guard_live_sizing_active") is True
+    ):
+        return True
+    if (
+        policy_config.get("dynamic_symbol_guard_recovery_sizing_enabled") is True
+        and details.get("dynamic_symbol_guard_recovery_sizing_active") is True
+    ):
+        return True
+    return False
+
+def update_symbol_guard_stats(
+    stats: dict,
+    symbol: str,
+    details: dict,
+    *,
+    policy_config: dict,
+) -> None:
     stats["records"] += 1
     if details.get("symbol_guard_shadow_mode") != "observation_only":
         return
     stats["with_shadow"] += 1
+    if details.get("dynamic_symbol_guard_live_policy_enabled") is True:
+        stats["live_policy_enabled_records"] += 1
+    if details.get("dynamic_symbol_guard_live_sizing_active") is True:
+        stats["live_sizing_active_records"] += 1
+        reason = str(details.get("dynamic_symbol_guard_live_sizing_reason") or "unknown")
+        stats["by_live_sizing_reason"][reason] = (
+            int(stats["by_live_sizing_reason"].get(reason) or 0) + 1
+        )
+    if details.get("dynamic_symbol_guard_recovery_sizing_active") is True:
+        stats["recovery_sizing_active_records"] += 1
+        reason = str(details.get("dynamic_symbol_guard_recovery_reason") or "unknown")
+        stats["by_recovery_sizing_reason"][reason] = (
+            int(stats["by_recovery_sizing_reason"].get(reason) or 0) + 1
+        )
     if details.get("symbol_guard_live_action_unchanged") is not True:
         stats["live_action_unchanged_false"] += 1
+        if symbol_guard_expected_live_action_change(details, policy_config):
+            stats["expected_live_action_changed"] += 1
+        else:
+            stats["unexpected_live_action_changed"] += 1
     symbol_key = str(symbol or "").upper()
     state = str(details.get("symbol_guard_state") or "unknown")
     stats["by_state"][state] = int(stats["by_state"].get(state) or 0) + 1
@@ -747,8 +814,9 @@ def build_p109_oil_shadow_focus(*, log_dir: Path, runtime_statuses: dict | None 
         "p109_oil_shadow": finalize_p109_oil_stats(stats),
     }
 
-def build_p108_symbol_guard_focus(*, log_dir: Path) -> dict:
+def build_p108_symbol_guard_focus(*, log_dir: Path, pod_a_config: dict) -> dict:
     stats = empty_symbol_guard_stats()
+    policy_config = symbol_guard_policy_config(pod_a_config)
     pod_a_log = log_dir / "pod_a_live.jsonl"
     try:
         journal_tail_lines = max(int(os.getenv("TRIDENT_FETCH_P108_JOURNAL_TAIL_LINES", "2000")), 1)
@@ -763,7 +831,12 @@ def build_p108_symbol_guard_focus(*, log_dir: Path) -> dict:
                 signal.get("dynamic_symbol_guard"),
                 signal.get("symbol_guard_shadow"),
             )
-            update_symbol_guard_stats(stats, str(signal.get("symbol") or ""), details)
+            update_symbol_guard_stats(
+                stats,
+                str(signal.get("symbol") or ""),
+                details,
+                policy_config=policy_config,
+            )
         elif event_type == "signal_review":
             review = record.get("review") if isinstance(record.get("review"), dict) else {}
             details = combine_shadow_details(
@@ -771,7 +844,12 @@ def build_p108_symbol_guard_focus(*, log_dir: Path) -> dict:
                 review.get("dynamic_symbol_guard"),
                 review.get("symbol_guard_shadow"),
             )
-            update_symbol_guard_stats(stats, str(review.get("symbol") or ""), details)
+            update_symbol_guard_stats(
+                stats,
+                str(review.get("symbol") or ""),
+                details,
+                policy_config=policy_config,
+            )
         elif event_type == "trade_close":
             trade = record.get("trade") if isinstance(record.get("trade"), dict) else {}
             details = combine_shadow_details(
@@ -779,7 +857,12 @@ def build_p108_symbol_guard_focus(*, log_dir: Path) -> dict:
                 trade.get("dynamic_symbol_guard"),
                 trade.get("symbol_guard_shadow"),
             )
-            update_symbol_guard_stats(stats, str(trade.get("symbol") or ""), details)
+            update_symbol_guard_stats(
+                stats,
+                str(trade.get("symbol") or ""),
+                details,
+                policy_config=policy_config,
+            )
     status = "WARN"
     reasons: list[str] = []
     if int(stats.get("with_shadow") or 0) > 0:
@@ -787,13 +870,18 @@ def build_p108_symbol_guard_focus(*, log_dir: Path) -> dict:
         reasons.append("shadow P1-08 présent dans les journaux Pod A")
     else:
         reasons.append("aucun champ dynamic_symbol_guard/symbol_guard_* observé dans le tail Pod A")
-    if int(stats.get("live_action_unchanged_false") or 0) > 0:
+    if int(stats.get("expected_live_action_changed") or 0) > 0:
+        reasons.append(
+            "P1-08 live sizing actif: live_action_unchanged=false attendu pour les plans cappes"
+        )
+    if int(stats.get("unexpected_live_action_changed") or 0) > 0:
         status = "FAIL"
-        reasons.append("shadow P1-08 indique live_action_unchanged=false")
+        reasons.append("P1-08 indique live_action_unchanged=false sans policy active attendue")
     return {
         "status": status,
         "reasons": reasons,
         "journal_tail_lines": journal_tail_lines,
+        "policy_config": policy_config,
         "dynamic_symbol_guard": finalize_symbol_guard_stats(stats),
     }
 
@@ -1096,7 +1184,7 @@ external_reference_focus = build_p103_external_reference_focus(
     log_dir=log_dir,
     snapshot_dir=snapshot_dir,
 )
-symbol_guard_focus = build_p108_symbol_guard_focus(log_dir=log_dir)
+symbol_guard_focus = build_p108_symbol_guard_focus(log_dir=log_dir, pod_a_config=pod_a_config)
 p109_oil_focus = build_p109_oil_shadow_focus(
     log_dir=log_dir,
     runtime_statuses=runtime_statuses,
@@ -1180,7 +1268,9 @@ if p108_status == "PASS":
     checks.append(
         "P1-08 dynamic symbol guard Pod A shadow collecté "
         f"({guard.get('with_shadow')}/{guard.get('records')}, "
-        f"states={guard.get('by_state')})"
+        f"states={guard.get('by_state')}, "
+        f"expected_live_changes={guard.get('expected_live_action_changed')}, "
+        f"unexpected_live_changes={guard.get('unexpected_live_action_changed')})"
     )
 elif p108_status == "FAIL":
     failures.append(
@@ -1289,16 +1379,31 @@ p108_lines = [
 for reason in symbol_guard_focus.get("reasons", []):
     p108_lines.append(f"- reason: `{reason}`")
 guard = symbol_guard_focus.get("dynamic_symbol_guard", {})
+policy_config = symbol_guard_focus.get("policy_config", {})
 p108_lines.extend(
     [
+        "",
+        "## Policy Config",
+        f"- dynamic_symbol_guard_live_sizing_enabled: `{policy_config.get('dynamic_symbol_guard_live_sizing_enabled')}`",
+        f"- dynamic_symbol_guard_recovery_sizing_enabled: `{policy_config.get('dynamic_symbol_guard_recovery_sizing_enabled')}`",
+        f"- throttle_multiplier: `{policy_config.get('dynamic_symbol_guard_throttle_multiplier')}`",
+        f"- quarantine_multiplier: `{policy_config.get('dynamic_symbol_guard_quarantine_multiplier')}`",
+        f"- min_multiplier: `{policy_config.get('dynamic_symbol_guard_min_multiplier')}`",
         "",
         "## Shadow P1-08",
         f"- records: `{guard.get('records')}`",
         f"- with_shadow: `{guard.get('with_shadow')}`",
         f"- live_action_unchanged_false: `{guard.get('live_action_unchanged_false')}`",
+        f"- expected_live_action_changed: `{guard.get('expected_live_action_changed')}`",
+        f"- unexpected_live_action_changed: `{guard.get('unexpected_live_action_changed')}`",
+        f"- live_policy_enabled_records: `{guard.get('live_policy_enabled_records')}`",
+        f"- live_sizing_active_records: `{guard.get('live_sizing_active_records')}`",
+        f"- recovery_sizing_active_records: `{guard.get('recovery_sizing_active_records')}`",
         f"- avg_score: `{guard.get('avg_score')}`",
         f"- by_state: `{guard.get('by_state')}`",
         f"- by_gate: `{guard.get('by_gate')}`",
+        f"- by_live_sizing_reason: `{guard.get('by_live_sizing_reason')}`",
+        f"- by_recovery_sizing_reason: `{guard.get('by_recovery_sizing_reason')}`",
         f"- by_symbol: `{guard.get('by_symbol')}`",
     ]
 )
@@ -1417,8 +1522,14 @@ lines.extend(
         "",
         "## P1-08 Dynamic Symbol Guard Pod A",
         f"- status: `{symbol_guard_focus.get('status')}`",
+        f"- live_sizing_enabled: `{symbol_guard_focus.get('policy_config', {}).get('dynamic_symbol_guard_live_sizing_enabled')}`",
+        f"- recovery_sizing_enabled: `{symbol_guard_focus.get('policy_config', {}).get('dynamic_symbol_guard_recovery_sizing_enabled')}`",
         f"- shadow_coverage: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('with_shadow')}/{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('records')}`",
         f"- shadow_live_action_unchanged_false: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('live_action_unchanged_false')}`",
+        f"- expected_live_action_changed: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('expected_live_action_changed')}`",
+        f"- unexpected_live_action_changed: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('unexpected_live_action_changed')}`",
+        f"- live_sizing_active_records: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('live_sizing_active_records')}`",
+        f"- recovery_sizing_active_records: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('recovery_sizing_active_records')}`",
         f"- avg_score: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('avg_score')}`",
         f"- by_state: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('by_state')}`",
         f"- by_gate: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('by_gate')}`",
@@ -1438,7 +1549,7 @@ lines.extend(
         "## Next Review Focus",
         "- Verifier que le serveur expose bien `live_max_order_notional_usd=200`, `pod_a.stop_grace_minutes=60` et `live_block_stop_grace_setups=false`.",
         "- P1-03: verifier `external_reference.symbols_enriched>0`, la couverture par symbole et les revues `XYZ:SILVER` en `symbol_blocked` dans `p103_external_reference_audit.md`.",
-        "- P1-08: verifier `dynamic_symbol_guard` / `symbol_guard_*` dans `p108_dynamic_symbol_guard_audit.md`, avec `with_shadow>0` et `live_action_unchanged_false=0`.",
+        "- P1-08: verifier `dynamic_symbol_guard` / `symbol_guard_*` dans `p108_dynamic_symbol_guard_audit.md`, avec `with_shadow>0` et `unexpected_live_action_changed=0`; si le sizing live est explicitement actif, `expected_live_action_changed>0` devient normal.",
         "- P1-09: verifier `p109_oil_shadow_*` dans `p109_oil_shadow_audit.md`, avec `with_shadow>0` et `live_action_unchanged_false=0`.",
         "- Pod A: surveiller les nouveaux `exchange_closed_stop_loss` et `early_failure_exit`; comparer perte reelle vs stop planifie.",
         "- Pod C: verifier qu'aucun nouveau trade `XYZ:SILVER` ne s'ouvre et que les signaux silver sont rejetes `symbol_blocked` si presents.",

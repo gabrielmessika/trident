@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from scripts.run_p103_pod_c_external_reference_validation import (
     EnrichedTrade,
+    _evaluate_cap,
     _evaluate_gate,
     _gate_reason,
 )
@@ -44,3 +45,16 @@ def test_gate_delta_is_positive_when_blocking_losing_trade() -> None:
     assert outcome.delta_usd == 3.0
     assert outcome.blocked_trades == 1
     assert outcome.premium_blocks == 1
+
+
+def test_cap_outcome_scales_touched_trade_instead_of_removing_it() -> None:
+    losing_trade = _trade(symbol="XYZ:GOLD", pnl_usd=-4.0, external_premium_bps=75.0)
+    winning_trade = _trade(symbol="XYZ:SP500", pnl_usd=2.0, external_premium_bps=10.0)
+
+    outcome = _evaluate_cap("fixture", [losing_trade, winning_trade], "abs_premium_gt_50", 0.5)
+
+    assert outcome.action == "cap50"
+    assert outcome.base_pnl_usd == -2.0
+    assert outcome.kept_pnl_usd == 0.0
+    assert outcome.delta_usd == 2.0
+    assert outcome.blocked_trades == 1

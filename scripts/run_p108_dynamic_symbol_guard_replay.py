@@ -58,6 +58,12 @@ class ScenarioSpec:
     recovery_min_closed_trades: int = 4
     recovery_min_profit_factor: float = 1.05
     recovery_min_expectancy_usd: float = 0.0
+    loss_probation_multiplier: float = 0.50
+    loss_probation_min_closed_trades: int = 2
+    loss_probation_max_pnl_usd: float = -2.0
+    loss_probation_max_profit_factor: float = 0.80
+    loss_probation_rehab_min_profit_factor: float = 1.05
+    loss_probation_rehab_min_expectancy_usd: float = 0.0
 
 
 @dataclass(slots=True)
@@ -138,6 +144,15 @@ def default_scenarios() -> list[ScenarioSpec]:
             action="recovery_sizing_policy",
         ),
         ScenarioSpec(
+            name="loss_probation_symbol_setup_cap50",
+            description=(
+                "Counterfactual A-PNL-08: cap-only 50% apres pertes rolling "
+                "sur le meme couple symbole/setup; rehabilitation au plein "
+                "sizing apres PF et expectancy rolling positifs."
+            ),
+            action="loss_probation_sizing_policy",
+        ),
+        ScenarioSpec(
             name="quarantine_only_75",
             description="Counterfactual: score >=75 bloque les nouvelles entrées Pod A du symbole.",
             action="quarantine_only",
@@ -157,6 +172,18 @@ def default_scenarios() -> list[ScenarioSpec]:
     ]
 
 
+def filter_scenarios(scenarios: list[ScenarioSpec], raw_names: str) -> list[ScenarioSpec]:
+    requested = [item.strip() for item in str(raw_names or "").split(",") if item.strip()]
+    if not requested:
+        return scenarios
+    by_name = {scenario.name: scenario for scenario in scenarios}
+    missing = [name for name in requested if name not in by_name]
+    if missing:
+        available = ", ".join(sorted(by_name))
+        raise SystemExit(f"Unknown --scenarios values: {', '.join(missing)}. Available: {available}")
+    return [by_name[name] for name in requested]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config/trident.toml")
@@ -166,6 +193,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-end", default="2026-05-13T23:59:59Z")
     parser.add_argument("--live-start", default="2026-05-14T00:00:00Z")
     parser.add_argument("--live-end", default="2026-06-15T23:59:59Z")
+    parser.add_argument(
+        "--scenarios",
+        default="",
+        help="Liste optionnelle de scenarios separes par virgule.",
+    )
     parser.add_argument(
         "--window",
         choices=("both", "baseline", "live"),
@@ -194,13 +226,14 @@ def main() -> None:
         or (args.window == "baseline" and window.name == "baseline_apr_may")
         or (args.window == "live" and window.name == "live_post_baseline")
     ]
+    scenarios = filter_scenarios(default_scenarios(), args.scenarios)
     rows: list[WindowResult] = []
     for window in windows:
         print(f"window={window.name} status=running", flush=True)
         window_rows = run_window(
             config=config,
             window=window,
-            scenarios=default_scenarios(),
+            scenarios=scenarios,
             apply_live_caps=not args.no_live_caps,
         )
         rows.extend(window_rows)
@@ -219,7 +252,7 @@ def main() -> None:
         "status": "research_only_no_live_change",
         "live_caps": not args.no_live_caps,
         "windows": [asdict(window) | {"input_path": str(window.input_path)} for window in windows],
-        "scenarios": [asdict(scenario) for scenario in default_scenarios()],
+        "scenarios": [asdict(scenario) for scenario in scenarios],
         "results": [asdict(row) for row in rows],
     }
     (output_dir / "p108_dynamic_symbol_guard_replay.json").write_text(
@@ -466,6 +499,9 @@ def process_state(
                         "p108_recovery_sizing_policy_counterfactual": (
                             state.spec.action == "recovery_sizing_policy"
                         ),
+                        "p108_loss_probation_policy_counterfactual": (
+                            state.spec.action == "loss_probation_sizing_policy"
+                        ),
                         "symbol_guard_live_action_unchanged": False,
                     },
                 }
@@ -511,9 +547,13 @@ def p108_cap_multiplier(
     details: dict[str, Any] | None = None,
 ) -> float:
     if feature is None:
+        if spec.action == "loss_probation_sizing_policy":
+            return p108_loss_probation_multiplier(spec, details or {})
         if spec.action != "recovery_sizing_policy":
             return 1.0
         return p108_recovery_multiplier(spec, details or {})
+    if spec.action == "loss_probation_sizing_policy":
+        return p108_loss_probation_multiplier(spec, details or {})
     if spec.action in {"live_sizing_policy", "recovery_sizing_policy"}:
         state = str(getattr(feature, "state", "") or "").lower()
         if state == "quarantine" or bool(getattr(feature, "would_block", False)):
@@ -541,6 +581,31 @@ def p108_recovery_multiplier(spec: ScenarioSpec, details: dict[str, Any]) -> flo
     if expectancy_ok or profit_factor_ok:
         return spec.recovery_partial_multiplier
     return spec.recovery_base_multiplier
+
+
+def p108_loss_probation_multiplier(spec: ScenarioSpec, details: dict[str, Any]) -> float:
+    trades = int(float(details.get("symbol_setup_rolling_trades", 0) or 0))
+    if trades < max(int(spec.loss_probation_min_closed_trades), 1):
+        return 1.0
+    pnl = float(details.get("symbol_setup_rolling_pnl_usd", 0.0) or 0.0)
+    expectancy = float(details.get("symbol_setup_rolling_expectancy_usd", 0.0) or 0.0)
+    profit_factor = float(details.get("symbol_setup_rolling_profit_factor", 0.0) or 0.0)
+    rehabilitated = (
+        expectancy > spec.loss_probation_rehab_min_expectancy_usd
+        and profit_factor >= spec.loss_probation_rehab_min_profit_factor
+    )
+    if rehabilitated:
+        return 1.0
+    probation = (
+        pnl <= spec.loss_probation_max_pnl_usd
+        or (
+            expectancy < 0.0
+            and profit_factor <= spec.loss_probation_max_profit_factor
+        )
+    )
+    if probation:
+        return spec.loss_probation_multiplier
+    return 1.0
 
 
 def record_tick(

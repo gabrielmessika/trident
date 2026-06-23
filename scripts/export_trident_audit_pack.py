@@ -485,6 +485,7 @@ def export_directional_logs(source_root: Path, output_dir: Path) -> dict[str, An
                             "has_open_position_after": execution.get("has_open_position_after"),
                             "opened": execution.get("opened"),
                             "skipped_open": execution.get("skipped_open"),
+                            "skip_reason": execution.get("skip_reason"),
                             "close_reason": execution.get("close_reason"),
                             "open_fill_count": len(execution.get("open_fills") or []),
                             "close_fill_count": len(execution.get("close_fills") or []),

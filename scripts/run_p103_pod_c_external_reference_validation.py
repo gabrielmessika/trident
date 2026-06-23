@@ -69,6 +69,7 @@ class EnrichedTrade:
 class GateOutcome:
     window: str
     gate: str
+    action: str
     base_pnl_usd: float
     kept_pnl_usd: float
     delta_usd: float
@@ -416,6 +417,7 @@ def _evaluate_gate(window: str, trades: list[EnrichedTrade], gate: str) -> GateO
     return GateOutcome(
         window=window,
         gate=gate,
+        action="veto",
         base_pnl_usd=round(base_pnl, 4),
         kept_pnl_usd=round(base_pnl - blocked_pnl, 4),
         delta_usd=round(-blocked_pnl, 4),
@@ -428,6 +430,38 @@ def _evaluate_gate(window: str, trades: list[EnrichedTrade], gate: str) -> GateO
         stale_blocks=sum(1 for _, reason in blocked if reason == "stale"),
         premium_blocks=sum(1 for _, reason in blocked if reason == "premium"),
         momentum_blocks=sum(1 for _, reason in blocked if reason == "momentum"),
+        blocked_symbols=dict(sorted(symbols.items())),
+    )
+
+
+def _evaluate_cap(window: str, trades: list[EnrichedTrade], gate: str, cap_multiplier: float) -> GateOutcome:
+    base_pnl = sum(trade.pnl_usd for trade in trades)
+    capped: list[tuple[EnrichedTrade, str]] = []
+    for trade in trades:
+        reason = _gate_reason(trade, gate)
+        if reason is not None:
+            capped.append((trade, reason))
+    capped_pnl = sum(trade.pnl_usd for trade, _ in capped)
+    adjusted_pnl = base_pnl - capped_pnl * (1.0 - cap_multiplier)
+    symbols: dict[str, int] = {}
+    for trade, _ in capped:
+        symbols[trade.symbol] = symbols.get(trade.symbol, 0) + 1
+    return GateOutcome(
+        window=window,
+        gate=f"cap{int(cap_multiplier * 100)}_{gate}",
+        action=f"cap{int(cap_multiplier * 100)}",
+        base_pnl_usd=round(base_pnl, 4),
+        kept_pnl_usd=round(adjusted_pnl, 4),
+        delta_usd=round(adjusted_pnl - base_pnl, 4),
+        total_trades=len(trades),
+        blocked_trades=len(capped),
+        blocked_pnl_usd=round(capped_pnl, 4),
+        blocked_winners=sum(1 for trade, _ in capped if trade.pnl_usd > 0),
+        blocked_losers=sum(1 for trade, _ in capped if trade.pnl_usd < 0),
+        missing_reference_blocks=sum(1 for _, reason in capped if reason == "missing"),
+        stale_blocks=sum(1 for _, reason in capped if reason == "stale"),
+        premium_blocks=sum(1 for _, reason in capped if reason == "premium"),
+        momentum_blocks=sum(1 for _, reason in capped if reason == "momentum"),
         blocked_symbols=dict(sorted(symbols.items())),
     )
 
@@ -474,7 +508,11 @@ def _recommendation(outcomes: list[GateOutcome], summaries: list[WindowSummary])
         for summary in summaries
         if summary.trade_count > 0 and summary.reference_coverage_pct < 80.0
     ]
-    non_data_gates = [outcome for outcome in outcomes if outcome.gate != "data_only"]
+    non_data_gates = [
+        outcome
+        for outcome in outcomes
+        if outcome.gate != "data_only" and outcome.action == "veto"
+    ]
     covered_positive = sorted(
         {
             outcome.gate
@@ -534,8 +572,8 @@ def _render_markdown(report: ValidationReport) -> str:
         [
             "\n",
             "## Gate Counterfactuals\n\n",
-            "| window | gate | kept pnl | delta | blocked | blocked pnl | winners/losers | reason mix | symbols |\n",
-            "| --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |\n",
+            "| window | gate | action | kept pnl | delta | touched | touched pnl | winners/losers | reason mix | symbols |\n",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |\n",
         ]
     )
     for row in report.gate_outcomes:
@@ -544,7 +582,7 @@ def _render_markdown(report: ValidationReport) -> str:
             f"premium={row.premium_blocks}, momentum={row.momentum_blocks}"
         )
         lines.append(
-            f"| {row.window} | {row.gate} | {row.kept_pnl_usd:.2f} | "
+            f"| {row.window} | {row.gate} | {row.action} | {row.kept_pnl_usd:.2f} | "
             f"{row.delta_usd:.2f} | {row.blocked_trades}/{row.total_trades} | "
             f"{row.blocked_pnl_usd:.2f} | {row.blocked_winners}/{row.blocked_losers} | "
             f"{reason_mix} | {row.blocked_symbols} |\n"
@@ -591,6 +629,14 @@ def run_validation(
         "candidate_default_5m",
         "candidate_loose_5m",
     ]
+    cap_gates = [
+        "missing_or_stale_15m",
+        "abs_premium_gt_50",
+        "long_chase_premium_gt_25",
+        "counter_momentum_5m_6bps",
+        "candidate_default_5m",
+        "candidate_loose_5m",
+    ]
     summaries = [
         _window_summary(window, input_by_window[window], enriched_by_window.get(window, []))
         for window in trades_by_window
@@ -600,6 +646,11 @@ def run_validation(
         for window in trades_by_window
         for gate in gates
     ]
+    outcomes.extend(
+        _evaluate_cap(window, enriched_by_window.get(window, []), gate, 0.50)
+        for window in trades_by_window
+        for gate in cap_gates
+    )
     recommendation, notes = _recommendation(outcomes, summaries)
     report = ValidationReport(
         generated_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),

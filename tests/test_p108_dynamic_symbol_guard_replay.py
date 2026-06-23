@@ -3,6 +3,8 @@ from scripts.run_p108_dynamic_symbol_guard_replay import (
     ScenarioSpec,
     _profit_factor,
     _win_rate,
+    filter_scenarios,
+    p108_loss_probation_multiplier,
     p108_recovery_multiplier,
 )
 
@@ -55,6 +57,23 @@ def test_dynamic_symbol_guard_details_are_compacted_for_export() -> None:
     assert compacted["dynamic_symbol_guard_recovery_multiplier"] == 0.7
 
 
+def test_filter_scenarios_keeps_requested_order_and_rejects_unknown() -> None:
+    scenarios = [
+        ScenarioSpec(name="current_ac", description="current"),
+        ScenarioSpec(name="candidate", description="candidate"),
+    ]
+
+    filtered = filter_scenarios(scenarios, "candidate,current_ac")
+
+    assert [scenario.name for scenario in filtered] == ["candidate", "current_ac"]
+    try:
+        filter_scenarios(scenarios, "missing")
+    except SystemExit as exc:
+        assert "missing" in str(exc)
+    else:
+        raise AssertionError("missing scenario should raise SystemExit")
+
+
 def test_recovery_multiplier_requires_positive_pf_and_expectancy() -> None:
     spec = ScenarioSpec(
         name="recovery",
@@ -84,5 +103,41 @@ def test_recovery_multiplier_requires_positive_pf_and_expectancy() -> None:
             "symbol_setup_rolling_trades": 4,
             "symbol_setup_rolling_expectancy_usd": 0.25,
             "symbol_setup_rolling_profit_factor": 1.2,
+        },
+    ) == 1.0
+
+
+def test_loss_probation_multiplier_caps_only_after_negative_rolling_history() -> None:
+    spec = ScenarioSpec(
+        name="loss_probation",
+        description="test",
+        action="loss_probation_sizing_policy",
+    )
+
+    assert p108_loss_probation_multiplier(
+        spec,
+        {
+            "symbol_setup_rolling_trades": 1,
+            "symbol_setup_rolling_pnl_usd": -5.0,
+            "symbol_setup_rolling_expectancy_usd": -5.0,
+            "symbol_setup_rolling_profit_factor": 0.0,
+        },
+    ) == 1.0
+    assert p108_loss_probation_multiplier(
+        spec,
+        {
+            "symbol_setup_rolling_trades": 2,
+            "symbol_setup_rolling_pnl_usd": -2.1,
+            "symbol_setup_rolling_expectancy_usd": -1.05,
+            "symbol_setup_rolling_profit_factor": 0.0,
+        },
+    ) == 0.50
+    assert p108_loss_probation_multiplier(
+        spec,
+        {
+            "symbol_setup_rolling_trades": 3,
+            "symbol_setup_rolling_pnl_usd": 2.5,
+            "symbol_setup_rolling_expectancy_usd": 0.833333,
+            "symbol_setup_rolling_profit_factor": 1.5,
         },
     ) == 1.0

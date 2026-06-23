@@ -87,6 +87,8 @@ class PodABacktestRunner:
         self,
         input_path: str | Path,
         output_path: str | Path | None = None,
+        *,
+        include_signal_reviews: bool = True,
     ) -> PodABacktestResult:
         supervisor = TridentSupervisor(
             config=self.config,
@@ -250,6 +252,9 @@ class PodABacktestRunner:
                                 "opened": preview.symbol in execution.opened_symbols,
                                 "skipped_open": preview.symbol
                                 in execution.skipped_open_symbols,
+                                "skip_reason": execution.skip_reasons_by_symbol.get(
+                                    preview.symbol
+                                ),
                                 "close_reason": execution.close_reasons_by_symbol.get(
                                     preview.symbol
                                 ),
@@ -268,19 +273,20 @@ class PodABacktestRunner:
                     )
                     for preview in previews
                 )
-                output_journal.append_many(
-                    build_signal_review_journal_record(
-                        timestamp=record.timestamp,
-                        record_index=record.record_index,
-                        regime=supervisor.state.regime.value,
-                        regime_snapshot=record.regime_snapshot,
-                        symbol_snapshot=snapshot_by_symbol.get(str(review.get("symbol", ""))),
-                        source="pod_a_backtest_filtered",
-                        review=review,
+                if include_signal_reviews:
+                    output_journal.append_many(
+                        build_signal_review_journal_record(
+                            timestamp=record.timestamp,
+                            record_index=record.record_index,
+                            regime=supervisor.state.regime.value,
+                            regime_snapshot=record.regime_snapshot,
+                            symbol_snapshot=snapshot_by_symbol.get(str(review.get("symbol", ""))),
+                            source="pod_a_backtest_filtered",
+                            review=review,
+                        )
+                        for review in supervisor.state.pod_a_signal_review
+                        if str(review.get("status")) == "filtered"
                     )
-                    for review in supervisor.state.pod_a_signal_review
-                    if str(review.get("status")) == "filtered"
-                )
 
             for preview in previews:
                 report.add_signal(

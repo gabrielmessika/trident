@@ -162,6 +162,23 @@ Source de verite operationnelle depuis le `2026-05-24`:
   config locale dormante est alignee sur `quarantine_multiplier=0.50`, mais ce
   patch n'a pas ete redeploye et n'a aucun effet live tant que
   `dynamic_symbol_guard_live_sizing_enabled=false`.
+- Implementation A-PNL-01 audit P108 `2026-06-23`: `scripts/fetch_trident_data.sh`
+  distingue maintenant `expected_live_action_changed` et
+  `unexpected_live_action_changed` pour P1-08. En shadow/policy desactivee,
+  `symbol_guard_live_action_unchanged=false` reste un `FAIL`; avec
+  `dynamic_symbol_guard_live_sizing_enabled=true` dans la config rapatriee et
+  `dynamic_symbol_guard_live_sizing_active=true` dans les logs, le changement
+  devient attendu et ne fait pas echouer la review. Tests locaux OK et review
+  locale `server-data/reviews/20260623T091959Z/` en `PASS`, P1-08
+  `2000/2000` records avec shadow, `unexpected_live_action_changed=0`.
+- Decision A-PNL-01 `2026-06-23`: l'audit P108 est pret pour une eventuelle
+  review post-deploiement, mais aucune activation live n'est faite. Point de
+  vigilance: la config serveur rapatriee a encore
+  `dynamic_symbol_guard_quarantine_multiplier=0.10` avec le flag desactive,
+  tandis que la config locale candidate est `0.50`. Avant tout live, il faudra
+  confirmation explicite, redeploiement de la variante `cap50/cap50`, puis
+  fetch/review verifiant `unexpected_live_action_changed=0` et la config serveur
+  `throttle=0.50`, `quarantine=0.50`.
 - Implementation A-PNL-02 `2026-06-22`: Pod A expose les stats rolling
   `symbol/setup` dans les `setup_details` (`trades`, PnL, expectancy, profit
   factor) et dispose d'une policy dormante de recovery sizing
@@ -236,6 +253,89 @@ Source de verite operationnelle depuis le `2026-05-24`:
   pas promouvoir la policy cap-only microstructure. Validations locales OK,
   dont `rtk uv run pytest` (`675` passed, `1` warning historique) et
   `rtk git diff --check`.
+- Implementation A-PNL-07 `2026-06-23`: ajout de l'audit local
+  `scripts/run_p117_fill_quality_audit.py` pour mesurer, sans effet live, cout
+  d'entree attendu, spread, depth/touch notional, signaux acceptes mais non
+  ouverts, rejets risk gate et retours directionnels 1/5/15m. `PodABacktestRunner`
+  expose `skip_reason` dans le journal backtest et peut omettre les
+  `signal_review` filtres pour ces audits; `scripts/export_trident_audit_pack.py`
+  exporte aussi `execution.skip_reason`. Aucun flag live, aucun ordre, aucun
+  deploy et aucun changement fetch requis.
+- Decision A-PNL-07 `2026-06-23`: replay full-window
+  `server-data/replay_reports/p117_fill_quality_audit_20260623/` sur
+  `2026-05-14T00:00:00Z -> 2026-06-23T00:00:00Z`. `94406` records, `5718`
+  signaux Pod A, `93` ouvertures, `57` acceptes non ouverts, `5568` rejetes.
+  Les ouvertures font `-60.05` USD, PF `0.8078`; les buckets simples ne sont pas
+  monotoniques (`depth <1x` positif, `1-2x` positif, `gte_10x` negatif; cout
+  `4-8bps` positif, `<1bps` negatif). Garder A-PNL-07 en
+  `research_only_no_live_change`; ne pas promouvoir de veto/cap simple
+  spread/depth/cost. Prochaine piste: classifieur combine ou repricing/cap-only
+  apres analyse des `57` acceptes non ouverts.
+- Implementation A-PNL-07b/P118 `2026-06-23`: ajout de l'audit local
+  `scripts/run_p118_repeated_signal_scale_in_audit.py`, qui consomme le journal
+  P117 compact et simule des add-ons hypothetique sur les signaux acceptes mais
+  non ouverts pour cause `portfolio_open_rejected`. Les scenarios incluent les
+  add-ons bruts et des filtres live-compatibles bases sur le PnL latent du trade
+  parent (`>=0`, `>=25`, `>=50` bps). Aucun flag live, aucune config d'add-on,
+  aucun ordre, aucun deploy et aucun changement fetch requis.
+- Decision P118 `2026-06-23`: replay
+  `server-data/replay_reports/p118_repeated_signal_scale_in_20260623/`, `57`
+  opportunites acceptees/non ouvertes et `57` rattachees a un trade parent.
+  Les variantes premier add-on sont negatives (`first_add25_cap` `-9.62` USD,
+  PF `0.6422`; `first_add50_cap` `-9.42` USD, PF `0.7235`). La variante
+  `all_add25_cap` est seulement legerement positive (`+3.33` USD, PF `1.0825`)
+  avec `8919.41` USD de notional hypothetique et un gain surtout concentre sur
+  INJ/trades parents en `trailing_stop`. Le filtre `all_add25_parent_plus50_cap`
+  ressort mieux (`+16.31` USD, PF `3.1495`, `16` add-ons, `2351.15` USD de
+  notional hypothetique) mais reste trop petit et INJ-concentre: hors INJ, le
+  PnL tombe a `-0.55` USD, et le split temporel est fragile (`+15.52` USD avant
+  le 2026-06-03, `+0.79` USD ensuite). Ne pas promouvoir de scale-in simple;
+  garder `parent_plus50` comme hypothese research a valider hors-echantillon
+  dans un classifieur combine.
+- Implementation A-PNL-08/P119 `2026-06-23`: ajout du scenario P108
+  `loss_probation_symbol_setup_cap50` et du filtre CLI `--scenarios` pour rejouer
+  seulement les variantes utiles. Ajout de l'audit rapide
+  `scripts/run_p119_loss_probation_cap_audit.py`, qui consomme le journal P117 et
+  simule un cap-only `50%` apres historique rolling negatif par couple
+  `symbol/setup`, avec rehabilitation si PF et expectancy rolling redeviennent
+  positifs. Aucun flag live, aucun ordre, aucun deploy et aucun changement fetch.
+- Decision A-PNL-08/P119 `2026-06-23`: audit
+  `server-data/replay_reports/p119_loss_probation_cap_20260623/` sur les `93`
+  trades Pod A ouverts de P117. Le cap-only ameliore le PnL ouvert
+  `-60.05 -> -33.94` (`+26.11`) et le PF global `0.8078 -> 0.8584`, mais cappe
+  `42/93` trades, dont `+93.46` USD de winners; le PF post-split baisse
+  `0.5634 -> 0.5240`. Ne pas promouvoir tel quel. Garder comme piste research
+  pour une variante moins destructrice de winners; replay full-bot seulement si
+  une variante plus fine garde le delta sans degrader le PF post-split.
+- Implementation C-PNL-02/P103 `2026-06-23`: le replay Pod C external reference
+  expose des outcomes cap-only `50%` en plus des vetoes historiques. Le rapport
+  `server-data/replay_reports/p103_pod_c_external_reference_cap50_20260623/`
+  montre une forte amelioration sur la fenetre recente couverte
+  (`cap50_candidate_default_5m` `+40.05`, coverage `91.67%`), mais la baseline
+  avril/mai a `0%` de coverage reference. Garder en shadow/OOS; aucune
+  promotion sans baseline reference complete, aucun flag live/deploy/fetch.
+- Implementation C-PNL-03/P120 `2026-06-23`: ajout de l'audit local
+  `scripts/run_p120_oil_relative_value_audit.py` sur les observations
+  `p109_oil_shadow_*` Pod C. Le rapport
+  `server-data/replay_reports/p120_oil_relative_value_20260623/` indique que le
+  flux CL/BRENTOIL brut repete est negatif (`pair_confirmed` `-394.68`, PF
+  `0.6764`), tandis que la version dedupee 240m est positive mais minuscule
+  (`+6.98`, PF `2.0375`, `12` maturations). Garder comme hypothese oil
+  shadow/OOS, pas live.
+- Implementation C-PNL-04/P121 `2026-06-23`: ajout de l'audit local
+  `scripts/run_p121_pod_c_session_liquidity_audit.py` sur baseline avril/mai et
+  replay live P116 no-dedupe. Le rapport
+  `server-data/replay_reports/p121_pod_c_session_liquidity_20260623/` ne valide
+  aucun cap session robuste: `non_us_cash` aide le live (`+4.28`) mais detruit
+  la baseline (`-37.79`), `us_late` aide la baseline (`+1.70`) mais degrade le
+  live (`-0.06`). Research-only, pas live.
+- Implementation C-PNL-05/P122 `2026-06-23`: ajout de l'audit local
+  `scripts/run_p122_pod_c_execution_cost_audit.py` sur fees/spread/liquidite Pod
+  C, sans simulation maker. Le rapport
+  `server-data/replay_reports/p122_pod_c_execution_cost_20260623/` rejette les
+  seuils spread/cout purs; seul `bucket_notional<100k` cap50 est positif sur les
+  deux fenetres (`+4.70` baseline, `+1.56` live), mais trop petit et live
+  GOLD-only. Shadow/OOS uniquement, pas de maker/taker live sans fill model.
 - Incident live `2026-06-07`: Pod A a ouvert une position ARB mainnet
   (`oid=461196360588`, long `2446.4`, entry `0.0817`, cap live ~`200 USDC`)
   mais le state/journal n'a pas garde la position avant crash/restart. Pod A
