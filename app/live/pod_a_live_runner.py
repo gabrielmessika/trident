@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -77,7 +78,14 @@ from app.trident.pod_a.regime_shadow import (
     signal_regime_shadow_details,
 )
 from app.trident.supervisor import TridentSupervisor
-from app.trident.types import PodName, RegimeSnapshot, RiskDecision, SymbolMarketSnapshot, symbol_market_snapshot_from_mapping
+from app.trident.types import (
+    PodName,
+    RegimeSnapshot,
+    RiskDecision,
+    SymbolMarketSnapshot,
+    TradePlan,
+    symbol_market_snapshot_from_mapping,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -403,6 +411,10 @@ class PodALiveRunner:
                     timestamp=timestamp,
                     close_fills=[close_fill_record],
                 )
+                self._open_live_loss_reaction_after_exchange_close(
+                    trade=trade,
+                    timestamp=timestamp,
+                )
                 changed = True
         changed = self._refresh_live_stop_grace_orders() or changed
         if changed:
@@ -539,6 +551,16 @@ class PodALiveRunner:
             entry_allowed_symbols=entry_allowed_symbols,
             managed_symbols=managed_symbols,
         )
+        reaction_decisions, reaction_execution = self._maybe_open_live_loss_reactions(
+            closed_trades=execution.closed_trades,
+            snapshots=snapshots,
+            timestamp=timestamp,
+            entry_allowed_symbols=entry_allowed_symbols,
+            managed_symbols=managed_symbols,
+        )
+        if reaction_execution is not None:
+            execution = self._merge_execution_batches(execution, reaction_execution)
+            risk_decisions = [*risk_decisions, *reaction_decisions]
         snapshot_by_symbol = {
             item["symbol"]: item for item in symbols if isinstance(item, dict) and "symbol" in item
         }
@@ -787,6 +809,324 @@ class PodALiveRunner:
         )
         self._regime_shadow_tracker.observe(timestamp=timestamp, snapshots=snapshots)
 
+    def _maybe_open_live_loss_reactions(
+        self,
+        *,
+        closed_trades: list[object],
+        snapshots: list[SymbolMarketSnapshot],
+        timestamp: str | None,
+        entry_allowed_symbols: set[str] | None,
+        managed_symbols: set[str] | None,
+    ) -> tuple[list[RiskDecision], object | None]:
+        if self.mode != "live":
+            return [], None
+        if not self._live_ready_for_entries():
+            return [], None
+        decisions = self._live_loss_reaction_decisions_from_closed_trades(
+            closed_trades=closed_trades,
+            snapshots=snapshots,
+            timestamp=timestamp,
+        )
+        if not decisions:
+            return [], None
+        execution = self.executor.process_record(
+            snapshots=snapshots,
+            risk_decisions=decisions,
+            signal_sides_by_symbol={},
+            timestamp=timestamp,
+            entry_allowed_symbols=entry_allowed_symbols,
+            managed_symbols=managed_symbols,
+        )
+        if execution.opened_symbols:
+            logger.warning(
+                "%s live loss-reaction opened; symbols=%s parent_reasons=%s",
+                self.review_label,
+                execution.opened_symbols,
+                [
+                    decision.trade_plan.setup_details.get(
+                        "live_loss_reaction_parent_close_reason",
+                        "",
+                    )
+                    for decision in decisions
+                    if decision.trade_plan.symbol in execution.opened_symbols
+                ],
+            )
+        if execution.skipped_open_symbols:
+            logger.info(
+                "%s live loss-reaction skipped; symbols=%s reasons=%s",
+                self.review_label,
+                execution.skipped_open_symbols,
+                execution.skip_reasons_by_symbol,
+            )
+        return decisions, execution
+
+    def _live_loss_reaction_decisions_from_closed_trades(
+        self,
+        *,
+        closed_trades: list[object],
+        snapshots: list[SymbolMarketSnapshot],
+        timestamp: str | None,
+    ) -> list[RiskDecision]:
+        if not bool(getattr(self.config.pod_a, "live_loss_reaction_enabled", False)):
+            return []
+        snapshot_by_symbol = {snapshot.symbol.upper(): snapshot for snapshot in snapshots}
+        decisions: list[RiskDecision] = []
+        seen_symbols: set[str] = set()
+        for trade in closed_trades:
+            symbol = str(getattr(trade, "symbol", "") or "").upper()
+            if not symbol or symbol in seen_symbols:
+                continue
+            plan = self._live_loss_reaction_plan_from_trade(
+                trade,
+                snapshot=snapshot_by_symbol.get(symbol),
+                timestamp=timestamp,
+            )
+            if plan is None:
+                continue
+            decisions.append(
+                RiskDecision(
+                    accepted=True,
+                    reason="live_loss_reaction",
+                    trade_plan=plan,
+                )
+            )
+            seen_symbols.add(symbol)
+        return decisions
+
+    def _live_loss_reaction_plan_from_trade(
+        self,
+        trade: object,
+        *,
+        snapshot: SymbolMarketSnapshot | None,
+        timestamp: str | None,
+    ) -> TradePlan | None:
+        if snapshot is None:
+            return None
+        try:
+            pnl_usd = float(getattr(trade, "pnl_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if pnl_usd >= 0.0:
+            return None
+        setup = str(getattr(trade, "setup", "") or "")
+        details = dict(getattr(trade, "setup_details", {}) or {})
+        if setup == "loss_reaction" or bool(details.get("live_loss_reaction_trade")):
+            return None
+        allowed_setups = {
+            str(item).strip()
+            for item in getattr(self.config.pod_a, "live_loss_reaction_parent_setups", [])
+            if str(item).strip()
+        }
+        if allowed_setups and setup not in allowed_setups:
+            return None
+        close_reason = str(getattr(trade, "close_reason", "") or "")
+        allowed_reasons = {
+            str(item).strip()
+            for item in getattr(
+                self.config.pod_a,
+                "live_loss_reaction_parent_close_reasons",
+                [],
+            )
+            if str(item).strip()
+        }
+        if allowed_reasons and close_reason not in allowed_reasons:
+            return None
+        side = str(getattr(trade, "side", "") or "")
+        if side == "long":
+            reaction_side = "short"
+        elif side == "short":
+            reaction_side = "long"
+        else:
+            return None
+        target_notional = float(getattr(trade, "target_notional_usd", 0.0) or 0.0)
+        stop_bps = float(getattr(trade, "stop_bps", 0.0) or 0.0)
+        if target_notional <= 0.0 or stop_bps <= 0.0:
+            return None
+        size_multiplier = max(
+            float(getattr(self.config.pod_a, "live_loss_reaction_size_multiplier", 1.0) or 1.0),
+            0.0,
+        )
+        effective_leverage = max(float(getattr(trade, "effective_leverage", 1.0) or 1.0), 1.0)
+        opened_at = getattr(trade, "opened_at", None)
+        closed_at = getattr(trade, "closed_at", None)
+        reaction_details = {
+            "live_loss_reaction_trade": True,
+            "loss_reaction_trade": True,
+            "live_loss_reaction_parent_setup": setup,
+            "live_loss_reaction_parent_side": side,
+            "live_loss_reaction_parent_close_reason": close_reason,
+            "live_loss_reaction_parent_pnl_usd": round(pnl_usd, 6),
+            "live_loss_reaction_parent_opened_at": (
+                opened_at.isoformat() if opened_at is not None else ""
+            ),
+            "live_loss_reaction_parent_closed_at": (
+                closed_at.isoformat() if closed_at is not None else ""
+            ),
+            "live_loss_reaction_triggered_at": str(timestamp or ""),
+            "market_cluster": snapshot.market_cluster,
+            "cluster_leader": snapshot.cluster_leader,
+            "current_date_key": str(timestamp or "")[:10],
+        }
+        plan = TradePlan(
+            symbol=str(getattr(trade, "symbol", "") or ""),
+            side=reaction_side,
+            setup="loss_reaction",
+            confidence=float(getattr(trade, "confidence", 0.0) or 0.0),
+            target_notional_usd=round(target_notional * size_multiplier, 6),
+            stop_bps=stop_bps,
+            time_stop_hours=int(getattr(trade, "time_stop_hours", 0) or 0),
+            take_profit_bps=float(getattr(trade, "take_profit_bps", 0.0) or 0.0),
+            break_even_trigger_bps=float(
+                getattr(trade, "break_even_trigger_bps", 0.0) or 0.0
+            ),
+            trailing_activation_bps=float(
+                getattr(trade, "trailing_activation_bps", 0.0) or 0.0
+            ),
+            trailing_distance_bps=float(
+                getattr(trade, "trailing_distance_bps", 0.0) or 0.0
+            ),
+            reentry_cooldown_minutes=0,
+            margin_usd=round(float(getattr(trade, "margin_usd", 0.0) or 0.0) * size_multiplier, 6),
+            requested_leverage=effective_leverage,
+            effective_leverage=effective_leverage,
+            risk_budget_usd=round(
+                float(getattr(trade, "risk_budget_usd", 0.0) or 0.0) * size_multiplier,
+                6,
+            ),
+            expected_loss_usd=round(
+                float(getattr(trade, "expected_loss_usd", 0.0) or 0.0) * size_multiplier,
+                6,
+            ),
+            invalidation_price=None,
+            isolated=bool(getattr(trade, "isolated", self.config.pod_a.prefer_isolated)),
+            setup_details=reaction_details,
+        )
+        max_notional = max(
+            float(getattr(self.config.pod_a, "live_loss_reaction_max_notional_usd", 0.0) or 0.0),
+            0.0,
+        )
+        if max_notional <= 0.0:
+            max_notional = self.config.trident.execution.live_max_order_notional_usd
+        leverage_policy = LeveragePolicy(self.config.pod_a)
+        capped = apply_live_notional_cap(
+            plan,
+            max_notional,
+            max_leverage=leverage_policy.max_allowed(plan.symbol),
+        )
+        return replace(
+            capped,
+            setup_details={
+                **dict(capped.setup_details or {}),
+                "live_loss_reaction_max_notional_usd": round(max_notional, 6),
+                "live_loss_reaction_size_multiplier": round(size_multiplier, 6),
+            },
+        )
+
+    def _merge_execution_batches(self, first: object, second: object) -> object:
+        return replace(
+            first,
+            opened_symbols=[*first.opened_symbols, *second.opened_symbols],
+            skipped_open_symbols=[*first.skipped_open_symbols, *second.skipped_open_symbols],
+            skip_reasons_by_symbol={
+                **first.skip_reasons_by_symbol,
+                **second.skip_reasons_by_symbol,
+            },
+            closed_trades=[*first.closed_trades, *second.closed_trades],
+            fills=[*first.fills, *second.fills],
+            has_open_position_after={
+                **first.has_open_position_after,
+                **second.has_open_position_after,
+            },
+            close_reasons_by_symbol={
+                **first.close_reasons_by_symbol,
+                **second.close_reasons_by_symbol,
+            },
+        )
+
+    def _record_live_loss_reaction_execution(
+        self,
+        *,
+        date_key: str,
+        decisions: list[RiskDecision],
+        execution: object,
+    ) -> None:
+        if not decisions:
+            return
+        decisions_by_symbol = {decision.trade_plan.symbol: decision for decision in decisions}
+        for decision in decisions:
+            self.report.add_decision(
+                date_key=date_key,
+                setup=decision.trade_plan.setup,
+                accepted=decision.accepted,
+                reason=decision.reason,
+            )
+        self.report.add_execution_batch(
+            opened_symbols=execution.opened_symbols,
+            skipped_open_symbols=execution.skipped_open_symbols,
+        )
+        for symbol in execution.opened_symbols:
+            decision = decisions_by_symbol.get(symbol)
+            if decision is not None:
+                self.report.add_opened_setup(decision.trade_plan.setup)
+        for symbol in execution.skipped_open_symbols:
+            decision = decisions_by_symbol.get(symbol)
+            if decision is not None:
+                self.report.add_skipped_open_setup(decision.trade_plan.setup)
+
+    def _open_live_loss_reaction_after_exchange_close(
+        self,
+        *,
+        trade: object,
+        timestamp: str | None,
+    ) -> bool:
+        if self.mode != "live":
+            return False
+        if not self._live_ready_for_entries():
+            return False
+        symbol = str(getattr(trade, "symbol", "") or "").upper()
+        if not symbol:
+            return False
+        try:
+            all_mids = self._info_client.fetch_all_mids(symbols=[symbol])
+        except Exception:
+            logger.warning(
+                "%s live loss-reaction skipped after exchange close; REST mid fetch failed for %s",
+                self.review_label,
+                symbol,
+            )
+            return False
+        snapshot = self._rest_fallback_snapshot(symbol, all_mids)
+        if snapshot is None:
+            logger.info(
+                "%s live loss-reaction skipped after exchange close; no snapshot for %s",
+                self.review_label,
+                symbol,
+            )
+            return False
+        entry_allowed_symbols = self.supervisor.opening_symbols_for(PodName.POD_A)
+        managed_symbols = self.supervisor.managed_symbols_for(
+            PodName.POD_A,
+            {
+                str(open_symbol).upper()
+                for open_symbol in self.executor.portfolio.open_positions
+            },
+        )
+        decisions, execution = self._maybe_open_live_loss_reactions(
+            closed_trades=[trade],
+            snapshots=[snapshot],
+            timestamp=timestamp,
+            entry_allowed_symbols=entry_allowed_symbols,
+            managed_symbols=managed_symbols,
+        )
+        if execution is None:
+            return False
+        self._record_live_loss_reaction_execution(
+            date_key=str(timestamp or "")[:10],
+            decisions=decisions,
+            execution=execution,
+        )
+        return bool(execution.opened_symbols)
+
     def _process_maintenance_record(
         self,
         record: dict[str, object],
@@ -801,6 +1141,7 @@ class PodALiveRunner:
         if not snapshots:
             return
         self._latest_snapshots_by_symbol.update({snapshot.symbol: snapshot for snapshot in snapshots})
+        entry_allowed_symbols = self.supervisor.opening_symbols_for(PodName.POD_A)
         managed_symbols = self.supervisor.managed_symbols_for(
             PodName.POD_A,
             {
@@ -813,9 +1154,23 @@ class PodALiveRunner:
             risk_decisions=[],
             signal_sides_by_symbol={},
             timestamp=timestamp,
-            entry_allowed_symbols=self.supervisor.opening_symbols_for(PodName.POD_A),
+            entry_allowed_symbols=entry_allowed_symbols,
             managed_symbols=managed_symbols,
         )
+        reaction_decisions, reaction_execution = self._maybe_open_live_loss_reactions(
+            closed_trades=execution.closed_trades,
+            snapshots=snapshots,
+            timestamp=timestamp,
+            entry_allowed_symbols=entry_allowed_symbols,
+            managed_symbols=managed_symbols,
+        )
+        if reaction_execution is not None:
+            execution = self._merge_execution_batches(execution, reaction_execution)
+            self._record_live_loss_reaction_execution(
+                date_key=timestamp[:10],
+                decisions=reaction_decisions,
+                execution=reaction_execution,
+            )
         current_regime = self.supervisor.state.regime.value
         for trade in execution.closed_trades:
             self._record_closed_trade(
@@ -1110,6 +1465,7 @@ class PodALiveRunner:
                     else None
                 ),
                 "live_trading_paused": self._live_trading_paused,
+                "live_loss_reaction": self._live_loss_reaction_status(),
                 "user_order_updates": (
                     self._live_user_stream.stats.to_dict()
                     if self._live_user_stream is not None
@@ -1120,6 +1476,33 @@ class PodALiveRunner:
                 "supervisor": self.supervisor.snapshot(),
             },
         )
+
+    def _live_loss_reaction_status(self) -> dict[str, object]:
+        config = self.config.pod_a
+        return {
+            "enabled": bool(getattr(config, "live_loss_reaction_enabled", False)),
+            "parent_close_reasons": [
+                str(item)
+                for item in getattr(
+                    config,
+                    "live_loss_reaction_parent_close_reasons",
+                    [],
+                )
+            ],
+            "parent_setups": [
+                str(item)
+                for item in getattr(config, "live_loss_reaction_parent_setups", [])
+            ],
+            "size_multiplier": float(
+                getattr(config, "live_loss_reaction_size_multiplier", 1.0) or 1.0
+            ),
+            "max_notional_usd": float(
+                getattr(config, "live_loss_reaction_max_notional_usd", 0.0) or 0.0
+            ),
+            "opened_count": int(self.report.opened_by_setup.get("loss_reaction", 0)),
+            "closed_trade_count": int(self.report.trades_by_setup.get("loss_reaction", 0)),
+            "realized_pnl_usd": float(self.report.pnl_by_setup.get("loss_reaction", 0.0)),
+        }
 
     def _backfill_missing_position_snapshots(
         self,
@@ -1196,14 +1579,29 @@ class PodALiveRunner:
             PodName.POD_A,
             set(open_symbols),
         )
+        entry_allowed_symbols = self.supervisor.opening_symbols_for(PodName.POD_A)
         execution = self.executor.process_record(
             snapshots=snapshots,
             risk_decisions=[],
             signal_sides_by_symbol={},
             timestamp=timestamp,
-            entry_allowed_symbols=self.supervisor.opening_symbols_for(PodName.POD_A),
+            entry_allowed_symbols=entry_allowed_symbols,
             managed_symbols=managed_symbols,
         )
+        reaction_decisions, reaction_execution = self._maybe_open_live_loss_reactions(
+            closed_trades=execution.closed_trades,
+            snapshots=snapshots,
+            timestamp=timestamp,
+            entry_allowed_symbols=entry_allowed_symbols,
+            managed_symbols=managed_symbols,
+        )
+        if reaction_execution is not None:
+            execution = self._merge_execution_batches(execution, reaction_execution)
+            self._record_live_loss_reaction_execution(
+                date_key=timestamp[:10],
+                decisions=reaction_decisions,
+                execution=reaction_execution,
+            )
         current_regime = self.supervisor.state.regime.value
         for trade in execution.closed_trades:
             self._record_closed_trade(

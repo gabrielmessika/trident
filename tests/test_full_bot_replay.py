@@ -453,6 +453,188 @@ class FullBotReplayTests(unittest.TestCase):
         self.assertIn("XYZ:BRENTOIL", runner.pod_c_executor.portfolio.open_positions)
         self.assertEqual(runner.pod_c_executor.portfolio.closed_trades, [])
 
+    def test_loss_reaction_flips_losing_trade_once_without_cascade(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = FullBotBacktestRunner(config, enable_loss_reaction_trades=True)
+        losing_trade = SimpleNamespace(
+            symbol="BTC",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.72,
+            target_notional_usd=250.0,
+            stop_bps=120.0,
+            time_stop_hours=4,
+            take_profit_bps=240.0,
+            break_even_trigger_bps=80.0,
+            trailing_activation_bps=140.0,
+            trailing_distance_bps=70.0,
+            margin_usd=25.0,
+            effective_leverage=10.0,
+            risk_budget_usd=3.0,
+            expected_loss_usd=3.0,
+            isolated=True,
+            pnl_usd=-3.25,
+            close_reason="stop_hit",
+            opened_at=None,
+            closed_at=None,
+            setup_details={"market_cluster": "crypto", "current_date_key": "2026-04-05"},
+        )
+
+        [decision] = runner._loss_reaction_decisions_from_closed_trades(
+            pod_name=PodName.POD_A,
+            closed_trades=[losing_trade],
+            snapshots=[],
+        )
+
+        self.assertTrue(decision.accepted)
+        self.assertEqual(decision.reason, "loss_reaction")
+        plan = decision.trade_plan
+        self.assertEqual(plan.symbol, "BTC")
+        self.assertEqual(plan.side, "short")
+        self.assertEqual(plan.setup, "loss_reaction")
+        self.assertEqual(plan.target_notional_usd, 250.0)
+        self.assertEqual(plan.stop_bps, 120.0)
+        self.assertEqual(plan.reentry_cooldown_minutes, 0)
+        self.assertTrue(plan.setup_details["loss_reaction_trade"])
+        self.assertEqual(plan.setup_details["loss_reaction_parent_side"], "long")
+        self.assertEqual(plan.setup_details["loss_reaction_parent_setup"], "trend_pullback_long")
+
+        reaction_loss = SimpleNamespace(
+            **{
+                **losing_trade.__dict__,
+                "side": "short",
+                "setup": "loss_reaction",
+                "setup_details": {"loss_reaction_trade": True},
+            }
+        )
+        self.assertEqual(
+            runner._loss_reaction_decisions_from_closed_trades(
+                pod_name=PodName.POD_A,
+                closed_trades=[reaction_loss],
+                snapshots=[],
+            ),
+            [],
+        )
+
+    def test_loss_reaction_can_filter_parent_reason_and_pod(self) -> None:
+        config = load_config("config/trident.toml")
+        runner = FullBotBacktestRunner(
+            config,
+            enable_loss_reaction_trades=True,
+            loss_reaction_parent_close_reasons={"stop_hit"},
+            loss_reaction_allowed_pods={"pod_a"},
+        )
+        base_trade = SimpleNamespace(
+            symbol="BTC",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.72,
+            target_notional_usd=250.0,
+            stop_bps=120.0,
+            time_stop_hours=4,
+            take_profit_bps=240.0,
+            break_even_trigger_bps=80.0,
+            trailing_activation_bps=140.0,
+            trailing_distance_bps=70.0,
+            margin_usd=25.0,
+            effective_leverage=10.0,
+            risk_budget_usd=3.0,
+            expected_loss_usd=3.0,
+            isolated=True,
+            pnl_usd=-3.25,
+            close_reason="early_failure_exit",
+            opened_at=None,
+            closed_at=None,
+            setup_details={},
+        )
+
+        self.assertEqual(
+            runner._loss_reaction_decisions_from_closed_trades(
+                pod_name=PodName.POD_A,
+                closed_trades=[base_trade],
+                snapshots=[],
+            ),
+            [],
+        )
+        stop_trade = SimpleNamespace(**{**base_trade.__dict__, "close_reason": "stop_hit"})
+        self.assertEqual(
+            runner._loss_reaction_decisions_from_closed_trades(
+                pod_name=PodName.POD_C,
+                closed_trades=[stop_trade],
+                snapshots=[],
+            ),
+            [],
+        )
+        self.assertEqual(
+            len(
+                runner._loss_reaction_decisions_from_closed_trades(
+                    pod_name=PodName.POD_A,
+                    closed_trades=[stop_trade],
+                    snapshots=[],
+                )
+            ),
+            1,
+        )
+
+    def test_loss_reaction_ignore_entry_guards_bypasses_routing_for_reaction_only(self) -> None:
+        config = load_config("config/trident.toml")
+        snapshot = SymbolMarketSnapshot(
+            symbol="BTC",
+            price=94.0,
+            ema_fast=96.0,
+            ema_slow=97.0,
+            vwap_distance_bps=-10.0,
+            structure_score=-0.2,
+            funding_rate=0.0,
+            spread_bps=1.0,
+            btc_aligned=True,
+        )
+        for ignore_guards, expected_open in ((False, False), (True, True)):
+            runner = FullBotBacktestRunner(
+                config,
+                enable_loss_reaction_trades=True,
+                loss_reaction_ignore_entry_guards=ignore_guards,
+            )
+            self.assertTrue(
+                runner.pod_a_executor.portfolio.open_from_plan(
+                    TradePlan(
+                        symbol="BTC",
+                        side="long",
+                        setup="trend_pullback_long",
+                        confidence=0.72,
+                        target_notional_usd=250.0,
+                        stop_bps=500.0,
+                        time_stop_hours=4,
+                        take_profit_bps=1000.0,
+                        margin_usd=25.0,
+                        effective_leverage=10.0,
+                        risk_budget_usd=12.5,
+                        expected_loss_usd=12.5,
+                    ),
+                    price=100.0,
+                    entry_fee_usd=0.1,
+                    timestamp="2026-04-05T10:00:00Z",
+                )
+            )
+
+            execution, decisions = runner._execute_directional_record(
+                pod_name=PodName.POD_A,
+                executor=runner.pod_a_executor,
+                snapshots=[snapshot],
+                risk_decisions=[],
+                signal_sides_by_symbol={},
+                timestamp="2026-04-05T10:01:00Z",
+                entry_allowed_symbols=set(),
+                managed_symbols=set(),
+            )
+
+            self.assertEqual(execution.opened_symbols == ["BTC"], expected_open)
+            self.assertEqual(any(decision.trade_plan.setup == "loss_reaction" for decision in decisions), True)
+            if expected_open:
+                self.assertEqual(runner.pod_a_executor.portfolio.open_positions["BTC"].side, "short")
+            else:
+                self.assertFalse(runner.pod_a_executor.portfolio.has_open_position("BTC"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1439,6 +1439,11 @@ p103_lines.extend(
         f"- by_fresh_cap_reason: `{external_reference_focus.get('external_reference_shadow', {}).get('by_fresh_cap_reason')}`",
         f"- by_symbol: `{external_reference_focus.get('external_reference_shadow', {}).get('by_symbol')}`",
         "",
+        "## Post-Promotion Analysis Reminder",
+        "- Si `unexpected_live_action_changed>0`: analyser les logs et rollback `external_reference_fresh_cap_sizing_enabled` avant nouvelle promotion.",
+        "- Si `fresh_cap_sizing_active_records>0`: comparer PnL closed+open Pod C, symboles touchés, raisons `by_fresh_cap_reason`, et vérifier que les caps ne concentrent pas trop oil/GOLD.",
+        "- Si `fresh_cap_sizing_active_records=0`: la policy est active mais pas encore observée; relancer un fetch après une vraie fenêtre de signaux.",
+        "",
         "## Silver",
         f"- silver_blocked_by_config: `{external_reference_focus.get('silver_blocked_by_config')}`",
         f"- silver_symbol_blocked_reviews: `{external_reference_focus.get('silver_symbol_blocked_reviews')}`",
@@ -1500,6 +1505,11 @@ p108_lines.extend(
         f"- by_recovery_sizing_reason: `{guard.get('by_recovery_sizing_reason')}`",
         f"- by_loss_probation_reason: `{guard.get('by_loss_probation_reason')}`",
         f"- by_symbol: `{guard.get('by_symbol')}`",
+        "",
+        "## Post-Promotion Analysis Reminder",
+        "- Si `unexpected_live_action_changed>0`: analyser les logs et rollback la policy Pod A active avant nouvelle promotion.",
+        "- Si `loss_probation_sizing_active_records>0`: comparer PnL closed+open Pod A, raisons `by_loss_probation_reason`, symboles touchés et pertes réelles vs stops planifiés.",
+        "- Si `loss_probation_sizing_active_records=0`: la policy est active mais pas encore observée; relancer un fetch après une vraie fenêtre de signaux.",
     ]
 )
 (output / "p108_dynamic_symbol_guard_audit.md").write_text(
@@ -1646,6 +1656,19 @@ lines.extend(
         f"- by_research_regime: `{p109_oil_focus.get('p109_oil_shadow', {}).get('by_research_regime')}`",
         f"- detail: `{output / 'p109_oil_shadow_audit.md'}`",
         "",
+        "## Post-Promotion PnL Analysis",
+        f"- Pod A loss-probation active: `{symbol_guard_focus.get('policy_config', {}).get('dynamic_symbol_guard_loss_probation_sizing_enabled')}`",
+        f"- Pod A loss_probation_sizing_active_records: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('loss_probation_sizing_active_records')}`",
+        f"- Pod A unexpected_live_action_changed: `{symbol_guard_focus.get('dynamic_symbol_guard', {}).get('unexpected_live_action_changed')}`",
+        f"- Pod C fresh cap active: `{external_reference_focus.get('policy_config', {}).get('external_reference_fresh_cap_sizing_enabled')}`",
+        f"- Pod C fresh_cap_sizing_active_records: `{external_reference_focus.get('external_reference_shadow', {}).get('fresh_cap_sizing_active_records')}`",
+        f"- Pod C unexpected_live_action_changed: `{external_reference_focus.get('external_reference_shadow', {}).get('unexpected_live_action_changed')}`",
+        f"- Pod A closed/open PnL: `realized={pod_report('pod_a').get('realized_pnl_usd')}, unrealized={pod_report('pod_a').get('total_unrealized_pnl_usd')}`",
+        f"- Pod C closed/open PnL: `realized={pod_report('pod_c').get('realized_pnl_usd')}, unrealized={pod_report('pod_c').get('total_unrealized_pnl_usd')}`",
+        "- Analyse attendue après chaque fetch: vérifier `unexpected_live_action_changed=0`, regarder si les compteurs de caps promus sont >0, comparer PnL closed+open, inspecter les raisons/symboles touchés, puis décider `keep`, `wait_more_signals`, ou rollback ciblé.",
+        "- Si les deux compteurs de caps promus restent à `0`, conclure que les policies sont actives mais pas encore testées par le flux live.",
+        "- Si rollback nécessaire, prioriser le rollback de la policy dont l'audit montre `unexpected_live_action_changed>0` ou une dégradation PnL immédiate; à défaut, Pod C fresh-only est la plus risquée des deux.",
+        "",
         "## Next Review Focus",
         "- Verifier que le serveur expose bien `live_max_order_notional_usd=200`, `pod_a.stop_grace_minutes=60` et `live_block_stop_grace_setups=false`.",
         "- P1-03: verifier `external_reference.symbols_enriched>0`, la couverture par symbole, `unexpected_live_action_changed=0` et les revues `XYZ:SILVER` en `symbol_blocked` dans `p103_external_reference_audit.md`; si le cap fresh-only est explicitement actif, `expected_live_action_changed>0` devient normal.",
@@ -1684,6 +1707,21 @@ for pod in ("pod_a", "pod_c"):
             "p103_external_reference_focus": external_reference_focus,
             "p108_dynamic_symbol_guard_focus": symbol_guard_focus,
             "p109_oil_shadow_focus": p109_oil_focus,
+            "post_promotion_analysis_reminder": {
+                "required_checks": [
+                    "unexpected_live_action_changed=0 on P1-03 and P1-08",
+                    "loss_probation_sizing_active_records and fresh_cap_sizing_active_records",
+                    "closed+open PnL after promoted caps",
+                    "cap reasons and touched symbols",
+                    "rollback targeted policy if unexpected live change or immediate PnL degradation appears",
+                ],
+                "pod_a_loss_probation_active": symbol_guard_focus.get("policy_config", {}).get(
+                    "dynamic_symbol_guard_loss_probation_sizing_enabled"
+                ),
+                "pod_c_fresh_cap_active": external_reference_focus.get("policy_config", {}).get(
+                    "external_reference_fresh_cap_sizing_enabled"
+                ),
+            },
             "checks": checks,
             "warnings": warnings,
             "failures": failures,
@@ -1716,5 +1754,10 @@ fi
 
 write_review
 
+echo ""
+info "Analyse post-promotion à faire avec la review:"
+info "- vérifier P1-03/P1-08 unexpected_live_action_changed=0"
+info "- regarder loss_probation_sizing_active_records et fresh_cap_sizing_active_records"
+info "- comparer PnL closed+open, raisons/symboles touchés, puis décider keep/wait/rollback ciblé"
 echo ""
 ok "Fetch TRIDENT A/C terminé dans ${LOCAL_DIR}/"

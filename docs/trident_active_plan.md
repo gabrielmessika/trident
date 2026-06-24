@@ -192,6 +192,19 @@ Source de verite operationnelle depuis le `2026-05-24`:
   record Pod A avec sizing actif au moment de la review
   (`live_sizing_active_records=0`), donc surveiller la prochaine fenetre de
   signaux pour confirmer les premiers caps effectifs.
+- Implementation Pod A live loss-reaction `2026-06-24`: decision operateur a
+  risque accepte. La config locale active `live_loss_reaction_enabled=true` pour
+  Pod A uniquement: apres un parent `trend_pullback_long` ferme perdant par
+  `stop_hit` ou `exchange_closed_stop_loss`, TRIDENT peut ouvrir une unique
+  reaction `loss_reaction` en sens oppose, avec sizing/exits clones, cap live
+  A/C applique, et garde-fou `live_ready_for_entries`; un trade
+  `loss_reaction` perdant ne declenche jamais de cascade. Replay global
+  research-only sur `2026-04-05 -> 2026-05-13`: `opposite_stop_hit_pod_a`
+  ameliore de `+47.17` avec `2` reactions, tandis que la variante systematique
+  sans garde-fous degrade de `-81.17`. Cette activation n'est pas deployee tant
+  que `./deploy.sh` n'est pas lance explicitement apres preflight; surveiller
+  `live_loss_reaction` dans le runtime status et les trades
+  `setup=loss_reaction` apres deploiement.
 - Implementation Robust PnL Lab `2026-06-23`: demarrage du plan
   `docs/plan_evos_robustes.md` par un harness commun research-only
   `scripts/run_pnl_robust_candidate_lab.py` et sa suite

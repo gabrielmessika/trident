@@ -5,13 +5,14 @@ import unittest
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.hyperliquid.private_state import parse_account_state
 from app.live.pod_a_live_runner import PodALiveRunner
 from app.live.state_store import LiveStateStore
 from app.persistence.journal import JsonlJournal
 from app.settings import load_config
-from app.trident.types import TradePlan
+from app.trident.types import SymbolMarketSnapshot, TradePlan
 
 
 class _FakeCollector:
@@ -249,6 +250,88 @@ class PodALiveRunnerTests(unittest.TestCase):
         self.assertTrue(bool(shaped_plan.setup_details["live_quality_sizing_active"]))
         self.assertEqual(shaped_plan.setup_details["live_quality_sizing_multiplier"], 0.5)
         self.assertIn("low_confidence", shaped_plan.setup_details["live_quality_sizing_reasons"])
+
+    def test_live_loss_reaction_builds_opposite_stop_hit_trade_without_cascade(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_a=replace(
+                config.pod_a,
+                live_loss_reaction_enabled=True,
+                live_loss_reaction_parent_close_reasons=["stop_hit"],
+                live_loss_reaction_parent_setups=["trend_pullback_long"],
+            ),
+        )
+        runner = PodALiveRunner(config, coins=["BTC"])
+        closed_trade = SimpleNamespace(
+            symbol="BTC",
+            side="long",
+            setup="trend_pullback_long",
+            confidence=0.74,
+            target_notional_usd=500.0,
+            stop_bps=100.0,
+            time_stop_hours=4,
+            take_profit_bps=250.0,
+            break_even_trigger_bps=80.0,
+            trailing_activation_bps=150.0,
+            trailing_distance_bps=75.0,
+            margin_usd=50.0,
+            effective_leverage=10.0,
+            risk_budget_usd=5.0,
+            expected_loss_usd=5.0,
+            isolated=True,
+            pnl_usd=-5.0,
+            close_reason="stop_hit",
+            opened_at=None,
+            closed_at=None,
+            setup_details={"market_cluster": "crypto"},
+        )
+        snapshot = SymbolMarketSnapshot(
+            symbol="BTC",
+            price=99.0,
+            ema_fast=100.0,
+            ema_slow=101.0,
+            vwap_distance_bps=-12.0,
+            structure_score=-0.25,
+            funding_rate=0.0,
+            spread_bps=1.0,
+            btc_aligned=True,
+            market_cluster="crypto",
+        )
+
+        [decision] = runner._live_loss_reaction_decisions_from_closed_trades(
+            closed_trades=[closed_trade],
+            snapshots=[snapshot],
+            timestamp="2026-06-24T12:00:00Z",
+        )
+
+        self.assertEqual(decision.reason, "live_loss_reaction")
+        plan = decision.trade_plan
+        self.assertEqual(plan.symbol, "BTC")
+        self.assertEqual(plan.side, "short")
+        self.assertEqual(plan.setup, "loss_reaction")
+        self.assertEqual(plan.target_notional_usd, 200.0)
+        self.assertTrue(plan.setup_details["live_loss_reaction_trade"])
+        self.assertEqual(plan.setup_details["live_loss_reaction_parent_close_reason"], "stop_hit")
+
+        early_failure = SimpleNamespace(
+            **{**closed_trade.__dict__, "close_reason": "early_failure_exit"}
+        )
+        reaction_loss = SimpleNamespace(
+            **{
+                **closed_trade.__dict__,
+                "setup": "loss_reaction",
+                "setup_details": {"live_loss_reaction_trade": True},
+            }
+        )
+        self.assertEqual(
+            runner._live_loss_reaction_decisions_from_closed_trades(
+                closed_trades=[early_failure, reaction_loss],
+                snapshots=[snapshot],
+                timestamp="2026-06-24T12:00:00Z",
+            ),
+            [],
+        )
 
     def test_dynamic_symbol_guard_sizing_can_be_disabled_by_config(self) -> None:
         config = load_config("config/trident.toml")
@@ -880,6 +963,102 @@ class PodALiveRunnerTests(unittest.TestCase):
             self.assertTrue(changed)
             trade = runner.executor.portfolio.closed_trades[-1]
             self.assertEqual(trade.close_reason, "exchange_closed_stop_loss")
+
+    def test_live_sync_opens_loss_reaction_after_exchange_stop_loss(self) -> None:
+        config = load_config("config/trident.toml")
+        config = replace(
+            config,
+            pod_a=replace(
+                config.pod_a,
+                live_loss_reaction_enabled=True,
+                live_loss_reaction_parent_close_reasons=["exchange_closed_stop_loss"],
+                live_loss_reaction_parent_setups=["trend_pullback_long"],
+            ),
+        )
+        runner = PodALiveRunner(config, coins=["ETH"])
+        runner.mode = "live"
+        runner._live_ready_for_entries = lambda: True  # type: ignore[method-assign]
+        runner._info_client = _FakeInfoClient({"ETH": 2118.0})  # type: ignore[assignment]
+        runner.supervisor.opening_symbols_for = lambda pod_name: {"ETH"}  # type: ignore[method-assign]
+        runner.supervisor.managed_symbols_for = (  # type: ignore[method-assign]
+            lambda pod_name, active_symbols=None: {"ETH", *set(active_symbols or set())}
+        )
+        runner._latest_snapshots_by_symbol["ETH"] = SymbolMarketSnapshot(
+            symbol="ETH",
+            price=2121.0,
+            ema_fast=2130.0,
+            ema_slow=2140.0,
+            vwap_distance_bps=-14.0,
+            structure_score=-0.35,
+            funding_rate=0.0,
+            spread_bps=1.0,
+            btc_aligned=False,
+            market_cluster="crypto",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner.live_state_store = LiveStateStore(Path(tmpdir) / "live_state.json")
+            runner.live_state_store.save(
+                {
+                    "positions": {},
+                    "orders": {"ETH": {"protective_oids": {"sl": 2, "tp": 3}}},
+                    "events": [],
+                }
+            )
+            plan = TradePlan(
+                symbol="ETH",
+                side="long",
+                setup="trend_pullback_long",
+                confidence=0.8,
+                target_notional_usd=100.0,
+                stop_bps=45.0,
+                time_stop_hours=24,
+                take_profit_bps=120.0,
+                break_even_trigger_bps=40.0,
+                trailing_activation_bps=80.0,
+                trailing_distance_bps=30.0,
+            )
+            self.assertTrue(
+                runner.executor.portfolio.open_from_plan(
+                    plan,
+                    price=2132.51,
+                    entry_fee_usd=0.0,
+                    timestamp="2026-05-19T13:37:00Z",
+                )
+            )
+            runner._live_private_client = _FakePrivateClient(  # type: ignore[assignment]
+                _account_state_with_recent_fills(
+                    [
+                        {
+                            "coin": "ETH",
+                            "oid": 2,
+                            "side": "A",
+                            "dir": "Close Long",
+                            "sz": "0.0409",
+                            "px": "2120.0",
+                            "closedPnl": "-0.58",
+                            "fee": "0.01",
+                            "time": _timestamp_ms("2026-05-19T13:45:00Z"),
+                        },
+                    ]
+                )
+            )
+
+            changed = runner._sync_live_exchange_state(journal=None)
+
+            self.assertTrue(changed)
+            trade = runner.executor.portfolio.closed_trades[-1]
+            self.assertEqual(trade.close_reason, "exchange_closed_stop_loss")
+            position = runner.executor.portfolio.open_positions["ETH"]
+            self.assertEqual(position.side, "short")
+            self.assertEqual(position.setup, "loss_reaction")
+            self.assertEqual(position.target_notional_usd, 100.0)
+            self.assertEqual(position.take_profit_bps, 120.0)
+            self.assertTrue(position.setup_details["live_loss_reaction_trade"])
+            self.assertEqual(
+                position.setup_details["live_loss_reaction_parent_close_reason"],
+                "exchange_closed_stop_loss",
+            )
+            self.assertEqual(runner.report.opened_by_setup["loss_reaction"], 1)
 
     def test_live_runner_can_write_to_custom_status_path_for_specialized_shadow(self) -> None:
         config = load_config("config/trident.toml")

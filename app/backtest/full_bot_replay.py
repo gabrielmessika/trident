@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -13,7 +13,7 @@ from app.backtest.pod_report import PodABacktestReport
 from app.backtest.routing_replay import RoutingReplayRunner
 from app.backtest.snapshot_loader import SnapshotLoader
 from app.execution.live_cap import apply_live_notional_cap
-from app.execution.directional_executor import DirectionalExecutor
+from app.execution.directional_executor import DirectionalExecutor, ExecutionBatch
 from app.risk.pod_a_gate import PodARiskGate
 from app.risk.pod_c_gate import PodCRiskGate
 from app.settings import AppConfig, load_config
@@ -35,6 +35,7 @@ from app.trident.types import (
     SignalPreview,
     SymbolAllocation,
     SymbolMarketSnapshot,
+    TradePlan,
     symbol_market_snapshot_from_mapping,
 )
 
@@ -56,6 +57,7 @@ class FullBotBacktestResult:
     directional_fees_usd: float
     total_activity_count: int
     notes: list[str]
+    experiments: dict[str, object] = field(default_factory=dict)
     report_path: str | None = None
     summary_path: str | None = None
 
@@ -73,10 +75,42 @@ class FullBotBacktestRunner:
         force_enable_all_pods: bool = True,
         external_reference_policy: ExternalReferenceDecisionPolicy | None = None,
         apply_live_notional_caps: bool = False,
+        enable_loss_reaction_trades: bool = False,
+        loss_reaction_direction: str = "opposite",
+        loss_reaction_parent_close_reasons: set[str] | None = None,
+        loss_reaction_allowed_pods: set[str] | None = None,
+        loss_reaction_validation: str = "none",
+        loss_reaction_max_parent_hold_hours: float | None = None,
+        loss_reaction_size_multiplier: float = 1.0,
+        loss_reaction_ignore_entry_guards: bool = False,
     ) -> None:
         self.config = self._runtime_config(config, force_enable_all_pods=force_enable_all_pods)
         self.external_reference_policy = external_reference_policy
         self.apply_live_notional_caps = bool(apply_live_notional_caps)
+        self.enable_loss_reaction_trades = bool(enable_loss_reaction_trades)
+        self.loss_reaction_direction = self._normalize_loss_reaction_direction(
+            loss_reaction_direction
+        )
+        self.loss_reaction_parent_close_reasons = {
+            item.strip()
+            for item in (loss_reaction_parent_close_reasons or set())
+            if item.strip()
+        }
+        self.loss_reaction_allowed_pods = {
+            item.strip()
+            for item in (loss_reaction_allowed_pods or set())
+            if item.strip()
+        }
+        self.loss_reaction_validation = self._normalize_loss_reaction_validation(
+            loss_reaction_validation
+        )
+        self.loss_reaction_max_parent_hold_hours = (
+            float(loss_reaction_max_parent_hold_hours)
+            if loss_reaction_max_parent_hold_hours is not None
+            else None
+        )
+        self.loss_reaction_size_multiplier = max(float(loss_reaction_size_multiplier), 0.0)
+        self.loss_reaction_ignore_entry_guards = bool(loss_reaction_ignore_entry_guards)
         self.loader = SnapshotLoader()
         self.pod_a_risk_gate = PodARiskGate(self.config)
         self.pod_c_risk_gate = PodCRiskGate(self.config)
@@ -96,6 +130,39 @@ class FullBotBacktestRunner:
             pod_a=replace(config.pod_a, enabled=True),
             pod_c=replace(config.pod_c, enabled=True),
         )
+
+    def _normalize_loss_reaction_direction(self, value: str) -> str:
+        normalized = str(value or "opposite").strip().lower()
+        if normalized in {"opposite", "same"}:
+            return normalized
+        raise ValueError("loss_reaction_direction must be 'opposite' or 'same'")
+
+    def _normalize_loss_reaction_validation(self, value: str) -> str:
+        normalized = str(value or "none").strip().lower()
+        allowed = {
+            "none",
+            "trend",
+            "orderflow",
+            "trend_orderflow",
+            "micro_momentum",
+        }
+        if normalized in allowed:
+            return normalized
+        raise ValueError(
+            "loss_reaction_validation must be one of: "
+            + ", ".join(sorted(allowed))
+        )
+
+    def _loss_reaction_policy_summary(self) -> dict[str, object]:
+        return {
+            "direction": self.loss_reaction_direction,
+            "parent_close_reasons": sorted(self.loss_reaction_parent_close_reasons),
+            "allowed_pods": sorted(self.loss_reaction_allowed_pods),
+            "validation": self.loss_reaction_validation,
+            "max_parent_hold_hours": self.loss_reaction_max_parent_hold_hours,
+            "size_multiplier": self.loss_reaction_size_multiplier,
+            "ignore_entry_guards": self.loss_reaction_ignore_entry_guards,
+        }
 
     def run_jsonl(
         self,
@@ -230,6 +297,11 @@ class FullBotBacktestRunner:
         pod_a = pod_a_report.to_dict()
         pod_b = pod_b_report.to_dict()
         pod_c = pod_c_report.to_dict()
+        experiments = self._experiment_summary(
+            pod_a=pod_a,
+            pod_b=pod_b,
+            pod_c=pod_c,
+        )
         pod_b_realized = float(pod_b.get("realized_pnl_usd", 0.0))
         pod_b_fees = float(pod_b.get("fees_usd", 0.0))
         pod_b_activity = int(pod_b.get("closed_trade_count", 0))
@@ -265,7 +337,13 @@ class FullBotBacktestRunner:
             notes=[
                 "directional_fees_usd couvre Pod A, Pod B et Pod C.",
                 "total_activity_count additionne les trades clotures des trois pods directionnels.",
+                (
+                    "loss_reaction_trades est actif en replay research-only."
+                    if self.enable_loss_reaction_trades
+                    else "loss_reaction_trades est inactif."
+                ),
             ],
+            experiments=experiments,
             report_path=str(report_output) if report_output is not None else None,
             summary_path=str(summary_output) if summary_output is not None else None,
         )
@@ -327,7 +405,9 @@ class FullBotBacktestRunner:
             PodName.POD_A,
             active_symbols=self.pod_a_executor.portfolio.open_positions.keys(),
         )
-        execution = self.pod_a_executor.process_record(
+        execution, report_risk_decisions = self._execute_directional_record(
+            pod_name=PodName.POD_A,
+            executor=self.pod_a_executor,
             snapshots=snapshots,
             risk_decisions=risk_decisions,
             signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
@@ -342,7 +422,7 @@ class FullBotBacktestRunner:
             timestamp=timestamp,
             source_file=source_file,
             previews=previews,
-            risk_decisions=risk_decisions,
+            risk_decisions=report_risk_decisions,
             execution=execution,
             executor=self.pod_a_executor,
             closed_trade_recorder=self._record_pod_a_closed_trade,
@@ -388,7 +468,9 @@ class FullBotBacktestRunner:
             PodName.POD_C,
             active_symbols=self.pod_c_executor.portfolio.open_positions.keys(),
         )
-        execution = self.pod_c_executor.process_record(
+        execution, report_risk_decisions = self._execute_directional_record(
+            pod_name=PodName.POD_C,
+            executor=self.pod_c_executor,
             snapshots=snapshots,
             risk_decisions=risk_decisions,
             signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
@@ -403,7 +485,7 @@ class FullBotBacktestRunner:
             timestamp=timestamp,
             source_file=source_file,
             previews=previews,
-            risk_decisions=risk_decisions,
+            risk_decisions=report_risk_decisions,
             execution=execution,
             executor=self.pod_c_executor,
         )
@@ -542,7 +624,9 @@ class FullBotBacktestRunner:
             ),
             current_open_position_count=len(current_open_positions),
         )
-        execution = self.pod_b_executor.process_record(
+        execution, report_risk_decisions = self._execute_directional_record(
+            pod_name=PodName.POD_B,
+            executor=self.pod_b_executor,
             snapshots=snapshots,
             risk_decisions=risk_decisions,
             signal_sides_by_symbol={preview.symbol: preview.side for preview in previews},
@@ -557,7 +641,7 @@ class FullBotBacktestRunner:
             timestamp=timestamp,
             source_file=source_file,
             previews=previews,
-            risk_decisions=risk_decisions,
+            risk_decisions=report_risk_decisions,
             execution=execution,
             executor=self.pod_b_executor,
             closed_trade_recorder=self._record_pod_b_closed_trade,
@@ -649,6 +733,357 @@ class FullBotBacktestRunner:
         if source.startswith("pod_c"):
             return [targets[PodName.POD_C]]
         return list(targets.values())
+
+    def _execute_directional_record(
+        self,
+        *,
+        pod_name: PodName,
+        executor: DirectionalExecutor,
+        snapshots: list[SymbolMarketSnapshot],
+        risk_decisions: list[RiskDecision],
+        signal_sides_by_symbol: dict[str, str],
+        timestamp: str | None,
+        entry_allowed_symbols: set[str] | None,
+        managed_symbols: set[str] | None,
+    ) -> tuple[ExecutionBatch, list[RiskDecision]]:
+        if not self.enable_loss_reaction_trades:
+            return (
+                executor.process_record(
+                    snapshots=snapshots,
+                    risk_decisions=risk_decisions,
+                    signal_sides_by_symbol=signal_sides_by_symbol,
+                    timestamp=timestamp,
+                    entry_allowed_symbols=entry_allowed_symbols,
+                    managed_symbols=managed_symbols,
+                ),
+                risk_decisions,
+            )
+
+        close_execution = executor.process_record(
+            snapshots=snapshots,
+            risk_decisions=[],
+            signal_sides_by_symbol=signal_sides_by_symbol,
+            timestamp=timestamp,
+            entry_allowed_symbols=entry_allowed_symbols,
+            managed_symbols=managed_symbols,
+        )
+        reaction_decisions = self._loss_reaction_decisions_from_closed_trades(
+            pod_name=pod_name,
+            closed_trades=close_execution.closed_trades,
+            snapshots=snapshots,
+        )
+        reaction_symbols = {decision.trade_plan.symbol for decision in reaction_decisions}
+        normal_decisions = [
+            decision
+            for decision in risk_decisions
+            if decision.trade_plan.symbol not in reaction_symbols
+        ]
+        open_entry_allowed_symbols = entry_allowed_symbols
+        open_managed_symbols = managed_symbols
+        if self.loss_reaction_ignore_entry_guards and reaction_symbols:
+            open_entry_allowed_symbols = (
+                None
+                if entry_allowed_symbols is None
+                else {*entry_allowed_symbols, *reaction_symbols}
+            )
+            open_managed_symbols = (
+                None
+                if managed_symbols is None
+                else {*managed_symbols, *reaction_symbols}
+            )
+        open_execution = executor.process_record(
+            snapshots=snapshots,
+            risk_decisions=[*reaction_decisions, *normal_decisions],
+            signal_sides_by_symbol={},
+            timestamp=timestamp,
+            entry_allowed_symbols=open_entry_allowed_symbols,
+            managed_symbols=open_managed_symbols,
+        )
+        return (
+            self._combine_execution_batches(close_execution, open_execution),
+            [*reaction_decisions, *normal_decisions],
+        )
+
+    def _loss_reaction_decisions_from_closed_trades(
+        self,
+        *,
+        pod_name: PodName,
+        closed_trades: list[object],
+        snapshots: list[SymbolMarketSnapshot],
+    ) -> list[RiskDecision]:
+        decisions: list[RiskDecision] = []
+        seen_symbols: set[str] = set()
+        snapshot_by_symbol = {snapshot.symbol: snapshot for snapshot in snapshots}
+        for trade in closed_trades:
+            plan = self._loss_reaction_plan_from_trade(
+                pod_name=pod_name,
+                trade=trade,
+                snapshot=snapshot_by_symbol.get(str(getattr(trade, "symbol", ""))),
+            )
+            if plan is None or plan.symbol in seen_symbols:
+                continue
+            decisions.append(RiskDecision(accepted=True, reason="loss_reaction", trade_plan=plan))
+            seen_symbols.add(plan.symbol)
+        return decisions
+
+    def _loss_reaction_plan_from_trade(
+        self,
+        *,
+        pod_name: PodName,
+        trade: object,
+        snapshot: SymbolMarketSnapshot | None = None,
+    ) -> TradePlan | None:
+        if self.loss_reaction_allowed_pods and pod_name.value not in self.loss_reaction_allowed_pods:
+            return None
+        pnl_usd = float(getattr(trade, "pnl_usd", 0.0) or 0.0)
+        if pnl_usd >= 0.0:
+            return None
+        setup_details = getattr(trade, "setup_details", None)
+        if isinstance(setup_details, dict) and bool(setup_details.get("loss_reaction_trade")):
+            return None
+        if str(getattr(trade, "setup", "")) == "loss_reaction":
+            return None
+        parent_close_reason = str(getattr(trade, "close_reason", "")).strip()
+        if (
+            self.loss_reaction_parent_close_reasons
+            and parent_close_reason not in self.loss_reaction_parent_close_reasons
+        ):
+            return None
+        parent_hold_hours = self._hold_hours(trade)
+        if (
+            self.loss_reaction_max_parent_hold_hours is not None
+            and (
+                parent_hold_hours is None
+                or parent_hold_hours > self.loss_reaction_max_parent_hold_hours
+            )
+        ):
+            return None
+        side = str(getattr(trade, "side", ""))
+        if self.loss_reaction_direction == "same":
+            reaction_side = side
+        elif side == "long":
+            reaction_side = "short"
+        elif side == "short":
+            reaction_side = "long"
+        else:
+            return None
+        symbol = str(getattr(trade, "symbol", "")).strip()
+        target_notional_usd = float(getattr(trade, "target_notional_usd", 0.0) or 0.0)
+        stop_bps = float(getattr(trade, "stop_bps", 0.0) or 0.0)
+        if not symbol or target_notional_usd <= 0.0 or stop_bps <= 0.0:
+            return None
+        validation_details = self._loss_reaction_validation_details(
+            side=reaction_side,
+            snapshot=snapshot,
+        )
+        if validation_details is None:
+            return None
+        parent_details = setup_details if isinstance(setup_details, dict) else {}
+        opened_at = getattr(trade, "opened_at", None)
+        closed_at = getattr(trade, "closed_at", None)
+        reaction_details: dict[str, float | str | bool] = {
+            "loss_reaction_trade": True,
+            "loss_reaction_pod": pod_name.value,
+            "loss_reaction_direction": self.loss_reaction_direction,
+            "loss_reaction_validation": self.loss_reaction_validation,
+            "loss_reaction_parent_setup": str(getattr(trade, "setup", "")),
+            "loss_reaction_parent_side": side,
+            "loss_reaction_parent_close_reason": parent_close_reason,
+            "loss_reaction_parent_pnl_usd": round(pnl_usd, 6),
+            "loss_reaction_parent_hold_hours": (
+                round(parent_hold_hours, 6) if parent_hold_hours is not None else -1.0
+            ),
+            "loss_reaction_parent_opened_at": (
+                opened_at.isoformat() if opened_at is not None else ""
+            ),
+            "loss_reaction_parent_closed_at": (
+                closed_at.isoformat() if closed_at is not None else ""
+            ),
+        }
+        reaction_details.update(validation_details)
+        for key in ("market_cluster", "cluster_leader", "current_date_key"):
+            value = parent_details.get(key)
+            if isinstance(value, (str, int, float, bool)):
+                reaction_details[key] = value
+        base_plan = self._trade_plan_template_from_closed_trade(trade)
+        size_multiplier = self.loss_reaction_size_multiplier
+        return replace(
+            base_plan,
+            side=reaction_side,
+            setup="loss_reaction",
+            target_notional_usd=round(base_plan.target_notional_usd * size_multiplier, 6),
+            margin_usd=round(base_plan.margin_usd * size_multiplier, 6),
+            risk_budget_usd=round(base_plan.risk_budget_usd * size_multiplier, 6),
+            expected_loss_usd=round(base_plan.expected_loss_usd * size_multiplier, 6),
+            reentry_cooldown_minutes=0,
+            invalidation_price=None,
+            setup_details=reaction_details,
+        )
+
+    def _loss_reaction_validation_details(
+        self,
+        *,
+        side: str,
+        snapshot: SymbolMarketSnapshot | None,
+    ) -> dict[str, float | str | bool] | None:
+        if self.loss_reaction_validation == "none":
+            return {"loss_reaction_validation_passed": True}
+        if snapshot is None:
+            return None
+        trend_score, trend_components = self._reaction_trend_score(side, snapshot)
+        orderflow_score, orderflow_components = self._reaction_orderflow_score(side, snapshot)
+        micro_score, micro_components = self._reaction_micro_score(side, snapshot)
+        passed = False
+        if self.loss_reaction_validation == "trend":
+            passed = trend_score >= 3
+        elif self.loss_reaction_validation == "orderflow":
+            passed = orderflow_score >= 2
+        elif self.loss_reaction_validation == "trend_orderflow":
+            passed = trend_score >= 3 and orderflow_score >= 2
+        elif self.loss_reaction_validation == "micro_momentum":
+            passed = micro_score >= 3
+        if not passed:
+            return None
+        return {
+            "loss_reaction_validation_passed": True,
+            "loss_reaction_validation_trend_score": trend_score,
+            "loss_reaction_validation_orderflow_score": orderflow_score,
+            "loss_reaction_validation_micro_score": micro_score,
+            **trend_components,
+            **orderflow_components,
+            **micro_components,
+        }
+
+    def _reaction_trend_score(
+        self,
+        side: str,
+        snapshot: SymbolMarketSnapshot,
+    ) -> tuple[int, dict[str, float | bool]]:
+        direction = 1.0 if side == "long" else -1.0
+        price = float(snapshot.price)
+        ema_fast = float(snapshot.ema_fast)
+        ema_slow = float(snapshot.ema_slow)
+        checks = {
+            "price_vs_ema_fast_aligned": direction * (price - ema_fast) > 0.0,
+            "price_vs_ema_slow_aligned": direction * (price - ema_slow) > 0.0,
+            "vwap_aligned": direction * float(snapshot.vwap_distance_bps) > 0.0,
+            "structure_aligned": direction * float(snapshot.structure_score) > 0.0,
+        }
+        details: dict[str, float | bool] = {
+            "loss_reaction_price_vs_ema_fast_bps": (
+                round(((price - ema_fast) / ema_fast) * 10_000.0, 6)
+                if ema_fast > 0
+                else 0.0
+            ),
+            "loss_reaction_price_vs_ema_slow_bps": (
+                round(((price - ema_slow) / ema_slow) * 10_000.0, 6)
+                if ema_slow > 0
+                else 0.0
+            ),
+            "loss_reaction_vwap_distance_bps": round(float(snapshot.vwap_distance_bps), 6),
+            "loss_reaction_structure_score": round(float(snapshot.structure_score), 6),
+            **{f"loss_reaction_{key}": value for key, value in checks.items()},
+        }
+        return sum(1 for value in checks.values() if value), details
+
+    def _reaction_orderflow_score(
+        self,
+        side: str,
+        snapshot: SymbolMarketSnapshot,
+    ) -> tuple[int, dict[str, float | bool]]:
+        direction = 1.0 if side == "long" else -1.0
+        book = float(snapshot.book_imbalance)
+        flow = float(snapshot.trade_flow_bias)
+        checks = {
+            "book_imbalance_aligned": direction * book >= 0.20,
+            "trade_flow_bias_aligned": direction * flow >= 0.50,
+        }
+        return (
+            sum(1 for value in checks.values() if value),
+            {
+                "loss_reaction_book_imbalance": round(book, 6),
+                "loss_reaction_trade_flow_bias": round(flow, 6),
+                **{f"loss_reaction_{key}": value for key, value in checks.items()},
+            },
+        )
+
+    def _reaction_micro_score(
+        self,
+        side: str,
+        snapshot: SymbolMarketSnapshot,
+    ) -> tuple[int, dict[str, float | bool]]:
+        direction = 1.0 if side == "long" else -1.0
+        micro = float(snapshot.microprice_dislocation_bps)
+        flow = float(snapshot.trade_flow_bias)
+        book = float(snapshot.book_imbalance)
+        vwap = float(snapshot.vwap_distance_bps)
+        checks = {
+            "microprice_aligned": direction * micro > 0.0,
+            "trade_flow_bias_soft_aligned": direction * flow > 0.0,
+            "book_imbalance_soft_aligned": direction * book > 0.0,
+            "vwap_soft_aligned": direction * vwap > 0.0,
+        }
+        return (
+            sum(1 for value in checks.values() if value),
+            {
+                "loss_reaction_microprice_dislocation_bps": round(micro, 6),
+                **{f"loss_reaction_{key}": value for key, value in checks.items()},
+            },
+        )
+
+    def _trade_plan_template_from_closed_trade(self, trade: object) -> TradePlan:
+        effective_leverage = float(getattr(trade, "effective_leverage", 1.0) or 1.0)
+        return TradePlan(
+            symbol=str(getattr(trade, "symbol", "")),
+            side=str(getattr(trade, "side", "")),
+            setup=str(getattr(trade, "setup", "")),
+            confidence=float(getattr(trade, "confidence", 0.0) or 0.0),
+            target_notional_usd=float(getattr(trade, "target_notional_usd", 0.0) or 0.0),
+            stop_bps=float(getattr(trade, "stop_bps", 0.0) or 0.0),
+            time_stop_hours=int(getattr(trade, "time_stop_hours", 0) or 0),
+            take_profit_bps=float(getattr(trade, "take_profit_bps", 0.0) or 0.0),
+            break_even_trigger_bps=float(
+                getattr(trade, "break_even_trigger_bps", 0.0) or 0.0
+            ),
+            trailing_activation_bps=float(
+                getattr(trade, "trailing_activation_bps", 0.0) or 0.0
+            ),
+            trailing_distance_bps=float(getattr(trade, "trailing_distance_bps", 0.0) or 0.0),
+            margin_usd=float(getattr(trade, "margin_usd", 0.0) or 0.0),
+            requested_leverage=effective_leverage,
+            effective_leverage=effective_leverage,
+            risk_budget_usd=float(getattr(trade, "risk_budget_usd", 0.0) or 0.0),
+            expected_loss_usd=float(getattr(trade, "expected_loss_usd", 0.0) or 0.0),
+            isolated=bool(getattr(trade, "isolated", True)),
+        )
+
+    def _combine_execution_batches(
+        self,
+        first: ExecutionBatch,
+        second: ExecutionBatch,
+    ) -> ExecutionBatch:
+        return ExecutionBatch(
+            opened_symbols=[*first.opened_symbols, *second.opened_symbols],
+            skipped_open_symbols=[*first.skipped_open_symbols, *second.skipped_open_symbols],
+            skip_reasons_by_symbol={
+                **first.skip_reasons_by_symbol,
+                **second.skip_reasons_by_symbol,
+            },
+            closed_trades=[*first.closed_trades, *second.closed_trades],
+            fills=[*first.fills, *second.fills],
+            had_open_position_before={
+                **second.had_open_position_before,
+                **first.had_open_position_before,
+            },
+            has_open_position_after={
+                **first.has_open_position_after,
+                **second.has_open_position_after,
+            },
+            close_reasons_by_symbol={
+                **first.close_reasons_by_symbol,
+                **second.close_reasons_by_symbol,
+            },
+        )
 
     def _pod_b_planning_allocation(
         self,
@@ -870,11 +1305,89 @@ class FullBotBacktestRunner:
             return None
         return round((closed_at - opened_at).total_seconds() / 3600.0, 4)
 
+    def _experiment_summary(
+        self,
+        *,
+        pod_a: dict[str, object],
+        pod_b: dict[str, object],
+        pod_c: dict[str, object],
+    ) -> dict[str, object]:
+        if not self.enable_loss_reaction_trades:
+            return {
+                "loss_reaction_trades_enabled": False,
+                "loss_reaction_policy": self._loss_reaction_policy_summary(),
+            }
+        pods: dict[str, dict[str, object]] = {}
+        total_opened = 0
+        total_closed = 0
+        total_pnl = 0.0
+        for pod_name, pod in (("pod_a", pod_a), ("pod_b", pod_b), ("pod_c", pod_c)):
+            opened_by_setup = pod.get("opened_by_setup", {})
+            trades_by_setup = pod.get("trades_by_setup", {})
+            pnl_by_setup = pod.get("pnl_by_setup", {})
+            log = pod.get("closed_trade_log", [])
+            reaction_trades = [
+                trade
+                for trade in log
+                if isinstance(trade, dict)
+                and (
+                    trade.get("setup") == "loss_reaction"
+                    or bool((trade.get("setup_details") or {}).get("loss_reaction_trade"))
+                )
+            ]
+            close_reasons: dict[str, int] = {}
+            parent_setups: dict[str, int] = {}
+            for trade in reaction_trades:
+                reason = str(trade.get("close_reason", ""))
+                if reason:
+                    close_reasons[reason] = close_reasons.get(reason, 0) + 1
+                setup_details = trade.get("setup_details") or {}
+                if isinstance(setup_details, dict):
+                    parent_setup = str(setup_details.get("loss_reaction_parent_setup", ""))
+                    if parent_setup:
+                        parent_setups[parent_setup] = parent_setups.get(parent_setup, 0) + 1
+            opened = int(
+                opened_by_setup.get("loss_reaction", 0) if isinstance(opened_by_setup, dict) else 0
+            )
+            closed = int(
+                trades_by_setup.get("loss_reaction", 0) if isinstance(trades_by_setup, dict) else 0
+            )
+            pnl = float(
+                pnl_by_setup.get("loss_reaction", 0.0) if isinstance(pnl_by_setup, dict) else 0.0
+            )
+            wins = sum(1 for trade in reaction_trades if float(trade.get("pnl_usd", 0.0) or 0.0) >= 0.0)
+            losses = len(reaction_trades) - wins
+            pods[pod_name] = {
+                "opened_count": opened,
+                "closed_trade_count": closed,
+                "realized_pnl_usd": round(pnl, 2),
+                "win_count": wins,
+                "loss_count": losses,
+                "win_rate": round(wins / len(reaction_trades), 4) if reaction_trades else None,
+                "close_reasons": close_reasons,
+                "parent_setups": parent_setups,
+            }
+            total_opened += opened
+            total_closed += closed
+            total_pnl += pnl
+        return {
+            "loss_reaction_trades_enabled": True,
+            "loss_reaction_policy": self._loss_reaction_policy_summary(),
+            "loss_reaction_trades": {
+                "setup": "loss_reaction",
+                "opened_count": total_opened,
+                "closed_trade_count": total_closed,
+                "realized_pnl_usd": round(total_pnl, 2),
+                "pods": pods,
+            },
+        }
+
     def _comparison_entry(self, result: FullBotBacktestResult) -> dict[str, object]:
         pod_a = result.pod_a
         pod_b = result.pod_b
         pod_c = result.pod_c
         routing = result.routing
+        loss_reaction = result.experiments.get("loss_reaction_trades", {})
         return {
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "input_path": result.input_path,
@@ -890,6 +1403,20 @@ class FullBotBacktestRunner:
             "pod_a_closed_trade_count": pod_a.get("closed_trade_count", 0),
             "pod_b_closed_trade_count": pod_b.get("closed_trade_count", 0),
             "pod_c_closed_trade_count": pod_c.get("closed_trade_count", 0),
+            "loss_reaction_trades_enabled": result.experiments.get(
+                "loss_reaction_trades_enabled",
+                False,
+            ),
+            "loss_reaction_closed_trade_count": (
+                loss_reaction.get("closed_trade_count", 0)
+                if isinstance(loss_reaction, dict)
+                else 0
+            ),
+            "loss_reaction_realized_pnl_usd": (
+                loss_reaction.get("realized_pnl_usd", 0.0)
+                if isinstance(loss_reaction, dict)
+                else 0.0
+            ),
             "routing_reassignment_event_count": routing.get("reassignment_event_count", 0),
             "routing_max_ownership_conflict_count": routing.get(
                 "max_ownership_conflict_count",
@@ -904,6 +1431,18 @@ class FullBotBacktestRunner:
         pod_b = result.pod_b
         pod_c = result.pod_c
         routing = result.routing
+        loss_reaction = result.experiments.get("loss_reaction_trades", {})
+        experiment_lines: list[str] = []
+        if isinstance(loss_reaction, dict):
+            experiment_lines = [
+                "\n",
+                "## Experience loss_reaction_trades\n\n",
+                f"- enabled: `{result.experiments.get('loss_reaction_trades_enabled')}`\n",
+                f"- policy: `{result.experiments.get('loss_reaction_policy', {})}`\n",
+                f"- opened_count: `{loss_reaction.get('opened_count', 0)}`\n",
+                f"- closed_trade_count: `{loss_reaction.get('closed_trade_count', 0)}`\n",
+                f"- realized_pnl_usd: `{loss_reaction.get('realized_pnl_usd', 0.0)}`\n",
+            ]
         return "".join(
             [
                 "# TRIDENT full-bot backtest\n\n",
@@ -929,6 +1468,7 @@ class FullBotBacktestRunner:
                 "\n",
                 "## Notes\n\n",
                 "".join(f"- {note}\n" for note in result.notes),
+                *experiment_lines,
             ]
         )
 
@@ -957,7 +1497,55 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Apply the A/C live notional cap before dry-run replay execution.",
     )
+    parser.add_argument(
+        "--enable-loss-reaction-trades",
+        action="store_true",
+        help="Open one opposite-side research-only reaction trade after a losing close.",
+    )
+    parser.add_argument(
+        "--loss-reaction-direction",
+        choices=("opposite", "same"),
+        default="opposite",
+        help="Reaction direction relative to the losing parent trade.",
+    )
+    parser.add_argument(
+        "--loss-reaction-parent-close-reasons",
+        default="",
+        help="Comma-separated parent close reasons allowed to trigger a reaction.",
+    )
+    parser.add_argument(
+        "--loss-reaction-pods",
+        default="",
+        help="Comma-separated pod values allowed to trigger reactions, e.g. pod_a,pod_c.",
+    )
+    parser.add_argument(
+        "--loss-reaction-validation",
+        choices=("none", "trend", "orderflow", "trend_orderflow", "micro_momentum"),
+        default="none",
+        help="Snapshot validation required before opening a reaction trade.",
+    )
+    parser.add_argument(
+        "--loss-reaction-max-parent-hold-hours",
+        type=float,
+        default=None,
+        help="Only react to parent trades held at most this many hours.",
+    )
+    parser.add_argument(
+        "--loss-reaction-size-multiplier",
+        type=float,
+        default=1.0,
+        help="Scale cloned reaction notional/risk/margin by this multiplier.",
+    )
+    parser.add_argument(
+        "--loss-reaction-ignore-entry-guards",
+        action="store_true",
+        help="Allow reaction trades to bypass entry routing/managed-symbol guards.",
+    )
     return parser
+
+
+def _csv_set(value: str) -> set[str]:
+    return {item.strip() for item in str(value or "").split(",") if item.strip()}
 
 
 def main() -> None:
@@ -966,6 +1554,14 @@ def main() -> None:
         load_config(args.config),
         force_enable_all_pods=not args.respect_config_enabled,
         apply_live_notional_caps=args.apply_live_notional_caps,
+        enable_loss_reaction_trades=args.enable_loss_reaction_trades,
+        loss_reaction_direction=args.loss_reaction_direction,
+        loss_reaction_parent_close_reasons=_csv_set(args.loss_reaction_parent_close_reasons),
+        loss_reaction_allowed_pods=_csv_set(args.loss_reaction_pods),
+        loss_reaction_validation=args.loss_reaction_validation,
+        loss_reaction_max_parent_hold_hours=args.loss_reaction_max_parent_hold_hours,
+        loss_reaction_size_multiplier=args.loss_reaction_size_multiplier,
+        loss_reaction_ignore_entry_guards=args.loss_reaction_ignore_entry_guards,
     ).run_jsonl(
         input_path=args.input,
         dedupe_by_timestamp=not args.no_dedupe_timestamps,

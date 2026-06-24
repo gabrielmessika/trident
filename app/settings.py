@@ -274,6 +274,15 @@ class PodAConfig:
     live_loss_tax_stop_reasons: list[str] = field(
         default_factory=lambda: ["stop_hit", "exchange_closed_stop_loss"]
     )
+    live_loss_reaction_enabled: bool = False
+    live_loss_reaction_parent_close_reasons: list[str] = field(
+        default_factory=lambda: ["stop_hit"]
+    )
+    live_loss_reaction_parent_setups: list[str] = field(
+        default_factory=lambda: ["trend_pullback_long"]
+    )
+    live_loss_reaction_size_multiplier: float = 1.0
+    live_loss_reaction_max_notional_usd: float = 0.0
     live_correlation_full_size_slots: int = 3
     live_correlation_extra_multiplier: float = 0.50
     dynamic_symbol_guard_live_sizing_enabled: bool = False
@@ -1725,6 +1734,27 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                     "live_loss_tax_stop_reasons",
                     ["stop_hit", "exchange_closed_stop_loss"],
                 )
+            ),
+            live_loss_reaction_enabled=bool(
+                pod_a_data.get("live_loss_reaction_enabled", False)
+            ),
+            live_loss_reaction_parent_close_reasons=_str_list(
+                pod_a_data.get(
+                    "live_loss_reaction_parent_close_reasons",
+                    ["stop_hit"],
+                )
+            ),
+            live_loss_reaction_parent_setups=_str_list(
+                pod_a_data.get(
+                    "live_loss_reaction_parent_setups",
+                    ["trend_pullback_long"],
+                )
+            ),
+            live_loss_reaction_size_multiplier=float(
+                pod_a_data.get("live_loss_reaction_size_multiplier", 1.0)
+            ),
+            live_loss_reaction_max_notional_usd=float(
+                pod_a_data.get("live_loss_reaction_max_notional_usd", 0.0)
             ),
             live_correlation_full_size_slots=int(
                 pod_a_data.get("live_correlation_full_size_slots", 3)
