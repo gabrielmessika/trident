@@ -26,7 +26,12 @@ from app.reporting.multi_pod import (
 )
 from app.reporting.live_journal import attach_live_journal_report
 from app.trident.hip4_outcome.reporting import replay_opportunities
-from app.backtest.snapshot_loader import SnapshotLoader, SnapshotRecord, merge_snapshot_records
+from app.backtest.snapshot_loader import (
+    SnapshotFormatError,
+    SnapshotLoader,
+    SnapshotRecord,
+    merge_snapshot_records,
+)
 from app.live.runtime_status import (
     load_runtime_status,
     sanitize_runtime_status_payload,
@@ -2596,11 +2601,14 @@ def _latest_snapshot_record(
     for record_index, line in enumerate(_tail_text_lines(latest_file, max_lines=200), start=1):
         if not line.strip():
             continue
-        payload = json.loads(line)
-        if not isinstance(payload, dict):
+        try:
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                continue
+            loader._validate_payload(payload, file_path=latest_file)
+            enriched_payload = loader._enrich_payload(payload)
+        except (json.JSONDecodeError, SnapshotFormatError, KeyError, TypeError):
             continue
-        loader._validate_payload(payload, file_path=latest_file)
-        enriched_payload = loader._enrich_payload(payload)
         cluster_raw = enriched_payload.get("cluster_regime_snapshots")
         records.append(
             SnapshotRecord(

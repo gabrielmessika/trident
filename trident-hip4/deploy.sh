@@ -249,6 +249,15 @@ post_checks() {
     fi
 }
 
+run_remote_retention() {
+    info "Application de la retention disque serveur..."
+    if ssh_remote "cd ${DEPLOY_DIR} && TRIDENT_RETENTION_TRIDENT_ROOT=/opt/trident TRIDENT_RETENTION_HIP4_ROOT=/opt/trident-hip4 ./scripts/trident_disk_retention.sh --scope all --apply --install-cron"; then
+        ok "Retention disque appliquee"
+    else
+        warn "Retention disque non appliquee; verifier ${DEPLOY_DIR}/logs/retention_cron.log ou lancer scripts/trident_disk_retention.sh manuellement."
+    fi
+}
+
 start_remote() {
     local extra_args
     extra_args="$(server_flags)"
@@ -270,6 +279,7 @@ validate_local
 deploy_code
 build_remote
 post_checks
+run_remote_retention
 
 if [ -n "$START" ]; then
     start_remote

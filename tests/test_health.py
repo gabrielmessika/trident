@@ -209,6 +209,49 @@ class HealthApiTests(unittest.TestCase):
 
         self.assertEqual([row["record_index"] for row in rows], [29, 28, 27])
 
+    def test_latest_snapshot_record_skips_truncated_tail_line(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            snapshot_dir = Path(tmpdir)
+            path = snapshot_dir / "2026-07-03.jsonl"
+            valid_record = {
+                "timestamp": "2026-07-03T07:32:00Z",
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 20.0,
+                    "atr_ratio": 1.0,
+                    "range_width_bps": 100.0,
+                    "structure_score": 0.1,
+                    "btc_impulse": 0.0,
+                },
+                "symbols": [
+                    {
+                        "symbol": "BTC",
+                        "price": 60000.0,
+                        "ema_fast": 60100.0,
+                        "ema_slow": 59900.0,
+                        "vwap_distance_bps": 5.0,
+                        "structure_score": 0.2,
+                        "funding_rate": 0.0001,
+                        "spread_bps": 1.0,
+                        "btc_aligned": True,
+                    }
+                ],
+            }
+            path.write_text(
+                json.dumps(valid_record) + "\n"
+                '{"timestamp": "2026-07-03T07:33:00Z", "regime_snapshot": {"ready":',
+                encoding="utf-8",
+            )
+
+            record = _latest_snapshot_record(
+                snapshot_dir=snapshot_dir,
+                max_snapshot_age_seconds=3600.0,
+            )
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record.timestamp, "2026-07-03T07:32:00Z")
+        self.assertEqual([item["symbol"] for item in record.symbols], ["BTC"])
+
     def test_tail_csv_records_reads_recent_rows_with_header(self) -> None:
         with TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "rows.csv"

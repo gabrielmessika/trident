@@ -201,10 +201,18 @@ Source de verite operationnelle depuis le `2026-05-24`:
   `loss_reaction` perdant ne declenche jamais de cascade. Replay global
   research-only sur `2026-04-05 -> 2026-05-13`: `opposite_stop_hit_pod_a`
   ameliore de `+47.17` avec `2` reactions, tandis que la variante systematique
-  sans garde-fous degrade de `-81.17`. Cette activation n'est pas deployee tant
-  que `./deploy.sh` n'est pas lance explicitement apres preflight; surveiller
-  `live_loss_reaction` dans le runtime status et les trades
-  `setup=loss_reaction` apres deploiement.
+  sans garde-fous degrade de `-81.17`.
+- Deploiement Pod A live loss-reaction `2026-06-24T15:26Z`: deploiement
+  live/mainnet effectue via
+  `./deploy.sh --start --mode live --network mainnet --config config/trident.toml`.
+  Preflight Pod A/Pod C OK, services `trident-api`, `pod-a-live`, `pod-c-live`,
+  `tradfi-funding-collector` et `funding-collector` actifs. Fetch post-deploy
+  `server-data/reviews/20260624T152835Z/review_summary.md` en `PASS`, mode
+  `live`, network `mainnet`, reconciliations Pod A/Pod C ready, aucun conflit
+  d'ownership, aucune position ouverte et aucun open order inconnu. Le runtime
+  Pod A expose `live_loss_reaction.enabled=true` avec compteurs reaction encore
+  a `0`; surveiller `live_loss_reaction` dans le runtime status et les trades
+  `setup=loss_reaction` sur les prochaines clotures perdantes.
 - Implementation Robust PnL Lab `2026-06-23`: demarrage du plan
   `docs/plan_evos_robustes.md` par un harness commun research-only
   `scripts/run_pnl_robust_candidate_lab.py` et sa suite

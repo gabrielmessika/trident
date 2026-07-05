@@ -210,6 +210,7 @@ fetch_logs_runtime() {
     fetch_optional_remote_file "logs/hip4_nautilus_shadow/status.json" "${RUNTIME_DIR}/hip4_nautilus_shadow_status.json" "Runtime status Nautilus shadow"
     fetch_optional_remote_file "logs/pod_b_live_status.json" "${RUNTIME_DIR}/pod_b_live_status.json" "Alias status HIP-4"
     fetch_optional_remote_file "logs/trident_hip4_deployment_profile.json" "${RUNTIME_DIR}/trident_hip4_deployment_profile.json" "Profil de déploiement TRIDENT-HIP4"
+    fetch_optional_remote_file "logs/retention_runs.jsonl" "${RUNTIME_DIR}/retention_runs.jsonl" "Journal de retention disque"
     fetch_optional_remote_file "runtime/hip4_outcome_state.json" "${RUNTIME_DIR}/hip4_outcome_state.json" "State HIP-4"
     fetch_optional_remote_file "runtime/hip4_outcome_paper_state.json" "${RUNTIME_DIR}/hip4_outcome_paper_state.json" "State HIP-4 paper"
     fetch_optional_remote_file "runtime/hip4_outcome_testnet_state.json" "${RUNTIME_DIR}/hip4_outcome_testnet_state.json" "State HIP-4 testnet"
