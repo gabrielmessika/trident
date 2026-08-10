@@ -58,6 +58,11 @@ class AnchorTrendPlanner:
             side=signal.side,
             fallback_bps=initial_stop_bps(signal.confidence),
         )
+        chart_setup = signal.setup.startswith("chart_")
+        if chart_setup:
+            chart_stop_bps = _float_detail(signal.setup_details, "chart_stop_bps")
+            if chart_stop_bps > 0.0:
+                stop_bps = chart_stop_bps
         symbol_mode = active_symbol_mode(self._config.pod_a, signal.symbol)
         campaign = None if symbol_mode is not None else self._campaign_for_signal(signal)
         if campaign is not None:
@@ -87,6 +92,18 @@ class AnchorTrendPlanner:
             signal.confidence,
             signal.market_cluster,
         )
+        if chart_setup:
+            chart_take_profit_bps = _float_detail(
+                signal.setup_details,
+                "chart_take_profit_bps",
+            )
+            if chart_take_profit_bps > 0.0:
+                exit_policy = {
+                    "take_profit_bps": chart_take_profit_bps,
+                    "break_even_trigger_bps": 0.0,
+                    "trailing_activation_bps": 0.0,
+                    "trailing_distance_bps": 0.0,
+                }
         setup_runner = self._setup_runner_for_signal(signal)
         if setup_runner is not None:
             exit_policy = self._setup_runner_exit_policy(stop_bps, setup_runner)
@@ -118,12 +135,16 @@ class AnchorTrendPlanner:
                     structural_take_profit_bps,
                 )
         time_stop_hours = (
-            symbol_mode.time_stop_hours
-            if symbol_mode is not None
+            max(_int_detail(signal.setup_details, "chart_time_stop_hours"), 1)
+            if chart_setup and _int_detail(signal.setup_details, "chart_time_stop_hours") > 0
             else (
-                campaign.time_stop_hours
-                if campaign is not None
-                else time_stop_hours_for_cluster(signal.market_cluster)
+                symbol_mode.time_stop_hours
+                if symbol_mode is not None
+                else (
+                    campaign.time_stop_hours
+                    if campaign is not None
+                    else time_stop_hours_for_cluster(signal.market_cluster)
+                )
             )
         )
         campaign_initial_entry_fraction = 1.0

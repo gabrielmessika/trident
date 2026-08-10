@@ -1350,9 +1350,19 @@ class PodALiveRunner:
             reverse=True,
         )
         correlated_open_counts = self._correlated_open_counts()
+        chart_open_count = self._open_chart_pattern_count()
+        chart_new_count = 0
         shaped: list[object] = []
         for plan in sorted_plans:
             details = dict(getattr(plan, "setup_details", {}) or {})
+            if self._is_chart_pattern_plan(plan):
+                max_chart_open = max(
+                    int(getattr(self.config.pod_a.chart_patterns, "max_open_positions", 1)),
+                    0,
+                )
+                if max_chart_open <= 0 or chart_open_count + chart_new_count >= max_chart_open:
+                    continue
+                chart_new_count += 1
             side = str(getattr(plan, "side", ""))
             count_key = f"{side}:crypto:trend_pullback_long"
             correlated_count = correlated_open_counts.get(count_key, 0)
@@ -1374,6 +1384,20 @@ class PodALiveRunner:
                 correlated_open_counts[count_key] = correlated_count + 1
             shaped.append(shaped_plan)
         return shaped
+
+    def _is_chart_pattern_plan(self, plan: object) -> bool:
+        setup = str(getattr(plan, "setup", "") or "")
+        details = dict(getattr(plan, "setup_details", {}) or {})
+        return setup.startswith("chart_") or bool(details.get("chart_pattern_live_promoted"))
+
+    def _open_chart_pattern_count(self) -> int:
+        count = 0
+        for position in self.executor.portfolio.open_positions.values():
+            if not isinstance(position, OpenPosition):
+                continue
+            if self._is_chart_pattern_plan(position):
+                count += 1
+        return count
 
     def _correlated_open_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}

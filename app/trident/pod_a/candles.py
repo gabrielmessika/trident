@@ -133,6 +133,11 @@ class TimeframeBuffer:
             return None
         return self._current.open
 
+    def current_sample_count(self) -> int:
+        if self._current is None:
+            return 0
+        return self._current.sample_count
+
 
 def _clamp(value: float, lower: float = -1.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
@@ -511,6 +516,7 @@ class CandleService:
                 "lower_wick_ratio_4h": 0.0,
                 "bb_position_4h": 0.5,
                 "btc_overextension_score": 0.0,
+                "current_4h_sample_count": 0,
             }
 
         candles_15m = buffers["15m"].candles()
@@ -641,4 +647,14 @@ class CandleService:
             "lower_wick_ratio_4h": round(float(lower_wick_ratio_4h), 4),
             "bb_position_4h": round(float(bb_position_4h), 4),
             "btc_overextension_score": round(float(btc_overextension_score), 4),
+            "current_4h_sample_count": buffers["4h"].current_sample_count(),
         }
+
+    def completed_candles_for(self, symbol: str, timeframe: str) -> list[Candle]:
+        buffers = self._buffers_by_symbol.get(symbol)
+        if buffers is None:
+            return []
+        buffer = buffers.get(timeframe)
+        if buffer is None:
+            return []
+        return buffer.completed_candles()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.settings import AppConfig, load_config
+from app.trident.pod_a.chart_patterns import best_chart_pattern_candidate
 from app.trident.market_clusters import enrich_snapshots
 from app.trident.pod_a.candles import CandleService
 from app.trident.pod_a.signals import AnchorTrendContext
@@ -56,6 +57,9 @@ class MarketContextService:
         snapshot: SymbolMarketSnapshot,
     ) -> AnchorTrendContext:
         features = self._candles.features_for(snapshot.symbol)
+        chart_candidate = best_chart_pattern_candidate(
+            self._candles.completed_candles_for(snapshot.symbol, "4h")
+        )
         return AnchorTrendContext(
             symbol=snapshot.symbol,
             regime=regime.value,
@@ -134,6 +138,47 @@ class MarketContextService:
             lower_wick_ratio_4h=float(features["lower_wick_ratio_4h"]),
             bb_position_4h=float(features["bb_position_4h"]),
             btc_overextension_score=float(features["btc_overextension_score"]),
+            current_4h_sample_count=int(features["current_4h_sample_count"]),
+            chart_pattern_name=chart_candidate.pattern if chart_candidate is not None else "",
+            chart_pattern_validation_time=(
+                chart_candidate.validation_time if chart_candidate is not None else ""
+            ),
+            chart_pattern_theoretical_target_bps=(
+                chart_candidate.theoretical_target_pct * 100.0
+                if chart_candidate is not None
+                else 0.0
+            ),
+            chart_pattern_structure_height_pct=(
+                chart_candidate.structure_height_pct if chart_candidate is not None else 0.0
+            ),
+            chart_pattern_structure_depth_pct=(
+                chart_candidate.structure_depth_pct if chart_candidate is not None else 0.0
+            ),
+            chart_pattern_breakout_margin_pct=(
+                chart_candidate.breakout_margin_pct if chart_candidate is not None else 0.0
+            ),
+            chart_pattern_compression_pct=(
+                chart_candidate.compression_pct
+                if chart_candidate is not None and chart_candidate.compression_pct is not None
+                else 0.0
+            ),
+            chart_pattern_low_mismatch_pct=(
+                chart_candidate.low_mismatch_pct
+                if chart_candidate is not None and chart_candidate.low_mismatch_pct is not None
+                else 0.0
+            ),
+            chart_pattern_upper_slope_pct_per_bar=(
+                chart_candidate.upper_slope_pct_per_bar
+                if chart_candidate is not None and chart_candidate.upper_slope_pct_per_bar is not None
+                else 0.0
+            ),
+            chart_pattern_lower_slope_pct_per_bar=(
+                chart_candidate.lower_slope_pct_per_bar
+                if chart_candidate is not None and chart_candidate.lower_slope_pct_per_bar is not None
+                else 0.0
+            ),
+            chart_pattern_bars=chart_candidate.pattern_bars if chart_candidate is not None else 0,
+            chart_pattern_score=chart_candidate.score if chart_candidate is not None else 0.0,
             external_reference_price=snapshot.external_reference_price,
             external_reference_source_count=snapshot.external_reference_source_count,
             external_reference_sources=snapshot.external_reference_sources,

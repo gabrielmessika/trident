@@ -120,6 +120,10 @@ class AnchorTrendService:
         if not passes_anchor_filters(context):
             return None
 
+        chart_signal = self._chart_pattern_signal(context)
+        if chart_signal is not None:
+            return chart_signal
+
         if is_bos_retest_long(context) and context.bos_long_confirmed:
             components = self._confidence_components(context, "long")
             components["setup_bonus"] = 0.08
@@ -548,7 +552,26 @@ class AnchorTrendService:
             signal = self.evaluate(context)
             if signal is not None:
                 signals.append(signal)
-        return sorted(signals, key=lambda item: item.confidence, reverse=True)
+        ordered = sorted(signals, key=lambda item: item.confidence, reverse=True)
+        chart_config = self._config.pod_a.chart_patterns
+        if not chart_config.enabled:
+            return ordered
+        max_chart = max(int(chart_config.max_new_signals_per_batch), 0)
+        if max_chart <= 0:
+            return [
+                signal
+                for signal in ordered
+                if not str(signal.setup).startswith("chart_")
+            ]
+        chart_count = 0
+        filtered: list[AnchorTrendSignal] = []
+        for signal in ordered:
+            if str(signal.setup).startswith("chart_"):
+                if chart_count >= max_chart:
+                    continue
+                chart_count += 1
+            filtered.append(signal)
+        return filtered
 
     def best_signal(
         self,
@@ -559,6 +582,7 @@ class AnchorTrendService:
 
     def review_context(self, context: AnchorTrendContext) -> dict[str, object]:
         candidates = {
+            "chart_pattern_long": self._chart_pattern_signal(context) is not None,
             "bos_retest_long": is_bos_retest_long(context),
             "bos_retest_short": is_bos_retest_short(context),
             "liquidity_sweep_reclaim_long": is_liquidity_sweep_reclaim_long(context),
@@ -605,6 +629,114 @@ class AnchorTrendService:
                 "vwap_reclaim_score": round(context.vwap_reclaim_score, 4),
             },
         }
+
+    def _chart_pattern_signal(self, context: AnchorTrendContext) -> AnchorTrendSignal | None:
+        chart_config = self._config.pod_a.chart_patterns
+        if not chart_config.enabled:
+            return None
+        if context.market_cluster != "crypto":
+            return None
+        if not context.chart_pattern_name:
+            return None
+        if (
+            chart_config.require_first_snapshot_after_4h_close
+            and context.current_4h_sample_count != 1
+        ):
+            return None
+        theoretical_target_pct = context.chart_pattern_theoretical_target_bps / 100.0
+        matching_profiles = [
+            profile
+            for profile in chart_config.profiles
+            if profile.enabled and profile.pattern == context.chart_pattern_name
+        ]
+        for profile in matching_profiles:
+            if not self._setup_allowed_for_symbol(profile.setup, context.symbol):
+                continue
+            if theoretical_target_pct > max(profile.max_theoretical_target_pct, 0.0):
+                continue
+            if context.chart_pattern_score < max(profile.min_score, 0.0):
+                continue
+            if context.volume_ratio < max(profile.min_volume_ratio, 0.0):
+                continue
+            if context.chart_pattern_breakout_margin_pct < max(
+                profile.min_breakout_margin_pct,
+                0.0,
+            ):
+                continue
+            target_bps = context.chart_pattern_theoretical_target_bps * max(
+                profile.target_fraction_pct,
+                0.0,
+            ) / 100.0
+            stop_bps = max(profile.stop_loss_pct, 0.0) * 100.0
+            if target_bps <= 0.0 or stop_bps <= 0.0:
+                continue
+            components = self._confidence_components(context, "long")
+            components["setup_bonus"] = 0.10
+            components["chart_pattern_score"] = min(context.chart_pattern_score / 3.2, 1.0)
+            confidence = max(
+                float(profile.min_confidence),
+                self._aggregate_confidence(components),
+            )
+            confidence = round(min(confidence, 0.82), 3)
+            invalidation = context.price * (1.0 - stop_bps / 10_000.0)
+            return AnchorTrendSignal(
+                symbol=context.symbol,
+                side="long",
+                setup=profile.setup,
+                confidence=confidence,
+                entry_price=context.price,
+                market_cluster=context.market_cluster,
+                cluster_leader=context.cluster_leader,
+                invalidation_price=invalidation,
+                setup_details=_with_regime(
+                    context,
+                    {
+                        "family": "chart_pattern",
+                        "chart_pattern_live_promoted": True,
+                        "chart_pattern_profile": profile.name,
+                        "chart_pattern": context.chart_pattern_name,
+                        "chart_pattern_validation_time": context.chart_pattern_validation_time,
+                        "chart_pattern_timeframe": "4h",
+                        "chart_pattern_theoretical_target_bps": round(
+                            context.chart_pattern_theoretical_target_bps,
+                            4,
+                        ),
+                        "chart_target_fraction_pct": round(
+                            profile.target_fraction_pct,
+                            4,
+                        ),
+                        "chart_take_profit_bps": round(target_bps, 4),
+                        "chart_stop_bps": round(stop_bps, 4),
+                        "chart_time_stop_hours": float(profile.time_stop_hours),
+                        "chart_pattern_score": round(context.chart_pattern_score, 6),
+                        "chart_structure_height_pct": round(
+                            context.chart_pattern_structure_height_pct,
+                            6,
+                        ),
+                        "chart_structure_depth_pct": round(
+                            context.chart_pattern_structure_depth_pct,
+                            6,
+                        ),
+                        "chart_breakout_margin_pct": round(
+                            context.chart_pattern_breakout_margin_pct,
+                            6,
+                        ),
+                        "chart_compression_pct": round(
+                            context.chart_pattern_compression_pct,
+                            6,
+                        ),
+                        "chart_low_mismatch_pct": round(
+                            context.chart_pattern_low_mismatch_pct,
+                            6,
+                        ),
+                        "chart_pattern_bars": float(context.chart_pattern_bars),
+                        "chart_volume_ratio": round(context.volume_ratio, 6),
+                    },
+                    side="long",
+                ),
+                confidence_components=components,
+            )
+        return None
 
     def _is_long_setup(self, context: AnchorTrendContext) -> bool:
         return (

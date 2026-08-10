@@ -245,6 +245,9 @@ class PodAConfig:
     reversal_fade: PodAReversalFadeConfig = field(
         default_factory=lambda: PodAReversalFadeConfig()
     )
+    chart_patterns: PodAChartPatternConfig = field(
+        default_factory=lambda: PodAChartPatternConfig()
+    )
     pattern_vetoes: list[PodAPatternVetoConfig] = field(default_factory=list)
     pattern_watchers: list[PodAPatternVetoConfig] = field(default_factory=list)
     symbol_modes: dict[str, PodASymbolModeConfig] = field(default_factory=dict)
@@ -408,6 +411,31 @@ class PodAReversalFadeConfig:
     min_stoch_rsi_k: float = 0.72
     min_cci20: float = 90.0
     max_vwap_reclaim_score: float = -0.05
+
+
+@dataclass(slots=True)
+class PodAChartPatternProfileConfig:
+    name: str
+    enabled: bool = True
+    pattern: str = ""
+    setup: str = ""
+    target_fraction_pct: float = 100.0
+    stop_loss_pct: float = 6.0
+    min_score: float = 0.0
+    max_theoretical_target_pct: float = 100.0
+    min_volume_ratio: float = 0.0
+    min_breakout_margin_pct: float = 0.0
+    min_confidence: float = 0.55
+    time_stop_hours: int = 336
+
+
+@dataclass(slots=True)
+class PodAChartPatternConfig:
+    enabled: bool = False
+    require_first_snapshot_after_4h_close: bool = True
+    max_new_signals_per_batch: int = 1
+    max_open_positions: int = 1
+    profiles: list[PodAChartPatternProfileConfig] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -920,6 +948,49 @@ def _pod_a_reversal_fade(raw: object) -> PodAReversalFadeConfig:
         min_stoch_rsi_k=float(raw.get("min_stoch_rsi_k", 0.72)),
         min_cci20=float(raw.get("min_cci20", 90.0)),
         max_vwap_reclaim_score=float(raw.get("max_vwap_reclaim_score", -0.05)),
+    )
+
+
+def _pod_a_chart_patterns(raw: object) -> PodAChartPatternConfig:
+    if not isinstance(raw, dict):
+        return PodAChartPatternConfig()
+    profiles: list[PodAChartPatternProfileConfig] = []
+    for item in raw.get("profiles", []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        pattern = str(item.get("pattern", "")).strip()
+        setup = str(item.get("setup", "")).strip()
+        if not name or not pattern or not setup:
+            continue
+        profiles.append(
+            PodAChartPatternProfileConfig(
+                name=name,
+                enabled=bool(item.get("enabled", True)),
+                pattern=pattern,
+                setup=setup,
+                target_fraction_pct=float(item.get("target_fraction_pct", 100.0)),
+                stop_loss_pct=float(item.get("stop_loss_pct", 6.0)),
+                min_score=float(item.get("min_score", 0.0)),
+                max_theoretical_target_pct=float(
+                    item.get("max_theoretical_target_pct", 100.0)
+                ),
+                min_volume_ratio=float(item.get("min_volume_ratio", 0.0)),
+                min_breakout_margin_pct=float(
+                    item.get("min_breakout_margin_pct", 0.0)
+                ),
+                min_confidence=float(item.get("min_confidence", 0.55)),
+                time_stop_hours=int(item.get("time_stop_hours", 336)),
+            )
+        )
+    return PodAChartPatternConfig(
+        enabled=bool(raw.get("enabled", False)),
+        require_first_snapshot_after_4h_close=bool(
+            raw.get("require_first_snapshot_after_4h_close", True)
+        ),
+        max_new_signals_per_batch=int(raw.get("max_new_signals_per_batch", 1)),
+        max_open_positions=int(raw.get("max_open_positions", 1)),
+        profiles=profiles,
     )
 
 
@@ -1654,6 +1725,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             reversal_fade=_pod_a_reversal_fade(
                 pod_a_data.get("reversal_fade", {})
+            ),
+            chart_patterns=_pod_a_chart_patterns(
+                pod_a_data.get("chart_patterns", {})
             ),
             pattern_vetoes=_pod_a_pattern_vetoes(pod_a_data.get("pattern_vetoes", [])),
             pattern_watchers=_pod_a_pattern_watchers(

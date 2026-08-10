@@ -213,6 +213,19 @@ Source de verite operationnelle depuis le `2026-05-24`:
   Pod A expose `live_loss_reaction.enabled=true` avec compteurs reaction encore
   a `0`; surveiller `live_loss_reaction` dans le runtime status et les trades
   `setup=loss_reaction` sur les prochaines clotures perdantes.
+- Promotion locale Pod A chart patterns `2026-07-06`: decision operateur a
+  risque accepte malgre gate statistique refuse (`0/24` profils passes, sample
+  `<10`). La config locale active `pod_a.chart_patterns.enabled=true` avec
+  `max_new_signals_per_batch=1`, `max_open_positions=1`,
+  `chart_double_bottom_long` et `chart_triangle_breakout_long`. Replay integre
+  full-bot cap-aware apres promotion:
+  `server-data/replay_reports/chart_pattern_promoted_livecaps_20260706T000000Z/`
+  sort `+83.99 USD` total vs baseline cap-aware `+77.08`, Pod A
+  `+63.63` vs `+56.72`, Pod C inchange `+20.36`. La contribution chartiste
+  fermee est `+6.91 USD` via `2` trades `chart_double_bottom_long`; aucun trade
+  `chart_triangle_breakout_long` accepte sur cette fenetre. Aucun redeploiement
+  serveur n'est effectue dans cette passe: avant effet live serveur, lancer
+  preflight/deploy explicite puis fetch/review post-deploy.
 - Implementation Robust PnL Lab `2026-06-23`: demarrage du plan
   `docs/plan_evos_robustes.md` par un harness commun research-only
   `scripts/run_pnl_robust_candidate_lab.py` et sa suite

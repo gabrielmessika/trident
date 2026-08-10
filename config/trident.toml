@@ -386,7 +386,7 @@ dynamic_symbol_guard_loss_probation_max_profit_factor = 0.60
 dynamic_symbol_guard_loss_probation_rehab_min_profit_factor = 1.05
 dynamic_symbol_guard_loss_probation_rehab_min_expectancy_usd = 0.0
 opposite_signal_debounce_minutes = 15
-allowed_setups = ["trend_pullback_long"]
+allowed_setups = ["trend_pullback_long", "chart_double_bottom_long", "chart_triangle_breakout_long"]
 disabled_setups = ["bos_retest_short", "bos_retest_long", "trend_pullback_short", "liquidity_sweep_reclaim_short", "liquidity_sweep_reclaim_long", "vwap_reclaim_long"]
 blocked_regimes = ["DeadZone", "RangeAuction"]
 allowed_setups_in_blocked_regimes = []
@@ -467,6 +467,40 @@ min_rejection_flow = 0.10
 min_stoch_rsi_k = 0.72
 min_cci20 = 90.0
 max_vwap_reclaim_score = -0.05
+
+[pod_a.chart_patterns]
+enabled = true
+require_first_snapshot_after_4h_close = true
+max_new_signals_per_batch = 1
+max_open_positions = 1
+
+[[pod_a.chart_patterns.profiles]]
+name = "risk_accepted_double_bottom_4h_t100_sl6"
+enabled = true
+pattern = "double_bottom"
+setup = "chart_double_bottom_long"
+target_fraction_pct = 100.0
+stop_loss_pct = 6.0
+min_score = 2.1706325
+max_theoretical_target_pct = 4.717747
+min_volume_ratio = 1.2868355
+min_breakout_margin_pct = 0.0
+min_confidence = 0.57
+time_stop_hours = 336
+
+[[pod_a.chart_patterns.profiles]]
+name = "risk_accepted_triangle_breakout_4h_t75_sl8"
+enabled = true
+pattern = "triangle_breakout"
+setup = "chart_triangle_breakout_long"
+target_fraction_pct = 75.0
+stop_loss_pct = 8.0
+min_score = 2.2913925
+max_theoretical_target_pct = 10.3142285
+min_volume_ratio = 1.0216265
+min_breakout_margin_pct = 0.0
+min_confidence = 0.57
+time_stop_hours = 336
 
 [[pod_a.pattern_vetoes]]
 name = "trend1h_negative"
