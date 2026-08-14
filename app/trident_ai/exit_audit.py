@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.backtest.snapshot_loader import open_jsonl_text, resolve_jsonl_files
 from app.trident_ai.config import TridentAIConfig, load_trident_ai_config
 from app.trident_ai.paper import PAPER_REPLAY_TRADE_CLOSED_EVENT
 
@@ -703,12 +704,14 @@ def _render_markdown_report(payload: dict[str, object]) -> str:
 
 def _iter_jsonl(path: str | Path) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        payload = json.loads(line)
-        if isinstance(payload, dict):
-            rows.append(payload)
+    for file_path in resolve_jsonl_files(path):
+        with open_jsonl_text(file_path) as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                if isinstance(payload, dict):
+                    rows.append(payload)
     return rows
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import tempfile
 import unittest
@@ -39,8 +40,8 @@ class TridentAICandidateOutcomeAuditTests(unittest.TestCase):
                     ),
                 ],
             )
-            _write_jsonl(
-                market_input_path,
+            _write_gzip_jsonl(
+                Path(f"{market_input_path}.gz"),
                 [
                     _market_record("2026-06-07T12:15:00Z", {"BTC": 101.0, "ETH": 198.0}),
                     _market_record("2026-06-07T12:30:00Z", {"BTC": 99.0, "ETH": 202.0}),
@@ -162,6 +163,13 @@ def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
         "\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n",
         encoding="utf-8",
     )
+
+
+def _write_gzip_jsonl(path: Path, records: list[dict[str, object]]) -> None:
+    with gzip.open(path, "wt", encoding="utf-8") as handle:
+        handle.write(
+            "\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n"
+        )
 
 
 if __name__ == "__main__":

@@ -56,6 +56,16 @@ Source de verite operationnelle depuis le `2026-05-24`:
 
 ## Lecture Rapide
 
+- Maintenance locale `2026-08-14`: les `21` entrees de replay historiques de
+  `server-data/replay_inputs/` superieures ou egales a `100 MB` sont archivees
+  en `jsonl.gz` apres verification SHA-256 du flux decompresse (`10.72 GB` ->
+  `2.22 GB`). `SnapshotLoader`, l'enrichissement de reference externe et les
+  audits TRIDENT-AI outcome/exit resolvent automatiquement `fichier.jsonl.gz`
+  lorsqu'une commande existante demande encore `fichier.jsonl`; le nom de
+  source logique reste `.jsonl`.
+  Replay comparatif avant/apres strictement identique sur la fenetre
+  `2026-04-05 -> 2026-04-12` (`10 009` records, PnL total `244.84 USD`). Aucun
+  changement live, config, deploy ou collecte.
 - Config prod/dry-run principale: `config/trident.toml`.
 - Mode cible live TRIDENT: `Pod A` crypto core et `Pod C` tradfi en vrais
   ordres apres preflight. `Pod B HIP-4 Outcome` est gere par `TRIDENT-HIP4`.

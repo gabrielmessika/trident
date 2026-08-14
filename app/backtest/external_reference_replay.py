@@ -6,10 +6,10 @@ import concurrent.futures
 import json
 import statistics
 import time
+from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator
 from urllib import error, parse, request
 
 from app.backtest.external_reference_policy import (
@@ -17,9 +17,9 @@ from app.backtest.external_reference_policy import (
     ExternalReferencePolicyConfig,
 )
 from app.backtest.full_bot_replay import FullBotBacktestResult, FullBotBacktestRunner
+from app.backtest.snapshot_loader import open_jsonl_text, resolve_jsonl_files
 from app.settings import AppConfig, load_config
 from app.trident.market_clusters import cluster_for_symbol
-
 
 MINUTE_MS = 60_000
 
@@ -517,9 +517,7 @@ def _is_external_crypto_symbol(
 
 
 def _input_files(input_path: Path) -> list[Path]:
-    if input_path.is_file():
-        return [input_path]
-    return sorted(input_path.glob("*.jsonl"))
+    return resolve_jsonl_files(input_path)
 
 
 def _default_date_window(input_path: Path) -> tuple[str | None, str | None]:
@@ -559,7 +557,7 @@ def _load_records(
             continue
         if end_date is not None and file_path.stem[:10] > end_date:
             continue
-        with file_path.open("r", encoding="utf-8") as handle:
+        with open_jsonl_text(file_path) as handle:
             for line in handle:
                 if not line.strip():
                     continue
@@ -580,7 +578,7 @@ def _iter_records(
             continue
         if end_date is not None and file_path.stem[:10] > end_date:
             continue
-        with file_path.open("r", encoding="utf-8") as handle:
+        with open_jsonl_text(file_path) as handle:
             for line in handle:
                 if not line.strip():
                     continue

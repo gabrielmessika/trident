@@ -1,3 +1,4 @@
+import gzip
 import json
 import tempfile
 import unittest
@@ -46,6 +47,43 @@ class SnapshotLoaderTests(unittest.TestCase):
             self.assertEqual(records[0].symbols[0]["symbol"], "ETH")
             self.assertIn("breadth_pct", records[0].regime_snapshot)
             self.assertIn("leader_trend_score", records[0].regime_snapshot)
+
+    def test_loader_reads_gzip_through_legacy_jsonl_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.jsonl"
+            archived_path = Path(f"{input_path}.gz")
+            record = {
+                "timestamp": "2026-04-04T00:00:00Z",
+                "regime_snapshot": {
+                    "ready": True,
+                    "adx": 32.0,
+                    "atr_ratio": 1.2,
+                    "range_width_bps": 180.0,
+                    "structure_score": 0.55,
+                    "btc_impulse": False,
+                },
+                "symbols": [
+                    {
+                        "symbol": "ETH",
+                        "price": 3100.0,
+                        "ema_fast": 3090.0,
+                        "ema_slow": 3050.0,
+                        "vwap_distance_bps": -8.0,
+                        "structure_score": 0.62,
+                        "funding_rate": 0.0001,
+                        "spread_bps": 1.2,
+                        "btc_aligned": True,
+                    }
+                ],
+            }
+            with gzip.open(archived_path, "wt", encoding="utf-8") as handle:
+                handle.write(json.dumps(record) + "\n")
+
+            records = list(self.loader.iter_jsonl(input_path))
+
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].source_file, "input.jsonl")
+            self.assertEqual(records[0].symbols[0]["symbol"], "ETH")
 
     def test_loader_rejects_missing_symbol_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

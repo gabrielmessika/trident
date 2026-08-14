@@ -1,15 +1,59 @@
 from __future__ import annotations
 
+import gzip
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import TextIO
 
-from app.trident.regime_snapshot_v2 import enrich_cluster_regime_snapshots, enrich_regime_snapshot
+from app.trident.regime_snapshot_v2 import (
+    enrich_cluster_regime_snapshots,
+    enrich_regime_snapshot,
+)
 
 
 class SnapshotFormatError(ValueError):
     """Raised when a snapshot JSONL record does not match the expected schema."""
+
+
+def resolve_jsonl_files(input_path: str | Path) -> list[Path]:
+    """Resolve plain or gzip JSONL inputs without changing legacy CLI paths."""
+
+    path = Path(input_path)
+    if path.is_file():
+        return [path]
+
+    archived_path = Path(f"{path}.gz")
+    if path.suffix == ".jsonl" and archived_path.is_file():
+        return [archived_path]
+
+    if not path.is_dir():
+        return []
+
+    files_by_logical_name: dict[str, Path] = {}
+    for file_path in sorted(path.glob("*.jsonl")):
+        files_by_logical_name[file_path.name] = file_path
+    for file_path in sorted(path.glob("*.jsonl.gz")):
+        logical_name = file_path.name.removesuffix(".gz")
+        files_by_logical_name.setdefault(logical_name, file_path)
+    return [files_by_logical_name[name] for name in sorted(files_by_logical_name)]
+
+
+def open_jsonl_text(path: str | Path) -> TextIO:
+    """Open a resolved JSONL file as text, decompressing gzip archives."""
+
+    file_path = Path(path)
+    if file_path.suffix == ".gz":
+        return gzip.open(file_path, "rt", encoding="utf-8")
+    return file_path.open("r", encoding="utf-8")
+
+
+def logical_jsonl_name(path: str | Path) -> str:
+    """Return the historical JSONL name for plain and gzip-backed inputs."""
+
+    name = Path(path).name
+    return name.removesuffix(".gz") if name.endswith(".jsonl.gz") else name
 
 
 @dataclass(slots=True)
@@ -159,12 +203,11 @@ class SnapshotLoader:
     }
 
     def iter_jsonl(self, input_path: str | Path) -> Iterator[SnapshotRecord]:
-        path = Path(input_path)
-        files = [path] if path.is_file() else sorted(path.glob("*.jsonl"))
+        files = resolve_jsonl_files(input_path)
         record_index = 0
 
         for file_path in files:
-            with file_path.open("r", encoding="utf-8") as handle:
+            with open_jsonl_text(file_path) as handle:
                 for line in handle:
                     line = line.strip()
                     if not line:
@@ -176,7 +219,7 @@ class SnapshotLoader:
                     cluster_raw = enriched_payload.get("cluster_regime_snapshots")
                     yield SnapshotRecord(
                         record_index=record_index,
-                        source_file=file_path.name,
+                        source_file=logical_jsonl_name(file_path),
                         timestamp=enriched_payload.get("timestamp"),
                         regime_snapshot=enriched_payload["regime_snapshot"],
                         symbols=enriched_payload.get("symbols", []),
